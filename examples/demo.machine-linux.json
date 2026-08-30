@@ -1,0 +1,719 @@
+{
+  "schema_version": 1,
+  "name": "Demo",
+  "bpm": 120.0,
+  "swing": 0.0,
+  "time_signature": [
+    4,
+    4
+  ],
+  "groups": [
+    {
+      "name": "Kit 808",
+      "color": 22,
+      "sounds": [
+        {
+          "name": "Kick",
+          "color": 6,
+          "volume_db": 0.0,
+          "pan": 0.0,
+          "muted": false,
+          "solo": false,
+          "choke_group": null,
+          "polyphony": 8,
+          "zones": [
+            {
+              "sample_path": null,
+              "root_key": 36,
+              "lokey": 0,
+              "hikey": 127,
+              "lovel": 0,
+              "hivel": 127,
+              "seq_length": 1,
+              "seq_position": 0,
+              "tune_cents": 0,
+              "pan": 0.0,
+              "volume_db": 0.0
+            }
+          ],
+          "adsr": {
+            "attack_ms": 2.0,
+            "decay_ms": 100.0,
+            "sustain": 0.8,
+            "release_ms": 150.0
+          },
+          "filter": {
+            "kind": "Off",
+            "cutoff_hz": 0.0,
+            "resonance": 0.0
+          }
+        },
+        {
+          "name": "Snare",
+          "color": 22,
+          "volume_db": 0.0,
+          "pan": 0.0,
+          "muted": false,
+          "solo": false,
+          "choke_group": null,
+          "polyphony": 8,
+          "zones": [
+            {
+              "sample_path": null,
+              "root_key": 37,
+              "lokey": 0,
+              "hikey": 127,
+              "lovel": 0,
+              "hivel": 127,
+              "seq_length": 1,
+              "seq_position": 0,
+              "tune_cents": 0,
+              "pan": 0.0,
+              "volume_db": 0.0
+            }
+          ],
+          "adsr": {
+            "attack_ms": 2.0,
+            "decay_ms": 100.0,
+            "sustain": 0.8,
+            "release_ms": 150.0
+          },
+          "filter": {
+            "kind": "Off",
+            "cutoff_hz": 0.0,
+            "resonance": 0.0
+          }
+        },
+        {
+          "name": "HiHat Closed",
+          "color": 30,
+          "volume_db": 0.0,
+          "pan": 0.0,
+          "muted": false,
+          "solo": false,
+          "choke_group": null,
+          "polyphony": 8,
+          "zones": [
+            {
+              "sample_path": null,
+              "root_key": 38,
+              "lokey": 0,
+              "hikey": 127,
+              "lovel": 0,
+              "hivel": 127,
+              "seq_length": 1,
+              "seq_position": 0,
+              "tune_cents": 0,
+              "pan": 0.0,
+              "volume_db": 0.0
+            }
+          ],
+          "adsr": {
+            "attack_ms": 2.0,
+            "decay_ms": 100.0,
+            "sustain": 0.8,
+            "release_ms": 150.0
+          },
+          "filter": {
+            "kind": "Off",
+            "cutoff_hz": 0.0,
+            "resonance": 0.0
+          }
+        },
+        {
+          "name": "HiHat Open",
+          "color": 42,
+          "volume_db": 0.0,
+          "pan": 0.0,
+          "muted": false,
+          "solo": false,
+          "choke_group": null,
+          "polyphony": 8,
+          "zones": [
+            {
+              "sample_path": null,
+              "root_key": 39,
+              "lokey": 0,
+              "hikey": 127,
+              "lovel": 0,
+              "hivel": 127,
+              "seq_length": 1,
+              "seq_position": 0,
+              "tune_cents": 0,
+              "pan": 0.0,
+              "volume_db": 0.0
+            }
+          ],
+          "adsr": {
+            "attack_ms": 2.0,
+            "decay_ms": 100.0,
+            "sustain": 0.8,
+            "release_ms": 150.0
+          },
+          "filter": {
+            "kind": "Off",
+            "cutoff_hz": 0.0,
+            "resonance": 0.0
+          }
+        },
+        {
+          "name": "Clap",
+          "color": 50,
+          "volume_db": 0.0,
+          "pan": 0.0,
+          "muted": false,
+          "solo": false,
+          "choke_group": null,
+          "polyphony": 8,
+          "zones": [
+            {
+              "sample_path": null,
+              "root_key": 40,
+              "lokey": 0,
+              "hikey": 127,
+              "lovel": 0,
+              "hivel": 127,
+              "seq_length": 1,
+              "seq_position": 0,
+              "tune_cents": 0,
+              "pan": 0.0,
+              "volume_db": 0.0
+            }
+          ],
+          "adsr": {
+            "attack_ms": 2.0,
+            "decay_ms": 100.0,
+            "sustain": 0.8,
+            "release_ms": 150.0
+          },
+          "filter": {
+            "kind": "Off",
+            "cutoff_hz": 0.0,
+            "resonance": 0.0
+          }
+        },
+        {
+          "name": "Tom Low",
+          "color": 58,
+          "volume_db": 0.0,
+          "pan": 0.0,
+          "muted": false,
+          "solo": false,
+          "choke_group": null,
+          "polyphony": 8,
+          "zones": [
+            {
+              "sample_path": null,
+              "root_key": 41,
+              "lokey": 0,
+              "hikey": 127,
+              "lovel": 0,
+              "hivel": 127,
+              "seq_length": 1,
+              "seq_position": 0,
+              "tune_cents": 0,
+              "pan": 0.0,
+              "volume_db": 0.0
+            }
+          ],
+          "adsr": {
+            "attack_ms": 2.0,
+            "decay_ms": 100.0,
+            "sustain": 0.8,
+            "release_ms": 150.0
+          },
+          "filter": {
+            "kind": "Off",
+            "cutoff_hz": 0.0,
+            "resonance": 0.0
+          }
+        },
+        {
+          "name": "Tom Mid",
+          "color": 10,
+          "volume_db": 0.0,
+          "pan": 0.0,
+          "muted": false,
+          "solo": false,
+          "choke_group": null,
+          "polyphony": 8,
+          "zones": [
+            {
+              "sample_path": null,
+              "root_key": 42,
+              "lokey": 0,
+              "hikey": 127,
+              "lovel": 0,
+              "hivel": 127,
+              "seq_length": 1,
+              "seq_position": 0,
+              "tune_cents": 0,
+              "pan": 0.0,
+              "volume_db": 0.0
+            }
+          ],
+          "adsr": {
+            "attack_ms": 2.0,
+            "decay_ms": 100.0,
+            "sustain": 0.8,
+            "release_ms": 150.0
+          },
+          "filter": {
+            "kind": "Off",
+            "cutoff_hz": 0.0,
+            "resonance": 0.0
+          }
+        },
+        {
+          "name": "Tom High",
+          "color": 14,
+          "volume_db": 0.0,
+          "pan": 0.0,
+          "muted": false,
+          "solo": false,
+          "choke_group": null,
+          "polyphony": 8,
+          "zones": [
+            {
+              "sample_path": null,
+              "root_key": 43,
+              "lokey": 0,
+              "hikey": 127,
+              "lovel": 0,
+              "hivel": 127,
+              "seq_length": 1,
+              "seq_position": 0,
+              "tune_cents": 0,
+              "pan": 0.0,
+              "volume_db": 0.0
+            }
+          ],
+          "adsr": {
+            "attack_ms": 2.0,
+            "decay_ms": 100.0,
+            "sustain": 0.8,
+            "release_ms": 150.0
+          },
+          "filter": {
+            "kind": "Off",
+            "cutoff_hz": 0.0,
+            "resonance": 0.0
+          }
+        },
+        {
+          "name": "Crash",
+          "color": 26,
+          "volume_db": 0.0,
+          "pan": 0.0,
+          "muted": false,
+          "solo": false,
+          "choke_group": null,
+          "polyphony": 8,
+          "zones": [
+            {
+              "sample_path": null,
+              "root_key": 44,
+              "lokey": 0,
+              "hikey": 127,
+              "lovel": 0,
+              "hivel": 127,
+              "seq_length": 1,
+              "seq_position": 0,
+              "tune_cents": 0,
+              "pan": 0.0,
+              "volume_db": 0.0
+            }
+          ],
+          "adsr": {
+            "attack_ms": 2.0,
+            "decay_ms": 100.0,
+            "sustain": 0.8,
+            "release_ms": 150.0
+          },
+          "filter": {
+            "kind": "Off",
+            "cutoff_hz": 0.0,
+            "resonance": 0.0
+          }
+        },
+        {
+          "name": "Ride",
+          "color": 31,
+          "volume_db": 0.0,
+          "pan": 0.0,
+          "muted": false,
+          "solo": false,
+          "choke_group": null,
+          "polyphony": 8,
+          "zones": [
+            {
+              "sample_path": null,
+              "root_key": 45,
+              "lokey": 0,
+              "hikey": 127,
+              "lovel": 0,
+              "hivel": 127,
+              "seq_length": 1,
+              "seq_position": 0,
+              "tune_cents": 0,
+              "pan": 0.0,
+              "volume_db": 0.0
+            }
+          ],
+          "adsr": {
+            "attack_ms": 2.0,
+            "decay_ms": 100.0,
+            "sustain": 0.8,
+            "release_ms": 150.0
+          },
+          "filter": {
+            "kind": "Off",
+            "cutoff_hz": 0.0,
+            "resonance": 0.0
+          }
+        },
+        {
+          "name": "Shaker",
+          "color": 34,
+          "volume_db": 0.0,
+          "pan": 0.0,
+          "muted": false,
+          "solo": false,
+          "choke_group": null,
+          "polyphony": 8,
+          "zones": [
+            {
+              "sample_path": null,
+              "root_key": 46,
+              "lokey": 0,
+              "hikey": 127,
+              "lovel": 0,
+              "hivel": 127,
+              "seq_length": 1,
+              "seq_position": 0,
+              "tune_cents": 0,
+              "pan": 0.0,
+              "volume_db": 0.0
+            }
+          ],
+          "adsr": {
+            "attack_ms": 2.0,
+            "decay_ms": 100.0,
+            "sustain": 0.8,
+            "release_ms": 150.0
+          },
+          "filter": {
+            "kind": "Off",
+            "cutoff_hz": 0.0,
+            "resonance": 0.0
+          }
+        },
+        {
+          "name": "Cowbell",
+          "color": 38,
+          "volume_db": 0.0,
+          "pan": 0.0,
+          "muted": false,
+          "solo": false,
+          "choke_group": null,
+          "polyphony": 8,
+          "zones": [
+            {
+              "sample_path": null,
+              "root_key": 47,
+              "lokey": 0,
+              "hikey": 127,
+              "lovel": 0,
+              "hivel": 127,
+              "seq_length": 1,
+              "seq_position": 0,
+              "tune_cents": 0,
+              "pan": 0.0,
+              "volume_db": 0.0
+            }
+          ],
+          "adsr": {
+            "attack_ms": 2.0,
+            "decay_ms": 100.0,
+            "sustain": 0.8,
+            "release_ms": 150.0
+          },
+          "filter": {
+            "kind": "Off",
+            "cutoff_hz": 0.0,
+            "resonance": 0.0
+          }
+        },
+        {
+          "name": "Perc 1",
+          "color": 11,
+          "volume_db": 0.0,
+          "pan": 0.0,
+          "muted": false,
+          "solo": false,
+          "choke_group": null,
+          "polyphony": 8,
+          "zones": [
+            {
+              "sample_path": null,
+              "root_key": 48,
+              "lokey": 0,
+              "hikey": 127,
+              "lovel": 0,
+              "hivel": 127,
+              "seq_length": 1,
+              "seq_position": 0,
+              "tune_cents": 0,
+              "pan": 0.0,
+              "volume_db": 0.0
+            }
+          ],
+          "adsr": {
+            "attack_ms": 2.0,
+            "decay_ms": 100.0,
+            "sustain": 0.8,
+            "release_ms": 150.0
+          },
+          "filter": {
+            "kind": "Off",
+            "cutoff_hz": 0.0,
+            "resonance": 0.0
+          }
+        },
+        {
+          "name": "Perc 2",
+          "color": 27,
+          "volume_db": 0.0,
+          "pan": 0.0,
+          "muted": false,
+          "solo": false,
+          "choke_group": null,
+          "polyphony": 8,
+          "zones": [
+            {
+              "sample_path": null,
+              "root_key": 49,
+              "lokey": 0,
+              "hikey": 127,
+              "lovel": 0,
+              "hivel": 127,
+              "seq_length": 1,
+              "seq_position": 0,
+              "tune_cents": 0,
+              "pan": 0.0,
+              "volume_db": 0.0
+            }
+          ],
+          "adsr": {
+            "attack_ms": 2.0,
+            "decay_ms": 100.0,
+            "sustain": 0.8,
+            "release_ms": 150.0
+          },
+          "filter": {
+            "kind": "Off",
+            "cutoff_hz": 0.0,
+            "resonance": 0.0
+          }
+        },
+        {
+          "name": "Bass",
+          "color": 33,
+          "volume_db": 0.0,
+          "pan": 0.0,
+          "muted": false,
+          "solo": false,
+          "choke_group": null,
+          "polyphony": 8,
+          "zones": [
+            {
+              "sample_path": null,
+              "root_key": 50,
+              "lokey": 0,
+              "hikey": 127,
+              "lovel": 0,
+              "hivel": 127,
+              "seq_length": 1,
+              "seq_position": 0,
+              "tune_cents": 0,
+              "pan": 0.0,
+              "volume_db": 0.0
+            }
+          ],
+          "adsr": {
+            "attack_ms": 2.0,
+            "decay_ms": 100.0,
+            "sustain": 0.8,
+            "release_ms": 150.0
+          },
+          "filter": {
+            "kind": "Off",
+            "cutoff_hz": 0.0,
+            "resonance": 0.0
+          }
+        },
+        {
+          "name": "FX",
+          "color": 78,
+          "volume_db": 0.0,
+          "pan": 0.0,
+          "muted": false,
+          "solo": false,
+          "choke_group": null,
+          "polyphony": 8,
+          "zones": [
+            {
+              "sample_path": null,
+              "root_key": 51,
+              "lokey": 0,
+              "hikey": 127,
+              "lovel": 0,
+              "hivel": 127,
+              "seq_length": 1,
+              "seq_position": 0,
+              "tune_cents": 0,
+              "pan": 0.0,
+              "volume_db": 0.0
+            }
+          ],
+          "adsr": {
+            "attack_ms": 2.0,
+            "decay_ms": 100.0,
+            "sustain": 0.8,
+            "release_ms": 150.0
+          },
+          "filter": {
+            "kind": "Off",
+            "cutoff_hz": 0.0,
+            "resonance": 0.0
+          }
+        }
+      ],
+      "patterns": [
+        {
+          "name": "Pattern 1",
+          "color": 22,
+          "length": {
+            "bars": 2,
+            "beats": 0,
+            "ticks": 0
+          },
+          "events": [
+            {
+              "pad": 0,
+              "tick": 0,
+              "velocity": 100,
+              "length_ticks": 120,
+              "pitch": 36
+            },
+            {
+              "pad": 0,
+              "tick": 960,
+              "velocity": 100,
+              "length_ticks": 120,
+              "pitch": 36
+            },
+            {
+              "pad": 2,
+              "tick": 960,
+              "velocity": 80,
+              "length_ticks": 120,
+              "pitch": 42
+            },
+            {
+              "pad": 0,
+              "tick": 1920,
+              "velocity": 100,
+              "length_ticks": 120,
+              "pitch": 36
+            },
+            {
+              "pad": 0,
+              "tick": 2880,
+              "velocity": 100,
+              "length_ticks": 120,
+              "pitch": 36
+            },
+            {
+              "pad": 2,
+              "tick": 2880,
+              "velocity": 80,
+              "length_ticks": 120,
+              "pitch": 42
+            },
+            {
+              "pad": 0,
+              "tick": 3840,
+              "velocity": 100,
+              "length_ticks": 120,
+              "pitch": 36
+            },
+            {
+              "pad": 0,
+              "tick": 4800,
+              "velocity": 100,
+              "length_ticks": 120,
+              "pitch": 36
+            },
+            {
+              "pad": 2,
+              "tick": 4800,
+              "velocity": 80,
+              "length_ticks": 120,
+              "pitch": 42
+            },
+            {
+              "pad": 0,
+              "tick": 5760,
+              "velocity": 100,
+              "length_ticks": 120,
+              "pitch": 36
+            },
+            {
+              "pad": 0,
+              "tick": 6720,
+              "velocity": 100,
+              "length_ticks": 120,
+              "pitch": 36
+            },
+            {
+              "pad": 2,
+              "tick": 6720,
+              "velocity": 80,
+              "length_ticks": 120,
+              "pitch": 42
+            }
+          ],
+          "swing": null
+        }
+      ],
+      "muted": false,
+      "solo": false,
+      "volume_db": 0.0
+    }
+  ],
+  "scenes": [
+    {
+      "name": "Scene 1",
+      "color": 22,
+      "patterns": [
+        0
+      ]
+    }
+  ],
+  "song": [
+    {
+      "scene": 0,
+      "length": {
+        "bars": 2,
+        "beats": 0,
+        "ticks": 0
+      },
+      "name": "Intro"
+    }
+  ],
+  "master": {
+    "volume_db": 0.0,
+    "pan": 0.0
+  }
+}

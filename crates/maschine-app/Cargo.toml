@@ -1,0 +1,41 @@
+[package]
+name = "maschine-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Binaire maschine-linux : daemon, CLI, probe, (future) GUI"
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "maschine-linux"
+path = "src/main.rs"
+
+[dependencies]
+maschine-proto = { workspace = true }
+maschine-hardware = { workspace = true }
+maschine-engine = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+crossbeam-channel = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+tokio = { workspace = true }
+ctrlc = "3.4"
+
+# GUI optionnelle
+eframe = { version = "0.32", optional = true }
+egui = { version = "0.32", optional = true }
+
+[features]
+default = []
+gui = ["dep:eframe", "dep:egui"]
+usb = ["maschine-hardware/usb"]
+midi-alsa = ["maschine-hardware/midi-alsa"]
+
+[dev-dependencies]
+env_logger = { workspace = true }

@@ -1,0 +1,15 @@
+[package]
+name = "maschine-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Codec pur pour Maschine MK3 : HID IN/OUT, bulk display, palette couleurs — sans I/O"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

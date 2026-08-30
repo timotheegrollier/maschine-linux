@@ -1,0 +1,16 @@
+# Maschine MK3 (17cc:1600) + Mikro MK3 (17cc:1700) — maschine-linux
+# Permet l'accès hidraw sans sudo via systemd-logind (TAG+="uaccess")
+# et fixe les permissions pour le bulk display (IF5) quand on utilise nusb/rusb.
+
+SUBSYSTEM=="usb", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1600", TAG+="uaccess", TAG+="udev-acl", MODE="0660", GROUP="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1700", TAG+="uaccess", TAG+="udev-acl", MODE="0660", GROUP="plugdev"
+
+# hidraw (IF4) — le driver usbhid reste chargé, on lit /dev/hidraw*
+KERNEL=="hidraw*", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1600", TAG+="uaccess", MODE="0660", GROUP="plugdev"
+KERNEL=="hidraw*", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1700", TAG+="uaccess", MODE="0660", GROUP="plugdev"
+
+# Optionnel : pour l'audio, éviter autosuspend
+ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="17cc", ATTR{power/control}="on"
+
+# Pour nusb exclusif (si on détache usbhid) — autorise usbfs
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="17cc", TAG+="uaccess"

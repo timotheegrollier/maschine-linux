@@ -1,0 +1,36 @@
+[package]
+name = "maschine-hardware"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Découverte et I/O Maschine MK3 : hidraw, nusb/rusb, ALSA Seq, JACK — threads temps-réel"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+maschine-proto = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+crossbeam-channel = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+libc = "0.2"
+
+# hardware — optionnels, activés via features
+hidapi = { version = "2.6", optional = true }
+rusb = { version = "0.9", optional = true }
+midir = { version = "0.10", optional = true }
+alsa = { version = "0.9", optional = true }
+
+[features]
+default = ["hidraw"]
+hidraw = []
+hidapi = ["dep:hidapi"]
+usb = ["dep:rusb"]
+midi-alsa = ["dep:midir", "dep:alsa"]
+midi-jack = ["dep:midir"]
+
+
+[dev-dependencies]
+env_logger = { workspace = true }

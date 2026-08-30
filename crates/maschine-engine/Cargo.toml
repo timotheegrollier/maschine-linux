@@ -1,0 +1,31 @@
+[package]
+name = "maschine-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Domaine Maschine : Project/Group/Sound/Pattern/Scene/Section, Transport, Sequencer, Sampler"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+maschine-proto = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+crossbeam-channel = { workspace = true }
+parking_lot = { workspace = true }
+
+# sampler / audio utils
+hound = { version = "3.5", optional = true }
+rubato = { version = "0.15", optional = true }
+cpal = { version = "0.15", optional = true }
+
+[features]
+default = ["sampler"]
+sampler = ["dep:hound", "dep:rubato"]
+audio = ["dep:cpal", "sampler"]
+
+[dev-dependencies]
+env_logger = { workspace = true }

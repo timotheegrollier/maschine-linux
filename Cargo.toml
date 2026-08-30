@@ -1,0 +1,45 @@
+[workspace]
+members = [
+    "crates/maschine-proto",
+    "crates/maschine-hardware",
+    "crates/maschine-engine",
+    "crates/maschine-app",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["maschine-linux contributors"]
+license = "GPL-3.0-or-later"
+repository = "https://github.com/timo/maschine-linux"
+rust-version = "1.75"
+keywords = ["maschine", "mk3", "daw", "audio", "midi"]
+categories = ["multimedia::audio", "hardware-support"]
+
+[workspace.dependencies]
+maschine-proto = { path = "crates/maschine-proto" }
+maschine-hardware = { path = "crates/maschine-hardware" }
+maschine-engine = { path = "crates/maschine-engine" }
+
+# common deps
+anyhow = "1.0"
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+env_logger = "0.11"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+tokio = { version = "1.40", features = ["rt", "sync", "time", "rt-multi-thread"] }
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"

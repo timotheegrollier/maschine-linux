@@ -26,16 +26,21 @@ serde_json = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
 tokio = { workspace = true }
 ctrlc = "3.4"
+cpal = { version = "0.15", optional = true }
+rusb = { version = "0.9", optional = true }
+libc = "0.2"
 
 # GUI optionnelle
 eframe = { version = "0.32", optional = true }
 egui = { version = "0.32", optional = true }
 
 [features]
-default = []
+default = ["audio", "usb", "midi-alsa", "gui"]
+audio = ["dep:cpal"]
 gui = ["dep:eframe", "dep:egui"]
-usb = ["maschine-hardware/usb"]
+usb = ["maschine-hardware/usb", "dep:rusb"]
 midi-alsa = ["maschine-hardware/midi-alsa"]
+full = ["audio", "usb", "gui"]
 
 [dev-dependencies]
 env_logger = { workspace = true }

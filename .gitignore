@@ -6,6 +6,7 @@
 # IDE
 .idea/
 .vscode/
+!.vscode/settings.json
 *.swp
 *.swo
 *~
@@ -32,3 +33,7 @@ Thumbs.db
 
 # Samples (large)
 samples/
+
+# opencode local sessions (DB 500Mo+)
+.opencode-data/
+.opencode/

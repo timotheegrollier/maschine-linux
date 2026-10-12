@@ -39,6 +39,9 @@ pub struct Transport {
     pub metronome: bool,
     /// Count-in bars
     pub count_in_bars: u8,
+    /// Fraction de tick résiduelle (accumulateur sub-sample pour précision exacte)
+    #[serde(default)]
+    pub tick_fraction: f64,
 }
 
 impl Default for Transport {
@@ -55,6 +58,7 @@ impl Default for Transport {
             swing: 0.0,
             metronome: false,
             count_in_bars: 0,
+            tick_fraction: 0.0,
         }
     }
 }
@@ -96,16 +100,20 @@ impl Transport {
         self.secs_to_tick(samples as f64 / self.sample_rate as f64)
     }
 
-    /// Avance de `samples` — gère loop.
+    /// Avance de `samples` — gère loop avec accumulateur haute précision (0 drift).
     pub fn advance_samples(&mut self, samples: u64) {
-        if self.state == TransportState::Stopped {
+        if self.state == TransportState::Stopped || self.sample_rate == 0 {
             return;
         }
-        let ticks = self.samples_to_tick(samples);
-        self.tick += ticks;
+        let delta_ticks = (samples as f64 / self.sample_rate as f64) * (self.bpm as f64 / 60.0) * (self.ppq as f64);
+        self.tick_fraction += delta_ticks;
+        let whole_ticks = self.tick_fraction.floor() as u64;
+        self.tick_fraction -= whole_ticks as f64;
+        self.tick += whole_ticks;
+
         if self.loop_enabled && self.tick >= self.loop_end {
-            self.tick = self.loop_start
-                + (self.tick - self.loop_end) % (self.loop_end - self.loop_start).max(1);
+            let loop_len = (self.loop_end - self.loop_start).max(1);
+            self.tick = self.loop_start + ((self.tick - self.loop_end) % loop_len);
         }
     }
 
@@ -141,6 +149,7 @@ impl Transport {
     /// Stop.
     pub fn stop(&mut self) {
         self.state = TransportState::Stopped;
+        self.tick_fraction = 0.0;
     }
 
     /// Record.

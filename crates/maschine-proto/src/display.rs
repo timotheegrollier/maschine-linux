@@ -122,137 +122,80 @@ impl DisplayFrame {
     }
 }
 
-/// Encode un `DisplayFrame` en transfert bulk complet (header 32 + stream RLE).
+/// Taille d'une commande dans le stream (4 octets).
+const COMMAND_LENGTH: usize = 4;
+/// Taille du header fenêtre (16 octets).
+const HEADER_LENGTH: usize = 16;
+/// Taille d'un pixel RGB565 (2 octets).
+const PIXEL_LENGTH: usize = 2;
+
+/// Encode un `DisplayFrame` en transfert bulk complet.
+///
+/// Format vérifié contre `ni-controllers-lib` (fichier `ni_lcd_displays.ts`):
+///   - 16 octets : header fenêtre  (magic, display_id, x, y, w, h)
+///   -  4 octets : commande "transmit" (0x00 + half-pixel count BE 24-bit)
+///   - w*h*2 octets : pixel data RGB565 Big-Endian
+///   -  4 octets : commande "blit" (0x03 + 3×0x00)
+///   -  4 octets : commande "end"  (0x40 + 3×0x00)
+///   Total plein écran = 16 + 4 + 261120 + 4 + 4 = 261148
 pub fn encode_bulk_transfer(frame: &DisplayFrame) -> Result<Vec<u8>> {
     frame.validate()?;
-    let mut out = Vec::with_capacity(32 + frame.pixels.len() * 2 + 16);
+    let pixel_count = frame.pixels.len();
+    let total_size = HEADER_LENGTH + COMMAND_LENGTH * 3 + pixel_count * PIXEL_LENGTH;
+    let mut out = Vec::with_capacity(total_size);
 
-    // Header 32 bytes
+    // ── Header fenêtre : 16 octets ──────────────────────────────────────
+    // [0]  0x84  magic
+    // [1]  0x00
+    // [2]  display_id (0=left, 1=right)
+    // [3]  0x60
+    // [4..7]  0x00 zeros
+    // [8..9]  x  (u16 BE)
+    // [10..11] y  (u16 BE)
+    // [12..13] w  (u16 BE) = 0x01E0 (480)
+    // [14..15] h  (u16 BE) = 0x0110 (272)
     out.push(0x84);
     out.push(0x00);
     out.push(frame.display as u8);
     out.push(0x60);
-    out.extend_from_slice(&[0u8; 4]); // 4..7
-    out.extend_from_slice(&frame.x.to_be_bytes()); // 8..9
-    out.extend_from_slice(&frame.y.to_be_bytes()); // 10..11
-    out.extend_from_slice(&frame.w.to_be_bytes()); // 12..13
-    out.extend_from_slice(&frame.h.to_be_bytes()); // 14..15
-    out.push(0x02); // 16
-    out.extend_from_slice(&[0u8; 5]); // 17..21
-    let image_size_half = (frame.pixels.len() as u16).to_be_bytes();
-    out.extend_from_slice(&image_size_half); // 22..23
-    out.extend_from_slice(&[0u8; 8]); // 24..31
+    out.extend_from_slice(&[0u8; 4]);                   // [4..7]
+    out.extend_from_slice(&frame.x.to_be_bytes());      // [8..9]
+    out.extend_from_slice(&frame.y.to_be_bytes());      // [10..11]
+    out.extend_from_slice(&frame.w.to_be_bytes());      // [12..13]
+    out.extend_from_slice(&frame.h.to_be_bytes());      // [14..15]
 
-    // Stream : on encode en RAW 0x00 par paires, avec RLE 0x01 pour les runs solides
-    // Simplification : tout en RAW si pas de run, sinon RLE quand ≥4 pixels identiques consécutifs
-    let pixels = &frame.pixels;
-    let mut i = 0;
-    while i < pixels.len() {
-        // Compte run de même couleur par paire (2 pixels = 4 bytes)
-        // RLE encode 2 pixels répétés n fois (n = pair count)
-        if i + 1 < pixels.len() && pixels[i] == pixels[i + 1] {
-            // au moins une paire identique
-            let pair = [pixels[i], pixels[i + 1]];
-            let mut run_pairs = 1usize;
-            let mut j = i + 2;
-            while j + 1 < pixels.len() && pixels[j] == pair[0] && pixels[j + 1] == pair[1] {
-                run_pairs += 1;
-                j += 2;
-                if run_pairs >= 0xFFFFFF {
-                    break;
-                }
-            }
-            if run_pairs >= 2 {
-                // use RLE
-                let n = run_pairs as u32;
-                out.push(0x01);
-                out.push((n & 0xFF) as u8);
-                out.push(((n >> 8) & 0xFF) as u8);
-                out.push(((n >> 16) & 0xFF) as u8);
-                out.extend_from_slice(&pair[0].to_be_bytes());
-                out.extend_from_slice(&pair[1].to_be_bytes());
-                i = j;
-                continue;
-            }
-        }
-        // RAW : on batch jusqu'à prochain run ou fin, en paires
-        let start = i;
-        let mut end = i + 2;
-        // batch au moins 1 paire, jusqu'à 0xFFFFFF paires
-        while end + 1 < pixels.len() {
-            // check si un run commence à end
-            if pixels[end] == pixels[end + 1] {
-                // peek run length
-                let mut run = 1usize;
-                let mut k = end + 2;
-                while k + 1 < pixels.len()
-                    && pixels[k] == pixels[end]
-                    && pixels[k + 1] == pixels[end + 1]
-                {
-                    run += 1;
-                    k += 2;
-                }
-                if run >= 2 {
-                    break;
-                }
-            }
-            end += 2;
-            if end - start >= 0xFFFF * 2 {
-                break;
-            }
-            // si impair trailing pixel, on va le gérer après
-        }
-        // assure pair count
-        if (end - start) % 2 == 1 {
-            end -= 1;
-        }
-        if end > pixels.len() {
-            end = pixels.len() & !1;
-        }
-        if end <= start {
-            end = start + 2;
-        }
-        let pairs = (end - start) / 2;
-        let n = pairs as u32;
-        out.push(0x00);
-        out.push((n & 0xFF) as u8);
-        out.push(((n >> 8) & 0xFF) as u8);
-        out.push(((n >> 16) & 0xFF) as u8);
-        for &px in &pixels[start..end] {
-            out.extend_from_slice(&px.to_be_bytes());
-        }
-        i = end;
-        // si reste 1 pixel impair, l'envoyer avec padding noir (firmware attend paires)
-        if i == pixels.len() - 1 {
-            let n = 1u32;
-            out.push(0x00);
-            out.push((n & 0xFF) as u8);
-            out.push(((n >> 8) & 0xFF) as u8);
-            out.push(((n >> 16) & 0xFF) as u8);
-            out.extend_from_slice(&pixels[i].to_be_bytes());
-            out.extend_from_slice(&DisplayPixel::BLACK.to_be_bytes());
-            i += 1;
-        }
+    // ── Commande "transmit" : 4 octets ──────────────────────────────────
+    // Encodes halfPixels as a Big-Endian uint32 with the MSB clobbered to 0x00.
+    // Reference: setUint32(0, halfPixels, false); setUint8(0, 0);
+    // halfPixels = pixel_count / 2 = 65280 = 0x0000FF00
+    // After clobber: [0x00, 0x00, 0xFF, 0x00]
+    let half_pixels = (pixel_count / 2) as u32;
+    let hp_be = half_pixels.to_be_bytes();  // [0x00, 0x00, 0xFF, 0x00]
+    out.push(0x00);         // [16] command byte (clobber MSB to 0x00)
+    out.push(hp_be[1]);     // [17]
+    out.push(hp_be[2]);     // [18]
+    out.push(hp_be[3]);     // [19]
+
+    // ── Pixel data : w*h*2 octets RGB565 Big-Endian ─────────────────────
+    for &px in &frame.pixels {
+        out.extend_from_slice(&px.to_be_bytes());
     }
 
-    // footer
-    out.push(0x02);
-    out.extend_from_slice(&[0u8; 3]);
+    // ── Commande "blit" : 4 octets ──────────────────────────────────────
     out.push(0x03);
-    out.extend_from_slice(&[0u8; 3]);
-    out.push(0x03);
-    out.extend_from_slice(&[0u8; 3]);
-    out.push(0x04);
     out.extend_from_slice(&[0u8; 3]);
 
-    // Certains firmwares attendent exactement 261175 bytes pour full frame — on ne pad pas ici,
-    // le caller peut vérifier out.len()
+    // ── Commande "end" : 4 octets ───────────────────────────────────────
+    out.push(0x40);
+    out.extend_from_slice(&[0u8; 3]);
+
+    debug_assert_eq!(out.len(), total_size);
     Ok(out)
 }
 
 /// Décode l'header bulk (pour tests / debug).
 pub fn decode_bulk_header(data: &[u8]) -> Result<DisplayFrame> {
-    if data.len() < 32 {
+    if data.len() < HEADER_LENGTH + COMMAND_LENGTH {
         return Err(ProtoError::InvalidBulkHeader("too short"));
     }
     if data[0] != 0x84 || data[1] != 0x00 || data[3] != 0x60 {
@@ -289,26 +232,34 @@ mod tests {
     fn solid_encode_decode_header() {
         let f = DisplayFrame::solid(DisplayId::Left, DisplayPixel::RED);
         let enc = encode_bulk_transfer(&f).unwrap();
+        // Header magic
         assert_eq!(enc[0], 0x84);
-        assert_eq!(enc[2], 0x00);
+        assert_eq!(enc[1], 0x00);
+        assert_eq!(enc[2], 0x00); // Left display
+        assert_eq!(enc[3], 0x60);
+        // Transmit command at [16..19]
+        assert_eq!(enc[16], 0x00); // command byte
+        assert_eq!(enc[17], 0x00);
+        assert_eq!(enc[18], 0xFF);
+        assert_eq!(enc[19], 0x00);
+        // Decode header
         let hdr = decode_bulk_header(&enc).unwrap();
         assert_eq!(hdr.display, DisplayId::Left);
         assert_eq!(hdr.w, 480);
         assert_eq!(hdr.h, 272);
-        // solid red should be mostly RLE -> much smaller than raw
-        assert!(
-            enc.len() < 5000,
-            "RLE solid should be tiny, got {}",
-            enc.len()
-        );
+        // Total: 16 (header) + 4 (cmd) + 480*272*2 (pixels) + 4 (blit) + 4 (end) = 261148
+        assert_eq!(enc.len(), 261148);
+        // Footer: blit=0x03, end=0x40
+        assert_eq!(enc[enc.len() - 8], 0x03);
+        assert_eq!(enc[enc.len() - 4], 0x40);
     }
 
     #[test]
-    fn full_black_rle() {
+    fn full_black_raw() {
         let f = DisplayFrame::new_full(DisplayId::Right);
         let enc = encode_bulk_transfer(&f).unwrap();
-        assert_eq!(enc[2], 0x01);
-        assert!(enc.len() < 5000);
+        assert_eq!(enc[2], 0x01); // Right display
+        assert_eq!(enc.len(), 261148);
     }
 
     #[test]
@@ -333,9 +284,6 @@ mod tests {
             pixels,
         };
         let enc = encode_bulk_transfer(&f).unwrap();
-        // checkerboard : alternating pair WB/WB? Our encoder will detect pair repeat? Actually pairs BW then.
-        // Just ensure it encodes and is not insane size (> raw)
-        assert!(enc.len() > 32);
-        assert!(enc.len() < 400_000);
+        assert_eq!(enc.len(), 261148);
     }
 }

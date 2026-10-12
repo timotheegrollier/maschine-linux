@@ -3,12 +3,12 @@ members = [
     "crates/maschine-proto",
     "crates/maschine-hardware",
     "crates/maschine-engine",
-    "crates/maschine-app",
+    "crates/maschine-app", "crates/maschine-dsp", "crates/maschine-guitar-standalone",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["maschine-linux contributors"]
 license = "GPL-3.0-or-later"

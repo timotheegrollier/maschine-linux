@@ -100,28 +100,64 @@ impl Project {
             });
             g.sounds[i] = Some(s);
         }
-        // Pattern 1 : kick 4x
-        let mut pat = Pattern::new("Pattern 1", BarsBeatsTicks::new(2, 0, 0));
-        for bar in 0..2 {
-            for beat in 0..4 {
-                pat.events.push(PatternEvent {
-                    pad: 0,
-                    tick: ((bar * 4 + beat) * 960) as u32,
-                    velocity: 100,
-                    length_ticks: 120,
-                    pitch: 36,
-                });
-                if beat % 2 == 1 {
-                    pat.events.push(PatternEvent {
-                        pad: 2,
-                        tick: ((bar * 4 + beat) * 960) as u32,
-                        velocity: 80,
-                        length_ticks: 120,
-                        pitch: 42,
-                    });
-                }
-            }
+        // Pattern 1 : Groove 808 complet 2 mesures (Kick, Snare, Hi-Hats, Clap, Toms)
+        let mut pat = Pattern::new("808 Groove", BarsBeatsTicks::new(2, 0, 0));
+
+        // Helper pour ajouter une note
+        let mut add_note = |pad: u8, bar: u32, beat: u32, sixteenth: u32, vel: u8| {
+            let tick = (bar * 4 * 960) + (beat * 960) + (sixteenth * 240);
+            pat.events.push(PatternEvent {
+                pad,
+                tick,
+                velocity: vel,
+                length_ticks: 120,
+                pitch: 36 + pad,
+            });
+        };
+
+        // Mesure 1
+        // Kicks
+        add_note(0, 0, 0, 0, 115); // Kick sur 1.1
+        add_note(0, 0, 2, 2, 105); // Kick sur 1.3.3 (syncope)
+
+        // Snares (sur temps 2 et 4)
+        add_note(1, 0, 1, 0, 110); // Snare sur 1.2
+        add_note(1, 0, 3, 0, 115); // Snare sur 1.4
+        add_note(7, 0, 3, 0, 95);  // Clap doublé sur 1.4
+
+        // Closed Hi-Hats (en croches 8ths sur toute la mesure)
+        for beat in 0..4 {
+            add_note(2, 0, beat, 0, 90);
+            add_note(2, 0, beat, 2, 75);
         }
+        // Open Hi-Hat sur contre-temps
+        add_note(3, 0, 1, 2, 85);
+        add_note(3, 0, 3, 2, 85);
+
+        // Mesure 2 (variation rythmique)
+        // Kicks
+        add_note(0, 1, 0, 0, 115); // Kick sur 2.1
+        add_note(0, 1, 1, 2, 100); // Kick sur 2.2.3
+        add_note(0, 1, 2, 0, 110); // Kick sur 2.3
+        add_note(0, 1, 3, 2, 105); // Kick sur 2.4.3
+
+        // Snares
+        add_note(1, 1, 1, 0, 110); // Snare sur 2.2
+        add_note(1, 1, 3, 0, 120); // Snare sur 2.4
+        add_note(7, 1, 3, 0, 100); // Clap sur 2.4
+
+        // Closed Hi-Hats
+        for beat in 0..4 {
+            add_note(2, 1, beat, 0, 90);
+            add_note(2, 1, beat, 2, 75);
+        }
+        // Open Hi-Hat
+        add_note(3, 1, 2, 2, 90);
+
+        // Fill percussif fin de mesure (Toms)
+        add_note(4, 1, 3, 1, 85);  // Tom Low
+        add_note(5, 1, 3, 3, 90);  // Tom Mid
+
         g.patterns.push(pat);
         p.groups.push(g);
         p.scenes.push(Scene {

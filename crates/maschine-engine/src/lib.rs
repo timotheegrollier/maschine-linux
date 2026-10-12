@@ -2,12 +2,15 @@
 
 #![allow(missing_docs)]
 
+pub mod display_render;
+pub mod drum_synth;
 pub mod engine;
 pub mod project;
 pub mod sampler;
 pub mod sequencer;
 pub mod transport;
 
+pub use drum_synth::generate_complete_808_kit;
 pub use engine::{Engine, EngineEvent, EngineSnapshot};
 pub use project::{Group, Pattern, PatternEvent, Project, Scene, Section, Sound, Zone};
 pub use sampler::{Sampler, SamplerVoice, ZoneMapping};

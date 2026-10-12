@@ -105,40 +105,72 @@ pub type ButtonLed = u8;
 
 /// Offsets boutons dans report 0x80 (après byte ID). 0-indexed array position.
 pub mod offsets {
-    /// Channel/MIDI unicouleur
-    pub const CHANNEL_MIDI: usize = 0;
-    /// Plugin
-    pub const PLUGIN: usize = 1;
-    /// Arranger
-    pub const ARRANGER: usize = 2;
-    /// Mixer
-    pub const MIXER: usize = 3;
+    /// Channel/MIDI unicolore
+    pub const CHANNEL_MIDI: usize = 1;
+    pub const PLUGIN: usize = 2;
+    pub const ARRANGER: usize = 3;
+    pub const MIXER: usize = 4;
     /// Browser RGB
-    pub const BROWSER: usize = 4;
-    /// Sampling
-    pub const SAMPLING: usize = 5;
-    /// Left
-    pub const LEFT: usize = 6;
-    /// Right
-    pub const RIGHT: usize = 7;
-    /// File/Save
-    pub const FILE_SAVE: usize = 8;
-    /// Settings
-    pub const SETTINGS: usize = 9;
-    /// Auto
-    pub const AUTO: usize = 10;
-    /// Macro
-    pub const MACRO: usize = 11;
-    /// Display Btn 1..8
+    pub const BROWSER: usize = 5;
+    pub const SAMPLING: usize = 6;
+    pub const LEFT: usize = 7;
+    pub const RIGHT: usize = 8;
+    pub const FILE_SAVE: usize = 9;
+    pub const SETTINGS: usize = 10;
+    pub const AUTO: usize = 11;
+    pub const MACRO: usize = 12;
+    /// Display Buttons 1..8 (offsets 12..19)
     pub const DISPLAY_BTN_1: usize = 12;
-    /// Volume..Notes (8)
+    pub const DISPLAY_BTN_2: usize = 13;
+    pub const DISPLAY_BTN_3: usize = 14;
+    pub const DISPLAY_BTN_4: usize = 15;
+    pub const DISPLAY_BTN_5: usize = 16;
+    pub const DISPLAY_BTN_6: usize = 17;
+    pub const DISPLAY_BTN_7: usize = 18;
+    pub const DISPLAY_BTN_8: usize = 19;
     pub const VOLUME: usize = 20;
-    /// Groups A..H RGB (8)
+    pub const SWING: usize = 21;
+    pub const NOTE_REPEAT: usize = 22;
+    pub const TEMPO: usize = 23;
+    pub const LOCK: usize = 24;
+    pub const PITCH: usize = 25;
+    pub const MOD: usize = 26;
+    pub const PERFORM: usize = 27;
+    pub const NOTES: usize = 28;
+    /// Groups A..H RGB (offsets 29..36)
     pub const GROUP_A: usize = 29;
-    /// Restart/Erase/Tap/Follow/Play/Rec/Stop (7)
+    pub const GROUP_B: usize = 30;
+    pub const GROUP_C: usize = 31;
+    pub const GROUP_D: usize = 32;
+    pub const GROUP_E: usize = 33;
+    pub const GROUP_F: usize = 34;
+    pub const GROUP_G: usize = 35;
+    pub const GROUP_H: usize = 36;
     pub const RESTART: usize = 37;
-    /// Shift
+    pub const ERASE: usize = 38;
+    pub const TAP: usize = 39;
+    pub const FOLLOW: usize = 40;
+    pub const PLAY: usize = 41;
+    pub const REC: usize = 42;
+    pub const STOP: usize = 43;
     pub const SHIFT: usize = 44;
+    pub const FIXED_VEL: usize = 45;
+    pub const PAD_MODE: usize = 46;
+    pub const KEYBOARD: usize = 47;
+    pub const CHORDS: usize = 48;
+    pub const STEP: usize = 49;
+    pub const SCENE: usize = 50;
+    pub const PATTERN: usize = 51;
+    pub const EVENTS: usize = 52;
+    pub const VARIATION: usize = 53;
+    pub const DUPLICATE: usize = 54;
+    pub const SELECT: usize = 55;
+    pub const SOLO: usize = 56;
+    pub const MUTE: usize = 57;
+    pub const FOUR_WAY_UP: usize = 58;
+    pub const FOUR_WAY_RIGHT: usize = 59;
+    pub const FOUR_WAY_DOWN: usize = 60;
+    pub const FOUR_WAY_LEFT: usize = 61;
 }
 
 // ---------------------------------------------------------------------------
@@ -225,8 +257,8 @@ mod tests {
     #[test]
     fn button_led_set() {
         let mut s = LedState::new();
-        s.set_button_raw(offsets::SHIFT + 1, LedBrightness::Bright as u8);
+        s.set_button_raw(offsets::SHIFT, LedBrightness::Bright as u8);
         let r = encode_report_80(&s).unwrap();
-        assert_eq!(r[offsets::SHIFT + 1], LedBrightness::Bright as u8);
+        assert_eq!(r[offsets::SHIFT], LedBrightness::Bright as u8);
     }
 }

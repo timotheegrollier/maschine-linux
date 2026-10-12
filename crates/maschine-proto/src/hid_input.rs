@@ -247,10 +247,11 @@ pub fn decode_report_01(data: &[u8]) -> Result<HidInput> {
             got: data[0],
         });
     }
-    if data.len() < crate::consts::HID_REPORT_01_SIZE + 1 {
+    // Accept 42 or 43 bytes (kernel may strip trailing zero)
+    if data.len() < crate::consts::HID_REPORT_01_SIZE {
         return Err(ProtoError::InvalidSize {
             report_id: 0x01,
-            expected: crate::consts::HID_REPORT_01_SIZE + 1,
+            expected: crate::consts::HID_REPORT_01_SIZE,
             got: data.len(),
         });
     }
@@ -359,10 +360,11 @@ pub fn decode_report_02(data: &[u8]) -> Result<Vec<PadEvent>> {
             got: data[0],
         });
     }
-    if data.len() < crate::consts::HID_REPORT_02_SIZE + 1 {
+    // Accept 64 or 65 bytes (kernel may strip trailing zero)
+    if data.len() < crate::consts::HID_REPORT_02_SIZE {
         return Err(ProtoError::InvalidSize {
             report_id: 0x02,
-            expected: crate::consts::HID_REPORT_02_SIZE + 1,
+            expected: crate::consts::HID_REPORT_02_SIZE,
             got: data.len(),
         });
     }

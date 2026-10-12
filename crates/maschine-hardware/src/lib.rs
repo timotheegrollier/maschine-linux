@@ -16,6 +16,9 @@ pub mod mapper;
 #[cfg(feature = "usb")]
 pub mod usb;
 
+#[cfg(feature = "midi-alsa")]
+pub mod midi_io;
+
 pub use device::{find_maschine_devices, DeviceInfo, MaschineDevice};
 pub use events::{HardwareEvent, PadState};
 pub use mapper::{HardwareMapper, MapperConfig};

@@ -1,0 +1,210 @@
+//! JACK audio backend (preferred for low latency on Linux/PipeWire)
+
+#![cfg(feature = "jack")]
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use crossbeam_channel::{Receiver, Sender};
+use jack::{AudioIn, AudioOut, Client, ClientOptions, Control, ProcessHandler, ProcessScope};
+use log::{info, warn, error};
+
+use maschine_dsp::{GuitarChain, AudioContext, ParamId};
+
+use crate::{ParamsBridge, GuiToAudio, AudioToGui, AppConfig};
+
+/// JACK process handler
+struct JackProcessor {
+    chain: Arc<parking_lot::Mutex<GuitarChain>>,
+    params_bridge: Arc<ParamsBridge>,
+    gui_tx: Sender<AudioToGui>,
+    running: Arc<AtomicBool>,
+    frame_count: u64,
+    sample_rate: f32,
+    in_port: jack::Port<AudioIn>,
+    out_port_l: jack::Port<AudioOut>,
+    out_port_r: jack::Port<AudioOut>,
+}
+
+impl ProcessHandler for JackProcessor {
+    fn process(&mut self, _: &Client, ps: &ProcessScope) -> Control {
+        if !self.running.load(Ordering::Relaxed) {
+            return Control::Quit;
+        }
+
+        // Apply pending params
+        self.params_bridge.apply_pending();
+
+        // Get ports
+        let in_port = self.in_port.as_slice(ps);
+        let out_l = self.out_port_l.as_mut_slice(ps);
+        let out_r = self.out_port_r.as_mut_slice(ps);
+        let frames = in_port.len();
+
+        // Process with chain
+        let mut chain_lock = self.chain.lock();
+        let ctx = AudioContext {
+            sample_rate: self.sample_rate,
+            bpm: 120.0,
+            frame_count: self.frame_count,
+        };
+
+        chain_lock.process(in_port, out_l, &ctx);
+        
+        // Copy to right channel for stereo out
+        out_r.copy_from_slice(out_l);
+
+        // Meter
+        let in_db = chain_lock.input_level_db();
+        let out_db = chain_lock.output_level_db();
+        let _ = self.gui_tx.try_send(AudioToGui::InputLevel(in_db));
+        let _ = self.gui_tx.try_send(AudioToGui::OutputLevel(out_db));
+
+        self.frame_count += frames as u64;
+        Control::Continue
+    }
+}
+
+impl JackProcessor {
+    fn new(
+        chain: Arc<parking_lot::Mutex<GuitarChain>>,
+        params_bridge: Arc<ParamsBridge>,
+        gui_tx: Sender<AudioToGui>,
+        running: Arc<AtomicBool>,
+        sample_rate: f32,
+        in_port: jack::Port<AudioIn>,
+        out_port_l: jack::Port<AudioOut>,
+        out_port_r: jack::Port<AudioOut>,
+    ) -> Self {
+        Self {
+            chain,
+            params_bridge,
+            gui_tx,
+            running,
+            frame_count: 0,
+            sample_rate: 48000.0,
+            in_port,
+            out_port_l,
+            out_port_r,
+        }
+    }
+}
+
+/// Run audio thread using JACK
+pub fn run_audio_thread(
+    config: AppConfig,
+    _chain_arc: Arc<parking_lot::Mutex<GuitarChain>>,
+    params_bridge: Arc<ParamsBridge>,
+    audio_to_gui_tx: Sender<AudioToGui>,
+    gui_to_audio_rx: Receiver<GuiToAudio>,
+    running: Arc<AtomicBool>,
+) -> Result<()> {
+    // Create JACK client
+    let (client, _status) = Client::new("maschine-guitar", ClientOptions::NO_START_SERVER)
+        .context("Failed to create JACK client. Is JACK/PipeWire running?")?;
+    
+    info!("JACK client created: {}", client.name());
+
+    // Register ports
+    let in_port = client.register_port("in", AudioIn::default())
+        .context("Failed to register input port")?;
+    let out_port_l = client.register_port("out_l", AudioOut::default())
+        .context("Failed to register output left port")?;
+    let out_port_r = client.register_port("out_r", AudioOut::default())
+        .context("Failed to register output right port")?;
+
+    // Get chain from bridge
+    let chain = params_bridge.take_chain()
+        .context("Chain not available")?;
+    let sample_rate = client.sample_rate() as f32;
+
+    // Create gui_tx for metering
+    let (gui_tx, _gui_rx) = crossbeam_channel::bounded::<AudioToGui>(64);
+    
+    // Create processor
+    let processor = JackProcessor::new(
+        chain,
+        params_bridge.clone(),
+        gui_tx,
+        running.clone(),
+        sample_rate,
+        in_port,
+        out_port_l,
+        out_port_r,
+    );
+
+    // Activate client with processor
+    let active_client = client.activate_async((), processor)
+        .context("Failed to activate JACK client")?;
+
+    // Auto-connect ports if requested
+    if config.audio.auto_connect {
+        connect_ports(&active_client)?;
+    }
+
+    info!("JACK client activated at {}Hz", sample_rate);
+
+    // Send device list (JACK ports)
+    let _ = audio_to_gui_tx.try_send(AudioToGui::DeviceList(
+        vec!["system:capture_1".to_string(), "system:capture_2".to_string()],
+        vec!["system:playback_1".to_string(), "system:playback_2".to_string()],
+    ));
+
+    // Handle GUI messages
+    while running.load(Ordering::Relaxed) {
+        while let Ok(msg) = gui_to_audio_rx.try_recv() {
+            match msg {
+                GuiToAudio::SetParam(id, value) => {
+                    params_bridge.set_param(id, value);
+                }
+                GuiToAudio::SetBypass(bypass) => {
+                    params_bridge.set_bypass(bypass);
+                }
+                GuiToAudio::Quit => {
+                    running.store(false, Ordering::Relaxed);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    active_client.deactivate().ok();
+    info!("JACK client deactivated");
+    Ok(())
+}
+
+fn connect_ports(client: &jack::AsyncClient<()>) -> Result<()> {
+    // Try to connect system capture to our input
+    let ports = client.ports(None, None, jack::PortFlags::IS_INPUT);
+    for port in ports {
+        if port.contains("capture") && !port.contains("maschine-guitar") {
+            if let Err(e) = client.connect_ports(&port, "maschine-guitar:in") {
+                warn!("Failed to connect {}: {}", port, e);
+            } else {
+                info!("Connected {} -> maschine-guitar:in", port);
+                break;
+            }
+        }
+    }
+
+    // Connect our outputs to system playback
+    for port in client.ports(None, None, jack::PortFlags::IS_OUTPUT) {
+        if port.contains("playback") && !port.contains("maschine-guitar") {
+            let our_port = if port.contains("_1") || port.contains("_L") || port.contains("left") {
+                "maschine-guitar:out_l"
+            } else {
+                "maschine-guitar:out_r"
+            };
+            if let Err(e) = client.connect_ports(our_port, &port) {
+                warn!("Failed to connect {}: {}", our_port, e);
+            } else {
+                info!("Connected {} -> {}", our_port, port);
+            }
+        }
+    }
+
+    Ok(())
+}

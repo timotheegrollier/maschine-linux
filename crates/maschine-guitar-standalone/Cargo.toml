@@ -1,0 +1,40 @@
+[package]
+name = "maschine-guitar-standalone"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone guitar FX rack (JACK/CPAL + egui GUI)"
+categories = ["multimedia::audio", "dsp"]
+keywords = ["guitar", "effects", "standalone", "jack", "egui"]
+
+[dependencies]
+maschine-dsp = { path = "../maschine-dsp" }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+crossbeam-channel = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+ctrlc = "3.4"
+# Audio backends
+jack = { version = "0.12", optional = true }
+cpal = { version = "0.15", optional = true }
+atomic_float = "1.1"
+# GUI
+eframe = { version = "0.32", optional = true, features = ["default_fonts", "accesskit"] }
+egui = { version = "0.32", optional = true, features = ["accesskit"] }
+# Config
+dirs = "5.0"
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+default = ["jack", "gui"]
+jack = ["dep:jack"]
+cpal = ["dep:cpal"]
+gui = ["dep:eframe", "dep:egui"]
+headless = []  # no GUI, audio only
+
+[dev-dependencies]
+env_logger = { workspace = true }

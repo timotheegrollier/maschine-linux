@@ -33,6 +33,29 @@ pub struct ZoneMapping {
     pub tune_cents: i16,
     /// Choke group
     pub choke_group: Option<u8>,
+    /// Mode One-Shot (ne coupe pas le son au relâchement du pad)
+    #[serde(default)]
+    pub is_one_shot: bool,
+}
+
+impl Default for ZoneMapping {
+    fn default() -> Self {
+        Self {
+            sample: None,
+            sample_path: None,
+            sample_rate: 48000,
+            root_key: 60,
+            lokey: 0,
+            hikey: 127,
+            lovel: 0,
+            hivel: 127,
+            volume_db: 0.0,
+            pan: 0.0,
+            tune_cents: 0,
+            choke_group: None,
+            is_one_shot: true,
+        }
+    }
 }
 
 /// Voix active.
@@ -60,6 +83,8 @@ pub struct SamplerVoice {
     pub choke_group: Option<u8>,
     /// Âge (pour voice stealing)
     pub age: u64,
+    /// Mode One-Shot
+    pub is_one_shot: bool,
 }
 
 /// Phase ADSR.
@@ -175,17 +200,18 @@ impl Sampler {
             velocity,
             choke_group: zone.choke_group,
             age: self.age_counter,
+            is_one_shot: zone.is_one_shot,
         };
         self.age_counter += 1;
         self.voices.push(voice);
         Some(self.voices.len() - 1)
     }
 
-    /// Note off — passe en Release.
+    /// Note off — passe en Release si non one-shot.
     pub fn note_off(&mut self, sound: u8, note: u8) {
         for v in &mut self.voices {
-            if v.note == note {
-                // on passe toutes les voix de cette note en Release (simplifié, devrait filtrer sound)
+            // Les percussions en mode One-Shot ne sont pas coupées au relâchement
+            if v.note == note && !v.is_one_shot {
                 let _ = sound;
                 if v.adsr_phase != AdsrPhase::Off && v.adsr_phase != AdsrPhase::Release {
                     v.adsr_phase = AdsrPhase::Release;
@@ -223,14 +249,19 @@ impl Sampler {
                 // ADSR gain (simplifié : attack 2ms, release 30ms linéaire)
                 let env = match voice.adsr_phase {
                     AdsrPhase::Attack => {
-                        let a_samples = (0.002 * self.sample_rate as f32) as u32;
-                        if voice.phase_samples < a_samples {
-                            voice.phase_samples += 1;
-                            voice.phase_samples as f32 / a_samples as f32
-                        } else {
+                        if voice.is_one_shot {
                             voice.adsr_phase = AdsrPhase::Sustain;
-                            voice.phase_samples = 0;
                             1.0
+                        } else {
+                            let a_samples = (0.002 * self.sample_rate as f32) as u32;
+                            if voice.phase_samples < a_samples {
+                                voice.phase_samples += 1;
+                                voice.phase_samples as f32 / a_samples as f32
+                            } else {
+                                voice.adsr_phase = AdsrPhase::Sustain;
+                                voice.phase_samples = 0;
+                                1.0
+                            }
                         }
                     }
                     AdsrPhase::Sustain => 1.0,
@@ -327,6 +358,7 @@ impl Sampler {
             pan: 0.0,
             tune_cents: 0,
             choke_group: None,
+            is_one_shot: true,
         };
         self.add_zone(sound, zone);
         Ok(())
@@ -376,6 +408,7 @@ mod tests {
                 pan: 0.0,
                 tune_cents: 0,
                 choke_group: None,
+                is_one_shot: false,
             },
         );
         s.note_on(0, 60, 100, 60);
@@ -411,6 +444,7 @@ mod tests {
                     pan: 0.0,
                     tune_cents: 0,
                     choke_group: Some(1),
+                    is_one_shot: true,
                 },
             );
         }

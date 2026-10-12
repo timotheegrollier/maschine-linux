@@ -3,7 +3,7 @@
 //! Mock si pas de hardware. Gère IF5 Vendor Bulk EP 0x04.
 
 #[cfg(feature = "usb")]
-use rusb::{Context, Device, DeviceHandle, UsbContext};
+use rusb::{Context, DeviceHandle, UsbContext};
 
 use crate::{HardwareError, Result};
 use maschine_proto::display::{encode_bulk_transfer, DisplayFrame};
@@ -33,9 +33,8 @@ impl BulkHandle {
                 let handle = device
                     .open()
                     .map_err(|e| HardwareError::Usb(format!("open: {e}")))?;
-                // detach kernel driver if needed (normalement IF5 n'a pas de driver, mais on tente)
                 let iface = 5u8;
-                let _ = handle.detach_kernel_driver(iface);
+                let _ = handle.set_auto_detach_kernel_driver(true);
                 handle
                     .claim_interface(iface)
                     .map_err(|e| HardwareError::Usb(format!("claim IF5: {e}")))?;
@@ -50,10 +49,12 @@ impl BulkHandle {
     /// Envoie une frame.
     pub fn send_frame(&mut self, frame: &DisplayFrame) -> Result<()> {
         let data = encode_bulk_transfer(frame).map_err(|e| HardwareError::Other(format!("{e}")))?;
-        // EP 0x04 OUT
+        // EP 0x04 OUT — un seul transfert bulk complet (261148 octets)
+        // libusb gère le découpage en paquets USB 512B en interne.
+        // Référence : ni-controllers-lib transferOut(endpoint, buffer) envoie tout d'un coup.
         let n = self
             .handle
-            .write_bulk(0x04, &data, std::time::Duration::from_millis(500))
+            .write_bulk(0x04, &data, std::time::Duration::from_millis(1000))
             .map_err(|e| HardwareError::Usb(format!("bulk write: {e}")))?;
         if n != data.len() {
             return Err(HardwareError::Usb(format!(

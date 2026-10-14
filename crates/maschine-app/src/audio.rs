@@ -31,7 +31,8 @@ impl AudioOutput {
         let dev_name = device.name().unwrap_or_else(|_| "unknown".to_string());
         log::info!("Audio device sélectionné: {dev_name}");
 
-        let is_mk3 = dev_name.to_lowercase().contains("mk3") || dev_name.to_lowercase().contains("maschine");
+        let is_mk3 =
+            dev_name.to_lowercase().contains("mk3") || dev_name.to_lowercase().contains("maschine");
 
         // Récupère la config par défaut du périphérique
         let default_cfg = device.default_output_config().ok();
@@ -72,11 +73,15 @@ impl AudioOutput {
             // Pour les périphériques PC (haut-parleurs, défaut système PipeWire/ALSA) :
             // Toujours privilégier la config par défaut en STEREO (2 canaux) avec buffer Default
             if let Some(ref d) = default_cfg {
-                let channels = if d.channels() >= 2 { 2u16 } else { d.channels() };
+                let channels = if d.channels() >= 2 {
+                    2u16
+                } else {
+                    d.channels()
+                };
                 let sc = cpal::SupportedStreamConfig::new(
                     channels,
                     d.sample_rate(),
-                    d.buffer_size().clone(),
+                    *d.buffer_size(),
                     d.sample_format(),
                 );
                 let mut cc: cpal::StreamConfig = sc.clone().into();
@@ -121,7 +126,9 @@ impl AudioOutput {
                 ) {
                     Ok(s) => s,
                     Err(e) => {
-                        log::warn!("Buffer size initial refusé ({e}) — fallback BufferSize::Default");
+                        log::warn!(
+                            "Buffer size initial refusé ({e}) — fallback BufferSize::Default"
+                        );
                         let mut cc_def = cpal_config.clone();
                         cc_def.buffer_size = cpal::BufferSize::Default;
                         let eng2 = engine_clone.clone();
@@ -146,7 +153,12 @@ impl AudioOutput {
                         *o = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
                     }
                 };
-                match device.build_output_stream(&cpal_config, cb, |err| log::error!("cpal stream err: {err}"), None) {
+                match device.build_output_stream(
+                    &cpal_config,
+                    cb,
+                    |err| log::error!("cpal stream err: {err}"),
+                    None,
+                ) {
                     Ok(s) => s,
                     Err(e) => {
                         log::warn!("Buffer size Fixed(128) refusé ({e}) — essai buffer Default");
@@ -155,12 +167,23 @@ impl AudioOutput {
                         let eng2 = engine_clone.clone();
                         let cb2 = move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
                             let mut tmp = vec![0.0f32; data.len()];
-                            audio_callback_f32(&mut tmp, &eng2, cc_def.sample_rate.0, channels, hp_dup);
+                            audio_callback_f32(
+                                &mut tmp,
+                                &eng2,
+                                cc_def.sample_rate.0,
+                                channels,
+                                hp_dup,
+                            );
                             for (o, &s) in data.iter_mut().zip(tmp.iter()) {
                                 *o = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
                             }
                         };
-                        device.build_output_stream(&cc_def, cb2, |err| log::error!("cpal stream err: {err}"), None)?
+                        device.build_output_stream(
+                            &cc_def,
+                            cb2,
+                            |err| log::error!("cpal stream err: {err}"),
+                            None,
+                        )?
                     }
                 }
             }
@@ -173,7 +196,12 @@ impl AudioOutput {
                         *o = ((s.clamp(-1.0, 1.0) * 0.5 + 0.5) * u16::MAX as f32) as u16;
                     }
                 };
-                match device.build_output_stream(&cpal_config, cb, |err| log::error!("cpal stream err: {err}"), None) {
+                match device.build_output_stream(
+                    &cpal_config,
+                    cb,
+                    |err| log::error!("cpal stream err: {err}"),
+                    None,
+                ) {
                     Ok(s) => s,
                     Err(e) => {
                         log::warn!("Buffer size Fixed(128) refusé ({e}) — essai buffer Default");
@@ -182,12 +210,23 @@ impl AudioOutput {
                         let eng2 = engine_clone.clone();
                         let cb2 = move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
                             let mut tmp = vec![0.0f32; data.len()];
-                            audio_callback_f32(&mut tmp, &eng2, cc_def.sample_rate.0, channels, hp_dup);
+                            audio_callback_f32(
+                                &mut tmp,
+                                &eng2,
+                                cc_def.sample_rate.0,
+                                channels,
+                                hp_dup,
+                            );
                             for (o, &s) in data.iter_mut().zip(tmp.iter()) {
                                 *o = ((s.clamp(-1.0, 1.0) * 0.5 + 0.5) * u16::MAX as f32) as u16;
                             }
                         };
-                        device.build_output_stream(&cc_def, cb2, |err| log::error!("cpal stream err: {err}"), None)?
+                        device.build_output_stream(
+                            &cc_def,
+                            cb2,
+                            |err| log::error!("cpal stream err: {err}"),
+                            None,
+                        )?
                     }
                 }
             }
@@ -230,7 +269,10 @@ impl AudioOutput {
     pub fn list_devices() -> anyhow::Result<()> {
         let host = cpal::default_host();
         println!("Host: {:?}", host.id());
-        println!("Default output: {:?}", host.default_output_device().and_then(|d| d.name().ok()));
+        println!(
+            "Default output: {:?}",
+            host.default_output_device().and_then(|d| d.name().ok())
+        );
         println!("\nDevices de sortie:");
         for dev in host.output_devices()? {
             let name = dev.name().unwrap_or_else(|_| "<err>".to_string());
@@ -428,7 +470,11 @@ fn find_mk3_device(host: &cpal::Host) -> Option<cpal::Device> {
 }
 
 /// Génère un wav de test (sine) et le joue via cpal brièvement (pour test sans engine).
-pub fn play_test_tone(duration_secs: f32, freq: f32, device_name: Option<&str>) -> anyhow::Result<()> {
+pub fn play_test_tone(
+    duration_secs: f32,
+    freq: f32,
+    device_name: Option<&str>,
+) -> anyhow::Result<()> {
     let host = cpal::default_host();
     let device = resolve_device(&host, device_name)?;
     let name = device.name().unwrap_or_else(|_| "unknown".to_string());

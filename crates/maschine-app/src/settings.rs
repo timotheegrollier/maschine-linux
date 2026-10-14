@@ -1,7 +1,7 @@
 //! Paramètres de l'application persistant dans ~/.config/maschine-linux/settings.json
 
-use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {

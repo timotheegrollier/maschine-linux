@@ -6,14 +6,13 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use crossbeam_channel::{bounded, Receiver, Sender};
-use log::{info, warn, error};
+use log::{error, info};
 use parking_lot::Mutex;
 
-use maschine_dsp::{GuitarChain, GuitarParams, AudioContext, ParamId, ParamId::*};
+use maschine_dsp::{GuitarChain, ParamId};
 
 // Audio backend modules
 // #[cfg(feature = "jack")]
@@ -29,8 +28,8 @@ mod gui;
 mod config;
 mod params_bridge;
 
-use config::{AppConfig};
-use params_bridge::{ParamsBridge, GuiParam};
+use config::AppConfig;
+use params_bridge::{GuiParam, ParamsBridge};
 
 /// Audio message from audio thread to GUI
 #[derive(Debug, Clone)]
@@ -73,12 +72,12 @@ impl App {
         let sample_rate = config.audio.sample_rate as f32;
         let chain = Arc::new(Mutex::new(GuitarChain::new(sample_rate)));
         let params_bridge = Arc::new(ParamsBridge::new(chain.clone()));
-        
+
         let (audio_to_gui_tx, audio_to_gui_rx) = bounded::<AudioToGui>(64);
         let (gui_to_audio_tx, gui_to_audio_rx) = bounded::<GuiToAudio>(64);
-        
+
         let running = Arc::new(AtomicBool::new(true));
-        
+
         Ok(Self {
             config,
             params_bridge,
@@ -117,9 +116,10 @@ impl App {
                 self.gui_to_audio_tx.clone(),
                 self.audio_to_gui_rx.clone(),
                 self.running.clone(),
-            ).map_err(|e| anyhow::anyhow!("GUI error: {}", e))
+            )
+            .map_err(|e| anyhow::anyhow!("GUI error: {}", e))
         }
-        
+
         #[cfg(not(feature = "gui"))]
         {
             // Headless mode - just wait for Ctrl+C
@@ -128,7 +128,7 @@ impl App {
                 let running = self.running.clone();
                 move || running.store(false, Ordering::Relaxed)
             })?;
-            
+
             while self.running.load(Ordering::Relaxed) {
                 thread::sleep(Duration::from_millis(100));
             }
@@ -139,30 +139,31 @@ impl App {
 
 fn main() -> Result<()> {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
-    
+
     let config = AppConfig::load_or_default();
-    info!("Starting Maschine Guitar Standalone v{}", env!("CARGO_PKG_VERSION"));
+    info!(
+        "Starting Maschine Guitar Standalone v{}",
+        env!("CARGO_PKG_VERSION")
+    );
     info!("Config: {:?}", config);
-    
+
     let mut app = App::new(config)?;
-    
+
     // Spawn audio thread
-    let audio_handle = thread::Builder::new()
-        .name("audio".to_string())
-        .spawn({
-            let app = app.clone();
-            move || {
-                if let Err(e) = app.run_audio_thread() {
-                    error!("Audio thread error: {}", e);
-                }
+    let audio_handle = thread::Builder::new().name("audio".to_string()).spawn({
+        let app = app.clone();
+        move || {
+            if let Err(e) = app.run_audio_thread() {
+                error!("Audio thread error: {}", e);
             }
-        })?;
-    
+        }
+    })?;
+
     // Run GUI on main thread (required by egui/winit)
     if let Err(e) = app.run_gui() {
         error!("GUI error: {}", e);
     }
-    
+
     // Shutdown
     app.running.store(false, Ordering::Relaxed);
     audio_handle.join().ok();

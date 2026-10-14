@@ -70,11 +70,118 @@ pub enum EngineEvent {
     SetRightTab(u8),
     /// Select active sound (0..15)
     SelectSound(u8),
+    /// Volume d'un groupe en dB
+    GroupVolume { group: u8, volume_db: f32 },
+    /// Pan d'un groupe
+    GroupPan { group: u8, pan: f32 },
+    /// Volume d'un sound (pad) en dB
+    SoundVolume {
+        group: u8,
+        sound: u8,
+        volume_db: f32,
+    },
+    /// Pan d'un sound
+    SoundPan { group: u8, sound: u8, pan: f32 },
+    /// Cutoff filtre d'un sound
+    SoundFilterCutoff {
+        group: u8,
+        sound: u8,
+        cutoff_hz: f32,
+    },
+    /// Résonance filtre d'un sound 0..1
+    SoundFilterReso {
+        group: u8,
+        sound: u8,
+        resonance: f32,
+    },
+    /// ADSR d'un sound (attack/decay/sustain/release)
+    SoundAdsr {
+        group: u8,
+        sound: u8,
+        attack_ms: f32,
+        decay_ms: f32,
+        sustain: f32,
+        release_ms: f32,
+    },
+    /// Efface toutes les notes d'un son dans le pattern actif (ERASE + pad)
+    EraseSound { group: u8, sound: u8 },
+    /// Miroirs workflow pour les écrans (envoyés par le mapper)
+    SetSceneMode(bool),
+    /// Miroir mode PATTERN
+    SetPatternMode(bool),
+    /// Miroir mode SELECT
+    SetSelectMode(bool),
+    /// Miroir mode ERASE
+    SetEraseMode(bool),
+    /// Miroir mode de jeu 0..3
+    SetControllerMode(u8),
+    /// Bascule la boucle transport
+    ToggleLoop,
+    /// Bascule le métronome
+    ToggleMetronome,
     /// Apply humanize variation to active pattern
     Variation,
     /// Quantize active pattern
     QuantizeActive,
+    /// Active/désactive le métronome
+    SetMetronome(bool),
+    /// Basculer mode Song (arranger) / Ideas (scènes)
+    ToggleSongMode,
+    /// Section suivante dans le Song
+    NextSection,
+    /// Section précédente dans le Song
+    PrevSection,
+    /// Activer un pattern spécifique (group, pattern idx)
+    PatternSelectIndex { group: u8, pattern: usize },
+    /// Charge un preset d'instrument drum synth (0..15) sur un sound
+    LoadDrumPreset {
+        /// Group
+        group: u8,
+        /// Sound 0..15
+        sound: u8,
+        /// Preset index 0..15
+        preset_idx: u8,
+    },
+    /// Charge un fichier sample WAV sur un sound
+    LoadSample {
+        /// Group
+        group: u8,
+        /// Sound 0..15
+        sound: u8,
+        /// Path to WAV file
+        path: std::path::PathBuf,
+    },
+    /// Défilement preset dans le Browser (+/- step)
+    BrowsePresetStep(i32),
+    /// Sélection de la mesure à afficher / éditer
+    SelectBar(usize),
+    /// Mesure suivante
+    NextBar,
+    /// Mesure précédente
+    PrevBar,
+    /// Définir la longueur du pattern en mesures (1, 2, 4, 8)
+    SetPatternBars(usize),
 }
+
+/// Noms des 16 presets de batterie DSP 808
+pub const DRUM_PRESET_NAMES: [&str; 16] = [
+    "Kick 808",
+    "Snare 808",
+    "Closed HH",
+    "Open HH",
+    "Tom Low",
+    "Tom Mid",
+    "Tom High",
+    "Clap 808",
+    "Rimshot",
+    "Shaker",
+    "Cowbell",
+    "Crash",
+    "Perc 1",
+    "Perc 2",
+    "Synth Stab",
+    "Sub Bass 808",
+];
 
 /// Snapshot lecture seule pour UI.
 #[derive(Debug, Clone)]
@@ -105,6 +212,28 @@ pub struct EngineSnapshot {
     pub right_tab: u8,
     /// Son actif sélectionné (0..15)
     pub active_sound: u8,
+    /// Mode Song (arranger) vs Ideas (scènes)
+    pub song_mode: bool,
+    /// Section active dans le Song
+    pub active_section: Option<usize>,
+    /// Pads flashés par le séquenceur (lecture pattern) — pour LEDs + GUI
+    pub triggered_pads: [bool; 16],
+    /// Mode SCENE (pads déclenchent les scènes) — miroir du mapper pour les écrans
+    pub scene_mode: bool,
+    /// Mode PATTERN (pads sélectionnent le pattern)
+    pub pattern_mode: bool,
+    /// Mode SELECT (pads sélectionnent sans jouer)
+    pub select_mode: bool,
+    /// Mode ERASE (pads gomment)
+    pub erase_mode: bool,
+    /// Mode de jeu : 0 Pad, 1 Keyboard, 2 Chords, 3 Step
+    pub controller_mode: u8,
+    /// Index preset sélectionné dans le browser (0..15)
+    pub browser_preset_idx: u8,
+    /// Mesure sélectionnée pour l'affichage / édition pas-à-pas (0-indexed : 0, 1, 2, 3...)
+    pub selected_bar: usize,
+    /// Nombre de mesures du pattern actif (1, 2, 4, 8)
+    pub pattern_bars: usize,
 }
 
 /// Engine principal.
@@ -133,6 +262,27 @@ pub struct Engine {
     pub right_tab: u8,
     /// Son actif
     pub active_sound: u8,
+    /// Mesure sélectionnée pour l'édition et l'affichage (0..pattern_bars-1)
+    pub selected_bar: usize,
+    /// Index preset sélectionné dans le Browser
+    pub browser_preset_idx: u8,
+    /// Mode Song (arranger) vs Ideas (scènes)
+    pub song_mode: bool,
+    /// Section active dans le Song
+    pub active_section: Option<usize>,
+    /// Flash pads jusqu'à ce tick (séquenceur) — 16 pads
+    pad_flash_until: [u64; 16],
+    /// Modes workflow (miroirs du mapper pour les écrans)
+    pub scene_mode: bool,
+    pub pattern_mode: bool,
+    pub select_mode: bool,
+    pub erase_mode: bool,
+    /// Mode de jeu 0..3 (Pad/Keyboard/Chords/Step)
+    pub controller_mode: u8,
+    /// Clic métronome accentué (début de mesure)
+    click_accent: std::sync::Arc<Vec<f32>>,
+    /// Clic métronome normal (temps)
+    click_normal: std::sync::Arc<Vec<f32>>,
 }
 
 impl Engine {
@@ -140,6 +290,17 @@ impl Engine {
     #[must_use]
     pub fn new(project: Project, sample_rate: u32) -> Self {
         let bpm = project.bpm;
+        fn click(sr: u32, freq: f32) -> std::sync::Arc<Vec<f32>> {
+            let n = (sr as f32 * 0.03) as usize;
+            let v: Vec<f32> = (0..n)
+                .map(|i| {
+                    let t = i as f32 / sr as f32;
+                    let env = (-t * 120.0).exp();
+                    (2.0 * std::f32::consts::PI * freq * t).sin() * env * 0.6
+                })
+                .collect();
+            std::sync::Arc::new(v)
+        }
         Self {
             project: Arc::new(RwLock::new(project)),
             transport: Transport::new(bpm, sample_rate),
@@ -155,6 +316,18 @@ impl Engine {
             left_tab: 0,
             right_tab: 0,
             active_sound: 0,
+            selected_bar: 0,
+            browser_preset_idx: 0,
+            song_mode: false,
+            active_section: None,
+            pad_flash_until: [0; 16],
+            scene_mode: false,
+            pattern_mode: false,
+            select_mode: false,
+            erase_mode: false,
+            controller_mode: 0,
+            click_accent: click(sample_rate, 1760.0),
+            click_normal: click(sample_rate, 880.0),
         }
     }
 
@@ -175,6 +348,26 @@ impl Engine {
     /// Snapshot pour UI.
     pub fn snapshot(&self) -> EngineSnapshot {
         let project = self.project.read().clone();
+        let playing = self.transport.is_playing();
+        let mut triggered_pads = [false; 16];
+        if playing {
+            for (i, triggered) in triggered_pads.iter_mut().enumerate() {
+                *triggered = self.transport.tick <= self.pad_flash_until[i];
+            }
+        }
+        let pattern_bars = project
+            .active_pattern_index(self.group_focus as usize, self.active_scene)
+            .and_then(|pi| {
+                project
+                    .groups
+                    .get(self.group_focus as usize)?
+                    .patterns
+                    .get(pi)
+            })
+            .map(|p| (p.length.bars as usize).max(1))
+            .unwrap_or(2);
+        let selected_bar = self.selected_bar.min(pattern_bars.saturating_sub(1));
+
         EngineSnapshot {
             project,
             transport: self.transport.clone(),
@@ -189,6 +382,17 @@ impl Engine {
             left_tab: self.left_tab,
             right_tab: self.right_tab,
             active_sound: self.active_sound,
+            song_mode: self.song_mode,
+            active_section: self.active_section,
+            triggered_pads,
+            scene_mode: self.scene_mode,
+            pattern_mode: self.pattern_mode,
+            select_mode: self.select_mode,
+            erase_mode: self.erase_mode,
+            controller_mode: self.controller_mode,
+            browser_preset_idx: self.browser_preset_idx,
+            selected_bar,
+            pattern_bars,
         }
     }
 
@@ -223,9 +427,12 @@ impl Engine {
     /// Humanise le pattern actif (légères variations de vélocité et micro-timing)
     pub fn humanize_active_pattern(&mut self) {
         let mut proj = self.project.write();
+        let pat_idx = proj.active_pattern_index(self.group_focus as usize, self.active_scene);
         if let Some(group) = proj.groups.get_mut(self.group_focus as usize) {
-            if let Some(pat) = group.patterns.first_mut() {
-                self.sequencer.humanize(&mut pat.events, 8, 12);
+            if let Some(pi) = pat_idx {
+                if let Some(pat) = group.patterns.get_mut(pi) {
+                    self.sequencer.humanize(&mut pat.events, 8, 12);
+                }
             }
         }
     }
@@ -233,9 +440,12 @@ impl Engine {
     /// Quantifie le pattern actif sur la grille courante
     pub fn quantize_active_pattern(&mut self) {
         let mut proj = self.project.write();
+        let pat_idx = proj.active_pattern_index(self.group_focus as usize, self.active_scene);
         if let Some(group) = proj.groups.get_mut(self.group_focus as usize) {
-            if let Some(pat) = group.patterns.first_mut() {
-                self.sequencer.quantize_pattern(pat);
+            if let Some(pi) = pat_idx {
+                if let Some(pat) = group.patterns.get_mut(pi) {
+                    self.sequencer.quantize_pattern(pat);
+                }
             }
         }
     }
@@ -248,11 +458,45 @@ impl Engine {
                 velocity,
                 pressed,
             } => {
+                // Groupe muté ? pas de son ni d'enregistrement
+                if self.muted_groups & (1 << self.group_focus) != 0 {
+                    return Ok(());
+                }
                 if pressed {
                     // trigger sampler pour le Sound du Group focus
                     let sound = pad;
                     let note = 36 + pad;
-                    self.sampler.note_on(sound, note, velocity, note);
+                    let guard = self.project.read();
+                    let group_gain = guard
+                        .groups
+                        .get(self.group_focus as usize)
+                        .map(|g| 10.0f32.powf(g.volume_db / 20.0))
+                        .unwrap_or(1.0);
+                    let (snd_gain, snd_pan, vparams) = guard
+                        .groups
+                        .get(self.group_focus as usize)
+                        .and_then(|g| g.sounds.get(pad as usize).and_then(|s| s.as_ref()))
+                        .map(|s| {
+                            (
+                                10.0f32.powf(s.volume_db / 20.0),
+                                s.pan,
+                                crate::sampler::VoiceParams {
+                                    attack_ms: s.adsr.attack_ms,
+                                    decay_ms: s.adsr.decay_ms,
+                                    sustain: s.adsr.sustain,
+                                    release_ms: s.adsr.release_ms,
+                                    cutoff_hz: s.filter.cutoff_hz,
+                                    resonance: s.filter.resonance,
+                                },
+                            )
+                        })
+                        .unwrap_or((1.0, 0.0, crate::sampler::VoiceParams::default()));
+                    drop(guard);
+                    if let Some(idx) = self.sampler.note_on(sound, note, velocity, note) {
+                        self.sampler.set_voice_gain(idx, group_gain * snd_gain);
+                        self.sampler.set_voice_pan(idx, snd_pan);
+                        self.sampler.set_voice_params(idx, &vparams);
+                    }
                     // si Recording, ajoute event au pattern actif
                     if self.transport.state == TransportState::Recording {
                         self.record_pad_event(pad, velocity);
@@ -338,14 +582,371 @@ impl Engine {
             EngineEvent::SelectSound(snd) => {
                 self.active_sound = snd.min(15);
             }
+            EngineEvent::SoundVolume {
+                group,
+                sound,
+                volume_db,
+            } => {
+                let mut proj = self.project.write();
+                if let Some(g) = proj.groups.get_mut(group as usize) {
+                    if let Some(s) = g.sounds.get_mut(sound as usize).and_then(|s| s.as_mut()) {
+                        s.volume_db = volume_db.clamp(-60.0, 12.0);
+                    }
+                }
+            }
+            EngineEvent::SoundPan { group, sound, pan } => {
+                let p = pan.clamp(-1.0, 1.0);
+                {
+                    let mut proj = self.project.write();
+                    if let Some(g) = proj.groups.get_mut(group as usize) {
+                        if let Some(s) = g.sounds.get_mut(sound as usize).and_then(|s| s.as_mut()) {
+                            s.pan = p;
+                        }
+                    }
+                }
+                if group == self.group_focus {
+                    self.sampler.update_sound_pan(sound, p);
+                }
+            }
+            EngineEvent::SoundFilterCutoff {
+                group,
+                sound,
+                cutoff_hz,
+            } => {
+                let c = cutoff_hz.clamp(20.0, 20000.0);
+                let mut reso = 0.0;
+                {
+                    let mut proj = self.project.write();
+                    if let Some(g) = proj.groups.get_mut(group as usize) {
+                        if let Some(s) = g.sounds.get_mut(sound as usize).and_then(|s| s.as_mut()) {
+                            s.filter.cutoff_hz = c;
+                            if s.filter.kind == crate::project::FilterKind::Off {
+                                s.filter.kind = crate::project::FilterKind::LowPass;
+                            }
+                            reso = s.filter.resonance;
+                        }
+                    }
+                }
+                if group == self.group_focus {
+                    self.sampler.update_sound_filter(sound, c, reso);
+                }
+            }
+            EngineEvent::SoundFilterReso {
+                group,
+                sound,
+                resonance,
+            } => {
+                let r = resonance.clamp(0.0, 1.0);
+                let mut cutoff = 20000.0;
+                {
+                    let mut proj = self.project.write();
+                    if let Some(g) = proj.groups.get_mut(group as usize) {
+                        if let Some(s) = g.sounds.get_mut(sound as usize).and_then(|s| s.as_mut()) {
+                            s.filter.resonance = r;
+                            if s.filter.kind == crate::project::FilterKind::Off {
+                                s.filter.kind = crate::project::FilterKind::LowPass;
+                            }
+                            cutoff = s.filter.cutoff_hz;
+                        }
+                    }
+                }
+                if group == self.group_focus {
+                    self.sampler.update_sound_filter(sound, cutoff, r);
+                }
+            }
+            EngineEvent::SoundAdsr {
+                group,
+                sound,
+                attack_ms,
+                decay_ms,
+                sustain,
+                release_ms,
+            } => {
+                let a = attack_ms.clamp(0.1, 5000.0);
+                let d = decay_ms.clamp(0.1, 5000.0);
+                let su = sustain.clamp(0.0, 1.0);
+                let rel = release_ms.clamp(0.1, 5000.0);
+                {
+                    let mut proj = self.project.write();
+                    if let Some(g) = proj.groups.get_mut(group as usize) {
+                        if let Some(s) = g.sounds.get_mut(sound as usize).and_then(|s| s.as_mut()) {
+                            s.adsr.attack_ms = a;
+                            s.adsr.decay_ms = d;
+                            s.adsr.sustain = su;
+                            s.adsr.release_ms = rel;
+                        }
+                    }
+                }
+                if group == self.group_focus {
+                    self.sampler.update_sound_adsr(sound, a, d, su, rel);
+                }
+            }
+            EngineEvent::GroupVolume { group, volume_db } => {
+                let mut proj = self.project.write();
+                if let Some(g) = proj.groups.get_mut(group as usize) {
+                    g.volume_db = volume_db.clamp(-60.0, 12.0);
+                }
+            }
+            EngineEvent::GroupPan { group, pan } => {
+                let mut proj = self.project.write();
+                if let Some(g) = proj.groups.get_mut(group as usize) {
+                    g.pan = pan.clamp(-1.0, 1.0);
+                }
+            }
             EngineEvent::Variation => {
                 self.humanize_active_pattern();
             }
             EngineEvent::QuantizeActive => {
                 self.quantize_active_pattern();
             }
+            EngineEvent::SetMetronome(on) => {
+                self.transport.metronome = on;
+            }
+            EngineEvent::ToggleSongMode => {
+                self.song_mode = !self.song_mode;
+                if self.song_mode && self.active_section.is_none() {
+                    self.active_section = if self.project.read().song.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    };
+                }
+            }
+            EngineEvent::NextSection => {
+                let n = self.project.read().song.len();
+                if n > 0 {
+                    let cur = self.active_section.unwrap_or(0);
+                    self.active_section = Some((cur + 1) % n);
+                    if let Some(si) = self.active_section {
+                        if let Some(sec) = self.project.read().song.get(si) {
+                            self.active_scene = Some(sec.scene);
+                        }
+                    }
+                }
+            }
+            EngineEvent::PrevSection => {
+                let n = self.project.read().song.len();
+                if n > 0 {
+                    let cur = self.active_section.unwrap_or(0);
+                    self.active_section = Some((cur + n - 1) % n);
+                    if let Some(si) = self.active_section {
+                        if let Some(sec) = self.project.read().song.get(si) {
+                            self.active_scene = Some(sec.scene);
+                        }
+                    }
+                }
+            }
+            EngineEvent::PatternSelectIndex { group, pattern } => {
+                let _ = self.handle_event(EngineEvent::PatternSelect { group, pattern });
+            }
+            EngineEvent::EraseSound { group, sound } => {
+                self.erase_sound(group, sound);
+            }
+            EngineEvent::SetSceneMode(v) => {
+                self.scene_mode = v;
+            }
+            EngineEvent::SetPatternMode(v) => {
+                self.pattern_mode = v;
+            }
+            EngineEvent::SetSelectMode(v) => {
+                self.select_mode = v;
+            }
+            EngineEvent::SetEraseMode(v) => {
+                self.erase_mode = v;
+            }
+            EngineEvent::SetControllerMode(v) => {
+                self.controller_mode = v.min(3);
+            }
+            EngineEvent::ToggleLoop => {
+                self.transport.loop_enabled = !self.transport.loop_enabled;
+            }
+            EngineEvent::ToggleMetronome => {
+                self.transport.metronome = !self.transport.metronome;
+            }
+            EngineEvent::LoadDrumPreset {
+                group,
+                sound,
+                preset_idx,
+            } => {
+                let sr = self.transport.sample_rate;
+                let (name, samp) = match preset_idx {
+                    0 => ("Kick 808", crate::drum_synth::generate_kick(sr)),
+                    1 => ("Snare 808", crate::drum_synth::generate_snare(sr)),
+                    2 => ("Closed HH", crate::drum_synth::generate_closed_hh(sr)),
+                    3 => ("Open HH", crate::drum_synth::generate_open_hh(sr)),
+                    4 => ("Tom Low", crate::drum_synth::generate_tom(sr, 85.0)),
+                    5 => ("Tom Mid", crate::drum_synth::generate_tom(sr, 130.0)),
+                    6 => ("Tom High", crate::drum_synth::generate_tom(sr, 185.0)),
+                    7 => ("Clap 808", crate::drum_synth::generate_clap(sr)),
+                    8 => ("Rimshot", crate::drum_synth::generate_rimshot(sr)),
+                    9 => ("Shaker", crate::drum_synth::generate_shaker(sr)),
+                    10 => ("Cowbell", crate::drum_synth::generate_cowbell(sr)),
+                    11 => ("Crash", crate::drum_synth::generate_crash(sr)),
+                    12 => ("Perc 1", crate::drum_synth::generate_perc(sr, 880.0)),
+                    13 => ("Perc 2", crate::drum_synth::generate_perc(sr, 1250.0)),
+                    14 => ("Synth Stab", crate::drum_synth::generate_synth_stab(sr)),
+                    _ => ("Sub Bass 808", crate::drum_synth::generate_sub_bass(sr)),
+                };
+                self.sampler.clear_sound(sound);
+                self.sampler.add_zone(
+                    sound,
+                    crate::sampler::ZoneMapping {
+                        sample: Some(std::sync::Arc::new(samp)),
+                        sample_path: None,
+                        sample_rate: sr,
+                        root_key: 36 + sound,
+                        lokey: 0,
+                        hikey: 127,
+                        lovel: 0,
+                        hivel: 127,
+                        volume_db: 0.0,
+                        pan: 0.0,
+                        tune_cents: 0,
+                        choke_group: if preset_idx == 2 || preset_idx == 3 {
+                            Some(1)
+                        } else {
+                            None
+                        },
+                        is_one_shot: true,
+                    },
+                );
+                let mut proj = self.project.write();
+                if let Some(g) = proj.groups.get_mut(group as usize) {
+                    if let Some(s) = g.sounds.get_mut(sound as usize).and_then(|s| s.as_mut()) {
+                        s.name = name.to_string();
+                    }
+                }
+            }
+            EngineEvent::LoadSample {
+                group,
+                sound,
+                path,
+            } => {
+                self.sampler.clear_sound(sound);
+                #[cfg(feature = "sampler")]
+                {
+                    if let Err(e) = self.sampler.load_wav(sound, &path, 36 + sound) {
+                        log::error!("Failed to load sample: {e}");
+                    }
+                }
+                #[cfg(not(feature = "sampler"))]
+                {
+                    let _ = path;
+                    log::warn!("Sampler feature not enabled");
+                }
+                let mut proj = self.project.write();
+                if let Some(g) = proj.groups.get_mut(group as usize) {
+                    if let Some(s) = g.sounds.get_mut(sound as usize).and_then(|s| s.as_mut()) {
+                        if let Some(file_name) = path.file_stem().and_then(|s| s.to_str()) {
+                            s.name = file_name.to_string();
+                        }
+                    }
+                }
+            }
+            EngineEvent::BrowsePresetStep(step) => {
+                let next = (self.browser_preset_idx as i32 + step).rem_euclid(16) as u8;
+                self.browser_preset_idx = next;
+                self.preview_preset(next);
+            }
+            EngineEvent::SelectBar(bar) => {
+                let max_bars = {
+                    let proj = self.project.read();
+                    proj.active_pattern_index(self.group_focus as usize, self.active_scene)
+                        .and_then(|pi| proj.groups.get(self.group_focus as usize)?.patterns.get(pi))
+                        .map(|p| (p.length.bars as usize).max(1))
+                        .unwrap_or(2)
+                };
+                self.selected_bar = bar.min(max_bars.saturating_sub(1));
+            }
+            EngineEvent::NextBar => {
+                let max_bars = {
+                    let proj = self.project.read();
+                    proj.active_pattern_index(self.group_focus as usize, self.active_scene)
+                        .and_then(|pi| proj.groups.get(self.group_focus as usize)?.patterns.get(pi))
+                        .map(|p| (p.length.bars as usize).max(1))
+                        .unwrap_or(2)
+                };
+                if self.selected_bar + 1 < max_bars {
+                    self.selected_bar += 1;
+                }
+            }
+            EngineEvent::PrevBar => {
+                self.selected_bar = self.selected_bar.saturating_sub(1);
+            }
+            EngineEvent::SetPatternBars(bars) => {
+                let bars_clamped = bars.clamp(1, 16) as u16;
+                let mut proj = self.project.write();
+                let pat_idx =
+                    proj.active_pattern_index(self.group_focus as usize, self.active_scene);
+                if let Some(g) = proj.groups.get_mut(self.group_focus as usize) {
+                    if let Some(pi) = pat_idx {
+                        if let Some(p) = g.patterns.get_mut(pi) {
+                            p.length = crate::project::BarsBeatsTicks::new(bars_clamped, 0, 0);
+                        }
+                    }
+                }
+                self.transport.loop_end = (bars_clamped as u64) * 4 * 960;
+                self.selected_bar = self.selected_bar.min(bars_clamped as usize - 1);
+            }
         }
         Ok(())
+    }
+
+    /// Index preset sélectionné dans le Browser
+    #[must_use]
+    pub fn browser_preset_idx(&self) -> u8 {
+        self.browser_preset_idx
+    }
+
+    /// Joue un aperçu sonore immédiat d'un preset drum synth (pour pré-écoute dans le browser)
+    pub fn preview_preset(&mut self, preset_idx: u8) {
+        let sr = self.transport.sample_rate;
+        let samp = match preset_idx {
+            0 => crate::drum_synth::generate_kick(sr),
+            1 => crate::drum_synth::generate_snare(sr),
+            2 => crate::drum_synth::generate_closed_hh(sr),
+            3 => crate::drum_synth::generate_open_hh(sr),
+            4 => crate::drum_synth::generate_tom(sr, 85.0),
+            5 => crate::drum_synth::generate_tom(sr, 130.0),
+            6 => crate::drum_synth::generate_tom(sr, 185.0),
+            7 => crate::drum_synth::generate_clap(sr),
+            8 => crate::drum_synth::generate_rimshot(sr),
+            9 => crate::drum_synth::generate_shaker(sr),
+            10 => crate::drum_synth::generate_cowbell(sr),
+            11 => crate::drum_synth::generate_crash(sr),
+            12 => crate::drum_synth::generate_perc(sr, 880.0),
+            13 => crate::drum_synth::generate_perc(sr, 1250.0),
+            14 => crate::drum_synth::generate_synth_stab(sr),
+            _ => crate::drum_synth::generate_sub_bass(sr),
+        };
+        self.sampler.play_raw(&std::sync::Arc::new(samp), 0.7);
+    }
+
+    /// Efface toutes les notes d'un son dans le pattern actif du groupe (mode ERASE + pad).
+    pub fn erase_sound(&mut self, group: u8, sound: u8) {
+        let mut proj = self.project.write();
+        let pat_idx = proj.active_pattern_index(group as usize, self.active_scene);
+        if let Some(g) = proj.groups.get_mut(group as usize) {
+            if let Some(pi) = pat_idx {
+                if let Some(pat) = g.patterns.get_mut(pi) {
+                    let before = pat.events.len();
+                    pat.events.retain(|e| e.pad != sound);
+                    if pat.events.len() != before {
+                        log::debug!("erase sound {sound} in group {group}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Joue le clic métronome (accent = début de mesure).
+    fn trigger_click(&mut self, accent: bool) {
+        let sample = if accent {
+            self.click_accent.clone()
+        } else {
+            self.click_normal.clone()
+        };
+        self.sampler.play_raw(&sample, if accent { 0.5 } else { 0.32 });
     }
 
     /// Avance le transport + séquenceur, déclenche les notes des patterns.
@@ -356,20 +957,86 @@ impl Engine {
         if !self.transport.is_playing() {
             return;
         }
+        // Clic métronome sur chaque temps (accent sur début de mesure).
+        if self.transport.metronome && new_tick > prev_tick {
+            let first_beat = prev_tick / 960 + 1;
+            let last_beat = new_tick / 960;
+            for beat in first_beat..=last_beat.min(first_beat + 8) {
+                let accent = beat % 4 == 0;
+                self.trigger_click(accent);
+            }
+        }
         // Pour chaque Group, joue les events du pattern actif de la scène courante
         let proj = self.project.read().clone(); // clone pour éviter borrow sampler
+
+        // Mode Song : détermine la scène active selon la position dans le Song
+        if self.song_mode && !proj.song.is_empty() {
+            let total: u64 = proj.song.iter().map(|s| s.length.to_ticks() as u64).sum();
+            if total > 0 {
+                let pos = new_tick % total;
+                let mut acc = 0u64;
+                let mut idx = 0usize;
+                for (i, sec) in proj.song.iter().enumerate() {
+                    let len = sec.length.to_ticks() as u64;
+                    if pos < acc + len {
+                        idx = i;
+                        break;
+                    }
+                    acc += len;
+                    idx = (i + 1).min(proj.song.len() - 1);
+                }
+                self.active_section = Some(idx);
+                if let Some(sec) = proj.song.get(idx) {
+                    self.active_scene = Some(sec.scene);
+                }
+            }
+        }
+
         if let Some(scene_idx) = self.active_scene {
             if let Some(scene) = proj.scenes.get(scene_idx) {
                 for (gi, pat_opt) in scene.patterns.iter().enumerate() {
+                    // Respecte le mute par groupe
+                    if (self.muted_groups & (1 << gi)) != 0 {
+                        continue;
+                    }
+                    if proj.groups.get(gi).map(|g| g.muted).unwrap_or(false) {
+                        continue;
+                    }
                     if let Some(pat_idx) = pat_opt {
                         if let Some(group) = proj.groups.get(gi) {
                             if let Some(pat) = group.patterns.get(*pat_idx) {
+                                let gain = 10.0f32.powf(group.volume_db / 20.0);
+                                let mut vp =
+                                    [crate::sampler::VoiceParams::default(); 16];
+                                let mut sg = [1.0f32; 16];
+                                let mut sp = [0.0f32; 16];
+                                for s in 0..16 {
+                                    if let Some(snd) = group.sounds[s].as_ref() {
+                                        vp[s] = crate::sampler::VoiceParams {
+                                            attack_ms: snd.adsr.attack_ms,
+                                            decay_ms: snd.adsr.decay_ms,
+                                            sustain: snd.adsr.sustain,
+                                            release_ms: snd.adsr.release_ms,
+                                            cutoff_hz: snd.filter.cutoff_hz,
+                                            resonance: snd.filter.resonance,
+                                        };
+                                        sg[s] = 10.0f32.powf(snd.volume_db / 20.0);
+                                        sp[s] = snd.pan;
+                                    }
+                                }
                                 Self::trigger_pattern_events(
                                     pat,
                                     prev_tick,
                                     new_tick,
                                     &mut self.sampler,
                                     gi as u8,
+                                    gain,
+                                    &sg,
+                                    &sp,
+                                    &vp,
+                                    self.transport.swing,
+                                    &mut self.pad_flash_until,
+                                    new_tick,
                                 );
                             }
                         }
@@ -385,55 +1052,104 @@ impl Engine {
         new_tick: u64,
         sampler: &mut Sampler,
         _group: u8,
+        group_gain: f32,
+        sound_gains: &[f32],
+        sound_pans: &[f32],
+        voice_params: &[crate::sampler::VoiceParams],
+        swing: f32,
+        flash_until: &mut [u64; 16],
+        now_tick: u64,
     ) {
         let pat_len = pat.length.to_ticks() as u64;
         if pat_len == 0 || prev_tick == new_tick {
             return;
         }
+        // Swing Maschine : retarde les doubles-croches impaires à la lecture.
+        let swing_ticks = (swing.clamp(0.0, 1.0) * 120.0) as u64;
         // gère wrap pattern (loop)
         let prev_in_pat = prev_tick % pat_len;
         let new_in_pat = new_tick % pat_len;
         let wrapped = new_in_pat < prev_in_pat;
         for ev in &pat.events {
             let tick = ev.tick as u64;
-            let triggered = if !wrapped {
-                if prev_tick == 0 {
-                    tick >= prev_in_pat && tick <= new_in_pat
-                } else {
-                    tick > prev_in_pat && tick <= new_in_pat
-                }
+            // Tick effectif avec swing (16e impaire = retardée)
+            let eff = if swing_ticks > 0 && (tick / 240) % 2 == 1 {
+                tick + swing_ticks
             } else {
-                tick > prev_in_pat || tick <= new_in_pat
+                tick
             };
-            if triggered {
+            let in_window = |t: u64| {
+                if !wrapped {
+                    if prev_tick == 0 {
+                        t >= prev_in_pat && t <= new_in_pat
+                    } else {
+                        t > prev_in_pat && t <= new_in_pat
+                    }
+                } else {
+                    t > prev_in_pat || t <= new_in_pat
+                }
+            };
+            if in_window(eff % pat_len.max(1)) {
                 let sound = ev.pad;
                 let note = ev.pitch;
-                sampler.note_on(sound, note, ev.velocity, note);
+                let sg = sound_gains.get(sound as usize).copied().unwrap_or(1.0);
+                let sp = sound_pans.get(sound as usize).copied().unwrap_or(0.0);
+                if let Some(idx) = sampler.note_on(sound, note, ev.velocity, note) {
+                    sampler.set_voice_gain(idx, group_gain * sg);
+                    sampler.set_voice_pan(idx, sp);
+                    if let Some(vp) = voice_params.get(sound as usize) {
+                        sampler.set_voice_params(idx, vp);
+                    }
+                }
+                // Flash LED du pad (fenêtre d'une triple-croche : bref et net).
+                if (sound as usize) < 16 {
+                    flash_until[sound as usize] = now_tick + 120;
+                }
+            }
+            // Note-off / longueur : déclenche release quand la fin de l'événement est franchie
+            let end_tick = tick + ev.length_ticks as u64;
+            let end_in_pat = end_tick % pat_len;
+            let off_triggered = if !wrapped {
+                end_tick > tick && end_in_pat > prev_in_pat && end_in_pat <= new_in_pat
+            } else {
+                end_in_pat > prev_in_pat || end_in_pat <= new_in_pat
+            };
+            // évite de couper la note à t=0 et seulement si la note a déjà sonné
+            if off_triggered && end_tick > tick && tick <= new_tick {
+                sampler.note_off(ev.pad, ev.pitch);
             }
         }
     }
 
     fn record_pad_event(&mut self, pad: u8, velocity: u8) {
-        let tick_in_pat = (self.transport.tick % (4 * 960)) as u32; // 1 bar loop pour démo
-        // quantize en live
-        let q_tick = self.sequencer.grid.quantize(tick_in_pat);
+        let focus = self.group_focus as usize;
         let mut proj = self.project.write();
-        if let Some(group) = proj.groups.get_mut(self.group_focus as usize) {
+        if let Some(group) = proj.groups.get_mut(focus) {
             if group.patterns.is_empty() {
                 group.patterns.push(crate::project::Pattern::new(
                     "Recorded",
                     BarsBeatsTicks::new(1, 0, 0),
                 ));
             }
-            if let Some(pat) = group.patterns.get_mut(0) {
-                pat.events.push(PatternEvent {
-                    pad,
-                    tick: q_tick,
-                    velocity,
-                    length_ticks: 120,
-                    pitch: 36 + pad,
-                });
-                pat.events.sort_by_key(|e| e.tick);
+        }
+        let pat_idx = proj.active_pattern_index(focus, self.active_scene);
+        if let Some(group) = proj.groups.get_mut(focus) {
+            if let Some(idx) = pat_idx {
+                if let Some(pat) = group.patterns.get_mut(idx) {
+                    let pat_len = pat.length.to_ticks().max(1);
+                    let tick_in_pat = (self.transport.tick % pat_len as u64) as u32;
+                    let q_tick = self.sequencer.grid.quantize(tick_in_pat);
+                    // évite les doublons exacts
+                    pat.events.retain(|e| !(e.pad == pad && e.tick == q_tick));
+                    pat.events.push(PatternEvent {
+                        pad,
+                        tick: q_tick,
+                        velocity,
+                        length_ticks: 120,
+                        pitch: 36 + pad,
+                    });
+                    pat.events.sort_by_key(|e| e.tick);
+                }
             }
         }
     }
@@ -486,10 +1202,15 @@ impl Engine {
         self.group_focus
     }
 
-    /// Bascule une note à un pas donné (tick) pour le pad donné dans le pattern actif
+    /// Bascule une note à un pas donné (tick) pour le pad donné dans le pattern actif.
+    /// Façon Maschine : silencieux — poser un pas ne joue aucun son, l'aperçu
+    /// se fait en mode Pad ou via les boutons ▶ de la GUI.
+    /// La comparaison se fait par case de 16e (tolère humanize/nudge) et
+    /// supprime tous les doublons de la case : un seul appui suffit toujours.
     pub fn toggle_step(&mut self, pad: u8, tick: u32) {
         let group_idx = self.group_focus as usize;
         let mut proj = self.project.write();
+        let pat_idx = proj.active_pattern_index(group_idx, self.active_scene);
         if let Some(group) = proj.groups.get_mut(group_idx) {
             if group.patterns.is_empty() {
                 group.patterns.push(crate::project::Pattern::new(
@@ -497,10 +1218,12 @@ impl Engine {
                     crate::project::BarsBeatsTicks::new(2, 0, 0),
                 ));
             }
-            if let Some(pat) = group.patterns.get_mut(0) {
-                if let Some(pos) = pat.events.iter().position(|e| e.pad == pad && e.tick == tick) {
-                    pat.events.remove(pos);
-                } else {
+            let idx = pat_idx.unwrap_or(0).min(group.patterns.len() - 1);
+            if let Some(pat) = group.patterns.get_mut(idx) {
+                let before = pat.events.len();
+                pat.events
+                    .retain(|e| !(e.pad == pad && crate::project::same_step_cell(e.tick, tick)));
+                if pat.events.len() == before {
                     pat.events.push(crate::project::PatternEvent {
                         pad,
                         tick,
@@ -508,7 +1231,7 @@ impl Engine {
                         length_ticks: 120,
                         pitch: 36 + pad,
                     });
-                    self.sampler.note_on(pad, 36 + pad, 115, 36 + pad);
+                    pat.events.sort_by_key(|e| e.tick);
                 }
             }
         }
@@ -518,19 +1241,23 @@ impl Engine {
     pub fn fill_four_on_the_floor(&mut self, pad: u8, bar: usize) {
         let group_idx = self.group_focus as usize;
         let mut proj = self.project.write();
+        let pat_idx = proj.active_pattern_index(group_idx, self.active_scene);
         if let Some(group) = proj.groups.get_mut(group_idx) {
-            if let Some(pat) = group.patterns.get_mut(0) {
-                let bar_start = (bar * 4 * 960) as u32;
-                let bar_end = bar_start + 4 * 960;
-                pat.events.retain(|e| !(e.pad == pad && e.tick >= bar_start && e.tick < bar_end));
-                for beat in 0..4 {
-                    pat.events.push(crate::project::PatternEvent {
-                        pad,
-                        tick: bar_start + beat * 960,
-                        velocity: 115,
-                        length_ticks: 120,
-                        pitch: 36 + pad,
-                    });
+            if let Some(pi) = pat_idx {
+                if let Some(pat) = group.patterns.get_mut(pi) {
+                    let bar_start = (bar * 4 * 960) as u32;
+                    let bar_end = bar_start + 4 * 960;
+                    pat.events
+                        .retain(|e| !(e.pad == pad && e.tick >= bar_start && e.tick < bar_end));
+                    for beat in 0..4 {
+                        pat.events.push(crate::project::PatternEvent {
+                            pad,
+                            tick: bar_start + beat * 960,
+                            velocity: 115,
+                            length_ticks: 120,
+                            pitch: 36 + pad,
+                        });
+                    }
                 }
             }
         }
@@ -540,19 +1267,23 @@ impl Engine {
     pub fn fill_eighths(&mut self, pad: u8, bar: usize) {
         let group_idx = self.group_focus as usize;
         let mut proj = self.project.write();
+        let pat_idx = proj.active_pattern_index(group_idx, self.active_scene);
         if let Some(group) = proj.groups.get_mut(group_idx) {
-            if let Some(pat) = group.patterns.get_mut(0) {
-                let bar_start = (bar * 4 * 960) as u32;
-                let bar_end = bar_start + 4 * 960;
-                pat.events.retain(|e| !(e.pad == pad && e.tick >= bar_start && e.tick < bar_end));
-                for step in 0..8 {
-                    pat.events.push(crate::project::PatternEvent {
-                        pad,
-                        tick: bar_start + step * 480,
-                        velocity: if step % 2 == 0 { 95 } else { 75 },
-                        length_ticks: 120,
-                        pitch: 36 + pad,
-                    });
+            if let Some(pi) = pat_idx {
+                if let Some(pat) = group.patterns.get_mut(pi) {
+                    let bar_start = (bar * 4 * 960) as u32;
+                    let bar_end = bar_start + 4 * 960;
+                    pat.events
+                        .retain(|e| !(e.pad == pad && e.tick >= bar_start && e.tick < bar_end));
+                    for step in 0..8 {
+                        pat.events.push(crate::project::PatternEvent {
+                            pad,
+                            tick: bar_start + step * 480,
+                            velocity: if step % 2 == 0 { 95 } else { 75 },
+                            length_ticks: 120,
+                            pitch: 36 + pad,
+                        });
+                    }
                 }
             }
         }
@@ -562,11 +1293,15 @@ impl Engine {
     pub fn clear_bar(&mut self, bar: usize) {
         let group_idx = self.group_focus as usize;
         let mut proj = self.project.write();
+        let pat_idx = proj.active_pattern_index(group_idx, self.active_scene);
         if let Some(group) = proj.groups.get_mut(group_idx) {
-            if let Some(pat) = group.patterns.get_mut(0) {
-                let bar_start = (bar * 4 * 960) as u32;
-                let bar_end = bar_start + 4 * 960;
-                pat.events.retain(|e| !(e.tick >= bar_start && e.tick < bar_end));
+            if let Some(pi) = pat_idx {
+                if let Some(pat) = group.patterns.get_mut(pi) {
+                    let bar_start = (bar * 4 * 960) as u32;
+                    let bar_end = bar_start + 4 * 960;
+                    pat.events
+                        .retain(|e| !(e.tick >= bar_start && e.tick < bar_end));
+                }
             }
         }
     }
@@ -575,8 +1310,8 @@ impl Engine {
     pub fn reset_demo_groove(&mut self) {
         let demo_proj = crate::project::Project::new_demo();
         let mut proj = self.project.write();
-        if let Some(demo_g) = demo_proj.groups.get(0) {
-            if let Some(demo_p) = demo_g.patterns.get(0) {
+        if let Some(demo_g) = demo_proj.groups.first() {
+            if let Some(demo_p) = demo_g.patterns.first() {
                 if let Some(g) = proj.groups.get_mut(0) {
                     if !g.patterns.is_empty() {
                         g.patterns[0] = demo_p.clone();
@@ -592,6 +1327,84 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toggle_step_is_silent_and_single_press() {
+        let mut eng = Engine::new_demo(48000);
+        assert_eq!(eng.sampler.num_voices(), 0);
+        // Case vide (pad 15 absent du groove démo) : pose le pas.
+        eng.toggle_step(15, 0);
+        // Silencieux : aucune voix créée (façon Maschine : pas d'aperçu).
+        assert_eq!(eng.sampler.num_voices(), 0);
+        {
+            let guard = eng.project_handle();
+            let proj = guard.read();
+            let n = proj.groups[0].patterns[0]
+                .events
+                .iter()
+                .filter(|e| e.pad == 15 && e.tick == 0)
+                .count();
+            assert_eq!(n, 1);
+        }
+        // Second appui : retire en une fois (pas de doublon, pas de 3e appui).
+        eng.toggle_step(15, 0);
+        {
+            let guard = eng.project_handle();
+            let proj = guard.read();
+            assert!(proj.groups[0].patterns[0]
+                .events
+                .iter()
+                .all(|e| e.pad != 15));
+        }
+        assert_eq!(eng.sampler.num_voices(), 0);
+    }
+
+    #[test]
+    fn toggle_step_removes_humanized_note_in_one_press() {
+        let mut eng = Engine::new_demo(48000);
+        eng.clear_bar(0);
+        eng.clear_bar(1);
+        eng.toggle_step(0, 0);
+        // Humanize décale de ±12 ticks : l'ancienne comparaison exacte
+        // `e.tick == tick` ratait la note et forçait des appuis multiples.
+        eng.humanize_active_pattern();
+        eng.toggle_step(0, 0);
+        let guard = eng.project_handle();
+        let proj = guard.read();
+        assert!(
+            proj.groups[0].patterns[0]
+                .events
+                .iter()
+                .all(|e| !(e.pad == 0 && crate::project::same_step_cell(e.tick, 0))),
+            "la note humanisée aurait dû être retirée en un seul appui"
+        );
+    }
+
+    #[test]
+    fn toggle_step_edits_scene_assigned_pattern() {
+        let mut eng = Engine::new_demo(48000);
+        // 2e pattern vide assigné à la scène courante pour le groupe 0.
+        {
+            let h = eng.project_handle();
+            let mut proj = h.write();
+            proj.groups[0].patterns.push(crate::project::Pattern::new(
+                "Vide",
+                crate::project::BarsBeatsTicks::new(2, 0, 0),
+            ));
+            proj.scenes[0].patterns[0] = Some(1);
+        }
+        eng.toggle_step(15, 0);
+        let guard = eng.project_handle();
+        let proj = guard.read();
+        assert!(
+            proj.groups[0].patterns[0]
+                .events
+                .iter()
+                .all(|e| e.pad != 15),
+            "le pattern 0 (non joué) ne doit pas être modifié"
+        );
+        assert_eq!(proj.groups[0].patterns[1].events.len(), 1);
+    }
 
     #[test]
     fn engine_pad_triggers_sampler() {
@@ -637,5 +1450,110 @@ mod tests {
         assert!(eng.transport.is_playing());
         eng.advance(4800); // 100ms
         assert!(eng.transport.tick > 0);
+    }
+
+    #[test]
+    fn metronome_click_audible() {
+        // Projet vide : seul le métronome doit produire du son.
+        let mut eng = Engine::new(Project::default(), 48000);
+        eng.handle_event(EngineEvent::ToggleMetronome).unwrap();
+        assert!(eng.transport.metronome);
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: false,
+            stop: false,
+        })
+        .unwrap();
+        // Avance d'un temps (0.5s à 120BPM) : au moins un clic.
+        eng.advance(24000);
+        let mut buf = vec![0.0f32; 1024 * 2];
+        eng.render_audio(&mut buf);
+        let mx = buf.iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        assert!(mx > 1e-4, "metronome silencieux, max={mx}");
+    }
+
+    #[test]
+    fn sound_filter_adsr_audible() {
+        let mut eng = Engine::new_demo(48000);
+        // Coupe franche : hi-hat fermé à 200Hz doit perdre ses aigus.
+        eng.handle_event(EngineEvent::SoundFilterCutoff {
+            group: 0,
+            sound: 2,
+            cutoff_hz: 200.0,
+        })
+        .unwrap();
+        eng.handle_event(EngineEvent::Pad {
+            pad: 2,
+            velocity: 127,
+            pressed: true,
+        })
+        .unwrap();
+        let mut dark = vec![0.0f32; 2048 * 2];
+        eng.render_audio(&mut dark);
+        // Rouvre le filtre et rejoue.
+        eng.handle_event(EngineEvent::SoundFilterCutoff {
+            group: 0,
+            sound: 2,
+            cutoff_hz: 20000.0,
+        })
+        .unwrap();
+        eng.handle_event(EngineEvent::Pad {
+            pad: 2,
+            velocity: 127,
+            pressed: true,
+        })
+        .unwrap();
+        let mut open = vec![0.0f32; 2048 * 2];
+        eng.render_audio(&mut open);
+        // Le chapeau contient des aigus : sans filtre, plus d'énergie HF.
+        // Approximation : compte les passages par zéro (richesse HF).
+        fn zc(buf: &[f32]) -> usize {
+            buf.iter()
+                .skip(2)
+                .step_by(2)
+                .zip(buf.iter().skip(4).step_by(2))
+                .filter(|(a, b)| (**a <= 0.0) != (**b <= 0.0))
+                .count()
+        }
+        let (e_dark, e_open): (f32, f32) = (
+            dark.iter().map(|x| x.abs()).sum(),
+            open.iter().map(|x| x.abs()).sum(),
+        );
+        assert!(e_dark > 1e-4 && e_open > 1e-4, "rendu silencieux");
+        assert!(
+            zc(&open) > zc(&dark),
+            "le cutoff ne filtre rien (zc open={} dark={})",
+            zc(&open),
+            zc(&dark)
+        );
+        let _ = e_dark;
+    }
+
+    #[test]
+    fn bar_navigation_and_pattern_length() {
+        let mut eng = Engine::new_demo(48000);
+        let snap = eng.snapshot();
+        assert_eq!(snap.selected_bar, 0);
+        assert_eq!(snap.pattern_bars, 2);
+
+        // Sélection directe mesure 1
+        eng.handle_event(EngineEvent::SelectBar(1)).unwrap();
+        assert_eq!(eng.snapshot().selected_bar, 1);
+
+        // NextBar / PrevBar
+        eng.handle_event(EngineEvent::NextBar).unwrap();
+        // Limité par pattern_bars (2) -> max bar index est 1
+        assert_eq!(eng.snapshot().selected_bar, 1);
+
+        eng.handle_event(EngineEvent::PrevBar).unwrap();
+        assert_eq!(eng.snapshot().selected_bar, 0);
+
+        // Étend le pattern à 4 mesures
+        eng.handle_event(EngineEvent::SetPatternBars(4)).unwrap();
+        assert_eq!(eng.snapshot().pattern_bars, 4);
+
+        // Maintenant NextBar peut aller jusqu'à mesure 3 (0-indexed)
+        eng.handle_event(EngineEvent::SelectBar(3)).unwrap();
+        assert_eq!(eng.snapshot().selected_bar, 3);
     }
 }

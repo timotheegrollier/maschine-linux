@@ -146,9 +146,9 @@ fn button_id_for(byte_idx: usize, bit: u8) -> ButtonId {
         (1, 0) => ButtonId::EncoderPush,
         (1, 1) => ButtonId::Pedal,
         (1, 2) => ButtonId::FourWayUp,
-        (1, 3) => ButtonId::FourWayDown,
-        (1, 4) => ButtonId::FourWayLeft,
-        (1, 5) => ButtonId::FourWayRight,
+        (1, 3) => ButtonId::FourWayRight,
+        (1, 4) => ButtonId::FourWayDown,
+        (1, 5) => ButtonId::FourWayLeft,
         (1, 6) => ButtonId::Shift,
         (1, 7) => ButtonId::DisplayBtn(8),
         (2, 0) => ButtonId::Group(0),
@@ -387,7 +387,7 @@ pub fn decode_report_02(data: &[u8]) -> Result<Vec<PadEvent>> {
             continue;
         }
         let pressure = raw;
-        let touched = pressure >= crate::consts::PAD_ON_THRESHOLD;
+        let touched = pressure >= crate::consts::pad_on_threshold();
         // velocity linéaire simple (remplacé par pic 3-5 frames dans hardware layer)
         let velocity = if touched {
             let norm = (pressure - 0x4000) as f32 / (0x0FFD as f32); // 0x4000..0x4FFD ≈ 0..4093
@@ -395,11 +395,11 @@ pub fn decode_report_02(data: &[u8]) -> Result<Vec<PadEvent>> {
         } else {
             0
         };
-        // Remap hardware order top-right→bottom-left vers logique 0..15 bottom-left→top-right
-        // Hardware: 13-16,9-12,5-8,1-4 → logique: 0-3 bottom, 4-7, 8-11, 12-15 top
-        // Pour MVP on garde hardware idx et on laisse maschine-hardware remapper
+        // Remap hardware (scan haut->bas) vers logique 0..15 (0=Pad1 bas-gauche).
+        // Sans ça, taper le Pad 1 (bas-gauche) allumerait le Pad 13 (haut-gauche).
+        let logical = crate::consts::hw_pad_to_logical(pad_idx);
         pads.push(PadEvent {
-            pad: pad_idx,
+            pad: logical,
             pressure,
             touched,
             velocity,
@@ -469,12 +469,12 @@ mod tests {
     fn decode_02_pads() {
         let mut v = vec![0u8; 65];
         v[0] = 0x02;
-        v[1] = 5; // pad 5
+        v[1] = 12; // hardware bas-gauche -> logique 0 (Pad 1)
         v[2] = 0x40;
         v[3] = 0x80; // 0x4080
         let pads = decode_report_02(&v).unwrap();
         assert_eq!(pads.len(), 1);
-        assert_eq!(pads[0].pad, 5);
+        assert_eq!(pads[0].pad, 0);
         assert!(pads[0].touched);
         assert!(pads[0].velocity > 0);
         // slot vide
@@ -484,14 +484,51 @@ mod tests {
     }
 
     #[test]
+    fn decode_02_pad_map_symmetry() {
+        // Taper Pad N (logique) doit allumer Pad N : entrée et sortie partagent la table.
+        for hw in 0..16u8 {
+            let logical = crate::consts::hw_pad_to_logical(hw);
+            assert_eq!(crate::consts::logical_to_hw_pad(logical), hw);
+        }
+        // Coins : HW 0 (haut-gauche) = Pad 13 logique 12, HW 12 (bas-gauche) = Pad 1 logique 0
+        assert_eq!(crate::consts::hw_pad_to_logical(0), 12);
+        assert_eq!(crate::consts::hw_pad_to_logical(12), 0);
+        assert_eq!(crate::consts::hw_pad_to_logical(15), 3);
+    }
+
+    #[test]
     fn decode_02_off_threshold() {
         let mut v = vec![0u8; 65];
         v[0] = 0x02;
-        v[1] = 2;
+        v[1] = 12; // -> logique 0
         v[2] = 0x40;
         v[3] = 0x02; // 0x4002 < PAD_OFF
         let pads = decode_report_02(&v).unwrap();
         assert_eq!(pads.len(), 1);
+        assert_eq!(pads[0].pad, 0);
         assert!(!pads[0].touched);
+    }
+
+    #[test]
+    fn decode_01_four_way_directions() {
+        let expected = [
+            (0, ButtonId::EncoderPush),
+            (1, ButtonId::Pedal),
+            (2, ButtonId::FourWayUp),
+            (3, ButtonId::FourWayRight),
+            (4, ButtonId::FourWayDown),
+            (5, ButtonId::FourWayLeft),
+            (6, ButtonId::Shift),
+            (7, ButtonId::DisplayBtn(8)),
+        ];
+        for (bit, btn) in expected {
+            let mut r = fake_report_01();
+            r[1] = 1 << bit;
+            let inp = decode_report_01(&r).unwrap();
+            assert!(
+                inp.buttons.iter().any(|b| b.id == btn),
+                "Bit {bit} of report 0x01 byte 1 did not map to {btn:?}"
+            );
+        }
     }
 }

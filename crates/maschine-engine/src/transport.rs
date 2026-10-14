@@ -105,7 +105,9 @@ impl Transport {
         if self.state == TransportState::Stopped || self.sample_rate == 0 {
             return;
         }
-        let delta_ticks = (samples as f64 / self.sample_rate as f64) * (self.bpm as f64 / 60.0) * (self.ppq as f64);
+        let delta_ticks = (samples as f64 / self.sample_rate as f64)
+            * (self.bpm as f64 / 60.0)
+            * (self.ppq as f64);
         self.tick_fraction += delta_ticks;
         let whole_ticks = self.tick_fraction.floor() as u64;
         self.tick_fraction -= whole_ticks as f64;

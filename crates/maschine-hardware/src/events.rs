@@ -87,9 +87,9 @@ pub fn button_to_event(ev: ButtonEvent, ts_ns: u64) -> HardwareEvent {
 /// Cette fonction ne fait que mapper — l'hystérésis 0x4010/0x4005 est appliquée ici.
 pub fn pad_to_state(raw: PadEvent, ts_ns: u64, prev_pressed: bool) -> PadState {
     let pressed = if prev_pressed {
-        raw.pressure >= maschine_proto::consts::PAD_OFF_THRESHOLD
+        raw.pressure >= maschine_proto::consts::pad_off_threshold()
     } else {
-        raw.pressure >= maschine_proto::consts::PAD_ON_THRESHOLD
+        raw.pressure >= maschine_proto::consts::pad_on_threshold()
     };
     // Si on vient de presser, velocity = raw.velocity, sinon on garde 0 en release
     // Le mapper peut lisser sur plusieurs frames pour le peak

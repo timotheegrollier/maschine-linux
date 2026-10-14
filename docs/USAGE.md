@@ -32,56 +32,57 @@ Le daemon :
 
 Logs : `RUST_LOG=debug maschine-linux -vv daemon`
 
-### Contrôles hardware supportés (MVP)
+### Contrôles hardware Maschine MK3 supportés
 
-- **Pads 1..16** → Sound 1..16 du Group focus, velocity + LED feedback (couleur selon vélocité)
-- **Groups A..H** → change `group_focus`, LED Groups
-- **Play / Rec / Stop** → Transport
-- **Knobs 1..8** → CC 14..21
-- **Touchstrip** → CC 74 + barre LEDs
-- **Shift / autres** → loggués, mapping à compléter
+- **Pads 1..16** :
+  - **Mode PAD** : déclenchement one-shot pleine dynamique (vélocité + pression) du son actif ou kit complet, flash blanc de frappe puis couleur assignée au son.
+  - **Mode STEP** : séquenceur pas-à-pas silencieux (aucune lecture parasite lors de la pose/retrait de pas), LEDs de pas actives + curseur playhead blanc en direct.
+  - **Mode KEYBOARD** : jeu mélodique en gamme mineure C3..D5.
+  - **Mode CHORDS** : accords diatoniques enrichis.
+- **Encodeur 4-D** :
+  - **Haut / Bas** : sélection du son actif (avec pré-écoute one-shot) ; en mode Browser, défilement des presets synthétiseur.
+  - **Gauche / Droite** ou touches `<` / `>` : navigation pas-à-pas entre les mesures du pattern (Bar 1, Bar 2, Bar 3, Bar 4...).
+  - **Shift + Droite** : extension dynamique du pattern à 4 ou 8 mesures.
+  - **Pression (Push)** : pré-écoute one-shot du son actif (ou chargement du preset sélectionné en mode Browser) — ne déclenche pas intempestivement la lecture en boucle.
+  - **Rotation** : ajustement fin selon le focus actif (Tempo, Volume Master, Swing).
+- **Écrans LCD couleur (2 × 480×272)** :
+  - **Display Buttons 1..4 (Écran gauche)** : sélection d'onglets (ARRANGE, MIXER, SAMPLER, BROWSER).
+  - **Display Buttons 5..8 (Écran droit)** : sélection directe de la mesure affichée/éditée (BAR 1, BAR 2, BAR 3, BAR 4) ; avec **Shift**, dimensionnement du pattern (1, 2, 4, 8 mesures).
+  - **8 Potentiomètres crantés sous écrans** :
+    - *MIXER* : volumes des Groupes A..H.
+    - *SAMPLER* : boutons 1..4 = Vol, Pan, Cutoff filtre, Résonance ; 5..8 = Attack, Decay, Sustain, Release ADSR.
+    - *BROWSER* : molette sélection de pad et défilement presets 808.
+    - *ARRANGE* : tempo, swing, volume et filtre global.
+- **Groupes A..H** : sélection instantanée du groupe actif, combinaison avec touches **MUTE** et **SOLO** pour mise en sourdine / solo immédiats.
+- **Transport** : PLAY, REC, STOP, RESTART, TAP (métronome), ERASE (effacement notes par pad).
+- **Touchstrip** : modulation / pitch bend avec feedback visuel ruban LED.
 
 ### Workflow projet
 
 ```bash
-# créer
-maschine-linux project new --out my.json
-# édite my.json (ou future GUI)
-# lance
-maschine-linux daemon --project my.json
-# joue → Scenes / Patterns définis dans le JSON sont séquencés si Transport playing
+# Lancement direct avec GUI et moteur audio PipeWire
+maschine-linux
+
+# Lancement en mode daemon console optimisé
+maschine-linux daemon --project my_project.json
 ```
 
-Voir `docs/workflow.md` et `examples/demo.machine-linux.json`.
+## GUI intégrée (`egui`)
 
-## GUI (feature `gui`)
+La GUI native affiche en temps réel :
 
-```bash
-cargo run -p maschine-app --features gui -- gui
-```
+- **Barre supérieure de transport** : BPM, Swing, curseur temporel BBT, état Play/Rec/Stop/Loop, monitoring CPU et voix actives, métronome.
+- **Séquenceur pas-à-pas multi-mesures (16 pistes)** :
+  - Sélecteur de mesure active (1, 2, 3, 4...) et flèches de navigation `◀` / `▶`.
+  - Boutons de dimensionnement de pattern (1M, 2M, 4M, 8M).
+  - 16 lignes d'instruments complètes avec boutons de pré-écoute `▶` et 16 pas par mesure.
+- **Grille de pads 4×4** : disposition identique au hardware MK3 pour frappe directe à la souris ou écran tactile.
+- **Éditeur de son / synthétiseur** : sélecteur de présets 808 (Kick, Snare, Hi-Hats, Clap, Tom, Rimshot, Cowbell, SubBass...), réglage dynamique de gain, panoramique, filtre coupe-bas/passe-haut résonant et enveloppe ADSR.
+- **Mixer 8 groupes (A..H)** : faders de volume, indicateurs de crête, mute et solo.
 
-MVP actuel :
+## Écrans matériels LCD (Bulk USB)
 
-- Top bar : nom projet, BPM, état transport, position BBT, voix
-- Left : Groups A.. + Scenes (click pour focus/activation)
-- Center : Patterns du Group focus (liste events)
-
-À venir : piano-roll, Ideas/Song grid, sampler, mixer, browser.
-
-## Display bulk (écrans)
-
-Nécessite ` --features usb` + `libusb1-devel` + `sudo dnf install libusb1-devel` :
-
-```rust
-let mut bulk = BulkHandle::open()?;
-bulk.send_frame(&DisplayFrame::solid(DisplayId::Left, DisplayPixel::RED))?;
-```
-
-Le daemon n'envoie pas encore les écrans par défaut (prochaine phase). Test manuel :
-
-```bash
-cargo run -p maschine-app --features usb -- led-test --pad 0 --color 6
-```
+Les 2 écrans couleur 480×272 sont pilotés à 30–60 FPS via USB bulk (Interface 5) dès le branchement du contrôleur, sans pilote propriétaire NI.
 
 ## Latence
 

@@ -3,30 +3,42 @@
 /// Biquad filter (Direct Form I)
 #[derive(Clone, Copy)]
 struct Biquad {
-    b0: f32, b1: f32, b2: f32,
-    a1: f32, a2: f32,
-    z1: f32, z2: f32,
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+    z1: f32,
+    z2: f32,
 }
 
 impl Biquad {
     fn new() -> Self {
-        Self { b0: 1.0, b1: 0.0, b2: 0.0, a1: 0.0, a2: 0.0, z1: 0.0, z2: 0.0 }
+        Self {
+            b0: 1.0,
+            b1: 0.0,
+            b2: 0.0,
+            a1: 0.0,
+            a2: 0.0,
+            z1: 0.0,
+            z2: 0.0,
+        }
     }
-    
+
     /// Lowpass filter
     fn lowpass(&mut self, freq_hz: f32, q: f32, sample_rate: f32) {
         let w0 = 2.0 * std::f32::consts::PI * freq_hz / sample_rate;
         let cos_w0 = w0.cos();
         let sin_w0 = w0.sin();
         let alpha = sin_w0 / (2.0 * q);
-        
+
         let b0 = (1.0 - cos_w0) / 2.0;
         let b1 = 1.0 - cos_w0;
         let b2 = (1.0 - cos_w0) / 2.0;
         let a0 = 1.0 + alpha;
         let a1 = -2.0 * cos_w0;
         let a2 = 1.0 - alpha;
-        
+
         self.b0 = b0 / a0;
         self.b1 = b1 / a0;
         self.b2 = b2 / a0;
@@ -43,14 +55,14 @@ impl Biquad {
         let cos_w0 = w0.cos();
         let sin_w0 = w0.sin();
         let alpha = sin_w0 / (2.0 * q);
-        
+
         let b0 = 1.0 + alpha * a;
         let b1 = -2.0 * cos_w0;
         let b2 = 1.0 - alpha * a;
         let a0 = 1.0 + alpha / a;
         let a1 = -2.0 * cos_w0;
         let a2 = 1.0 - alpha / a;
-        
+
         self.b0 = b0 / a0;
         self.b1 = b1 / a0;
         self.b2 = b2 / a0;
@@ -63,7 +75,8 @@ impl Biquad {
     #[inline]
     fn process(&mut self, input: f32) -> f32 {
         let out = self.b0 * input + self.b1 * self.z1 + self.b2 * self.z2
-            - self.a1 * self.z1 - self.a2 * self.z2;
+            - self.a1 * self.z1
+            - self.a2 * self.z2;
         self.z2 = self.z1;
         self.z1 = input;
         out
@@ -94,7 +107,8 @@ impl CabSim {
         self.highcut.lowpass(highcut_hz, 0.707, self.sample_rate);
 
         // Resonant peak around 2.5kHz (speaker cone resonance)
-        self.resonance.peaking_eq(2500.0, 3.0, resonance_q, self.sample_rate);
+        self.resonance
+            .peaking_eq(2500.0, 3.0, resonance_q, self.sample_rate);
     }
 
     /// Enable/disable cab sim

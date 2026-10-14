@@ -1,6 +1,5 @@
 //! Noise Gate with smooth attack/release
 
-use crate::params::SmoothParam;
 
 /// Simple noise gate with lookahead-style envelope follower
 pub struct NoiseGate {
@@ -32,7 +31,7 @@ impl NoiseGate {
     #[inline]
     pub fn process_sample(&mut self, input: f32, threshold_db: f32) -> f32 {
         let input_abs = input.abs();
-        
+
         // Envelope follower with separate attack/release
         if input_abs > self.envelope {
             self.envelope += (input_abs - self.envelope) * self.attack_coeff;
@@ -42,7 +41,7 @@ impl NoiseGate {
 
         // Gate threshold in linear scale
         let threshold = 10.0_f32.powf(threshold_db * 0.05); // dB to linear
-        
+
         // Smooth gate transition
         let gain = if self.envelope > threshold {
             1.0

@@ -7,7 +7,7 @@ use crate::{
     gate::NoiseGate,
     params::{GuitarParams, ParamId, SmoothParam},
     tonestack::ToneStack,
-    utils::{StereoMeter, PeakMeter},
+    utils::PeakMeter,
 };
 
 /// Audio context passed to process() for time-varying params
@@ -69,44 +69,52 @@ impl GuitarChain {
     /// Update all smoothed params and effect coefficients (call once per block)
     fn update_coefficients(&mut self) {
         let p = &self.params;
-        
+
         // Gate
-        let gate_thresh = ParamId::GateThreshold.range().0 + 
-            (ParamId::GateThreshold.range().1 - ParamId::GateThreshold.range().0) * p.gate_threshold.get_raw();
-        let gate_attack = ParamId::GateAttack.range().0 + 
-            (ParamId::GateAttack.range().1 - ParamId::GateAttack.range().0) * p.gate_attack.get_raw();
-        let gate_release = ParamId::GateRelease.range().0 + 
-            (ParamId::GateRelease.range().1 - ParamId::GateRelease.range().0) * p.gate_release.get_raw();
+        let _gate_thresh = ParamId::GateThreshold.range().0
+            + (ParamId::GateThreshold.range().1 - ParamId::GateThreshold.range().0)
+                * p.gate_threshold.get_raw();
+        let gate_attack = ParamId::GateAttack.range().0
+            + (ParamId::GateAttack.range().1 - ParamId::GateAttack.range().0)
+                * p.gate_attack.get_raw();
+        let gate_release = ParamId::GateRelease.range().0
+            + (ParamId::GateRelease.range().1 - ParamId::GateRelease.range().0)
+                * p.gate_release.get_raw();
         self.gate.update_params(gate_attack, gate_release);
 
         // Drive
-        let drive_gain = ParamId::DriveGain.range().0 + 
-            (ParamId::DriveGain.range().1 - ParamId::DriveGain.range().0) * p.drive_gain.get_raw();
-        let drive_tone = ParamId::DriveTone.range().0 + 
-            (ParamId::DriveTone.range().1 - ParamId::DriveTone.range().0) * p.drive_tone.get_raw();
-        let drive_mix = p.drive_mix.get_raw();
+        let _drive_gain = ParamId::DriveGain.range().0
+            + (ParamId::DriveGain.range().1 - ParamId::DriveGain.range().0)
+                * p.drive_gain.get_raw();
+        let drive_tone = ParamId::DriveTone.range().0
+            + (ParamId::DriveTone.range().1 - ParamId::DriveTone.range().0)
+                * p.drive_tone.get_raw();
+        let _drive_mix = p.drive_mix.get_raw();
         self.drive.set_tone(drive_tone);
 
         // ToneStack
-        let bass_db = ParamId::ToneBass.range().0 + 
-            (ParamId::ToneBass.range().1 - ParamId::ToneBass.range().0) * p.tone_bass.get_raw();
-        let mid_db = ParamId::ToneMid.range().0 + 
-            (ParamId::ToneMid.range().1 - ParamId::ToneMid.range().0) * p.tone_mid.get_raw();
-        let treble_db = ParamId::ToneTreble.range().0 + 
-            (ParamId::ToneTreble.range().1 - ParamId::ToneTreble.range().0) * p.tone_treble.get_raw();
+        let bass_db = ParamId::ToneBass.range().0
+            + (ParamId::ToneBass.range().1 - ParamId::ToneBass.range().0) * p.tone_bass.get_raw();
+        let mid_db = ParamId::ToneMid.range().0
+            + (ParamId::ToneMid.range().1 - ParamId::ToneMid.range().0) * p.tone_mid.get_raw();
+        let treble_db = ParamId::ToneTreble.range().0
+            + (ParamId::ToneTreble.range().1 - ParamId::ToneTreble.range().0)
+                * p.tone_treble.get_raw();
         self.tonestack.set_gains(bass_db, mid_db, treble_db);
 
         // CabSim
         let cab_enabled = p.cab_enabled.get_raw() > 0.5;
-        let cab_highcut = ParamId::CabHighcut.range().0 + 
-            (ParamId::CabHighcut.range().1 - ParamId::CabHighcut.range().0) * p.cab_highcut.get_raw();
-        let cab_res = ParamId::CabResonance.range().0 + 
-            (ParamId::CabResonance.range().1 - ParamId::CabResonance.range().0) * p.cab_resonance.get_raw();
+        let cab_highcut = ParamId::CabHighcut.range().0
+            + (ParamId::CabHighcut.range().1 - ParamId::CabHighcut.range().0)
+                * p.cab_highcut.get_raw();
+        let cab_res = ParamId::CabResonance.range().0
+            + (ParamId::CabResonance.range().1 - ParamId::CabResonance.range().0)
+                * p.cab_resonance.get_raw();
         self.cab.set_enabled(cab_enabled);
         self.cab.set_params(cab_highcut, cab_res);
 
         // Delay
-        let delay_enabled = p.delay_enabled.get_raw() > 0.5;
+        let _delay_enabled = p.delay_enabled.get_raw() > 0.5;
         // Delay processed per-sample with current params
 
         // Master
@@ -116,7 +124,7 @@ impl GuitarChain {
 
     /// Process one block of audio (mono in, mono out)
     /// Returns output level for metering
-    pub fn process(&mut self, input: &[f32], output: &mut [f32], ctx: &AudioContext) {
+    pub fn process(&mut self, input: &[f32], output: &mut [f32], _ctx: &AudioContext) {
         // Update coefficients from smoothed params
         self.update_coefficients();
 
@@ -131,17 +139,20 @@ impl GuitarChain {
             // Two buffers for ping-pong processing to avoid borrow conflicts
             let mut buf1 = vec![0.0f32; input.len()];
             let mut buf2 = vec![0.0f32; input.len()];
-            
+
             // Gate: input -> buf1
-            let gate_thresh = ParamId::GateThreshold.range().0 + 
-                (ParamId::GateThreshold.range().1 - ParamId::GateThreshold.range().0) * self.params.gate_threshold.get_raw();
+            let gate_thresh = ParamId::GateThreshold.range().0
+                + (ParamId::GateThreshold.range().1 - ParamId::GateThreshold.range().0)
+                    * self.params.gate_threshold.get_raw();
             self.gate.process_block(input, &mut buf1, gate_thresh);
 
             // Drive: buf1 -> buf2
-            let drive_gain = ParamId::DriveGain.range().0 + 
-                (ParamId::DriveGain.range().1 - ParamId::DriveGain.range().0) * self.params.drive_gain.get_raw();
+            let drive_gain = ParamId::DriveGain.range().0
+                + (ParamId::DriveGain.range().1 - ParamId::DriveGain.range().0)
+                    * self.params.drive_gain.get_raw();
             let drive_mix = self.params.drive_mix.get_raw();
-            self.drive.process_block(&buf1, &mut buf2, drive_gain, drive_mix);
+            self.drive
+                .process_block(&buf1, &mut buf2, drive_gain, drive_mix);
 
             // ToneStack: buf2 -> buf1
             self.tonestack.process_block(&buf2, &mut buf1);
@@ -152,12 +163,15 @@ impl GuitarChain {
             // Delay (if enabled): buf2 -> buf1
             let delay_enabled = self.params.delay_enabled.get_raw() > 0.5;
             if delay_enabled {
-                let delay_ms = ParamId::DelayTimeMs.range().0 + 
-                    (ParamId::DelayTimeMs.range().1 - ParamId::DelayTimeMs.range().0) * self.params.delay_time_ms.get_raw();
-                let delay_fb = ParamId::DelayFeedback.range().0 + 
-                    (ParamId::DelayFeedback.range().1 - ParamId::DelayFeedback.range().0) * self.params.delay_feedback.get_raw();
+                let delay_ms = ParamId::DelayTimeMs.range().0
+                    + (ParamId::DelayTimeMs.range().1 - ParamId::DelayTimeMs.range().0)
+                        * self.params.delay_time_ms.get_raw();
+                let delay_fb = ParamId::DelayFeedback.range().0
+                    + (ParamId::DelayFeedback.range().1 - ParamId::DelayFeedback.range().0)
+                        * self.params.delay_feedback.get_raw();
                 let delay_mix = self.params.delay_mix.get_raw();
-                self.delay.process_block(&buf2, &mut buf1, delay_ms, delay_fb, delay_mix);
+                self.delay
+                    .process_block(&buf2, &mut buf1, delay_ms, delay_fb, delay_mix);
             } else {
                 buf1.copy_from_slice(&buf2);
             }
@@ -176,7 +190,13 @@ impl GuitarChain {
     }
 
     /// Process stereo (mono in -> stereo out with slight stereo spread on delay)
-    pub fn process_stereo(&mut self, input: &[f32], output_l: &mut [f32], output_r: &mut [f32], ctx: &AudioContext) {
+    pub fn process_stereo(
+        &mut self,
+        input: &[f32],
+        output_l: &mut [f32],
+        output_r: &mut [f32],
+        ctx: &AudioContext,
+    ) {
         // For now, just duplicate mono to stereo
         self.process(input, output_l, ctx);
         output_r.copy_from_slice(output_l);
@@ -200,7 +220,9 @@ impl GuitarChain {
     /// Set bypass state
     pub fn set_bypass(&mut self, bypass: bool) {
         self.bypassed = bypass;
-        self.params.bypass.set_target(if bypass { 1.0 } else { 0.0 });
+        self.params
+            .bypass
+            .set_target(if bypass { 1.0 } else { 0.0 });
     }
 
     /// Get sample rate

@@ -43,7 +43,10 @@ pub fn spawn_led_writer(
             }
         })
         .map_err(|e| anyhow::anyhow!("spawn led writer: {e}"))?;
-    Ok(LedWriterHandle { stop, join: Some(join) })
+    Ok(LedWriterHandle {
+        stop,
+        join: Some(join),
+    })
 }
 
 fn led_loop(
@@ -71,7 +74,9 @@ fn led_loop(
     // Petite animation de démarrage : chenillard
     {
         let mut demo = LedState::new();
-        let palette = [6u8, 22, 30, 42, 50, 58, 10, 14, 26, 31, 34, 38, 11, 27, 33, 78];
+        let palette = [
+            6u8, 22, 30, 42, 50, 58, 10, 14, 26, 31, 34, 38, 11, 27, 33, 78,
+        ];
         for (i, &col) in palette.iter().enumerate().take(16) {
             demo.set_pad(i, Color::from_index(col).unwrap_or(Color::OFF));
         }
@@ -79,7 +84,10 @@ fn led_loop(
         std::thread::sleep(Duration::from_millis(400));
         // Groups
         for g in 0..8 {
-            demo.set_button_raw(maschine_proto::hid_output::offsets::GROUP_A + g, palette[g % palette.len()]);
+            demo.set_button_raw(
+                maschine_proto::hid_output::offsets::GROUP_A + g,
+                palette[g % palette.len()],
+            );
         }
         let _ = send_leds(fd, &demo);
         std::thread::sleep(Duration::from_millis(400));
@@ -120,9 +128,9 @@ fn led_loop(
 }
 
 pub fn send_leds(fd: std::os::fd::RawFd, state: &LedState) -> anyhow::Result<()> {
-    use maschine_proto::hid_output::{encode_report_80, encode_report_81};
+    use maschine_proto::hid_output::{encode_report_80, encode_report_81_mapped};
     let r80 = encode_report_80(state)?;
-    let r81 = encode_report_81(state)?;
+    let r81 = encode_report_81_mapped(state, maschine_hardware::pad_output_hw_order())?;
     // hidraw write : inclut report ID
     // On tente avec ID, si EINVAL on retry sans ID
     unsafe {
@@ -133,7 +141,10 @@ pub fn send_leds(fd: std::os::fd::RawFd, state: &LedState) -> anyhow::Result<()>
                 // retry sans ID
                 let ret = libc::write(fd, r80[1..].as_ptr() as *const libc::c_void, r80.len() - 1);
                 if ret < 0 {
-                    return Err(anyhow::anyhow!("write 0x80 sans ID: {}", std::io::Error::last_os_error()));
+                    return Err(anyhow::anyhow!(
+                        "write 0x80 sans ID: {}",
+                        std::io::Error::last_os_error()
+                    ));
                 }
             } else {
                 return Err(anyhow::anyhow!("write 0x80: {e}"));
@@ -145,7 +156,10 @@ pub fn send_leds(fd: std::os::fd::RawFd, state: &LedState) -> anyhow::Result<()>
             if e.raw_os_error() == Some(libc::EINVAL) {
                 let ret = libc::write(fd, r81[1..].as_ptr() as *const libc::c_void, r81.len() - 1);
                 if ret < 0 {
-                    return Err(anyhow::anyhow!("write 0x81 sans ID: {}", std::io::Error::last_os_error()));
+                    return Err(anyhow::anyhow!(
+                        "write 0x81 sans ID: {}",
+                        std::io::Error::last_os_error()
+                    ));
                 }
             } else {
                 return Err(anyhow::anyhow!("write 0x81: {e}"));
@@ -157,7 +171,10 @@ pub fn send_leds(fd: std::os::fd::RawFd, state: &LedState) -> anyhow::Result<()>
 
 /// Test rapide : allume tous les pads en couleur, attends, éteint.
 pub fn led_test_cycle(hidraw_path: &PathBuf, duration_ms: u64) -> anyhow::Result<()> {
-    let file = std::fs::OpenOptions::new().read(true).write(true).open(hidraw_path)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(hidraw_path)?;
     use std::os::fd::AsRawFd;
     let fd = file.as_raw_fd();
     let mut state = LedState::new();
@@ -190,8 +207,10 @@ pub mod display {
         let left = DisplayFrame::solid(DisplayId::Left, color);
         let right = DisplayFrame::solid(DisplayId::Right, color);
         log::info!("Envoi écrans solid {:?}...", color.0);
-        bulk.send_frame(&left).map_err(|e| anyhow::anyhow!("bulk left: {e}"))?;
-        bulk.send_frame(&right).map_err(|e| anyhow::anyhow!("bulk right: {e}"))?;
+        bulk.send_frame(&left)
+            .map_err(|e| anyhow::anyhow!("bulk left: {e}"))?;
+        bulk.send_frame(&right)
+            .map_err(|e| anyhow::anyhow!("bulk right: {e}"))?;
         std::thread::sleep(Duration::from_millis(duration_ms));
         // efface
         let black = DisplayFrame::solid(DisplayId::Left, DisplayPixel::BLACK);

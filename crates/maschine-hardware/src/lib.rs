@@ -23,6 +23,60 @@ pub use device::{find_maschine_devices, DeviceInfo, MaschineDevice};
 pub use events::{HardwareEvent, PadState};
 pub use mapper::{HardwareMapper, MapperConfig};
 
+/// Mapping pads hardware <-> logique (voir `maschine_proto::consts`).
+///
+/// - `Hw` (défaut) : le firmware numérote en scan haut->bas, on convertit vers
+///   logique `0 = Pad 1 (bas-gauche)`. Avec la sortie LEDs `hw`, taper Pad N
+///   allume Pad N.
+/// - `Identity` : pas de conversion (firmwares exotiques). Réglez via
+///   `MASCHINE_PAD_MAP=identity` si `pad-calibrate` montre raw == logique.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PadMap {
+    /// Scan hardware haut->bas (défaut).
+    #[default]
+    Hw,
+    /// Identité (pas de remap).
+    Identity,
+}
+
+impl PadMap {
+    /// Lit depuis l'environnement (`MASCHINE_PAD_MAP=identity|hw`).
+    #[must_use]
+    pub fn from_env() -> Self {
+        match std::env::var("MASCHINE_PAD_MAP")
+            .unwrap_or_default()
+            .to_lowercase()
+            .as_str()
+        {
+            "identity" | "ident" | "raw" | "0" => Self::Identity,
+            _ => Self::Hw,
+        }
+    }
+
+    /// Convertit un index décodé (déjà mappé `hw->logique` par le proto, table
+    /// auto-inverse) vers le logique effectif selon ce mode.
+    #[must_use]
+    pub fn apply(self, proto_logical: u8) -> u8 {
+        match self {
+            Self::Hw => proto_logical,
+            // La table est auto-inverse : ré-appliquer annule le remap proto.
+            Self::Identity => maschine_proto::consts::hw_pad_to_logical(proto_logical),
+        }
+    }
+}
+
+/// Ordre des octets LEDs pads (`MASCHINE_PAD_OUTPUT=identity|hw`, défaut `hw`).
+#[must_use]
+pub fn pad_output_hw_order() -> bool {
+    !matches!(
+        std::env::var("MASCHINE_PAD_OUTPUT")
+            .unwrap_or_default()
+            .to_lowercase()
+            .as_str(),
+        "identity" | "ident" | "logical" | "0"
+    )
+}
+
 /// Erreurs hardware.
 #[derive(thiserror::Error, Debug)]
 pub enum HardwareError {

@@ -1,7 +1,7 @@
 //! Application configuration
 
-use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -12,23 +12,23 @@ pub struct AppConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioConfig {
     #[cfg(feature = "jack")]
-    pub backend: String,           // "jack" or "cpal"
+    pub backend: String, // "jack" or "cpal"
     #[cfg(not(feature = "jack"))]
-    pub backend: String,           // "cpal"
-    pub sample_rate: u32,          // 48000
-    pub buffer_size: u32,          // 128
-    pub input_device: Option<String>,  // device name or index
+    pub backend: String, // "cpal"
+    pub sample_rate: u32,             // 48000
+    pub buffer_size: u32,             // 128
+    pub input_device: Option<String>, // device name or index
     pub output_device: Option<String>,
-    pub input_channels: u16,       // 1 (mono guitar)
-    pub output_channels: u16,      // 2 (stereo out)
-    pub auto_connect: bool,        // auto-connect JACK ports
+    pub input_channels: u16,  // 1 (mono guitar)
+    pub output_channels: u16, // 2 (stereo out)
+    pub auto_connect: bool,   // auto-connect JACK ports
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuiConfig {
     pub window_width: u32,
     pub window_height: u32,
-    pub theme: String,             // "dark" or "light"
+    pub theme: String, // "dark" or "light"
     pub show_vu_meters: bool,
     pub show_tuner: bool,
 }
@@ -72,15 +72,13 @@ impl AppConfig {
         let path = Self::config_path();
         if path.exists() {
             match std::fs::read_to_string(&path) {
-                Ok(content) => {
-                    match serde_json::from_str(&content) {
-                        Ok(config) => {
-                            log::info!("Loaded config from {:?}", path);
-                            return config;
-                        }
-                        Err(e) => log::warn!("Failed to parse config: {}", e),
+                Ok(content) => match serde_json::from_str(&content) {
+                    Ok(config) => {
+                        log::info!("Loaded config from {:?}", path);
+                        return config;
                     }
-                }
+                    Err(e) => log::warn!("Failed to parse config: {}", e),
+                },
                 Err(e) => log::warn!("Failed to read config: {}", e),
             }
         }

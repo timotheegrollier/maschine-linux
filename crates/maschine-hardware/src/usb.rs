@@ -71,6 +71,9 @@ impl BulkHandle {
 impl Drop for BulkHandle {
     fn drop(&mut self) {
         let _ = self.handle.release_interface(self.iface);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let _ = self.handle.reset();
+        std::thread::sleep(std::time::Duration::from_millis(200));
         let _ = self.handle.attach_kernel_driver(self.iface);
     }
 }

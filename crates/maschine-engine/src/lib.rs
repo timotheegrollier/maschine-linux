@@ -11,9 +11,9 @@ pub mod sequencer;
 pub mod transport;
 
 pub use drum_synth::generate_complete_808_kit;
-pub use engine::{Engine, EngineEvent, EngineSnapshot};
+pub use engine::{Engine, EngineEvent, EngineSnapshot, DRUM_PRESET_NAMES};
 pub use project::{Group, Pattern, PatternEvent, Project, Scene, Section, Sound, Zone};
-pub use sampler::{Sampler, SamplerVoice, ZoneMapping};
+pub use sampler::{Sampler, SamplerVoice, VoiceParams, ZoneMapping};
 pub use sequencer::{Grid, Sequencer};
 pub use transport::{Transport, TransportState};
 

@@ -1,11 +1,11 @@
 //! Bridge between GUI thread and audio thread for parameter updates
 
 use atomic_float::AtomicF32;
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use parking_lot::Mutex;
 
-use maschine_dsp::{GuitarChain, GuitarParams, ParamId};
+use maschine_dsp::{GuitarChain, ParamId};
 
 /// Thread-safe parameter bridge
 pub struct ParamsBridge {
@@ -90,13 +90,17 @@ impl ParamsBridge {
 
     /// Called from GUI thread to set a parameter
     pub fn set_param(&self, id: ParamId, normalized_value: f32) {
-        self.pending.lock().push((id, normalized_value.clamp(0.0, 1.0)));
+        self.pending
+            .lock()
+            .push((id, normalized_value.clamp(0.0, 1.0)));
     }
 
     /// Called from GUI thread to set bypass
     pub fn set_bypass(&self, bypass: bool) {
         self.bypass.store(bypass, Ordering::Relaxed);
-        self.params.bypass.store(if bypass { 1.0 } else { 0.0 }, Ordering::Relaxed);
+        self.params
+            .bypass
+            .store(if bypass { 1.0 } else { 0.0 }, Ordering::Relaxed);
     }
 
     /// Called from audio thread to apply pending updates
@@ -183,17 +187,19 @@ pub struct GuiParam {
 
 impl GuiParam {
     pub fn all() -> Vec<Self> {
-        ParamId::all().iter().map(|id| {
-            let (min, max, default) = id.range();
-            Self {
-                id: *id,
-                name: id.name(),
-                min,
-                max,
-                default,
-                unit: id.unit(),
-            }
-        }).collect()
+        ParamId::all()
+            .iter()
+            .map(|id| {
+                let (min, max, default) = id.range();
+                Self {
+                    id: *id,
+                    name: id.name(),
+                    min,
+                    max,
+                    default,
+                    unit: id.unit(),
+                }
+            })
+            .collect()
     }
 }
-

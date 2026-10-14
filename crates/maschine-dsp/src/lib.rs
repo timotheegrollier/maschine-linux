@@ -5,14 +5,14 @@
 
 #![allow(missing_docs)]
 
+pub mod cab;
 pub mod chain;
+pub mod delay;
 pub mod drive;
 pub mod gate;
-pub mod tonestack;
-pub mod cab;
-pub mod delay;
 pub mod params;
+pub mod tonestack;
 pub mod utils;
 
-pub use chain::{GuitarChain, AudioContext};
+pub use chain::{AudioContext, GuitarChain};
 pub use params::{GuitarParams, ParamId};

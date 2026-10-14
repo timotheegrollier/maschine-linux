@@ -37,8 +37,8 @@ impl From<u8> for LedBrightness {
 /// État complet LEDs — utilisé par le mapper pour construire les reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LedState {
-    /// LEDs boutons unicouleur / RGB. Index selon `BUTTON_LED_OFFSETS`.
-    pub button_leds: [u8; 61],
+    /// LEDs boutons unicouleur / RGB. Index selon `offsets` (1-indexed, converti en 0..61).
+    pub button_leds: [u8; 62],
     /// Pads RGB 0..15 (index palette)
     pub pad_leds: [u8; 16],
     /// Touchstrip 25 LEDs RGB
@@ -48,7 +48,7 @@ pub struct LedState {
 impl Default for LedState {
     fn default() -> Self {
         Self {
-            button_leds: [0; 61],
+            button_leds: [0; 62],
             pad_leds: [0; 16],
             strip_leds: [0; 25],
         }
@@ -74,9 +74,9 @@ impl LedState {
         self.pad_leds.fill(color.to_index());
     }
 
-    /// Définit une LED bouton par offset (1..61).
+    /// Définit une LED bouton par offset 1-indexed (1..=62).
     pub fn set_button_raw(&mut self, offset: usize, value: u8) {
-        if (1..=61).contains(&offset) {
+        if (1..=62).contains(&offset) {
             self.button_leds[offset - 1] = value;
         }
     }
@@ -100,10 +100,10 @@ pub type PadLed = Color;
 pub type ButtonLed = u8;
 
 // ---------------------------------------------------------------------------
-// Offsets — d'après cabl doc/HIDOutput.md (1-indexed dans doc, 0-indexed ici)
+// Offsets — 1-indexed (report byte position après ID 0x80)
 // ---------------------------------------------------------------------------
 
-/// Offsets boutons dans report 0x80 (après byte ID). 0-indexed array position.
+/// Offsets boutons dans report 0x80 (1-indexed : offset 1 = premier octet après ID 0x80).
 pub mod offsets {
     /// Channel/MIDI unicolore
     pub const CHANNEL_MIDI: usize = 1;
@@ -119,98 +119,117 @@ pub mod offsets {
     pub const SETTINGS: usize = 10;
     pub const AUTO: usize = 11;
     pub const MACRO: usize = 12;
-    /// Display Buttons 1..8 (offsets 12..19)
-    pub const DISPLAY_BTN_1: usize = 12;
-    pub const DISPLAY_BTN_2: usize = 13;
-    pub const DISPLAY_BTN_3: usize = 14;
-    pub const DISPLAY_BTN_4: usize = 15;
-    pub const DISPLAY_BTN_5: usize = 16;
-    pub const DISPLAY_BTN_6: usize = 17;
-    pub const DISPLAY_BTN_7: usize = 18;
-    pub const DISPLAY_BTN_8: usize = 19;
-    pub const VOLUME: usize = 20;
-    pub const SWING: usize = 21;
-    pub const NOTE_REPEAT: usize = 22;
-    pub const TEMPO: usize = 23;
-    pub const LOCK: usize = 24;
-    pub const PITCH: usize = 25;
-    pub const MOD: usize = 26;
-    pub const PERFORM: usize = 27;
-    pub const NOTES: usize = 28;
-    /// Groups A..H RGB (offsets 29..36)
-    pub const GROUP_A: usize = 29;
-    pub const GROUP_B: usize = 30;
-    pub const GROUP_C: usize = 31;
-    pub const GROUP_D: usize = 32;
-    pub const GROUP_E: usize = 33;
-    pub const GROUP_F: usize = 34;
-    pub const GROUP_G: usize = 35;
-    pub const GROUP_H: usize = 36;
-    pub const RESTART: usize = 37;
-    pub const ERASE: usize = 38;
-    pub const TAP: usize = 39;
-    pub const FOLLOW: usize = 40;
-    pub const PLAY: usize = 41;
-    pub const REC: usize = 42;
-    pub const STOP: usize = 43;
-    pub const SHIFT: usize = 44;
-    pub const FIXED_VEL: usize = 45;
-    pub const PAD_MODE: usize = 46;
-    pub const KEYBOARD: usize = 47;
-    pub const CHORDS: usize = 48;
-    pub const STEP: usize = 49;
-    pub const SCENE: usize = 50;
-    pub const PATTERN: usize = 51;
-    pub const EVENTS: usize = 52;
-    pub const VARIATION: usize = 53;
-    pub const DUPLICATE: usize = 54;
-    pub const SELECT: usize = 55;
-    pub const SOLO: usize = 56;
-    pub const MUTE: usize = 57;
-    pub const FOUR_WAY_UP: usize = 58;
-    pub const FOUR_WAY_RIGHT: usize = 59;
-    pub const FOUR_WAY_DOWN: usize = 60;
-    pub const FOUR_WAY_LEFT: usize = 61;
+    /// Display Buttons 1..8 (offsets 13..20)
+    pub const DISPLAY_BTN_1: usize = 13;
+    pub const DISPLAY_BTN_2: usize = 14;
+    pub const DISPLAY_BTN_3: usize = 15;
+    pub const DISPLAY_BTN_4: usize = 16;
+    pub const DISPLAY_BTN_5: usize = 17;
+    pub const DISPLAY_BTN_6: usize = 18;
+    pub const DISPLAY_BTN_7: usize = 19;
+    pub const DISPLAY_BTN_8: usize = 20;
+    pub const VOLUME: usize = 21;
+    pub const SWING: usize = 22;
+    pub const NOTE_REPEAT: usize = 23;
+    pub const TEMPO: usize = 24;
+    pub const LOCK: usize = 25;
+    pub const PITCH: usize = 26;
+    pub const MOD: usize = 27;
+    pub const PERFORM: usize = 28;
+    pub const NOTES: usize = 29;
+    /// Groups A..H RGB (offsets 30..37)
+    pub const GROUP_A: usize = 30;
+    pub const GROUP_B: usize = 31;
+    pub const GROUP_C: usize = 32;
+    pub const GROUP_D: usize = 33;
+    pub const GROUP_E: usize = 34;
+    pub const GROUP_F: usize = 35;
+    pub const GROUP_G: usize = 36;
+    pub const GROUP_H: usize = 37;
+    pub const RESTART: usize = 38;
+    pub const ERASE: usize = 39;
+    pub const TAP: usize = 40;
+    pub const FOLLOW: usize = 41;
+    pub const PLAY: usize = 42;
+    pub const REC: usize = 43;
+    pub const STOP: usize = 44;
+    pub const SHIFT: usize = 45;
+    pub const FIXED_VEL: usize = 46;
+    pub const PAD_MODE: usize = 47;
+    pub const KEYBOARD: usize = 48;
+    pub const CHORDS: usize = 49;
+    pub const STEP: usize = 50;
+    pub const SCENE: usize = 51;
+    pub const PATTERN: usize = 52;
+    pub const EVENTS: usize = 53;
+    pub const VARIATION: usize = 54;
+    pub const DUPLICATE: usize = 55;
+    pub const SELECT: usize = 56;
+    pub const SOLO: usize = 57;
+    pub const MUTE: usize = 58;
+    pub const ENCODER_TOP: usize = 59;
+    pub const ENCODER_LEFT: usize = 60;
+    pub const ENCODER_RIGHT: usize = 61;
+    pub const ENCODER_BOTTOM: usize = 62;
+    // Alias pour compatibilité
+    pub const FOUR_WAY_UP: usize = ENCODER_TOP;
+    pub const FOUR_WAY_LEFT: usize = ENCODER_LEFT;
+    pub const FOUR_WAY_RIGHT: usize = ENCODER_RIGHT;
+    pub const FOUR_WAY_DOWN: usize = ENCODER_BOTTOM;
 }
 
 // ---------------------------------------------------------------------------
 // Encoders
 // ---------------------------------------------------------------------------
 
-/// Encode le report `0x80` (boutons) — retourne `Vec<u8>` de taille 62 (ID + 61).
+/// Encode le report `0x80` (boutons) — retourne `Vec<u8>` de taille 63 (ID + 62 payload).
 pub fn encode_report_80(state: &LedState) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(crate::consts::HID_REPORT_80_SIZE);
     out.push(0x80);
     out.extend_from_slice(&state.button_leds);
-    // 61 bytes already, need 61 → out len 62 ok. Doc dit 61 payload → 62 total.
-    // Certains implémentent 62 payload ; on pad à 61 si besoin
     if out.len() < crate::consts::HID_REPORT_80_SIZE {
         out.resize(crate::consts::HID_REPORT_80_SIZE, 0);
     }
     Ok(out)
 }
 
-/// Encode le report `0x81` (strip + pads) — retourne `Vec<u8>` de taille 43 (ID + 42).
+/// Encode le report `0x81` (strip + pads) — retourne `Vec<u8>` de taille 42 (ID + 41 payload).
 pub fn encode_report_81(state: &LedState) -> Result<Vec<u8>> {
+    encode_report_81_mapped(state, true)
+}
+
+/// Encode le report `0x81` avec ordre configurable.
+///
+/// - `hw_order = true` (défaut, hardware réel) : octets dans l'ordre physique
+///   haut->bas `13-16,9-12,5-8,1-4`, donc le pad logique N est placé à sa
+///   position hardware. Taper Pad N allume Pad N.
+/// - `hw_order = false` (firmwares/exotiques) : octets dans l'ordre logique
+///   1-16. Réglez via `MASCHINE_PAD_OUTPUT=identity` si `pad-test` montre
+///   l'ordre inversé (logique 1 en haut-gauche au lieu d'en bas-gauche).
+pub fn encode_report_81_mapped(state: &LedState, hw_order: bool) -> Result<Vec<u8>> {
     let mut out = Vec::with_capacity(crate::consts::HID_REPORT_81_SIZE);
     out.push(0x81);
-    // 25 strip + 1 spare (0) + 16 pads = 42. On map strip 0..24 -> 1..25, pad 0..15 -> 27..42
-    // Doc: bytes 1-26 strip, 27-42 pads (hardware order 13-16,9-12,5-8,1-4)
-    // Pour MVP on map linéaire pad 0..15 -> 27..42
+    // 25 strip + 16 pads = 41 payload (pas de spare entre strip et pads).
+    // Doc RE : bytes 0-24 strip, 25-40 pads (hardware order 13-16,9-12,5-8,1-4).
+    // L'octet hardware N correspond au pad logique HW_PAD_TO_LOGICAL[N],
+    // donc on émet dans l'ordre hardware en piochant la couleur logique.
     for &c in &state.strip_leds {
         out.push(c);
     }
-    // pad 26 spare qu'on met à 0 pour aligner à 26
-    // mais on a déjà 25, on pad 1 byte à 0
-    out.push(0);
-    // hardware order remap : logique pad 0 = bottom-left hardware 0, mais doc hardware order = 13,9,5,1...
-    // On convertit : logique -> hardware
-    let remap = [12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3];
-    // en fait hardware order list [13,14,15,16,9,10,11,12,5,6,7,8,1,2,3,4] 1-indexed → 0-indexed [12,13,14,15,8,9,10,11,4,5,6,7,0,1,2,3]
-    // On veut envoyer dans hardware order, donc pour chaque position hardware on met la couleur du pad logique
-    // Simplification : inverse — on émet dans hardware order
-    for &hw in &remap {
-        out.push(state.pad_leds[hw]);
+    // Ordre hardware haut->bas : logique 12..15, 8..11, 4..7, 0..3.
+    // Utilise la même table que l'entrée pour garantir taper Pad N => allume Pad N.
+    if hw_order {
+        let remap = crate::consts::HW_PAD_TO_LOGICAL;
+        // en fait hardware order list [13,14,15,16,9,10,11,12,5,6,7,8,1,2,3,4] 1-indexed → 0-indexed [12,13,14,15,8,9,10,11,4,5,6,7,0,1,2,3]
+        // On veut envoyer dans hardware order, donc pour chaque position hardware on met la couleur du pad logique
+        // Simplification : inverse — on émet dans hardware order
+        for &hw in &remap {
+            out.push(state.pad_leds[hw as usize]);
+        }
+    } else {
+        for &c in &state.pad_leds {
+            out.push(c);
+        }
     }
     if out.len() != crate::consts::HID_REPORT_81_SIZE {
         return Err(ProtoError::InvalidSize {
@@ -248,10 +267,10 @@ mod tests {
         let r = encode_report_81(&s).unwrap();
         assert_eq!(r[0], 0x81);
         assert_eq!(r.len(), crate::consts::HID_REPORT_81_SIZE);
-        // pads start at r[27] after 25 strip + 1 spare, remap[12]=0 → r[27+12]=r[39] = pad 0
-        assert_eq!(r[39], PaletteIndex::Red as u8);
-        // pad 15 hw pos 3 → r[30]
-        assert_eq!(r[30], PaletteIndex::Blue as u8);
+        // pads start at r[26] after 25 strip (no spare), remap[12]=0 → r[26+12]=r[38] = pad 0
+        assert_eq!(r[38], PaletteIndex::Red as u8);
+        // pad 15 hw pos 3 → r[29]
+        assert_eq!(r[29], PaletteIndex::Blue as u8);
     }
 
     #[test]

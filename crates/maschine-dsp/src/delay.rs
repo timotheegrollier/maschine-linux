@@ -24,21 +24,29 @@ impl Delay {
     /// Process one sample with delay time in ms and feedback
     #[inline]
     pub fn process_sample(&mut self, input: f32, delay_ms: f32, feedback: f32, mix: f32) -> f32 {
-        let delay_samples = ((delay_ms * 0.001 * self.sample_rate) as usize).min(self.max_delay_samples);
+        let delay_samples =
+            ((delay_ms * 0.001 * self.sample_rate) as usize).min(self.max_delay_samples);
         let read_pos = (self.write_pos + self.buffer.len() - delay_samples) % self.buffer.len();
-        
+
         let delayed = self.buffer[read_pos];
-        
+
         // Write input + feedback * delayed
         self.buffer[self.write_pos] = input + delayed * feedback;
         self.write_pos = (self.write_pos + 1) % self.buffer.len();
-        
+
         // Dry/wet mix
         input * (1.0 - mix) + delayed * mix
     }
 
     /// Process block (mono)
-    pub fn process_block(&mut self, input: &[f32], output: &mut [f32], delay_ms: f32, feedback: f32, mix: f32) {
+    pub fn process_block(
+        &mut self,
+        input: &[f32],
+        output: &mut [f32],
+        delay_ms: f32,
+        feedback: f32,
+        mix: f32,
+    ) {
         for (in_sample, out_sample) in input.iter().zip(output.iter_mut()) {
             *out_sample = self.process_sample(*in_sample, delay_ms, feedback, mix);
         }

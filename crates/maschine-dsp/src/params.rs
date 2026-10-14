@@ -53,41 +53,41 @@ impl SmoothParam {
 /// All guitar chain parameters (normalized 0.0..1.0)
 pub struct GuitarParams {
     // Gate
-    pub gate_threshold: SmoothParam,  // -70..-20 dB
-    pub gate_attack: SmoothParam,     // 0.1..10 ms
-    pub gate_release: SmoothParam,    // 10..500 ms
+    pub gate_threshold: SmoothParam, // -70..-20 dB
+    pub gate_attack: SmoothParam,    // 0.1..10 ms
+    pub gate_release: SmoothParam,   // 10..500 ms
 
     // Drive
-    pub drive_gain: SmoothParam,      // 0..36 dB
-    pub drive_tone: SmoothParam,      // 0..1 (lowpass cutoff)
-    pub drive_mix: SmoothParam,       // 0..1 dry/wet
+    pub drive_gain: SmoothParam, // 0..36 dB
+    pub drive_tone: SmoothParam, // 0..1 (lowpass cutoff)
+    pub drive_mix: SmoothParam,  // 0..1 dry/wet
 
     // ToneStack (Baxandall-style 3-band)
-    pub tone_bass: SmoothParam,       // -12..+12 dB
-    pub tone_mid: SmoothParam,        // -12..+12 dB
-    pub tone_treble: SmoothParam,     // -12..+12 dB
+    pub tone_bass: SmoothParam,   // -12..+12 dB
+    pub tone_mid: SmoothParam,    // -12..+12 dB
+    pub tone_treble: SmoothParam, // -12..+12 dB
 
     // CabSim IIR
-    pub cab_enabled: SmoothParam,     // 0 or 1
-    pub cab_highcut: SmoothParam,     // 2k..8k Hz
-    pub cab_resonance: SmoothParam,   // 0.5..5.0 Q
+    pub cab_enabled: SmoothParam,   // 0 or 1
+    pub cab_highcut: SmoothParam,   // 2k..8k Hz
+    pub cab_resonance: SmoothParam, // 0.5..5.0 Q
 
     // Delay (synced to BPM)
-    pub delay_enabled: SmoothParam,   // 0 or 1
-    pub delay_time_ms: SmoothParam,   // 50..2000 ms
-    pub delay_feedback: SmoothParam,  // 0..0.95
-    pub delay_mix: SmoothParam,       // 0..1
+    pub delay_enabled: SmoothParam,  // 0 or 1
+    pub delay_time_ms: SmoothParam,  // 50..2000 ms
+    pub delay_feedback: SmoothParam, // 0..0.95
+    pub delay_mix: SmoothParam,      // 0..1
 
     // Master
-    pub master_volume: SmoothParam,   // 0..1
-    pub bypass: SmoothParam,          // 0 or 1
+    pub master_volume: SmoothParam, // 0..1
+    pub bypass: SmoothParam,        // 0 or 1
 }
 
 impl GuitarParams {
     /// Create all params with defaults at given sample rate
     pub fn new(sample_rate: f32) -> Self {
         Self {
-            gate_threshold: SmoothParam::new(0.3, sample_rate),  // ~-40dB
+            gate_threshold: SmoothParam::new(0.3, sample_rate), // ~-40dB
             gate_attack: SmoothParam::new(0.1, sample_rate),
             gate_release: SmoothParam::new(0.3, sample_rate),
             drive_gain: SmoothParam::new(0.4, sample_rate),
@@ -110,7 +110,7 @@ impl GuitarParams {
 
     /// Update sample rate for all smoothing coefficients
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        let coeff = 1.0 - (-1.0 / (SMOOTHING_TIME * sample_rate)).exp();
+        let _coeff = 1.0 - (-1.0 / (SMOOTHING_TIME * sample_rate)).exp();
         // Can't easily update coeff in existing structs, so recreate or use new method
         // For now, params are created once at init with correct SR
     }

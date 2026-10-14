@@ -30,7 +30,10 @@ impl OnePoleLP {
         let dt = 1.0 / sample_rate;
         let rc = 1.0 / (2.0 * PI * cutoff_hz);
         let alpha = dt / (rc + dt);
-        Self { alpha: alpha.clamp(0.0, 1.0), prev: 0.0 }
+        Self {
+            alpha: alpha.clamp(0.0, 1.0),
+            prev: 0.0,
+        }
     }
 
     fn process(&mut self, input: f32) -> f32 {
@@ -51,7 +54,11 @@ impl OnePoleHP {
         let dt = 1.0 / sample_rate;
         let rc = 1.0 / (2.0 * PI * cutoff_hz);
         let alpha = rc / (rc + dt);
-        Self { alpha: alpha.clamp(0.0, 1.0), prev_in: 0.0, prev_out: 0.0 }
+        Self {
+            alpha: alpha.clamp(0.0, 1.0),
+            prev_in: 0.0,
+            prev_out: 0.0,
+        }
     }
 
     fn process(&mut self, input: f32) -> f32 {
@@ -72,8 +79,8 @@ fn soft_clip(x: f32) -> f32 {
     }
 }
 
-/// 1. Kick 808 lourd et percutant
-/// Pitch drop rapide (220 Hz -> 50 Hz), transitoire click + sous-basse résonante
+/// 1. Kick 808 lourd et percutant —
+/// pitch drop rapide (220 Hz → 50 Hz), transitoire click + sous-basse résonante.
 pub fn generate_kick(sample_rate: u32) -> Vec<f32> {
     let sr = sample_rate as f32;
     let num_samples = (0.50 * sr) as usize; // 500 ms
@@ -112,8 +119,8 @@ pub fn generate_kick(sample_rate: u32) -> Vec<f32> {
     out
 }
 
-/// 2. Snare 808 tranchante
-/// Double tonalité harmonique (~185Hz et ~330Hz) + burst de bruit blanc filtré passe-haut
+/// 2. Snare 808 tranchante —
+/// double tonalité harmonique (~185Hz et ~330Hz) + burst de bruit blanc filtré passe-haut.
 pub fn generate_snare(sample_rate: u32) -> Vec<f32> {
     let sr = sample_rate as f32;
     let num_samples = (0.32 * sr) as usize; // 320 ms
@@ -142,7 +149,11 @@ pub fn generate_snare(sample_rate: u32) -> Vec<f32> {
         let snap = filtered_noise * noise_env;
 
         // Attaque percutante dans le premier ms
-        let pop = if t < 0.003 { (1.0 - t / 0.003) * 0.6 } else { 0.0 };
+        let pop = if t < 0.003 {
+            (1.0 - t / 0.003) * 0.6
+        } else {
+            0.0
+        };
 
         let mixed = tone * 0.45 + snap * 0.65 + pop * 0.3;
         out.push(soft_clip(mixed * 1.25) * 0.85);
@@ -150,8 +161,8 @@ pub fn generate_snare(sample_rate: u32) -> Vec<f32> {
     out
 }
 
-/// 3. Closed Hi-Hat 808 métallique et net
-/// Cluster inharmonique 808 + passe-haut à 7 kHz, decay ultra rapide (45 ms)
+/// 3. Closed Hi-Hat 808 métallique et net —
+/// cluster inharmonique 808 + passe-haut à 7 kHz, decay ultra rapide (45 ms).
 pub fn generate_closed_hh(sample_rate: u32) -> Vec<f32> {
     let sr = sample_rate as f32;
     let num_samples = (0.09 * sr) as usize; // 90 ms
@@ -182,8 +193,8 @@ pub fn generate_closed_hh(sample_rate: u32) -> Vec<f32> {
     out
 }
 
-/// 4. Open Hi-Hat 808 brillant
-/// Même cluster métallique avec sustain et decay prolongé (350 ms)
+/// 4. Open Hi-Hat 808 brillant —
+/// même cluster métallique avec sustain et decay prolongé (350 ms).
 pub fn generate_open_hh(sample_rate: u32) -> Vec<f32> {
     let sr = sample_rate as f32;
     let num_samples = (0.40 * sr) as usize; // 400 ms
@@ -213,8 +224,8 @@ pub fn generate_open_hh(sample_rate: u32) -> Vec<f32> {
     out
 }
 
-/// 5. Hand Clap 808 authentique
-/// 3 micro-frappes espacées de 11ms + réverbération/queue diffuse
+/// 5. Hand Clap 808 authentique —
+/// 3 micro-frappes espacées de 11ms + réverbération/queue diffuse.
 pub fn generate_clap(sample_rate: u32) -> Vec<f32> {
     let sr = sample_rate as f32;
     let num_samples = (0.35 * sr) as usize;
@@ -259,7 +270,11 @@ pub fn generate_tom(sample_rate: u32, base_freq: f32) -> Vec<f32> {
 
         let tone = phase.sin();
         let amp_env = (-t / 0.14).exp();
-        let stick = if t < 0.005 { noise.next_f32() * (1.0 - t / 0.005) * 0.3 } else { 0.0 };
+        let stick = if t < 0.005 {
+            noise.next_f32() * (1.0 - t / 0.005) * 0.3
+        } else {
+            0.0
+        };
 
         let raw = (tone * 0.9 + stick) * amp_env;
         out.push(soft_clip(raw * 1.2) * 0.85);
@@ -282,7 +297,11 @@ pub fn generate_rimshot(sample_rate: u32) -> Vec<f32> {
         phase2 = (phase2 + 2.0 * PI * 2240.0 / sr) % (2.0 * PI);
 
         let tone = (phase1.sin() * 0.6 + phase2.sin() * 0.4) * (-t / 0.025).exp();
-        let click = if t < 0.004 { noise.next_f32() * 0.8 * (1.0 - t / 0.004) } else { 0.0 };
+        let click = if t < 0.004 {
+            noise.next_f32() * 0.8 * (1.0 - t / 0.004)
+        } else {
+            0.0
+        };
 
         out.push((tone * 0.7 + click * 0.5) * 0.85);
     }
@@ -314,8 +333,8 @@ pub fn generate_shaker(sample_rate: u32) -> Vec<f32> {
     out
 }
 
-/// 9. Cowbell 808 mythique
-/// Double onde carrée 540 Hz + 800 Hz passée dans un filtre résonant
+/// 9. Cowbell 808 mythique —
+/// double onde carrée 540 Hz + 800 Hz passée dans un filtre résonant.
 pub fn generate_cowbell(sample_rate: u32) -> Vec<f32> {
     let sr = sample_rate as f32;
     let num_samples = (0.35 * sr) as usize;
@@ -472,7 +491,10 @@ mod tests {
             }
             // Vérifier que le son a de l'énergie
             let max_amp = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
-            assert!(max_amp > 0.1, "Sound {name} has almost no energy ({max_amp})");
+            assert!(
+                max_amp > 0.1,
+                "Sound {name} has almost no energy ({max_amp})"
+            );
             assert_eq!(pad as usize, pad as usize);
         }
     }

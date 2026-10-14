@@ -123,7 +123,7 @@ impl Project {
         // Snares (sur temps 2 et 4)
         add_note(1, 0, 1, 0, 110); // Snare sur 1.2
         add_note(1, 0, 3, 0, 115); // Snare sur 1.4
-        add_note(7, 0, 3, 0, 95);  // Clap doublé sur 1.4
+        add_note(7, 0, 3, 0, 95); // Clap doublé sur 1.4
 
         // Closed Hi-Hats (en croches 8ths sur toute la mesure)
         for beat in 0..4 {
@@ -155,8 +155,8 @@ impl Project {
         add_note(3, 1, 2, 2, 90);
 
         // Fill percussif fin de mesure (Toms)
-        add_note(4, 1, 3, 1, 85);  // Tom Low
-        add_note(5, 1, 3, 3, 90);  // Tom Mid
+        add_note(4, 1, 3, 1, 85); // Tom Low
+        add_note(5, 1, 3, 3, 90); // Tom Mid
 
         g.patterns.push(pat);
         p.groups.push(g);
@@ -279,6 +279,9 @@ pub struct Group {
     /// Volume
     #[serde(default)]
     pub volume_db: f32,
+    /// Pan
+    #[serde(default)]
+    pub pan: f32,
 }
 
 impl Group {
@@ -293,6 +296,7 @@ impl Group {
             muted: false,
             solo: false,
             volume_db: 0.0,
+            pan: 0.0,
         }
     }
 }
@@ -381,7 +385,7 @@ impl Default for Adsr {
 }
 
 /// Filtre.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Filter {
     /// Type
     pub kind: FilterKind,
@@ -391,8 +395,18 @@ pub struct Filter {
     pub resonance: f32,
 }
 
+impl Default for Filter {
+    fn default() -> Self {
+        Self {
+            kind: FilterKind::Off,
+            cutoff_hz: 20000.0, // Filtre grand ouvert par défaut (pas de filtrage)
+            resonance: 0.0,
+        }
+    }
+}
+
 /// Type filtre.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum FilterKind {
     /// Off
     #[default]
@@ -457,6 +471,22 @@ impl Default for Zone {
             volume_db: 0.0,
         }
     }
+}
+
+/// Ticks par pas de 16e (PPQ 960).
+pub const TICKS_PER_STEP: u32 = 240;
+/// Ticks par mesure 4/4.
+pub const TICKS_PER_BAR: u32 = 4 * 960;
+
+/// Vrai si deux ticks visent le même pas de 16e du pattern (index de la 16e
+/// la plus proche : `(tick + 120) / 240`).
+/// Tolère les micro-décalages (humanize ±12, nudge, swing stocké, ±119 ticks)
+/// y compris quand ils franchissent une frontière de case : la comparaison
+/// exacte `e.tick == tick` obligeait à appuyer plusieurs fois pour
+/// (dés)activer un pas.
+#[must_use]
+pub fn same_step_cell(a_tick: u32, b_tick: u32) -> bool {
+    (a_tick + TICKS_PER_STEP / 2) / TICKS_PER_STEP == (b_tick + TICKS_PER_STEP / 2) / TICKS_PER_STEP
 }
 
 /// Événement pattern.
@@ -570,6 +600,30 @@ impl Scene {
     }
 }
 
+impl Project {
+    /// Index du pattern à éditer / jouer pour un groupe : celui assigné dans
+    /// la scène active, sinon le premier pattern (comportement historique).
+    /// Retourne `None` si le groupe n'a aucun pattern.
+    #[must_use]
+    pub fn active_pattern_index(&self, group: usize, active_scene: Option<usize>) -> Option<usize> {
+        let group_len = self
+            .groups
+            .get(group)
+            .map(|g| g.patterns.len())
+            .unwrap_or(0);
+        if group_len == 0 {
+            return None;
+        }
+        let assigned = active_scene
+            .and_then(|si| self.scenes.get(si))
+            .and_then(|sc| sc.patterns.get(group).copied().flatten());
+        match assigned {
+            Some(pi) if pi < group_len => Some(pi),
+            _ => Some(0),
+        }
+    }
+}
+
 /// Section — référence à une Scene sur la timeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Section {
@@ -617,5 +671,31 @@ mod tests {
         let mut p = Project::new_demo();
         p.scenes[0].patterns.push(None); // trop long
         assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn same_step_cell_tolerates_humanize() {
+        assert!(same_step_cell(0, 0));
+        assert!(same_step_cell(0, 12)); // humanize +12
+        assert!(same_step_cell(240, 228)); // humanize -12 (frontière franchie)
+        assert!(same_step_cell(240, 239)); // nudge -1
+        assert!(!same_step_cell(0, 240));
+        assert!(!same_step_cell(239, 0));
+        assert!(!same_step_cell(0, 120)); // pile entre deux pas -> rattaché au suivant
+    }
+
+    #[test]
+    fn active_pattern_index_uses_scene_then_fallback() {
+        let mut p = Project::new_demo();
+        // Démo : scène 0 -> pattern 0.
+        assert_eq!(p.active_pattern_index(0, Some(0)), Some(0));
+        // Sans scène : premier pattern.
+        assert_eq!(p.active_pattern_index(0, None), Some(0));
+        // Assignation hors borne : repli sur 0.
+        p.scenes[0].patterns[0] = Some(7);
+        assert_eq!(p.active_pattern_index(0, Some(0)), Some(0));
+        // Groupe sans pattern : None.
+        p.groups[0].patterns.clear();
+        assert_eq!(p.active_pattern_index(0, Some(0)), None);
     }
 }

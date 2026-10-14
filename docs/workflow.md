@@ -67,6 +67,8 @@ Réplique exacte : Pattern = objet référencé (éditer propage partout) vs Cli
 - `Sequencer::tick_to_samples(tick)`, `quantize(event, grid)`, `nudge(event, ticks)`, `humanize(vel, timing)`.
 - Swing : delay every other 16th par `swing * 0.5 * step_duration`.
 - Résolution : 960 ticks / quarter (PPQ 960).
+- Multi-mesures : patterns configurables de 1 à 8 mesures (`1:0:0`, `2:0:0`, `4:0:0`, `8:0:0`).
+- Séquenceur pas-à-pas silencieux : en mode STEP, la pose d'un pas n'émet aucun son parasite et supprime proprement les doublons via comparaison par cellule de 16e (`same_step_cell`).
 
 ## State & persistance
 
@@ -74,11 +76,21 @@ Réplique exacte : Pattern = objet référencé (éditer propage partout) vs Cli
 - `schema_version: u32` pour migrations.
 - `EngineState` snapshot lock-free pour UI (`Arc<RwLock<Project>>` + `Arc<AtomicU64>` version).
 
-## Mapping hardware
+## Mapping hardware MK3 complet
 
-- Pad 1..16 → Sound 1..16 du Group focus (Group A-H via boutons). LED pad = couleur Sound ou `Color::from_velocity(vel)`.
-- Boutons : Play/Rec/Stop → Transport, Scene/Pattern → mode, Shift + Pad → secondaire, Encoder → tempo / param focus.
-- Écrans : left = browser/pattern, right = sampler/mixer (dirty-rect).
+- **Pads 1..16** :
+  - *Mode PAD* : déclenchement du son correspondant du groupe focus avec vélocité et pression dynamiques. Rendu one-shot sans bouclage accidentel.
+  - *Mode STEP* : bascule silencieuse du pas correspondant (0..15) dans la mesure sélectionnée (`selected_bar`). Curseur playhead blanc en direct.
+  - *Modes SCENE / PATTERN / ERASE / SELECT* : gestion directe du workflow Maschine.
+- **Encodeur 4-D** :
+  - *Haut / Bas* : changement rapide du son sélectionné (`active_sound`) avec pré-écoute instantanée ; navigation des presets dans le Browser.
+  - *Gauche / Droite* (ou `<` / `>`) : navigation entre les mesures (`selected_bar`).
+  - *Shift + Droite* : extension de la longueur du pattern à 4 ou 8 mesures.
+  - *Push* : pré-écoute one-shot du son ou validation preset.
+- **Écrans & Boutons d'écran 1..8** :
+  - *Boutons 1..4 (gauche)* : commutation des 4 vues principales (ARRANGE, MIXER, SAMPLER, BROWSER).
+  - *Boutons 5..8 (droite)* : sélection directe de Bar 1..4 (ou Shift + dimensionnement 1/2/4/8 mesures).
+  - *8 Potentiomètres rotatifs* : édition contextuelle des paramètres du son ou du mixeur.
 
 ## Exemple JSON minimal
 

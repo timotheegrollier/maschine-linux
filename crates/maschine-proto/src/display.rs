@@ -137,7 +137,8 @@ const PIXEL_LENGTH: usize = 2;
 ///   - w*h*2 octets : pixel data RGB565 Big-Endian
 ///   -  4 octets : commande "blit" (0x03 + 3×0x00)
 ///   -  4 octets : commande "end"  (0x40 + 3×0x00)
-///   Total plein écran = 16 + 4 + 261120 + 4 + 4 = 261148
+///
+/// Total plein écran = 16 + 4 + 261120 + 4 + 4 = 261148
 pub fn encode_bulk_transfer(frame: &DisplayFrame) -> Result<Vec<u8>> {
     frame.validate()?;
     let pixel_count = frame.pixels.len();
@@ -158,11 +159,11 @@ pub fn encode_bulk_transfer(frame: &DisplayFrame) -> Result<Vec<u8>> {
     out.push(0x00);
     out.push(frame.display as u8);
     out.push(0x60);
-    out.extend_from_slice(&[0u8; 4]);                   // [4..7]
-    out.extend_from_slice(&frame.x.to_be_bytes());      // [8..9]
-    out.extend_from_slice(&frame.y.to_be_bytes());      // [10..11]
-    out.extend_from_slice(&frame.w.to_be_bytes());      // [12..13]
-    out.extend_from_slice(&frame.h.to_be_bytes());      // [14..15]
+    out.extend_from_slice(&[0u8; 4]); // [4..7]
+    out.extend_from_slice(&frame.x.to_be_bytes()); // [8..9]
+    out.extend_from_slice(&frame.y.to_be_bytes()); // [10..11]
+    out.extend_from_slice(&frame.w.to_be_bytes()); // [12..13]
+    out.extend_from_slice(&frame.h.to_be_bytes()); // [14..15]
 
     // ── Commande "transmit" : 4 octets ──────────────────────────────────
     // Encodes halfPixels as a Big-Endian uint32 with the MSB clobbered to 0x00.
@@ -170,11 +171,11 @@ pub fn encode_bulk_transfer(frame: &DisplayFrame) -> Result<Vec<u8>> {
     // halfPixels = pixel_count / 2 = 65280 = 0x0000FF00
     // After clobber: [0x00, 0x00, 0xFF, 0x00]
     let half_pixels = (pixel_count / 2) as u32;
-    let hp_be = half_pixels.to_be_bytes();  // [0x00, 0x00, 0xFF, 0x00]
-    out.push(0x00);         // [16] command byte (clobber MSB to 0x00)
-    out.push(hp_be[1]);     // [17]
-    out.push(hp_be[2]);     // [18]
-    out.push(hp_be[3]);     // [19]
+    let hp_be = half_pixels.to_be_bytes(); // [0x00, 0x00, 0xFF, 0x00]
+    out.push(0x00); // [16] command byte (clobber MSB to 0x00)
+    out.push(hp_be[1]); // [17]
+    out.push(hp_be[2]); // [18]
+    out.push(hp_be[3]); // [19]
 
     // ── Pixel data : w*h*2 octets RGB565 Big-Endian ─────────────────────
     for &px in &frame.pixels {

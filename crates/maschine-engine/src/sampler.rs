@@ -119,6 +119,12 @@ pub struct SamplerVoice {
     pub env_level: f32,
     /// Niveau au début du Release
     pub release_from: f32,
+    /// Décalage de départ dans le bloc courant (échantillons) — permet de
+    /// placer les notes au sample près dans un buffer audio, au lieu de les
+    /// quantifier à la taille du buffer.
+    pub start_frame: usize,
+    /// Longueur (en positions de lecture) du fondu anti-clic en fin de sample.
+    pub end_fade: f64,
     /// Resonance 0..1
     pub resonance: f32,
     /// Filtre activé
@@ -205,33 +211,62 @@ impl Sampler {
 
     /// Note on — choisit la zone par key/vel, crée une voix.
     pub fn note_on(&mut self, sound: u8, note: u8, velocity: u8, pitch: u8) -> Option<usize> {
+        self.note_on_at(sound, note, velocity, pitch, 0)
+    }
+
+    /// Note on avec départ décalé dans le bloc audio courant (`start_frame`
+    /// échantillons de silence) : placement sample-accurate des notes.
+    pub fn note_on_at(
+        &mut self,
+        sound: u8,
+        note: u8,
+        velocity: u8,
+        pitch: u8,
+        start_frame: usize,
+    ) -> Option<usize> {
         let zones = self.zones.get(&sound)?;
-        // filtre lokey/hikey/lovel/hivel
-        let mut candidates: Vec<&ZoneMapping> = zones
-            .iter()
-            .filter(|z| {
-                pitch >= z.lokey && pitch <= z.hikey && velocity >= z.lovel && velocity <= z.hivel
-            })
-            .collect();
-        if candidates.is_empty() {
-            candidates = zones.iter().collect();
-        }
-        if candidates.is_empty() {
+        // filtre lokey/hikey/lovel/hivel — sans allocation : on compte puis on
+        // indexe la n-ième zone éligible (le callback audio ne doit pas allouer).
+        let eligible = |z: &ZoneMapping| {
+            pitch >= z.lokey && pitch <= z.hikey && velocity >= z.lovel && velocity <= z.hivel
+        };
+        let n_match = zones.iter().filter(|z| eligible(z)).count();
+        let (use_all, n_cand) = if n_match == 0 {
+            (true, zones.len())
+        } else {
+            (false, n_match)
+        };
+        if n_cand == 0 {
             return None;
         }
         // Round-robin : alterne les zones candidates pour le même Sound
         let rr = self.rr_counters.entry(sound).or_insert(0);
-        let rr_idx = (*rr as usize) % candidates.len();
+        let rr_idx = (*rr as usize) % n_cand;
         *rr = rr.wrapping_add(1);
-        let zone = candidates[rr_idx];
-        let sample = zone.sample.clone()?;
+        // Copie locale : le vol de voix ci-dessous a besoin de `&mut self`.
+        let (sample, pan, choke_group, root_key, tune_cents, volume_db, is_one_shot, zone_rate) = {
+            let zone = zones
+                .iter()
+                .filter(|z| use_all || eligible(z))
+                .nth(rr_idx)?;
+            (
+                zone.sample.clone()?,
+                zone.pan,
+                zone.choke_group,
+                zone.root_key,
+                zone.tune_cents,
+                zone.volume_db,
+                zone.is_one_shot,
+                zone.sample_rate,
+            )
+        };
         if sample.is_empty() {
             return None;
         }
 
         // choke : les voix du même groupe fondent en Release (5ms, pas de clic)
         // au lieu d'être coupées net.
-        if let Some(choke) = zone.choke_group {
+        if let Some(choke) = choke_group {
             for v in self.voices.iter_mut() {
                 if v.choke_group == Some(choke)
                     && v.adsr_phase != AdsrPhase::Off
@@ -250,23 +285,27 @@ impl Sampler {
         }
 
         // pitch : root_key → pitch
-        let semitones = pitch as f32 - zone.root_key as f32 + zone.tune_cents as f32 / 100.0;
+        let semitones = pitch as f32 - root_key as f32 + tune_cents as f32 / 100.0;
         let pitch_ratio = 2_f64.powf(semitones as f64 / 12.0);
-        let sr_ratio = zone.sample_rate as f64 / self.sample_rate as f64;
+        let sr_ratio = zone_rate as f64 / self.sample_rate as f64;
         let increment = pitch_ratio * sr_ratio;
 
-        let gain = velocity as f32 / 127.0 * db_to_linear(zone.volume_db);
+        let gain = velocity as f32 / 127.0 * db_to_linear(volume_db);
 
-        // voice stealing si max atteint : tue la plus vieille en Release
+        // Polyphonie pleine : on ne coupe plus la plus vieille voix d'un coup
+        // (clic) — elle part en fondu de 5 ms (le rendu la supprime ensuite).
         if self.voices.len() >= self.max_voices {
             if let Some(idx) = self
                 .voices
                 .iter()
                 .enumerate()
+                .filter(|(_, v)| {
+                    v.adsr_phase != AdsrPhase::Release && v.adsr_phase != AdsrPhase::Off
+                })
                 .min_by_key(|(_, v)| v.age)
                 .map(|(i, _)| i)
             {
-                self.voices.remove(idx);
+                self.fade_out_voice(idx, 0.005);
             }
         }
 
@@ -275,7 +314,7 @@ impl Sampler {
             pos: 0.0,
             increment,
             gain,
-            pan: zone.pan,
+            pan,
             adsr_phase: AdsrPhase::Attack,
             phase_samples: 0,
             attack_samples: ((0.002 * self.sample_rate as f32) as u32).max(1),
@@ -293,11 +332,14 @@ impl Sampler {
             filter_s2: 0.0,
             env_level: 0.0,
             release_from: 1.0,
+            start_frame,
+            // Fondu anti-clic de 3 ms en fin de sample (positions de lecture).
+            end_fade: (0.003 * self.sample_rate as f64 / increment.max(0.01)).max(1.0),
             note,
             velocity,
-            choke_group: zone.choke_group,
+            choke_group,
             age: self.age_counter,
-            is_one_shot: zone.is_one_shot,
+            is_one_shot,
             sound,
             group: u8::MAX,
         };
@@ -306,8 +348,31 @@ impl Sampler {
         Some(self.voices.len() - 1)
     }
 
+    /// Fait fondre une voix sur `secs` puis la laisse s'éteindre (anti-clic).
+    fn fade_out_voice(&mut self, idx: usize, secs: f32) {
+        if let Some(v) = self.voices.get_mut(idx) {
+            if v.adsr_phase == AdsrPhase::Release || v.adsr_phase == AdsrPhase::Off {
+                return;
+            }
+            v.adsr_phase = AdsrPhase::Release;
+            v.phase_samples = 0;
+            v.release_from = v.env_level.max(0.05);
+            v.release_samples = ((secs * self.sample_rate as f32) as u32).max(1);
+        }
+    }
+
     /// Joue un buffer brut en one-shot (clic métronome), sans zone.
     pub fn play_raw(&mut self, sample: &Arc<Vec<f32>>, gain: f32) -> Option<usize> {
+        self.play_raw_at(sample, gain, 0)
+    }
+
+    /// `play_raw` avec départ décalé dans le bloc courant.
+    pub fn play_raw_at(
+        &mut self,
+        sample: &Arc<Vec<f32>>,
+        gain: f32,
+        start_frame: usize,
+    ) -> Option<usize> {
         if sample.is_empty() {
             return None;
         }
@@ -316,10 +381,13 @@ impl Sampler {
                 .voices
                 .iter()
                 .enumerate()
+                .filter(|(_, v)| {
+                    v.adsr_phase != AdsrPhase::Release && v.adsr_phase != AdsrPhase::Off
+                })
                 .min_by_key(|(_, v)| v.age)
                 .map(|(i, _)| i)
             {
-                self.voices.remove(idx);
+                self.fade_out_voice(idx, 0.005);
             }
         }
         let voice = SamplerVoice {
@@ -345,6 +413,8 @@ impl Sampler {
             filter_s2: 0.0,
             env_level: 1.0,
             release_from: 1.0,
+            start_frame,
+            end_fade: (0.003 * self.sample_rate as f64).max(1.0),
             note: 255,
             velocity: 127,
             choke_group: None,
@@ -387,12 +457,23 @@ impl Sampler {
         }
         let mut to_remove = Vec::new();
         for (idx, voice) in self.voices.iter_mut().enumerate() {
+            // Départ décalé dans le bloc (timing sample-accurate) : si le bloc
+            // rendu est plus court que le décalage, la voix démarre au bloc
+            // suivant (le compteur est consommé bloc par bloc).
+            if voice.start_frame >= frames {
+                voice.start_frame -= frames;
+                continue;
+            }
+            let first = voice.start_frame;
+            voice.start_frame = 0;
             let mut pos = voice.pos;
             let inc = voice.increment;
             let sample = &voice.sample;
+            let sample_len = sample.len() as f64;
+            let end_fade = voice.end_fade;
             let mut voice_peak = 0.0f32;
-            for frame in 0..frames {
-                if pos >= sample.len() as f64 - 1.0 {
+            for frame in first..frames {
+                if pos >= sample_len - 1.0 {
                     to_remove.push(idx);
                     break;
                 }
@@ -402,6 +483,10 @@ impl Sampler {
                 let s0 = sample[i];
                 let s1 = sample.get(i + 1).copied().unwrap_or(0.0);
                 let mut s = s0 * (1.0 - frac) + s1 * frac;
+                // Fondu anti-clic sur la fin du sample (queue tronquée).
+                if sample_len - pos < end_fade {
+                    s *= ((sample_len - pos) / end_fade) as f32;
+                }
                 // Filtre lowpass résonant biquad (Direct Form II Transposed)
                 if voice.filter_enabled {
                     let out_f = voice.filter_b0 * s + voice.filter_s1;
@@ -505,6 +590,28 @@ impl Sampler {
     pub fn set_voice_pan(&mut self, idx: usize, pan: f32) {
         if let Some(v) = self.voices.get_mut(idx) {
             v.pan = pan.clamp(-1.0, 1.0);
+        }
+    }
+
+    /// Repointe les zones d'un Sound vers un nouveau sample (changement de taux
+    /// d'échantillonnage du moteur). Seules les zones qui pointaient encore sur
+    /// l'ancien sample sont modifiées : les samples importés sont préservés.
+    pub fn replace_zone_sample(
+        &mut self,
+        sound: u8,
+        old: &Arc<Vec<f32>>,
+        new: Arc<Vec<f32>>,
+        sample_rate: u32,
+    ) {
+        if let Some(zones) = self.zones.get_mut(&sound) {
+            for z in zones.iter_mut() {
+                if let Some(s) = &z.sample {
+                    if Arc::ptr_eq(s, old) {
+                        z.sample = Some(new.clone());
+                        z.sample_rate = sample_rate;
+                    }
+                }
+            }
         }
     }
 

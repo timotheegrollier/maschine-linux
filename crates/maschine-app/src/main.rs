@@ -54,12 +54,19 @@ fn spawn_latency_logger(
             let max = stats.hid_max_us.swap(0, Ordering::Relaxed);
             #[cfg(feature = "audio")]
             let audio_txt = match &audio_stats {
-                Some(a) => format!(
-                    "audio: {} cb, {} miss, max {} µs",
-                    a.callbacks.swap(0, Ordering::Relaxed),
-                    a.lock_misses.swap(0, Ordering::Relaxed),
-                    a.max_callback_us.swap(0, Ordering::Relaxed),
-                ),
+                Some(a) => {
+                    let frames = a.buffer_frames();
+                    let ms = if frames > 0 { frames as f64 * 1000.0 / 48000.0 } else { 0.0 };
+                    format!(
+                        "audio: {} cb (buffer {} frames ≈ {:.1} ms), {} miss, {} err, max {} µs",
+                        a.callbacks.swap(0, Ordering::Relaxed),
+                        frames,
+                        ms,
+                        a.lock_misses.swap(0, Ordering::Relaxed),
+                        a.errors.swap(0, Ordering::Relaxed),
+                        a.max_callback_us.swap(0, Ordering::Relaxed),
+                    )
+                }
                 None => "audio: —".to_string(),
             };
             #[cfg(not(feature = "audio"))]
@@ -118,6 +125,11 @@ enum Commands {
         /// Instrumentation latence : log HID→note_on et stats callback audio
         #[arg(long)]
         debug_latency: bool,
+        /// Diagnostic audio : démarre la lecture et simule une charge UI/HID
+        /// (verrou moteur + snapshots en continu) pour exposer les manques du
+        /// callback audio (craquements). À combiner avec --debug-latency.
+        #[arg(long)]
+        stress: bool,
     },
     /// Gestion projet (new/save/load)
     Project {
@@ -195,6 +207,12 @@ enum Commands {
         /// Pas d'audio
         #[arg(long)]
         no_audio: bool,
+        /// Instrumentation latence : stats audio (buffer réel, misses, erreurs)
+        #[arg(long)]
+        debug_latency: bool,
+        /// Diagnostic audio : démarre la lecture + contention verrou moteur
+        #[arg(long)]
+        stress: bool,
     },
 }
 
@@ -245,6 +263,7 @@ fn main() -> anyhow::Result<()> {
             no_led,
             headphone_mode,
             debug_latency,
+            stress,
         } => cmd_daemon(
             project,
             midi_port,
@@ -254,6 +273,7 @@ fn main() -> anyhow::Result<()> {
             headphone_mode,
             false,
             debug_latency,
+            stress,
         )?,
         Commands::Project { cmd } => cmd_project(cmd)?,
         Commands::LedTest { pad, color } => cmd_led_test(pad, color)?,
@@ -273,6 +293,8 @@ fn main() -> anyhow::Result<()> {
             project,
             audio_device,
             no_audio,
+            debug_latency,
+            stress,
         } => cmd_daemon(
             project,
             "Maschine MK3 Virtual".to_string(),
@@ -281,7 +303,8 @@ fn main() -> anyhow::Result<()> {
             false,
             "duplicate".to_string(),
             true,
-            false,
+            debug_latency,
+            stress,
         )?,
     }
     Ok(())
@@ -371,6 +394,7 @@ fn cmd_daemon(
     headphone_mode: String,
     with_gui: bool,
     debug_latency: bool,
+    stress: bool,
 ) -> anyhow::Result<()> {
     println!("# maschine-linux daemon — Ctrl+C pour quitter");
     let proj = if let Some(p) = project {
@@ -449,6 +473,62 @@ fn cmd_daemon(
         if !no_audio {
             log::warn!("feature `audio` non activée — rebuild avec --features audio pour du son");
         }
+    }
+
+    // Diagnostic : lecture + charge UI/HID simulée (verrou moteur et snapshots
+    // pris en continu) pour vérifier que le callback audio ne manque jamais son
+    // verrou, même sous contention.
+    if stress {
+        {
+            let mut eng = engine.lock();
+            let _ = eng.handle_event(EngineEvent::Transport {
+                play: true,
+                rec: false,
+                stop: false,
+            });
+        }
+        info!("⚠ Mode stress : lecture + contention verrou moteur (diagnostic)");
+        let eng_stress = engine.clone();
+        std::thread::Builder::new()
+            .name("stress-lock".to_string())
+            .spawn(move || {
+                let mut i = 0u64;
+                loop {
+                    {
+                        let mut eng = eng_stress.lock();
+                        match i % 6 {
+                            0 => {
+                                let pad = (i % 16) as u8;
+                                let _ = eng.handle_event(EngineEvent::Pad {
+                                    pad,
+                                    velocity: 110,
+                                    pressed: true,
+                                });
+                            }
+                            1 => {
+                                let pad = (i % 16) as u8;
+                                let _ = eng.handle_event(EngineEvent::Pad {
+                                    pad,
+                                    velocity: 0,
+                                    pressed: false,
+                                });
+                            }
+                            2 => {
+                                let _ = eng.handle_event(EngineEvent::SelectSound((i % 16) as u8));
+                            }
+                            3 => {
+                                let _ = eng.handle_event(EngineEvent::GroupFocus((i % 8) as u8));
+                            }
+                            _ => {}
+                        }
+                        // Comme le thread écrans : copie complète de l'état.
+                        let _ = eng.snapshot();
+                    }
+                    i += 1;
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            })
+            .ok();
     }
 
     // LED writer

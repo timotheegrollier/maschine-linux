@@ -1,463 +1,599 @@
-//! Synthétiseur de batterie DSP haute fidélité (Kit 808/909 analogique modélisé).
-//! Génère les 16 instruments percussifs complets : Kick, Snare, Hi-Hats, Clap, Toms, etc.
+//! Synthétiseur de batterie DSP — kit 808/909 analogique modélisé.
+//!
+//! Les 16 instruments sont synthétisés à taux plein (aucun sample externe) puis :
+//! - filtrés par biquads RBJ (pente 12 dB/oct) ou oscillateurs bande-limitée
+//!   (somme d'harmoniques) : pas de repliement audible ;
+//! - normalisés à une crête de kit homogène (`normalize`) ;
+//! - terminés par un fondu court (`declick`) : aucune chute d'amplitude en fin
+//!   de sample (le clic de fin était audible sur les queues longues).
 
 use std::f32::consts::PI;
 
-/// Générateur pseudo-aléatoire déterministe (LCG) pour le bruit blanc/rose.
+/// Générateur pseudo-aléatoire déterministe (xorshift32) — bruit blanc.
 struct NoiseGen {
     state: u32,
 }
 
 impl NoiseGen {
     fn new(seed: u32) -> Self {
-        Self { state: seed }
+        Self { state: seed | 1 }
     }
 
     fn next_f32(&mut self) -> f32 {
-        self.state = self.state.wrapping_mul(1664525).wrapping_add(1013904223);
-        ((self.state as f32 / u32::MAX as f32) * 2.0) - 1.0
+        // xorshift32 : période 2^32-1, bien plus « blanc » que l'LCG.
+        let mut x = self.state;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.state = x;
+        // [-1, 1)
+        (x as f32 / u32::MAX as f32) * 2.0 - 1.0
     }
 }
 
-/// Filtre passe-bas à un pôle
-struct OnePoleLP {
-    alpha: f32,
-    prev: f32,
+/// Biquad RBJ (Direct Form II transposé) — LP / HP / BP, Q contrôlé.
+#[derive(Debug, Clone, Copy)]
+struct Biquad {
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+    s1: f32,
+    s2: f32,
 }
 
-impl OnePoleLP {
-    fn new(cutoff_hz: f32, sample_rate: f32) -> Self {
-        let dt = 1.0 / sample_rate;
-        let rc = 1.0 / (2.0 * PI * cutoff_hz);
-        let alpha = dt / (rc + dt);
+impl Biquad {
+    fn from_coeffs(b0: f32, b1: f32, b2: f32, a0: f32, a1: f32, a2: f32) -> Self {
         Self {
-            alpha: alpha.clamp(0.0, 1.0),
-            prev: 0.0,
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            s1: 0.0,
+            s2: 0.0,
         }
     }
 
-    fn process(&mut self, input: f32) -> f32 {
-        self.prev += self.alpha * (input - self.prev);
-        self.prev
+    fn lowpass(fc: f32, q: f32, sr: f32) -> Self {
+        let w0 = 2.0 * PI * (fc / sr).clamp(0.0005, 0.49);
+        let (sin_w0, cos_w0) = w0.sin_cos();
+        let alpha = sin_w0 / (2.0 * q.max(0.05));
+        Self::from_coeffs(
+            (1.0 - cos_w0) * 0.5,
+            1.0 - cos_w0,
+            (1.0 - cos_w0) * 0.5,
+            1.0 + alpha,
+            -2.0 * cos_w0,
+            1.0 - alpha,
+        )
+    }
+
+    fn highpass(fc: f32, q: f32, sr: f32) -> Self {
+        let w0 = 2.0 * PI * (fc / sr).clamp(0.0005, 0.49);
+        let (sin_w0, cos_w0) = w0.sin_cos();
+        let alpha = sin_w0 / (2.0 * q.max(0.05));
+        Self::from_coeffs(
+            (1.0 + cos_w0) * 0.5,
+            -(1.0 + cos_w0),
+            (1.0 + cos_w0) * 0.5,
+            1.0 + alpha,
+            -2.0 * cos_w0,
+            1.0 - alpha,
+        )
+    }
+
+    fn bandpass(fc: f32, q: f32, sr: f32) -> Self {
+        let w0 = 2.0 * PI * (fc / sr).clamp(0.0005, 0.49);
+        let (sin_w0, cos_w0) = w0.sin_cos();
+        let alpha = sin_w0 / (2.0 * q.max(0.05));
+        Self::from_coeffs(alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cos_w0, 1.0 - alpha)
+    }
+
+    fn process(&mut self, x: f32) -> f32 {
+        let y = self.b0 * x + self.s1;
+        self.s1 = self.b1 * x - self.a1 * y + self.s2;
+        self.s2 = self.b2 * x - self.a2 * y;
+        y
     }
 }
 
-/// Filtre passe-haut à un pôle
-struct OnePoleHP {
-    alpha: f32,
-    prev_in: f32,
-    prev_out: f32,
+/// Saturation douce (tanh) : ajoute des harmoniques sans jamais écrêter dur.
+fn saturate(x: f32, drive: f32) -> f32 {
+    (x * drive).tanh()
 }
 
-impl OnePoleHP {
-    fn new(cutoff_hz: f32, sample_rate: f32) -> Self {
-        let dt = 1.0 / sample_rate;
-        let rc = 1.0 / (2.0 * PI * cutoff_hz);
-        let alpha = rc / (rc + dt);
+/// Onde carrée bande-limitée : somme des harmoniques impaires jusqu'à
+/// `max_odd` — évite le repliement spectral des carrés numériques.
+fn bandlimited_square(phase: f32, max_odd: usize) -> f32 {
+    let mut s = 0.0;
+    let mut n = 1usize;
+    while n <= max_odd.max(1) {
+        s += (phase * n as f32).sin() / n as f32;
+        n += 2;
+    }
+    s * 0.85
+}
+
+/// Cluster métallique 808 : 6 partiels inharmoniques (ratios d'origine).
+struct MetalCluster {
+    phases: [f32; 6],
+}
+
+/// Ratios inharmoniques du hi-hat/crash 808.
+const METAL_RATIOS: [f32; 6] = [1.0, 1.342, 1.752, 2.208, 3.447, 4.996];
+
+impl MetalCluster {
+    fn new() -> Self {
+        Self { phases: [0.0; 6] }
+    }
+
+    /// `square_mix` 0 = sinusoïdes pures, 1 = carrés bande-limitée.
+    /// Le nombre d'harmoniques suit la fréquence du partiel : jamais au-delà
+    /// de ~45 % du taux d'échantillonnage (zéro repliement).
+    fn process(&mut self, base_hz: f32, sr: f32, square_mix: f32) -> f32 {
+        let mut mix = 0.0;
+        for (p, ratio) in self.phases.iter_mut().zip(METAL_RATIOS.iter()) {
+            let f = base_hz * ratio;
+            let inc = 2.0 * PI * f / sr;
+            *p = (*p + inc) % (2.0 * PI);
+            let max_odd = ((0.45 * sr / f) as usize) | 1;
+            let sq = bandlimited_square(*p, max_odd.min(31));
+            mix += sq * square_mix + p.sin() * (1.0 - square_mix);
+        }
+        mix / 6.0
+    }
+}
+
+/// Marge de niveau du kit (≈ -2,5 dB) : plusieurs voix s'additionnent dans le
+/// mix (kick + snare + clap) et le limiteur master n'est là que pour les pics —
+/// une frappe seule doit rester parfaitement linéaire.
+const KIT_HEADROOM: f32 = 0.75;
+
+/// Normalise à `target` de crête (le kit garde des niveaux cohérents).
+fn normalize(out: &mut [f32], target: f32) {
+    let peak = out.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    if peak > 1e-6 {
+        let g = target / peak;
+        for s in out.iter_mut() {
+            *s *= g;
+        }
+    }
+}
+
+/// Fondu raised-cosine en fin de sample + micro fade-in : jamais de marche
+/// d'amplitude (clic d'attaque ou de fin).
+fn declick(out: &mut [f32], sr: f32, fade_ms: f32) {
+    let n = out.len();
+    if n == 0 {
+        return;
+    }
+    // fade-out final
+    let f = ((fade_ms / 1000.0 * sr) as usize).clamp(1, (n / 3).max(1));
+    let start = n - f;
+    for (i, s) in out[start..].iter_mut().enumerate() {
+        let t = i as f32 / f as f32;
+        let w = 0.5 + 0.5 * (PI * t).cos(); // 1 → 0
+        *s *= w;
+    }
+    // fade-in ultra court (0,4 ms) : évite la marche à l'échantillon 0
+    let fi = ((0.0004 * sr) as usize).clamp(1, (n / 8).max(1));
+    for (i, s) in out.iter_mut().take(fi).enumerate() {
+        let t = i as f32 / fi as f32;
+        *s *= 0.5 - 0.5 * (PI * t).cos(); // 0 → 1
+    }
+}
+
+/// Contexte de génération (taux + position).
+struct Gen {
+    sr: f32,
+    t: f32,
+}
+
+impl Gen {
+    fn new(sample_rate: u32) -> Self {
         Self {
-            alpha: alpha.clamp(0.0, 1.0),
-            prev_in: 0.0,
-            prev_out: 0.0,
+            sr: sample_rate.max(8000) as f32,
+            t: 0.0,
         }
     }
 
-    fn process(&mut self, input: f32) -> f32 {
-        self.prev_out = self.alpha * (self.prev_out + input - self.prev_in);
-        self.prev_in = input;
-        self.prev_out
+    fn advance(&mut self) {
+        self.t += 1.0 / self.sr;
     }
-}
 
-/// Saturation analogique douce (soft clipper)
-fn soft_clip(x: f32) -> f32 {
-    if x > 1.0 {
-        1.0
-    } else if x < -1.0 {
-        -1.0
-    } else {
-        1.5 * x - 0.5 * x * x * x
+    fn samples(&self, secs: f32) -> usize {
+        (secs.max(0.005) * self.sr) as usize
     }
 }
 
 /// 1. Kick 808 lourd et percutant —
 ///
-/// pitch drop rapide (220 Hz → 50 Hz), transitoire click + sous-basse résonante.
+/// corps sub 52 Hz + glissando rapide, click de transitoire filtré,
+/// saturation douce : punch dans le grave et attaque nette.
 pub fn generate_kick(sample_rate: u32) -> Vec<f32> {
-    let sr = sample_rate as f32;
-    let num_samples = (0.50 * sr) as usize; // 500 ms
-    let mut out = Vec::with_capacity(num_samples);
+    let mut g = Gen::new(sample_rate);
+    let sr = g.sr;
+    let mut out = Vec::with_capacity(g.samples(0.90));
     let mut phase = 0.0f32;
     let mut noise = NoiseGen::new(12345);
+    let mut click_bp = Biquad::bandpass(2200.0, 0.9, sr);
 
-    for i in 0..num_samples {
-        let t = i as f32 / sr;
+    for _ in 0..g.samples(0.90) {
+        let t = g.t;
+        // Glissando 262 → 52 Hz (le « boing » du 808).
+        let f_env = 52.0 + 210.0 * (-t / 0.030).exp();
+        phase = (phase + 2.0 * PI * f_env / sr) % (2.0 * PI);
 
-        // Enveloppe de pitch : descente exponentielle rapide de 240Hz à 52Hz
-        let f_env = 52.0 + 190.0 * (-t / 0.038).exp();
-        phase += 2.0 * PI * f_env / sr;
-        if phase > 2.0 * PI {
-            phase -= 2.0 * PI;
-        }
+        // Corps : fondamentale + 2e harmonique (chaleur) qui s'éteint plus vite.
+        let body = phase.sin() + (2.0 * phase).sin() * 0.16 * (-t / 0.05).exp();
 
-        // Corps sinusoïdal
-        let body = phase.sin();
+        // Enveloppe d'amplitude : corps long, queue inaudible en fin de sample.
+        let amp_env = (-t / 0.150).exp();
+        // Micro-retard d'amplitude (2 ms) : garde l'attaque sans « pop » numérique.
+        let attack = (t / 0.002).min(1.0);
 
-        // Enveloppe d'amplitude (attaque 0ms, sustain et decay sous-basse)
-        let amp_env = (-t / 0.16).exp();
-
-        // Transitoire de click dans les 4 premières millisecondes
-        let click = if t < 0.005 {
-            let ct = t / 0.005;
-            let click_env = 1.0 - ct;
-            (noise.next_f32() * 0.4 + (2.0 * PI * 1800.0 * t).sin() * 0.6) * click_env
+        // Click de transitoire : bruit passe-bande + burst 1,6 kHz (5 ms).
+        let click = if t < 0.006 {
+            let env = (1.0 - t / 0.006).powi(2);
+            (click_bp.process(noise.next_f32()) * 0.7 + (2.0 * PI * 1600.0 * t).sin() * 0.5) * env
         } else {
             0.0
         };
 
-        let raw = (body * 0.95 + click * 0.45) * amp_env;
-        out.push(soft_clip(raw * 1.3) * 0.88);
+        let raw = (body * 0.95 * amp_env * attack + click * 0.55) * 1.1;
+        out.push(saturate(raw, 1.15));
+        g.advance();
     }
+    normalize(&mut out, 0.95 * KIT_HEADROOM);
+    declick(&mut out, sr, 20.0);
     out
 }
 
 /// 2. Snare 808 tranchante —
 ///
-/// double tonalité harmonique (~185Hz et ~330Hz) + burst de bruit blanc filtré passe-haut.
+/// double tonalité (~190/290 Hz) + bruit passé bande 1,4–7,5 kHz, snap 2 ms.
 pub fn generate_snare(sample_rate: u32) -> Vec<f32> {
-    let sr = sample_rate as f32;
-    let num_samples = (0.32 * sr) as usize; // 320 ms
-    let mut out = Vec::with_capacity(num_samples);
-    let mut phase1 = 0.0f32;
-    let mut phase2 = 0.0f32;
-    let mut noise = NoiseGen::new(54321);
-    let mut hp = OnePoleHP::new(1400.0, sr);
-    let mut lp = OnePoleLP::new(7500.0, sr);
-
-    for i in 0..num_samples {
-        let t = i as f32 / sr;
-
-        // Tonalité de fût avec léger pitch drop
-        let f1 = 185.0 + 80.0 * (-t / 0.015).exp();
-        let f2 = 330.0 + 120.0 * (-t / 0.015).exp();
-        phase1 = (phase1 + 2.0 * PI * f1 / sr) % (2.0 * PI);
-        phase2 = (phase2 + 2.0 * PI * f2 / sr) % (2.0 * PI);
-
-        let tone = (phase1.sin() * 0.65 + phase2.sin() * 0.35) * (-t / 0.075).exp();
-
-        // Timbre de timbre métallique (noise filtré passe-haut)
-        let n = noise.next_f32();
-        let filtered_noise = lp.process(hp.process(n));
-        let noise_env = (-t / 0.16).exp();
-        let snap = filtered_noise * noise_env;
-
-        // Attaque percutante dans le premier ms
-        let pop = if t < 0.003 {
-            (1.0 - t / 0.003) * 0.6
-        } else {
-            0.0
-        };
-
-        let mixed = tone * 0.45 + snap * 0.65 + pop * 0.3;
-        out.push(soft_clip(mixed * 1.25) * 0.85);
-    }
-    out
-}
-
-/// 3. Closed Hi-Hat 808 métallique et net —
-///
-/// cluster inharmonique 808 + passe-haut à 7 kHz, decay ultra rapide (45 ms).
-pub fn generate_closed_hh(sample_rate: u32) -> Vec<f32> {
-    let sr = sample_rate as f32;
-    let num_samples = (0.09 * sr) as usize; // 90 ms
-    let mut out = Vec::with_capacity(num_samples);
-    let mut phases = [0.0f32; 6];
-    let freqs = [245.0, 306.0, 384.0, 523.0, 845.0, 1230.0];
-    let mut hp = OnePoleHP::new(6800.0, sr);
-    let mut noise = NoiseGen::new(9999);
-
-    for i in 0..num_samples {
-        let t = i as f32 / sr;
-
-        // 6 oscillateurs carrés inharmoniques typiques 808
-        let mut cluster = 0.0f32;
-        for (p, &f) in phases.iter_mut().zip(freqs.iter()) {
-            *p = (*p + 2.0 * PI * f / sr) % (2.0 * PI);
-            cluster += if p.sin() > 0.0 { 1.0 } else { -1.0 };
-        }
-        cluster /= 6.0;
-
-        let n = noise.next_f32();
-        let metal = cluster * 0.55 + n * 0.45;
-        let filtered = hp.process(metal);
-
-        let env = (-t / 0.038).exp();
-        out.push(soft_clip(filtered * 0.9) * env * 0.85);
-    }
-    out
-}
-
-/// 4. Open Hi-Hat 808 brillant —
-///
-/// même cluster métallique avec sustain et decay prolongé (350 ms).
-pub fn generate_open_hh(sample_rate: u32) -> Vec<f32> {
-    let sr = sample_rate as f32;
-    let num_samples = (0.40 * sr) as usize; // 400 ms
-    let mut out = Vec::with_capacity(num_samples);
-    let mut phases = [0.0f32; 6];
-    let freqs = [245.0, 306.0, 384.0, 523.0, 845.0, 1230.0];
-    let mut hp = OnePoleHP::new(6200.0, sr);
-    let mut noise = NoiseGen::new(8888);
-
-    for i in 0..num_samples {
-        let t = i as f32 / sr;
-
-        let mut cluster = 0.0f32;
-        for (p, &f) in phases.iter_mut().zip(freqs.iter()) {
-            *p = (*p + 2.0 * PI * f / sr) % (2.0 * PI);
-            cluster += if p.sin() > 0.0 { 1.0 } else { -1.0 };
-        }
-        cluster /= 6.0;
-
-        let n = noise.next_f32();
-        let metal = cluster * 0.6 + n * 0.4;
-        let filtered = hp.process(metal);
-
-        let env = (-t / 0.18).exp();
-        out.push(soft_clip(filtered * 0.9) * env * 0.80);
-    }
-    out
-}
-
-/// 5. Hand Clap 808 authentique —
-///
-/// 3 micro-frappes espacées de 11ms + réverbération/queue diffuse.
-pub fn generate_clap(sample_rate: u32) -> Vec<f32> {
-    let sr = sample_rate as f32;
-    let num_samples = (0.35 * sr) as usize;
-    let mut out = Vec::with_capacity(num_samples);
-    let mut noise = NoiseGen::new(7777);
-    let mut bp_lp = OnePoleLP::new(2600.0, sr);
-    let mut bp_hp = OnePoleHP::new(1000.0, sr);
-
-    for i in 0..num_samples {
-        let t = i as f32 / sr;
-        let n = noise.next_f32();
-        let filtered = bp_hp.process(bp_lp.process(n));
-
-        // Claps initiaux à t=0ms, t=11ms, t=22ms, puis queue diffuse à t=33ms
-        let env = if t < 0.011 {
-            (-(t) / 0.004).exp()
-        } else if t < 0.022 {
-            (-(t - 0.011) / 0.004).exp()
-        } else if t < 0.033 {
-            (-(t - 0.022) / 0.004).exp()
-        } else {
-            (-(t - 0.033) / 0.11).exp()
-        };
-
-        out.push(soft_clip(filtered * env * 1.6) * 0.85);
-    }
-    out
-}
-
-/// 6. Tom Low 808 résonant
-pub fn generate_tom(sample_rate: u32, base_freq: f32) -> Vec<f32> {
-    let sr = sample_rate as f32;
-    let num_samples = (0.40 * sr) as usize;
-    let mut out = Vec::with_capacity(num_samples);
-    let mut phase = 0.0f32;
-    let mut noise = NoiseGen::new(4321);
-
-    for i in 0..num_samples {
-        let t = i as f32 / sr;
-        let f = base_freq + (base_freq * 1.2) * (-t / 0.035).exp();
-        phase = (phase + 2.0 * PI * f / sr) % (2.0 * PI);
-
-        let tone = phase.sin();
-        let amp_env = (-t / 0.14).exp();
-        let stick = if t < 0.005 {
-            noise.next_f32() * (1.0 - t / 0.005) * 0.3
-        } else {
-            0.0
-        };
-
-        let raw = (tone * 0.9 + stick) * amp_env;
-        out.push(soft_clip(raw * 1.2) * 0.85);
-    }
-    out
-}
-
-/// 7. Rimshot 808
-pub fn generate_rimshot(sample_rate: u32) -> Vec<f32> {
-    let sr = sample_rate as f32;
-    let num_samples = (0.09 * sr) as usize;
-    let mut out = Vec::with_capacity(num_samples);
-    let mut phase1 = 0.0f32;
-    let mut phase2 = 0.0f32;
-    let mut noise = NoiseGen::new(6543);
-
-    for i in 0..num_samples {
-        let t = i as f32 / sr;
-        phase1 = (phase1 + 2.0 * PI * 1680.0 / sr) % (2.0 * PI);
-        phase2 = (phase2 + 2.0 * PI * 2240.0 / sr) % (2.0 * PI);
-
-        let tone = (phase1.sin() * 0.6 + phase2.sin() * 0.4) * (-t / 0.025).exp();
-        let click = if t < 0.004 {
-            noise.next_f32() * 0.8 * (1.0 - t / 0.004)
-        } else {
-            0.0
-        };
-
-        out.push((tone * 0.7 + click * 0.5) * 0.85);
-    }
-    out
-}
-
-/// 8. Shaker 808
-pub fn generate_shaker(sample_rate: u32) -> Vec<f32> {
-    let sr = sample_rate as f32;
-    let num_samples = (0.16 * sr) as usize;
-    let mut out = Vec::with_capacity(num_samples);
-    let mut noise = NoiseGen::new(3333);
-    let mut hp = OnePoleHP::new(5500.0, sr);
-
-    for i in 0..num_samples {
-        let t = i as f32 / sr;
-        let n = noise.next_f32();
-        let filtered = hp.process(n);
-
-        // Attaque douce (12ms) puis decay
-        let env = if t < 0.015 {
-            t / 0.015
-        } else {
-            (-(t - 0.015) / 0.055).exp()
-        };
-
-        out.push(filtered * env * 0.75);
-    }
-    out
-}
-
-/// 9. Cowbell 808 mythique —
-///
-/// double onde carrée 540 Hz + 800 Hz passée dans un filtre résonant.
-pub fn generate_cowbell(sample_rate: u32) -> Vec<f32> {
-    let sr = sample_rate as f32;
-    let num_samples = (0.35 * sr) as usize;
-    let mut out = Vec::with_capacity(num_samples);
+    let mut g = Gen::new(sample_rate);
+    let sr = g.sr;
+    let mut out = Vec::with_capacity(g.samples(0.40));
     let mut p1 = 0.0f32;
     let mut p2 = 0.0f32;
-    let mut bp_lp = OnePoleLP::new(1200.0, sr);
-    let mut bp_hp = OnePoleHP::new(650.0, sr);
+    let mut noise = NoiseGen::new(54321);
+    let mut hp = Biquad::highpass(1400.0, 0.7, sr);
+    let mut lp = Biquad::lowpass(7500.0, 0.7, sr);
 
-    for i in 0..num_samples {
-        let t = i as f32 / sr;
+    for _ in 0..g.samples(0.40) {
+        let t = g.t;
+        // Fût : deux partiels avec léger glissando.
+        let f1 = 190.0 + 70.0 * (-t / 0.018).exp();
+        let f2 = 290.0 + 110.0 * (-t / 0.018).exp();
+        p1 = (p1 + 2.0 * PI * f1 / sr) % (2.0 * PI);
+        p2 = (p2 + 2.0 * PI * f2 / sr) % (2.0 * PI);
+        let tone = (p1.sin() * 0.62 + p2.sin() * 0.38) * (-t / 0.075).exp();
+
+        // Timbre : bruit bande 1,4–7,5 kHz, queue plus longue que le fût.
+        let n = noise.next_f32();
+        let snap = lp.process(hp.process(n)) * (-t / 0.130).exp();
+
+        // Attaque 2 ms (transitoire large bande).
+        let pop = if t < 0.002 {
+            (1.0 - t / 0.002) * noise.next_f32() * 0.8
+        } else {
+            0.0
+        };
+
+        out.push(saturate(tone * 0.5 + snap * 0.85 + pop * 0.35, 1.15));
+        g.advance();
+    }
+    normalize(&mut out, 0.92 * KIT_HEADROOM);
+    declick(&mut out, sr, 25.0);
+    out
+}
+
+/// 3. Closed Hi-Hat 808 métallique et net.
+pub fn generate_closed_hh(sample_rate: u32) -> Vec<f32> {
+    let mut g = Gen::new(sample_rate);
+    let sr = g.sr;
+    let mut out = Vec::with_capacity(g.samples(0.13));
+    let mut metal = MetalCluster::new();
+    let mut noise = NoiseGen::new(9999);
+    let mut hp = Biquad::highpass(7200.0, 0.7, sr);
+    let mut hp2 = Biquad::highpass(5200.0, 0.7, sr);
+
+    for _ in 0..g.samples(0.13) {
+        let t = g.t;
+        let cluster = hp.process(metal.process(318.0, sr, 0.75));
+        let hiss = hp2.process(noise.next_f32()) * 0.55;
+        // Attaque 0,4 ms puis décroissance 34 ms.
+        let env = (t / 0.0004).min(1.0) * (-t / 0.034).exp();
+        out.push((cluster + hiss) * env * 0.8);
+        g.advance();
+    }
+    normalize(&mut out, 0.86 * KIT_HEADROOM);
+    declick(&mut out, sr, 12.0);
+    out
+}
+
+/// 4. Open Hi-Hat 808 brillant — queue 320 ms.
+pub fn generate_open_hh(sample_rate: u32) -> Vec<f32> {
+    let mut g = Gen::new(sample_rate);
+    let sr = g.sr;
+    let mut out = Vec::with_capacity(g.samples(0.50));
+    let mut metal = MetalCluster::new();
+    let mut noise = NoiseGen::new(8888);
+    let mut hp = Biquad::highpass(6500.0, 0.7, sr);
+    let mut hp2 = Biquad::highpass(4800.0, 0.7, sr);
+
+    for _ in 0..g.samples(0.50) {
+        let t = g.t;
+        let cluster = hp.process(metal.process(318.0, sr, 0.7));
+        let hiss = hp2.process(noise.next_f32()) * 0.5;
+        let env = (t / 0.0004).min(1.0) * (-t / 0.160).exp();
+        out.push((cluster + hiss) * env * 0.8);
+        g.advance();
+    }
+    normalize(&mut out, 0.84 * KIT_HEADROOM);
+    declick(&mut out, sr, 25.0);
+    out
+}
+
+/// 5. Hand Clap 808 authentique — 3 frappes (0/10/20 ms) + queue diffuse.
+pub fn generate_clap(sample_rate: u32) -> Vec<f32> {
+    let mut g = Gen::new(sample_rate);
+    let sr = g.sr;
+    let mut out = Vec::with_capacity(g.samples(0.42));
+    let mut noise = NoiseGen::new(7777);
+    let mut bp1 = Biquad::bandpass(1150.0, 0.85, sr);
+    let mut bp2 = Biquad::bandpass(2900.0, 0.9, sr);
+    let mut lp = Biquad::lowpass(4200.0, 0.7, sr);
+
+    for _ in 0..g.samples(0.42) {
+        let t = g.t;
+        let n = noise.next_f32();
+        let filtered = lp.process(bp1.process(n) * 0.8 + bp2.process(n) * 0.7 + n * 0.12);
+
+        // 3 rafales serrées puis la queue de salle.
+        let env = if t < 0.010 {
+            (-t / 0.0035).exp()
+        } else if t < 0.020 {
+            (-(t - 0.010) / 0.0035).exp()
+        } else if t < 0.030 {
+            (-(t - 0.020) / 0.0035).exp()
+        } else {
+            (-(t - 0.030) / 0.115).exp() * 0.85
+        };
+        out.push(filtered * env * 1.25);
+        g.advance();
+    }
+    normalize(&mut out, 0.90 * KIT_HEADROOM);
+    declick(&mut out, sr, 25.0);
+    out
+}
+
+/// 6. Tom 808 résonant — glissando + attaque de baguette.
+pub fn generate_tom(sample_rate: u32, base_freq: f32) -> Vec<f32> {
+    let mut g = Gen::new(sample_rate);
+    let sr = g.sr;
+    let mut out = Vec::with_capacity(g.samples(0.55));
+    let mut phase = 0.0f32;
+    let mut noise = NoiseGen::new(4321);
+    let mut stick_bp = Biquad::bandpass(3200.0, 1.1, sr);
+
+    for _ in 0..g.samples(0.55) {
+        let t = g.t;
+        let f = base_freq + (base_freq * 1.15) * (-t / 0.032).exp();
+        phase = (phase + 2.0 * PI * f / sr) % (2.0 * PI);
+
+        let tone = (phase.sin() + (2.0 * phase).sin() * 0.12 * (-t / 0.06).exp())
+            * (-t / 0.135).exp()
+            * (t / 0.002).min(1.0);
+        // Baguette : bruit passe-bande très court.
+        let stick = if t < 0.005 {
+            stick_bp.process(noise.next_f32()) * (1.0 - t / 0.005).powi(2) * 0.45
+        } else {
+            0.0
+        };
+
+        out.push(saturate(tone * 0.95 + stick, 1.1));
+        g.advance();
+    }
+    normalize(&mut out, 0.88 * KIT_HEADROOM);
+    declick(&mut out, sr, 20.0);
+    out
+}
+
+/// 7. Rimshot 808.
+pub fn generate_rimshot(sample_rate: u32) -> Vec<f32> {
+    let mut g = Gen::new(sample_rate);
+    let sr = g.sr;
+    let mut out = Vec::with_capacity(g.samples(0.10));
+    let mut p1 = 0.0f32;
+    let mut p2 = 0.0f32;
+    let mut noise = NoiseGen::new(6543);
+    let mut click_bp = Biquad::bandpass(2400.0, 0.9, sr);
+
+    for _ in 0..g.samples(0.10) {
+        let t = g.t;
+        p1 = (p1 + 2.0 * PI * 1680.0 / sr) % (2.0 * PI);
+        p2 = (p2 + 2.0 * PI * 2240.0 / sr) % (2.0 * PI);
+
+        let tone = (p1.sin() * 0.6 + p2.sin() * 0.4) * (-t / 0.022).exp();
+        let click = if t < 0.004 {
+            click_bp.process(noise.next_f32()) * (1.0 - t / 0.004).powi(2) * 0.9
+        } else {
+            0.0
+        };
+        out.push(saturate(tone * 0.75 + click * 0.55, 1.2));
+        g.advance();
+    }
+    normalize(&mut out, 0.88 * KIT_HEADROOM);
+    declick(&mut out, sr, 10.0);
+    out
+}
+
+/// 8. Shaker 808.
+pub fn generate_shaker(sample_rate: u32) -> Vec<f32> {
+    let mut g = Gen::new(sample_rate);
+    let sr = g.sr;
+    let mut out = Vec::with_capacity(g.samples(0.22));
+    let mut noise = NoiseGen::new(3333);
+    let mut hp = Biquad::highpass(6200.0, 0.7, sr);
+    let mut body = Biquad::bandpass(2600.0, 1.0, sr);
+
+    for _ in 0..g.samples(0.22) {
+        let t = g.t;
+        let n = noise.next_f32();
+        let filtered = hp.process(n) + body.process(n) * 0.35;
+        // Attaque 8 ms (mouvement de main) puis double décroissance.
+        let env = (t / 0.008).min(1.0) * ((-t / 0.055).exp() + 0.35 * (-t / 0.16).exp());
+        out.push(filtered * env * 0.7);
+        g.advance();
+    }
+    normalize(&mut out, 0.80 * KIT_HEADROOM);
+    declick(&mut out, sr, 18.0);
+    out
+}
+
+/// 9. Cowbell 808 mythique — deux « carrés » 540/800 Hz dans un passe-bande.
+pub fn generate_cowbell(sample_rate: u32) -> Vec<f32> {
+    let mut g = Gen::new(sample_rate);
+    let sr = g.sr;
+    let mut out = Vec::with_capacity(g.samples(0.45));
+    let mut p1 = 0.0f32;
+    let mut p2 = 0.0f32;
+    let mut bp = Biquad::bandpass(720.0, 1.1, sr);
+    let mut lp = Biquad::lowpass(4200.0, 0.7, sr);
+
+    for _ in 0..g.samples(0.45) {
+        let t = g.t;
         p1 = (p1 + 2.0 * PI * 540.0 / sr) % (2.0 * PI);
         p2 = (p2 + 2.0 * PI * 800.0 / sr) % (2.0 * PI);
 
-        let sq1 = if p1.sin() > 0.0 { 1.0 } else { -1.0 };
-        let sq2 = if p2.sin() > 0.0 { 1.0 } else { -1.0 };
-        let mix = (sq1 + sq2) * 0.5;
-
-        let filtered = bp_hp.process(bp_lp.process(mix));
-        let env = (-t / 0.11).exp();
-
-        out.push(soft_clip(filtered * env * 1.5) * 0.85);
+        let mix = (bandlimited_square(p1, 11) + bandlimited_square(p2, 11)) * 0.5;
+        let filtered = lp.process(bp.process(mix));
+        // Décroissance : partiel aigu plus court (caractère du 808).
+        let env = (-t / 0.30).exp() * 0.7 + (-t / 0.045).exp() * 0.45;
+        out.push(saturate(filtered * env * 1.1, 1.05));
+        g.advance();
     }
+    normalize(&mut out, 0.86 * KIT_HEADROOM);
+    declick(&mut out, sr, 22.0);
     out
 }
 
-/// 10. Crash Cymbal 808
+/// 10. Crash Cymbal 808 — cluster métallique + bruit, longue queue.
 pub fn generate_crash(sample_rate: u32) -> Vec<f32> {
-    let sr = sample_rate as f32;
-    let num_samples = (0.90 * sr) as usize;
-    let mut out = Vec::with_capacity(num_samples);
+    let mut g = Gen::new(sample_rate);
+    let sr = g.sr;
+    let mut out = Vec::with_capacity(g.samples(1.60));
     let mut noise = NoiseGen::new(2222);
-    let mut hp = OnePoleHP::new(4500.0, sr);
-    let mut phases = [0.0f32; 4];
-    let freqs = [315.0, 480.0, 780.0, 1120.0];
+    let mut metal = MetalCluster::new();
+    let mut hp = Biquad::highpass(4200.0, 0.7, sr);
+    let mut hp2 = Biquad::highpass(2800.0, 0.7, sr);
 
-    for i in 0..num_samples {
-        let t = i as f32 / sr;
-        let mut cluster = 0.0f32;
-        for (p, &f) in phases.iter_mut().zip(freqs.iter()) {
-            *p = (*p + 2.0 * PI * f / sr) % (2.0 * PI);
-            cluster += if p.sin() > 0.0 { 1.0 } else { -1.0 };
-        }
-        let metal = cluster * 0.35 + noise.next_f32() * 0.65;
-        let filtered = hp.process(metal);
-        let env = (-t / 0.38).exp();
-
-        out.push(soft_clip(filtered * 0.85) * env * 0.80);
+    for _ in 0..g.samples(1.60) {
+        let t = g.t;
+        let cluster = metal.process(384.0, sr, 0.55);
+        let metal_mix = hp.process(cluster) * 0.85 + hp2.process(noise.next_f32()) * 0.65;
+        // Attaque 0,5 ms + double queue (corps + traîne).
+        let env = (t / 0.0005).min(1.0) * ((-t / 0.42).exp() * 0.8 + (-t / 0.10).exp() * 0.35);
+        out.push(metal_mix * env * 0.75);
+        g.advance();
     }
+    normalize(&mut out, 0.82 * KIT_HEADROOM);
+    declick(&mut out, sr, 40.0);
     out
 }
 
-/// 11. Perc / Woodblock résonant
+/// 11. Perc / Woodblock résonant.
 pub fn generate_perc(sample_rate: u32, freq: f32) -> Vec<f32> {
-    let sr = sample_rate as f32;
-    let num_samples = (0.12 * sr) as usize;
-    let mut out = Vec::with_capacity(num_samples);
+    let mut g = Gen::new(sample_rate);
+    let sr = g.sr;
+    let mut out = Vec::with_capacity(g.samples(0.16));
     let mut phase = 0.0f32;
+    let mut noise = NoiseGen::new(1234);
+    let mut stick = Biquad::bandpass(4000.0, 1.2, sr);
 
-    for i in 0..num_samples {
-        let t = i as f32 / sr;
-        let f = freq + (freq * 0.8) * (-t / 0.008).exp();
+    for _ in 0..g.samples(0.16) {
+        let t = g.t;
+        let f = freq + (freq * 0.7) * (-t / 0.007).exp();
         phase = (phase + 2.0 * PI * f / sr) % (2.0 * PI);
-        let env = (-t / 0.035).exp();
-        out.push(phase.sin() * env * 0.85);
+        let tone = (phase.sin() + (2.0 * phase).sin() * 0.25) * (-t / 0.035).exp();
+        let click = if t < 0.003 {
+            stick.process(noise.next_f32()) * (1.0 - t / 0.003).powi(2) * 0.6
+        } else {
+            0.0
+        };
+        out.push(tone * 0.85 + click);
+        g.advance();
     }
+    normalize(&mut out, 0.86 * KIT_HEADROOM);
+    declick(&mut out, sr, 15.0);
     out
 }
 
-/// 12. Synth Stab (Accords FM vintage)
+/// 12. Synth Stab (accord mineur FM vintage).
 pub fn generate_synth_stab(sample_rate: u32) -> Vec<f32> {
-    let sr = sample_rate as f32;
-    let num_samples = (0.45 * sr) as usize;
-    let mut out = Vec::with_capacity(num_samples);
-    let mut p1 = 0.0f32;
-    let mut p2 = 0.0f32;
-    let mut p3 = 0.0f32;
+    let mut g = Gen::new(sample_rate);
+    let sr = g.sr;
+    let mut out = Vec::with_capacity(g.samples(0.55));
+    let mut p: [f32; 6] = [0.0; 6];
+    // Accord mineur F# / A / C# avec léger détune (largeur).
+    let freqs = [185.0, 186.4, 220.0, 221.6, 277.18, 278.8];
+    let mut lp = Biquad::lowpass(5200.0, 0.7, sr);
 
-    // Accord mineur F# / A / C#
-    let f1 = 185.0;
-    let f2 = 220.0;
-    let f3 = 277.18;
-
-    for i in 0..num_samples {
-        let t = i as f32 / sr;
-        p1 = (p1 + 2.0 * PI * f1 / sr) % (2.0 * PI);
-        p2 = (p2 + 2.0 * PI * f2 / sr) % (2.0 * PI);
-        p3 = (p3 + 2.0 * PI * f3 / sr) % (2.0 * PI);
-
-        let s = p1.sin() * 0.4 + p2.sin() * 0.35 + p3.sin() * 0.35;
-        let env = (-t / 0.16).exp();
-        out.push(soft_clip(s * 1.2) * env * 0.80);
+    for _ in 0..g.samples(0.55) {
+        let t = g.t;
+        let mut s = 0.0f32;
+        for (ph, f) in p.iter_mut().zip(freqs.iter()) {
+            *ph = (*ph + 2.0 * PI * f / sr) % (2.0 * PI);
+            s += ph.sin() + (2.0 * *ph).sin() * 0.15;
+        }
+        s /= 6.0;
+        let env = (t / 0.004).min(1.0) * (-t / 0.170).exp();
+        out.push(lp.process(saturate(s * env * 1.3, 1.1)));
+        g.advance();
     }
+    normalize(&mut out, 0.86 * KIT_HEADROOM);
+    declick(&mut out, sr, 25.0);
     out
 }
 
-/// 13. Sub Bass 808 profond
+/// 13. Sub Bass 808 profond.
 pub fn generate_sub_bass(sample_rate: u32) -> Vec<f32> {
-    let sr = sample_rate as f32;
-    let num_samples = (0.65 * sr) as usize;
-    let mut out = Vec::with_capacity(num_samples);
+    let mut g = Gen::new(sample_rate);
+    let sr = g.sr;
+    let mut out = Vec::with_capacity(g.samples(0.95));
     let mut phase = 0.0f32;
+    let mut noise = NoiseGen::new(2468);
+    let mut attack_bp = Biquad::bandpass(1800.0, 0.9, sr);
+    let mut lp = Biquad::lowpass(900.0, 0.7, sr);
 
-    for i in 0..num_samples {
-        let t = i as f32 / sr;
-        let f = 46.0 + 40.0 * (-t / 0.025).exp(); // pitch drop doux
+    for _ in 0..g.samples(0.95) {
+        let t = g.t;
+        let f = 44.0 + 36.0 * (-t / 0.022).exp();
         phase = (phase + 2.0 * PI * f / sr) % (2.0 * PI);
 
-        // Sinus avec 2ème harmonique pour chaleur audible
-        let s = phase.sin() + (2.0 * phase).sin() * 0.18;
-        let env = (-t / 0.28).exp();
-        out.push(soft_clip(s * 1.3) * env * 0.85);
+        // Sinus + 2e harmonique (audible sur petits HP) — LP pour la rondeur.
+        let s = lp.process(phase.sin() + (2.0 * phase).sin() * 0.18);
+        let env = (t / 0.003).min(1.0) * (-t / 0.280).exp();
+        // Petit click d'attaque (précision rythmique).
+        let click = if t < 0.004 {
+            attack_bp.process(noise.next_f32()) * (1.0 - t / 0.004).powi(2) * 0.5
+        } else {
+            0.0
+        };
+        out.push(saturate(s * env * 1.15 + click, 1.1));
+        g.advance();
     }
+    normalize(&mut out, 0.90 * KIT_HEADROOM);
+    declick(&mut out, sr, 30.0);
     out
 }
 
-/// Génère le kit complet de 16 instruments 808
+/// Génère le kit complet de 16 instruments 808.
 pub fn generate_complete_808_kit(sample_rate: u32) -> Vec<(u8, &'static str, Vec<f32>)> {
     vec![
         (0, "Kick 808", generate_kick(sample_rate)),
@@ -502,6 +638,35 @@ mod tests {
                 "Sound {name} has almost no energy ({max_amp})"
             );
             assert_eq!(pad as usize, pad as usize);
+        }
+    }
+
+    /// La fin de chaque sample doit être silencieuse : une coupure nette à
+    /// amplitude non nulle produisait un clic audible (surtout en fin de boucle).
+    #[test]
+    fn drum_tails_end_silent() {
+        for (pad, name, samples) in generate_complete_808_kit(44100) {
+            let tail = &samples[samples.len().saturating_sub(64)..];
+            let peak = tail.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+            assert!(
+                peak < 0.02,
+                "Sound {name} (pad {pad}) finit à {peak:.4} — clic de fin de sample"
+            );
+            // Début proche de zéro (fade-in anti-marche).
+            assert!(
+                samples[0].abs() < 0.05,
+                "Sound {name} (pad {pad}) commence à {:.4}",
+                samples[0]
+            );
+        }
+    }
+
+    /// Pas de composante continue (le biquad + saturation n'en créent pas).
+    #[test]
+    fn drum_has_no_dc_offset() {
+        for (_pad, name, samples) in generate_complete_808_kit(48000) {
+            let mean = samples.iter().sum::<f32>() / samples.len() as f32;
+            assert!(mean.abs() < 0.02, "Sound {name} DC offset {mean:.4}");
         }
     }
 }

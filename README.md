@@ -15,7 +15,7 @@ Workspace Cargo avec 4 crates principaux :
 | `maschine-engine` | Domaine : Project/Group/Sound/Pattern/Scene/Section, Transport, Sequencer multi-mesures, Drum Synth 808 (16 instruments), Rendu double LCD 480×272 |
 | `maschine-app` | Binaire `maschine-linux` : Application native avec GUI `egui`, daemon headless, PipeWire low-latency |
 
-Temps-réel : l'instantané moteur est partagé en `Arc` (copy-on-write, lectures O(1)), un compteur de révision ne redessine que ce qui a changé, les VU-mètres sont calculés dans le callback audio et le thread HID réveille la GUI instantanément. Instrumentation : `--debug-latency` (HID→Engine, callbacks audio, misses).
+Temps-réel : l'instantané moteur est partagé en `Arc` (copy-on-write, lectures O(1)), un compteur de révision ne redessine que ce qui a changé, les VU-mètres sont calculés dans le callback audio et le thread HID réveille la GUI instantanément. Audio : buffer 256 frames (période 64 ≈ 1,3 ms) à 48 kHz, **limiteur doux master** (jamais d'écrêtage dur), notes placées **au sample près** dans le bloc, kit DSP régénéré au taux réel du device. Instrumentation : `--debug-latency` (HID→Engine, buffer réel, misses, erreurs) et `--stress` (charge volontaire).
 
 ## Prérequis Fedora 44
 
@@ -55,6 +55,7 @@ sudo target/release/maschine-linux daemon --verbose
 
 # Instrumentation temps-réel (latence HID→Engine + stats audio, toutes les 2 s)
 sudo target/release/maschine-linux daemon --debug-latency
+sudo target/release/maschine-linux daemon --debug-latency --stress  # + charge volontaire (diagnostic craquements)
 ```
 
 ## Architecture

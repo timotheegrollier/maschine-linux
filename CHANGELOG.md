@@ -2,6 +2,27 @@
 
 Tous les changements notables.
 
+## [0.5.0] - 2026-10-18
+
+### Corrigé
+- **Craquements + latence audio** : le stream était ouvert en `BufferSize::Default` (≈2048 frames ≈ **46 ms** sur PipeWire) et un `try_lock` raté sur le moteur rendait un **buffer de silence entier**. Négociation désormais **48 kHz / buffer 256 frames (période 64 frames ≈ 1,3 ms)** avec replis progressifs (512 → 1024 → 2048 → défaut) et **attente du verrou moteur jusqu'à 2 ms** avant tout silence. Mesuré sous charge extrême (lecture + verrou moteur toutes les 1 ms + snapshots + écrans 30 FPS + 61 voix) : **0 miss, 0 err, 0 écrêtage**.
+- **Groove quantifié au buffer** : les notes du séquenceur démarraient au **début du buffer audio** (jusqu'à 46 ms de décalage, swing/humanize détruits). Chaque voix démarre maintenant à sa **position exacte en échantillons** dans le bloc (`SamplerVoice::start_frame`), métronome inclus.
+- **Écrêtage dur en sortie** (`clamp(-1,1)`) : kick + snare + clap montent à ≈1,55 et étaient **écrêtés en plateau** (la vraie source du « craque »). Remplacé par un **limiteur doux** (linéaire sous -3 dB, saturation tanh au-dessus) + **marge de kit ≈ -2,5 dB** : les frappes solo restent linéaires, seules les coïncidences sont lissées (≈0,6 dB).
+- **Kit désaccordé de 1,5 demi-ton** : les presets DSP étaient générés à 48 kHz et joués à 44,1 kHz (+8,8 %). `Engine::set_audio_sample_rate()` (appelé à l'ouverture du stream) **régénère le kit au taux réel** et repointe les zones du sampler ; réalignement d'horloge sans allocation dans le callback.
+- **Clacs de fin de sample** : toutes les queues (kick, crash, open hat…) étaient coupées net à amplitude non nulle (jusqu'à -22 dB). Fondus raised-cosine de fin + fade-in 0,4 ms dans le drum synth, fondu anti-clic 3 ms en fin de sample dans le sampler, clic métronome fondu.
+- **Vol de voix abrupt** : la plus vieille voix était **retirée d'un coup** (clic) ; elle part maintenant en **fondu 5 ms**.
+- Buffers > 1024 frames : des échantillons restaient **non écrits** (garbage). Rendu par tranches bornées, quel que soit le format (F32/I16/U16, 2 ou 4 canaux).
+
+### Modifié
+- **Drum synth 808 réécrit** : biquads RBJ (LP/HP/BP 12 dB/oct) au lieu des filtres 6 dB/oct, **oscillateurs bande-limités** (somme d'harmoniques : zéro repliement) pour hi-hats/crash, saturation `tanh`, **normalisation par instrument** (kit homogène), enveloppes retravaillées (kick sub + glissando + click filtré, caisse double partiel + bruit 1,4–7,5 kHz, clap 3 rafales + queue, toms avec attaque de baguette, cowbell, crash métallique 1,6 s).
+- **Sampler** : plus aucune allocation dans `note_on` (sélection de zone sans `Vec`), rendu par tranches, `replace_zone_sample` pour le changement de taux.
+- Négociation audio unifiée (4 canaux sur MK3 puis repli 2) ; `--debug-latency` journalise la taille de buffer **réelle** et les erreurs backend.
+- Nouveau mode diagnostic `daemon --stress` (lecture + contention du verrou moteur simulée).
+
+### Ajouté
+- Tests : fin de sample silencieuse (anti-clic), absence de DC du kit, placement des notes **dans** le bloc (`notes_start_at_their_position_inside_the_block`), métronome piloté en blocs comme le callback réel.
+- Exemples de contrôle qualité : `render_groove` (WAV + crête/RMS/écrêtés) et `render_kit` (16 instruments en WAV).
+
 ## [0.4.0] - 2026-10-18
 
 ### Ajouté

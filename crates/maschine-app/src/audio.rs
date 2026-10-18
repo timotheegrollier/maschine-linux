@@ -9,6 +9,11 @@ use parking_lot::Mutex;
 
 use maschine_engine::Engine;
 
+/// Attente max du verrou moteur dans le callback avant de rendre du silence.
+/// L'UI/HID ne tient le verrou que quelques µs : un `try_lock` raté ne doit
+/// pas couper 10 ms de son (c'était la source des craquements).
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_millis(2);
+
 /// Statistiques temps réel du callback audio (atomiques, sans verrou) —
 /// utilisées par `--debug-latency` et affichables dans la GUI.
 #[derive(Debug, Default)]
@@ -19,6 +24,12 @@ pub struct AudioStats {
     pub lock_misses: AtomicU64,
     /// Durée max de traitement d'un callback (µs).
     pub max_callback_us: AtomicU64,
+    /// Frames du dernier callback = taille réelle du buffer du device.
+    pub last_frames: AtomicU64,
+    /// Plus grande taille de callback observée.
+    pub max_frames: AtomicU64,
+    /// Erreurs/underruns signalés par le backend ALSA.
+    pub errors: AtomicU64,
 }
 
 impl AudioStats {
@@ -31,6 +42,11 @@ impl AudioStats {
     /// Comptabilise un échec de verrou (buffer de silence).
     pub fn record_miss(&self) {
         self.lock_misses.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Taille du dernier buffer audio (frames) — 0 si inconnu.
+    pub fn buffer_frames(&self) -> u64 {
+        self.last_frames.load(Ordering::Relaxed)
     }
 }
 
@@ -45,7 +61,12 @@ pub struct AudioOutput {
 }
 
 impl AudioOutput {
-    /// Ouvre un stream audio vers le périphérique sélectionné (ou défaut système) à 48kHz, buffer 128, stéréo ou 4ch.
+    /// Ouvre un stream audio vers le périphérique sélectionné (ou défaut système).
+    ///
+    /// Négociation : 48 kHz si le device l'accepte (le kit DSP est ensuite
+    /// généré au taux réel — jamais transposé), canaux 2 (4 sur MK3 : Main +
+    /// casque) et **le plus petit buffer accepté** (256 → 512 → 1024 →
+    /// défaut) : la latence et les trous de son en dépendaient directement.
     /// `engine` est partagé avec le daemon/GUI (locké dans le callback).
     pub fn open(
         engine: Arc<Mutex<Engine>>,
@@ -62,236 +83,116 @@ impl AudioOutput {
         let is_mk3 =
             dev_name.to_lowercase().contains("mk3") || dev_name.to_lowercase().contains("maschine");
 
-        // Récupère la config par défaut du périphérique
         let default_cfg = device.default_output_config().ok();
 
-        let (chosen_cfg, cpal_config) = if is_mk3 {
-            // Pour la Maschine MK3 : 4 canaux (Main 1/2 + Casque 3/4), 48kHz, buffer court
-            let desired_rate = cpal::SampleRate(48000);
-            let mut scfg = None;
-            for &ch in &[4u16, 2u16] {
-                if let Ok(configs) = device.supported_output_configs() {
-                    for c in configs {
-                        if c.channels() == ch
-                            && c.min_sample_rate() <= desired_rate
-                            && desired_rate <= c.max_sample_rate()
-                            && c.sample_format() == cpal::SampleFormat::F32
-                        {
-                            scfg = Some(c.with_sample_rate(desired_rate));
-                            break;
+        // Canaux : 4 sur la MK3 (Main 1/2 + casque 3/4), repli 2 si refusé ;
+        // 2 (ou moins) ailleurs.
+        let def_channels = default_cfg.as_ref().map(|c| c.channels()).unwrap_or(2);
+        let channel_candidates: Vec<u16> = if is_mk3 {
+            vec![4, def_channels.clamp(2, 4), 2]
+        } else {
+            vec![def_channels.clamp(1, 2)]
+        };
+        // Taux : 48 kHz d'abord (native des presets DSP), repli sur le défaut.
+        let def_rate = default_cfg
+            .as_ref()
+            .map(|c| c.sample_rate().0)
+            .unwrap_or(48000);
+        let rates: Vec<u32> = if def_rate == 48000 {
+            vec![48000]
+        } else {
+            vec![48000, def_rate]
+        };
+        let format = default_cfg
+            .as_ref()
+            .map(|c| c.sample_format())
+            .unwrap_or(cpal::SampleFormat::F32);
+
+        let stats = Arc::new(AudioStats::default());
+
+        // Buffers courts d'abord : chaque repli double la latence mais reste
+        // bien meilleur que le buffer « Default » du device (≈ 46 ms ici).
+        let buffers = [
+            cpal::BufferSize::Fixed(256),
+            cpal::BufferSize::Fixed(512),
+            cpal::BufferSize::Fixed(1024),
+            cpal::BufferSize::Fixed(2048),
+            cpal::BufferSize::Default,
+        ];
+
+        let mut built: Option<(cpal::Stream, cpal::StreamConfig)> = None;
+        'negotiate: for &channels in &channel_candidates {
+            for &rate in &rates {
+                for &buffer_size in &buffers {
+                    let cc = cpal::StreamConfig {
+                        channels,
+                        sample_rate: cpal::SampleRate(rate),
+                        buffer_size,
+                    };
+                    let attempt = match format {
+                        cpal::SampleFormat::F32 => build_f32_stream(
+                            &device,
+                            &cc,
+                            engine.clone(),
+                            channels as usize,
+                            hp_dup,
+                            stats.clone(),
+                        ),
+                        cpal::SampleFormat::I16 => build_i16_stream(
+                            &device,
+                            &cc,
+                            engine.clone(),
+                            channels as usize,
+                            hp_dup,
+                            stats.clone(),
+                        ),
+                        cpal::SampleFormat::U16 => build_u16_stream(
+                            &device,
+                            &cc,
+                            engine.clone(),
+                            channels as usize,
+                            hp_dup,
+                            stats.clone(),
+                        ),
+                        other => {
+                            anyhow::bail!("format d'échantillon non supporté: {other:?}");
+                        }
+                    };
+                    match attempt {
+                        Ok(stream) => {
+                            log::info!(
+                                "Stream config négociée: channels={} rate={} buffer={:?} format={:?}",
+                                cc.channels,
+                                cc.sample_rate.0,
+                                cc.buffer_size,
+                                format
+                            );
+                            built = Some((stream, cc));
+                            break 'negotiate;
+                        }
+                        Err(e) => {
+                            log::debug!(
+                                "Config refusée ({channels}ch {rate}Hz {buffer_size:?}): {e}"
+                            );
                         }
                     }
                 }
-                if scfg.is_some() {
-                    break;
-                }
             }
-            let sc = scfg.or_else(|| default_cfg.clone()).unwrap_or_else(|| {
-                cpal::SupportedStreamConfig::new(
-                    4,
-                    desired_rate,
-                    cpal::SupportedBufferSize::Range { min: 32, max: 8192 },
-                    cpal::SampleFormat::F32,
-                )
-            });
-            let mut cc: cpal::StreamConfig = sc.clone().into();
-            cc.buffer_size = cpal::BufferSize::Fixed(256);
-            (sc, cc)
-        } else {
-            // Pour les périphériques PC (haut-parleurs, défaut système PipeWire/ALSA) :
-            // Toujours privilégier la config par défaut en STEREO (2 canaux) avec buffer Default
-            if let Some(ref d) = default_cfg {
-                let channels = if d.channels() >= 2 {
-                    2u16
-                } else {
-                    d.channels()
-                };
-                let sc = cpal::SupportedStreamConfig::new(
-                    channels,
-                    d.sample_rate(),
-                    *d.buffer_size(),
-                    d.sample_format(),
-                );
-                let mut cc: cpal::StreamConfig = sc.clone().into();
-                cc.buffer_size = cpal::BufferSize::Default;
-                (sc, cc)
-            } else {
-                // Fallback 48kHz stéréo
-                let sc = cpal::SupportedStreamConfig::new(
-                    2,
-                    cpal::SampleRate(48000),
-                    cpal::SupportedBufferSize::Range { min: 64, max: 8192 },
-                    cpal::SampleFormat::F32,
-                );
-                let mut cc: cpal::StreamConfig = sc.clone().into();
-                cc.buffer_size = cpal::BufferSize::Default;
-                (sc, cc)
-            }
-        };
+        }
 
-        log::info!(
-            "Stream config retenue: channels={} rate={} buffer={:?} format={:?}",
-            cpal_config.channels,
-            cpal_config.sample_rate.0,
-            cpal_config.buffer_size,
-            chosen_cfg.sample_format()
-        );
+        let (stream, cfg) = built
+            .ok_or_else(|| anyhow::anyhow!("aucune configuration audio acceptée par le device"))?;
 
-        // Callback — gère stéréo ou 4ch
-        let engine_clone = engine.clone();
-        let channels = cpal_config.channels as usize;
-        let stats = Arc::new(AudioStats::default());
-        let stream = match chosen_cfg.sample_format() {
-            cpal::SampleFormat::F32 => {
-                let eng = engine_clone.clone();
-                let st = stats.clone();
-                let cb = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    audio_callback(data, &eng, cpal_config.sample_rate.0, channels, hp_dup, &st);
-                };
-                match device.build_output_stream(
-                    &cpal_config,
-                    cb,
-                    |err| log::warn!("cpal stream event: {err}"),
-                    None,
-                ) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        log::warn!(
-                            "Buffer size initial refusé ({e}) — fallback BufferSize::Default"
-                        );
-                        let mut cc_def = cpal_config.clone();
-                        cc_def.buffer_size = cpal::BufferSize::Default;
-                        let eng2 = engine_clone.clone();
-                        let st2 = stats.clone();
-                        let cb2 = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                            audio_callback(
-                                data,
-                                &eng2,
-                                cc_def.sample_rate.0,
-                                channels,
-                                hp_dup,
-                                &st2,
-                            );
-                        };
-                        device.build_output_stream(
-                            &cc_def,
-                            cb2,
-                            |err| log::warn!("cpal stream event: {err}"),
-                            None,
-                        )?
-                    }
-                }
-            }
-            cpal::SampleFormat::I16 => {
-                let eng = engine_clone.clone();
-                let st = stats.clone();
-                let cb = move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
-                    let mut tmp = vec![0.0f32; data.len()];
-                    audio_callback_f32(
-                        &mut tmp,
-                        &eng,
-                        cpal_config.sample_rate.0,
-                        channels,
-                        hp_dup,
-                        &st,
-                    );
-                    for (o, &s) in data.iter_mut().zip(tmp.iter()) {
-                        *o = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-                    }
-                };
-                match device.build_output_stream(
-                    &cpal_config,
-                    cb,
-                    |err| log::error!("cpal stream err: {err}"),
-                    None,
-                ) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        log::warn!("Buffer size Fixed(128) refusé ({e}) — essai buffer Default");
-                        let mut cc_def = cpal_config.clone();
-                        cc_def.buffer_size = cpal::BufferSize::Default;
-                        let eng2 = engine_clone.clone();
-                        let st2 = stats.clone();
-                        let cb2 = move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
-                            let mut tmp = vec![0.0f32; data.len()];
-                            audio_callback_f32(
-                                &mut tmp,
-                                &eng2,
-                                cc_def.sample_rate.0,
-                                channels,
-                                hp_dup,
-                                &st2,
-                            );
-                            for (o, &s) in data.iter_mut().zip(tmp.iter()) {
-                                *o = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-                            }
-                        };
-                        device.build_output_stream(
-                            &cc_def,
-                            cb2,
-                            |err| log::error!("cpal stream err: {err}"),
-                            None,
-                        )?
-                    }
-                }
-            }
-            cpal::SampleFormat::U16 => {
-                let eng = engine_clone.clone();
-                let st = stats.clone();
-                let cb = move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
-                    let mut tmp = vec![0.0f32; data.len()];
-                    audio_callback_f32(
-                        &mut tmp,
-                        &eng,
-                        cpal_config.sample_rate.0,
-                        channels,
-                        hp_dup,
-                        &st,
-                    );
-                    for (o, &s) in data.iter_mut().zip(tmp.iter()) {
-                        *o = ((s.clamp(-1.0, 1.0) * 0.5 + 0.5) * u16::MAX as f32) as u16;
-                    }
-                };
-                match device.build_output_stream(
-                    &cpal_config,
-                    cb,
-                    |err| log::error!("cpal stream err: {err}"),
-                    None,
-                ) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        log::warn!("Buffer size Fixed(128) refusé ({e}) — essai buffer Default");
-                        let mut cc_def = cpal_config.clone();
-                        cc_def.buffer_size = cpal::BufferSize::Default;
-                        let eng2 = engine_clone.clone();
-                        let st2 = stats.clone();
-                        let cb2 = move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
-                            let mut tmp = vec![0.0f32; data.len()];
-                            audio_callback_f32(
-                                &mut tmp,
-                                &eng2,
-                                cc_def.sample_rate.0,
-                                channels,
-                                hp_dup,
-                                &st2,
-                            );
-                            for (o, &s) in data.iter_mut().zip(tmp.iter()) {
-                                *o = ((s.clamp(-1.0, 1.0) * 0.5 + 0.5) * u16::MAX as f32) as u16;
-                            }
-                        };
-                        device.build_output_stream(
-                            &cc_def,
-                            cb2,
-                            |err| log::error!("cpal stream err: {err}"),
-                            None,
-                        )?
-                    }
-                }
-            }
-            _ => anyhow::bail!("format non supporté"),
-        };
+        let actual_rate = cfg.sample_rate.0;
+        let channels = cfg.channels as usize;
 
-        let actual_rate = cpal_config.sample_rate.0;
+        // Le moteur (et ses presets DSP) se cale sur le taux réel AVANT que le
+        // stream ne consomme des échantillons : sinon le kit joue faux.
+        {
+            let mut eng = engine.lock();
+            eng.set_audio_sample_rate(actual_rate);
+        }
+
         stream.play().context("stream play")?;
         log::info!("✓ Audio stream démarré sur '{dev_name}' {actual_rate}Hz (channels={channels})");
 
@@ -361,17 +262,138 @@ impl AudioOutput {
     }
 }
 
-fn audio_callback(
-    data: &mut [f32],
-    engine: &Arc<Mutex<Engine>>,
-    sample_rate: u32,
+/// Construit le stream F32 et branche le callback.
+fn build_f32_stream(
+    device: &cpal::Device,
+    cfg: &cpal::StreamConfig,
+    engine: Arc<Mutex<Engine>>,
     channels: usize,
     hp_dup: bool,
-    stats: &AudioStats,
-) {
-    audio_callback_f32(data, engine, sample_rate, channels, hp_dup, stats);
+    stats: Arc<AudioStats>,
+) -> Result<cpal::Stream, cpal::BuildStreamError> {
+    let sr = cfg.sample_rate.0;
+    let st_err = stats.clone();
+    let st_cb = stats;
+    device.build_output_stream(
+        cfg,
+        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+            audio_callback_f32(data, &engine, sr, channels, hp_dup, &st_cb);
+        },
+        move |err| {
+            st_err.errors.fetch_add(1, Ordering::Relaxed);
+            log::warn!("cpal stream event: {err}");
+        },
+        None,
+    )
 }
 
+/// Construit le stream I16 (device entier 16 bits).
+fn build_i16_stream(
+    device: &cpal::Device,
+    cfg: &cpal::StreamConfig,
+    engine: Arc<Mutex<Engine>>,
+    channels: usize,
+    hp_dup: bool,
+    stats: Arc<AudioStats>,
+) -> Result<cpal::Stream, cpal::BuildStreamError> {
+    let sr = cfg.sample_rate.0;
+    let st_err = stats.clone();
+    let st_cb = stats;
+    // Scratch pré-alloué : aucune allocation dans le callback.
+    let mut tmp: Vec<f32> = vec![0.0; 8192 * 2];
+    device.build_output_stream(
+        cfg,
+        move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+            if tmp.len() < data.len() {
+                tmp.resize(data.len(), 0.0);
+            }
+            render_audio_block(
+                &mut tmp[..data.len()],
+                &engine,
+                sr,
+                channels,
+                hp_dup,
+                &st_cb,
+            );
+            for (o, &s) in data.iter_mut().zip(tmp.iter()) {
+                *o = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+            }
+        },
+        move |err| {
+            st_err.errors.fetch_add(1, Ordering::Relaxed);
+            log::warn!("cpal stream event: {err}");
+        },
+        None,
+    )
+}
+
+/// Construit le stream U16 (device entier non signé 16 bits).
+fn build_u16_stream(
+    device: &cpal::Device,
+    cfg: &cpal::StreamConfig,
+    engine: Arc<Mutex<Engine>>,
+    channels: usize,
+    hp_dup: bool,
+    stats: Arc<AudioStats>,
+) -> Result<cpal::Stream, cpal::BuildStreamError> {
+    let sr = cfg.sample_rate.0;
+    let st_err = stats.clone();
+    let st_cb = stats;
+    let mut tmp: Vec<f32> = vec![0.0; 8192 * 2];
+    device.build_output_stream(
+        cfg,
+        move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
+            if tmp.len() < data.len() {
+                tmp.resize(data.len(), 0.0);
+            }
+            render_audio_block(
+                &mut tmp[..data.len()],
+                &engine,
+                sr,
+                channels,
+                hp_dup,
+                &st_cb,
+            );
+            for (o, &s) in data.iter_mut().zip(tmp.iter()) {
+                *o = ((s.clamp(-1.0, 1.0) * 0.5 + 0.5) * u16::MAX as f32) as u16;
+            }
+        },
+        move |err| {
+            st_err.errors.fetch_add(1, Ordering::Relaxed);
+            log::warn!("cpal stream event: {err}");
+        },
+        None,
+    )
+}
+
+/// Acquiert le verrou moteur en réessayant brièvement : l'UI/HID le tient
+/// quelques µs, un `try_lock` unique ratait donc régulièrement (silence =
+/// craquement). Renvoie `None` si le verrou reste pris au-delà de `LOCK_WAIT`.
+fn lock_engine_with_wait(
+    engine: &Arc<Mutex<Engine>>,
+) -> Option<parking_lot::MutexGuard<'_, Engine>> {
+    if let Some(g) = engine.try_lock() {
+        return Some(g);
+    }
+    let deadline = std::time::Instant::now() + LOCK_WAIT;
+    let mut spins = 0u32;
+    loop {
+        if let Some(g) = engine.try_lock() {
+            return Some(g);
+        }
+        std::hint::spin_loop();
+        spins += 1;
+        if spins % 128 == 0 {
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            // Laisse la main au détenteur du verrou (autre cœur ou non).
+            std::thread::yield_now();
+        }
+    }
+}
+
+/// Callback audio F32 : rendu stéréo du moteur vers un buffer interleaved.
 fn audio_callback_f32(
     data: &mut [f32],
     engine: &Arc<Mutex<Engine>>,
@@ -380,55 +402,79 @@ fn audio_callback_f32(
     hp_dup: bool,
     stats: &AudioStats,
 ) {
+    render_audio_block(data, engine, sample_rate, channels, hp_dup, stats);
+}
+
+/// Rendu d'un bloc complet dans `out`, au format interleaved du device
+/// (`channels` canaux). Aucune allocation ; la taille du bloc peut dépasser
+/// n'importe quelle constante (le buffer du device n'est jamais tronqué).
+fn render_audio_block(
+    out: &mut [f32],
+    engine: &Arc<Mutex<Engine>>,
+    sample_rate: u32,
+    channels: usize,
+    hp_dup: bool,
+    stats: &AudioStats,
+) {
+    let channels = channels.max(1);
+    let frames = out.len() / channels;
+    stats.last_frames.store(frames as u64, Ordering::Relaxed);
+    stats.max_frames.fetch_max(frames as u64, Ordering::Relaxed);
+
     let started = std::time::Instant::now();
-    let frames = data.len() / channels;
-    if let Some(mut eng) = engine.try_lock() {
-        if eng.transport.sample_rate != sample_rate {
-            eng.transport.sample_rate = sample_rate;
-            eng.sampler_mut().sample_rate = sample_rate;
-        }
-        eng.advance(frames as u64);
-        let hp_vol = eng.headphone_volume();
-        if channels == 2 {
-            eng.render_audio(data);
-        } else if channels == 4 {
-            // Buffer stéréo sur la pile pour éviter allocations sur le thread audio
-            let mut stereo = [0.0f32; 2048];
-            let stereo_len = (frames * 2).min(stereo.len());
-            eng.render_audio(&mut stereo[..stereo_len]);
-            for f in 0..frames.min(1024) {
-                let l = stereo[f * 2];
-                let r = stereo[f * 2 + 1];
-                data[f * 4] = l;
-                data[f * 4 + 1] = r;
-                if hp_dup {
-                    data[f * 4 + 2] = l * hp_vol;
-                    data[f * 4 + 3] = r * hp_vol;
-                } else {
-                    data[f * 4 + 2] = 0.0;
-                    data[f * 4 + 3] = 0.0;
-                }
-            }
-        } else {
-            let mut stereo = [0.0f32; 2048];
-            let stereo_len = (frames * 2).min(stereo.len());
-            eng.render_audio(&mut stereo[..stereo_len]);
-            for f in 0..frames.min(1024) {
-                for ch in 0..channels {
-                    data[f * channels + ch] = if ch < 2 { stereo[f * 2 + ch] } else { 0.0 };
-                }
-            }
-        }
-        for s in data.iter_mut() {
-            *s = s.clamp(-1.0, 1.0) * 0.85;
-        }
-        stats.record(started.elapsed().as_micros() as u64);
-    } else {
+    let Some(mut eng) = lock_engine_with_wait(engine) else {
         stats.record_miss();
-        for s in data.iter_mut() {
+        for s in out.iter_mut() {
             *s = 0.0;
         }
+        return;
+    };
+
+    // Filet de sécurité : si le device a changé de taux sans réouverture, on
+    // réaligne l'horloge (aucune allocation ici, le kit est régénéré à
+    // l'ouverture du stream via `set_audio_sample_rate`).
+    if eng.transport.sample_rate != sample_rate {
+        eng.align_sample_rate_clock(sample_rate);
     }
+
+    eng.advance(frames as u64);
+    let hp_vol = eng.headphone_volume();
+
+    const CHUNK_FRAMES: usize = 1024;
+    let mut stack_buf = [0.0f32; CHUNK_FRAMES * 2];
+    let mut frame = 0usize;
+    while frame < frames {
+        let n = (frames - frame).min(CHUNK_FRAMES);
+        if channels == 2 {
+            // Chemin direct : le layout stéréo du moteur est celui du device.
+            eng.render_audio(&mut out[frame * 2..(frame + n) * 2]);
+        } else {
+            let stereo = &mut stack_buf[..n * 2];
+            eng.render_audio(stereo);
+            for i in 0..n {
+                let l = stereo[i * 2];
+                let r = stereo[i * 2 + 1];
+                let base = (frame + i) * channels;
+                out[base] = l;
+                out[base + 1] = r;
+                #[allow(clippy::needless_range_loop)] // mapping canal → sortie
+                for ch in 2..channels {
+                    out[base + ch] = if hp_dup {
+                        (if ch % 2 == 0 { l } else { r }) * hp_vol
+                    } else {
+                        0.0
+                    };
+                }
+            }
+        }
+        frame += n;
+    }
+
+    // Sécurité : le limiteur du moteur borne déjà à ±1 (jamais d'écrêtage dur).
+    for s in out.iter_mut() {
+        *s = s.clamp(-1.0, 1.0);
+    }
+    stats.record(started.elapsed().as_micros() as u64);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -435,22 +435,51 @@ impl std::ops::DerefMut for ProjectWriteGuard<'_> {
     }
 }
 
+/// Contexte d'un bloc audio : permet de placer une note au sample près dans
+/// le buffer courant (sinon elle est quantifiée à la taille du buffer).
+#[derive(Debug, Clone, Copy)]
+struct BlockCtx {
+    /// Frames du bloc.
+    frames: u64,
+    /// Échantillons par tick (fonction du BPM et du taux d'échantillonnage).
+    samples_per_tick: f64,
+    /// Fraction de tick déjà écoulée au premier sample du bloc.
+    tick_fraction: f64,
+}
+
+impl BlockCtx {
+    /// Position en échantillons (depuis le début du bloc) d'un événement situé
+    /// `rel_ticks` ticks après le début du bloc.
+    fn offset(&self, rel_ticks: f64) -> usize {
+        let s = ((rel_ticks - self.tick_fraction) * self.samples_per_tick).round();
+        s.clamp(0.0, self.frames.saturating_sub(1) as f64) as usize
+    }
+}
+
 impl Engine {
+    /// Clic métronome (accent = début de mesure) — généré au taux demandé.
+    fn metronome_click(sr: u32, freq: f32) -> std::sync::Arc<Vec<f32>> {
+        let n = (sr as f32 * 0.030) as usize;
+        let v: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / sr as f32;
+                let env = (-t * 120.0).exp();
+                // Fondu de fin (anti-clic) : la queue du clic n'est pas coupée.
+                let tail = if i + 64 >= n {
+                    ((n - i) as f32 / 64.0).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                (2.0 * std::f32::consts::PI * freq * t).sin() * env * 0.6 * tail
+            })
+            .collect();
+        std::sync::Arc::new(v)
+    }
+
     /// Crée avec un projet.
     #[must_use]
     pub fn new(project: Project, sample_rate: u32) -> Self {
         let bpm = project.bpm;
-        fn click(sr: u32, freq: f32) -> std::sync::Arc<Vec<f32>> {
-            let n = (sr as f32 * 0.03) as usize;
-            let v: Vec<f32> = (0..n)
-                .map(|i| {
-                    let t = i as f32 / sr as f32;
-                    let env = (-t * 120.0).exp();
-                    (2.0 * std::f32::consts::PI * freq * t).sin() * env * 0.6
-                })
-                .collect();
-            std::sync::Arc::new(v)
-        }
         Self {
             project: Arc::new(RwLock::new(Arc::new(project))),
             transport: Transport::new(bpm, sample_rate),
@@ -478,8 +507,8 @@ impl Engine {
             select_mode: false,
             erase_mode: false,
             controller_mode: 0,
-            click_accent: click(sample_rate, 1760.0),
-            click_normal: click(sample_rate, 880.0),
+            click_accent: Self::metronome_click(sample_rate, 1760.0),
+            click_normal: Self::metronome_click(sample_rate, 880.0),
             group_meter: [0.0; 8],
             group_peak_hold: [0.0; 8],
             master_meter: 0.0,
@@ -683,6 +712,41 @@ impl Engine {
         self.transport.loop_enabled = true;
         self.transport.loop_start = 0;
         self.transport.loop_end = 2 * 4 * 960;
+    }
+
+    /// Réaligne l'horloge transport/sampler sur le taux du périphérique sans
+    /// régénérer les presets (appelable depuis le thread audio : aucune
+    /// allocation). Filet de sécurité si le device change de taux tout seul.
+    pub fn align_sample_rate_clock(&mut self, sample_rate: u32) {
+        let rate = sample_rate.max(8000);
+        self.transport.sample_rate = rate;
+        self.sampler.sample_rate = rate;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Aligne le moteur sur le taux d'échantillonnage réel du périphérique audio.
+    ///
+    /// Les presets de batterie sont synthétisés : sans cette réalisation, un
+    /// device à 44,1 kHz jouait un kit généré à 48 kHz ≈ 1,5 demi-ton trop haut.
+    /// Les presets synthétiques sont régénérés et les zones du sampler
+    /// repointées (les samples chargés depuis un fichier gardent leur taux).
+    pub fn set_audio_sample_rate(&mut self, sample_rate: u32) {
+        let rate = sample_rate.max(8000);
+        if rate == self.transport.sample_rate && rate == self.sampler.sample_rate {
+            return;
+        }
+        self.align_sample_rate_clock(rate);
+        self.click_accent = Self::metronome_click(rate, 1760.0);
+        self.click_normal = Self::metronome_click(rate, 880.0);
+        for i in 0..16usize {
+            let Some(old) = self.preset_samples.get(i).and_then(Option::as_ref).cloned() else {
+                continue;
+            };
+            self.preset_samples[i] = None;
+            let new = self.drum_preset_sample(i as u8);
+            self.preset_samples[i] = Some(new.clone());
+            self.sampler.replace_zone_sample(i as u8, &old, new, rate);
+        }
     }
 
     /// Humanise le pattern actif (légères variations de vélocité et micro-timing)
@@ -1424,19 +1488,20 @@ impl Engine {
     }
 
     /// Joue le clic métronome (accent = début de mesure).
-    fn trigger_click(&mut self, accent: bool) {
+    fn trigger_click(&mut self, accent: bool, start_frame: usize) {
         let sample = if accent {
             self.click_accent.clone()
         } else {
             self.click_normal.clone()
         };
         self.sampler
-            .play_raw(&sample, if accent { 0.5 } else { 0.32 });
+            .play_raw_at(&sample, if accent { 0.5 } else { 0.32 }, start_frame);
     }
 
     /// Avance le transport + séquenceur, déclenche les notes des patterns.
     pub fn advance(&mut self, samples: u64) {
         let prev_tick = self.transport.tick;
+        let frac_before = self.transport.tick_fraction;
         self.transport.advance_samples(samples);
         let new_tick = self.transport.tick;
         if new_tick != prev_tick {
@@ -1445,13 +1510,23 @@ impl Engine {
         if !self.transport.is_playing() {
             return;
         }
+        // Contexte du bloc : place chaque note au sample près au lieu de la
+        // quantifier à la taille du buffer (sinon le groove est décalé).
+        let bpm = self.transport.bpm.max(1.0) as f64;
+        let ppq = self.transport.ppq.max(1) as f64;
+        let ctx = BlockCtx {
+            frames: samples,
+            samples_per_tick: self.transport.sample_rate.max(1) as f64 * 60.0 / (bpm * ppq),
+            tick_fraction: frac_before,
+        };
         // Clic métronome sur chaque temps (accent sur début de mesure).
         if self.transport.metronome && new_tick > prev_tick {
             let first_beat = prev_tick / 960 + 1;
             let last_beat = new_tick / 960;
             for beat in first_beat..=last_beat.min(first_beat + 8) {
                 let accent = beat % 4 == 0;
-                self.trigger_click(accent);
+                let rel = (beat * 960).saturating_sub(prev_tick) as f64;
+                self.trigger_click(accent, ctx.offset(rel));
             }
         }
         // Pour chaque Group, joue les events du pattern actif de la scène courante
@@ -1525,6 +1600,7 @@ impl Engine {
                                     self.transport.swing,
                                     &mut self.pad_flash_until,
                                     new_tick,
+                                    &ctx,
                                 );
                             }
                         }
@@ -1548,6 +1624,7 @@ impl Engine {
         swing: f32,
         flash_until: &mut [u64; 16],
         now_tick: u64,
+        ctx: &BlockCtx,
     ) {
         let pat_len = pat.length.to_ticks() as u64;
         if pat_len == 0 || prev_tick == new_tick {
@@ -1583,7 +1660,16 @@ impl Engine {
                 let note = ev.pitch;
                 let sg = sound_gains.get(sound as usize).copied().unwrap_or(1.0);
                 let sp = sound_pans.get(sound as usize).copied().unwrap_or(0.0);
-                if let Some(idx) = sampler.note_on(sound, note, ev.velocity, note) {
+                // Décalage sample-accurate dans le bloc courant : la note part à
+                // sa vraie position rythmique, pas au début du buffer audio.
+                let local = eff % pat_len.max(1);
+                let rel_ticks = if !wrapped || local > prev_in_pat {
+                    local.saturating_sub(prev_in_pat) as f64
+                } else {
+                    (pat_len - prev_in_pat + local) as f64
+                };
+                let start_frame = ctx.offset(rel_ticks);
+                if let Some(idx) = sampler.note_on_at(sound, note, ev.velocity, note, start_frame) {
                     sampler.set_voice_gain(idx, group_gain * sg);
                     sampler.set_voice_pan(idx, sp);
                     sampler.set_voice_group(idx, group);
@@ -1664,12 +1750,21 @@ impl Engine {
                 self.group_peak_hold[g] * 0.996
             };
         }
-        // Volume master + crête master (post-volume = ce qu'on entend).
+        // Bus master : volume + limiteur doux (tanh). Avant, la sortie était
+        // écrêtée durement (clamp ±1) : kick + snare + clap (~1,7) distordaient.
+        // Ici la réponse reste linéaire sous -3 dB puis sature en douceur.
         let mv = self.master_volume;
         let mut peak = 0.0f32;
         for s in out.iter_mut() {
-            *s *= mv;
-            let a = s.abs();
+            let x = *s * mv;
+            let a = x.abs();
+            let y = if a <= 0.7 {
+                x
+            } else {
+                x.signum() * (0.7 + 0.3 * ((a - 0.7) / 0.3).tanh())
+            };
+            *s = y;
+            let a = y.abs();
             if a > peak {
                 peak = a;
             }
@@ -2248,6 +2343,46 @@ mod tests {
         assert!(eng.transport.tick > 0);
     }
 
+    /// Les notes démarrent à leur vraie position dans le buffer audio (et non
+    /// au début du bloc) : c'est ce qui garde le groove serré même avec un
+    /// buffer de plusieurs millisecondes.
+    #[test]
+    fn notes_start_at_their_position_inside_the_block() {
+        let mut eng = Engine::new_demo(48000);
+        eng.clear_bar(0);
+        eng.clear_bar(1);
+        // 150 BPM à 48 kHz : 20 échantillons par tick (blocs de 1000 = 50 ticks).
+        eng.handle_event(EngineEvent::Bpm(150.0)).unwrap();
+        eng.toggle_step(0, 240); // kick au tick 240
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: false,
+            stop: false,
+        })
+        .unwrap();
+
+        let mut buf = vec![0.0f32; 1000 * 2];
+        let mut first: Option<(usize, usize)> = None;
+        for block in 0..6 {
+            eng.advance(1000);
+            eng.render_audio(&mut buf);
+            if first.is_none() {
+                if let Some(pos) = buf
+                    .chunks_exact(2)
+                    .position(|f| f[0].abs() > 2e-3 || f[1].abs() > 2e-3)
+                {
+                    first = Some((block, pos));
+                }
+            }
+        }
+        let (block, pos) = first.expect("kick non entendu");
+        assert_eq!(block, 4, "kick déclenché dans le mauvais bloc");
+        assert!(
+            (pos as i64 - 800).abs() < 32,
+            "kick à la frame {pos} au lieu de 800 (position dans le bloc)"
+        );
+    }
+
     #[test]
     fn metronome_click_audible() {
         // Projet vide : seul le métronome doit produire du son.
@@ -2260,11 +2395,15 @@ mod tests {
             stop: false,
         })
         .unwrap();
-        // Avance d'un temps (0.5s à 120BPM) : au moins un clic.
-        eng.advance(24000);
+        // Avance d'un temps (0.5s à 120BPM) par petits blocs, comme le
+        // callback audio (advance + render du même bloc) : au moins un clic.
         let mut buf = vec![0.0f32; 1024 * 2];
-        eng.render_audio(&mut buf);
-        let mx = buf.iter().fold(0.0f32, |a, b| a.max(b.abs()));
+        let mut mx = 0.0f32;
+        for _ in 0..24 {
+            eng.advance(1024);
+            eng.render_audio(&mut buf);
+            mx = buf.iter().fold(mx, |a, b| a.max(b.abs()));
+        }
         assert!(mx > 1e-4, "metronome silencieux, max={mx}");
     }
 

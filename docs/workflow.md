@@ -90,9 +90,20 @@ Le mode STEP s'active avec le bouton **STEP** du hardware (ou la GUI). L'onglet 
 `maschine-linux daemon --debug-latency` (ou `gui --debug-latency`) journalise toutes les 2 s :
 
 - latence **HID→Engine** : nombre d'événements, dernier et max en µs par fenêtre ;
-- statistiques audio : callbacks, `lock_misses` (callback n'ayant pas pu prendre le lock → silence) et temps max de callback en µs.
+- statistiques audio : callbacks, **taille de buffer réelle** en frames (et ms), `lock_misses` (callback n'ayant pas pu prendre le lock → silence), `err` (erreurs/underruns backend) et temps max de callback en µs.
+
+`maschine-linux daemon --debug-latency --stress` ajoute une charge volontaire (lecture du pattern + verrou moteur et snapshots pris en continu) : c'est le révélateur des craquements. Référence mesurée (PipeWire `default`, 48 kHz) : **1500 callbacks/2 s (buffer 64 frames ≈ 1,3 ms), 0 miss, 0 err** avec 61 voix et la contention.
 
 Le thread HID réveille immédiatement la GUI (`RepaintSignal`), et le snapshot moteur partage le projet en `Arc` (copy-on-write) : les lectures UI sont O(1) et seules les actions utilisateur clonent.
+
+## Qualité audio & anti-craquements
+
+Chaîne de sortie (dans l'ordre) : voix → groupes (gains/pans/filtres) → **limiteur doux master** (linéaire sous -3 dB puis `tanh`, jamais d'écrêtage dur) → callback (clamp de sécurité ±1.0).
+
+- **Latence** : le stream est négocié au plus court — 48 kHz si accepté, buffer 256 frames (période 64), replis 512 → 1024 → 2048 → défaut. `set_audio_sample_rate()` régénère le kit DSP au taux réel du device à chaque ouverture (sinon le kit joue faux).
+- **Timing** : le callback avance le transport du bloc complet puis rend ; chaque note est placée au **sample près** dans le bloc (`start_frame`), donc le groove ne dépend pas de la taille de buffer.
+- **Anti-clic** : fondu de fin de sample (3 ms) + fondu de fin dans le drum synth, vol de voix et choke en fondu 5 ms, clics métronome fondus.
+- **Diagnostic hors-ligne** : `cargo run --release -p maschine-engine --example render_groove -- /tmp/g.wav 12 48000 0.85` (crête, RMS, écrêtés, plus grand saut) et `--example render_kit` (les 16 instruments en WAV). Référence du groove démo : crête ≈0,92, RMS ≈-18 dB, 0 écrêtage, aucun saut anormal aux bords de boucle.
 
 ## Sampler
 

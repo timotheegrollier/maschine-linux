@@ -86,25 +86,38 @@ bytes 27..42 : pads 16 RGB (ordre hardware 13-16,9-12,5-8,1-4)
 
 ## Bulk Display — IF5 EP 0x04
 
-- 2 écrans 480×272, RGB565 BE, sans alpha.
-- Transfert : header 32 bytes + stream commandes 4 bytes + data.
+- 2 écrans 480×272, RGB565 big-endian, sans alpha.
+- Chaque fenêtre part dans un transfert Bulk OUT sur IF5/EP `0x04`.
+- Un transfert contient le header de 16 octets, `transmit` (4 octets), les
+  pixels RGB565 bruts, puis `blit` et `end` (4 octets chacun).
 
 ```
-Header (32B):
+Header fenêtre (16B):
  0: 0x84, 1: 0x00, 2: display (0x00 left / 0x01 right), 3: 0x60
  4-7: 0x00×4, 8-9: X BE, 10-11: Y BE, 12-13: W BE, 14-15: H BE
- 16: 0x02, 17-21: 0x00×5, 22-23: image_size/2 BE, 24-31: réservé
 
-Commands (4B header = code + 3B LE param) :
- 0x00 blit raw  : param = pixel_pairs, data = n*4 bytes (n*2 pixels RGB565)
- 0x01 repeat    : param = repetitions, data = 2 pixels (4B) répétés n fois (RLE solides)
- 0x02 unknown   : footer début
- 0x03 flush     : param 0
- 0x04 end       : param 0  (terminates)
- 0x40 end var.  : vu chez asutherland (0x40 00 01 00)
+Transmit (4B): 0x00 + pixel_pairs encodé sur 24 bits big-endian
+  pixel_pairs = (W × H) / 2
+Pixels: W × H valeurs RGB565 BE, sans compression
+Blit (4B): 0x03 0x00 0x00 0x00
+End  (4B): 0x40 0x00 0x00 0x00
 ```
 
-Implémentation `display.rs` : dirty-rect 16×16 coalescing, 30-60fps, un bulk par frame, full 480*272*2 = 261120 + header en un transfert. Sur paquet malformé → power-cycle nécessaire (guard).
+Une frame complète a `W=480`, `H=272`, `pixel_pairs=65 280` et fait
+261 148 octets. La sonde de reprise 2×1 pixels fait 32 octets.
+
+**Contrainte : `W` doit être pair.** Le MCU compte les pixels RGB565 par
+paires. Une fenêtre de largeur impaire laisse le dernier pixel hors du compte;
+les octets `blit`/`end` sont alors lus au mauvais offset et peuvent bloquer les
+rafraîchissements suivants. Le différentiel élargit les rectangles au pixel
+voisin pour conserver une largeur paire. L'encodeur refuse les fenêtres
+invalides avant l'envoi.
+
+`display_thread.rs` compare les rendus à 30 Hz, transmet les régions modifiées
+(jusqu'à 6 rectangles fusionnés si besoin) et renvoie les deux écrans en plein
+toutes les 2 secondes pour resynchroniser les framebuffers. Le débit USB moyen
+est limité à 1,6 Mo/s. Un succès de `write_bulk` confirme l'acceptation des
+octets par USB, pas leur affichage visuel : vérifier les deux LCD directement.
 
 ## Notes Linux
 
@@ -117,3 +130,9 @@ Implémentation `display.rs` : dirty-rect 16×16 coalescing, 30-60fps, un bulk p
 Vecteurs dans `crates/maschine-proto/tests/vectors.rs` issus de captures réelles (pads press/release, button Shift+Play).
 
 Voir aussi `crates/maschine-proto/tests/fuzz.rs` (proptest).
+
+Régressions écran : `cargo test -p maschine-proto` contrôle les fenêtres paires,
+le diff d'un pixel au bord droit, le compteur de paires et la reconstruction du
+framebuffer. `cargo test -p maschine-app` contrôle la sonde 2×1 et le routage des
+knobs après une navigation GUI. Ces tests ne remplacent pas le contrôle visuel
+sur le contrôleur.

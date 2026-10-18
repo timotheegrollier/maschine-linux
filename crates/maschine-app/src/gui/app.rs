@@ -110,6 +110,11 @@ pub struct GuiApp {
     pub browser_search: String,
     /// Catégorie browser.
     pub browser_category: usize,
+    /// Chemin du WAV à importer dans le Sound focalisé.
+    pub sample_path_input: String,
+    /// Résultats d'import traités sur le thread UI.
+    sample_load_tx: crossbeam_channel::Sender<(String, bool)>,
+    sample_load_rx: crossbeam_channel::Receiver<(String, bool)>,
     /// Dernière révision moteur rendue pour le miroir écrans.
     mirror_revision: u64,
     /// Instant du dernier rendu miroir.
@@ -137,6 +142,7 @@ impl GuiApp {
             .unwrap_or_else(|| "default".to_string());
         let settings = crate::settings::AppSettings::load();
         let selected = settings.audio_device.unwrap_or(current_dev);
+        let (sample_load_tx, sample_load_rx) = crossbeam_channel::unbounded();
         Self {
             engine,
             audio,
@@ -150,6 +156,9 @@ impl GuiApp {
             last_left_tab: 0,
             browser_search: String::new(),
             browser_category: 0,
+            sample_path_input: String::new(),
+            sample_load_tx,
+            sample_load_rx,
             mirror_revision: u64::MAX,
             mirror_last: Instant::now() - Duration::from_secs(10),
             left_tex: None,
@@ -160,6 +169,7 @@ impl GuiApp {
     /// Crée l'app (sans audio).
     #[cfg(not(feature = "audio"))]
     pub fn new(engine: Arc<Mutex<Engine>>, repaint: crate::gui::RepaintSignal) -> Self {
+        let (sample_load_tx, sample_load_rx) = crossbeam_channel::unbounded();
         Self {
             engine,
             repaint,
@@ -171,6 +181,9 @@ impl GuiApp {
             last_left_tab: 0,
             browser_search: String::new(),
             browser_category: 0,
+            sample_path_input: String::new(),
+            sample_load_tx,
+            sample_load_rx,
             mirror_revision: u64::MAX,
             mirror_last: Instant::now() - Duration::from_secs(10),
             left_tex: None,
@@ -208,6 +221,41 @@ impl GuiApp {
     /// Envoie un événement moteur.
     pub fn send(&self, ev: EngineEvent) {
         let _ = self.engine.lock().handle_event(ev);
+    }
+
+    /// Décode le WAV sur un thread de travail puis installe ses données sans
+    /// bloquer l'interface ni garder le verrou moteur pendant l'accès disque.
+    pub fn load_sample_async(&mut self, group: u8, sound: u8) {
+        let path = std::path::PathBuf::from(self.sample_path_input.trim());
+        if path.as_os_str().is_empty() {
+            self.status_message = Some(("Indique un chemin de fichier WAV.".to_string(), true));
+            return;
+        }
+        let engine = Arc::clone(&self.engine);
+        let result_tx = self.sample_load_tx.clone();
+        let repaint = self.repaint.clone();
+        self.status_message = Some((format!("Chargement {}…", path.display()), false));
+        let spawn = std::thread::Builder::new()
+            .name("maschine-sample-loader".to_string())
+            .spawn(move || {
+                let result = maschine_engine::Sampler::prepare_wav(&path, 36 + sound)
+                    .map_err(|error| error.to_string())
+                    .and_then(|zone| {
+                        engine
+                            .lock()
+                            .handle_event(EngineEvent::LoadPreparedSample { group, sound, zone })
+                            .map_err(|error| error.to_string())
+                    });
+                let message = match result {
+                    Ok(()) => (format!("Sample chargé : {}", path.display()), false),
+                    Err(error) => (format!("Échec du chargement WAV : {error}"), true),
+                };
+                let _ = result_tx.send(message);
+                repaint.notify();
+            });
+        if let Err(error) = spawn {
+            self.status_message = Some((format!("Impossible de lancer l'import : {error}"), true));
+        }
     }
 
     /// Résumé des stats audio (callbacks, misses, µs max).
@@ -748,6 +796,9 @@ impl eframe::App for GuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.repaint.attach(ctx);
         self.handle_keyboard(ctx);
+        while let Ok(message) = self.sample_load_rx.try_recv() {
+            self.status_message = Some(message);
+        }
 
         // Snapshot O(1) (Arc<Project>) : aucune copie du projet par frame.
         let snap = self.engine.lock().snapshot();
@@ -786,10 +837,10 @@ impl eframe::App for GuiApp {
                     if mach_button(ui, label, active).clicked {
                         self.view = v;
                         let tab = v.tab_index();
-                        if self.last_left_tab != tab {
-                            self.last_left_tab = tab;
-                            self.send(EngineEvent::SetLeftTab(tab));
-                        }
+                        // Re-sélectionner la vue active restaure aussi sa page
+                        // droite contextuelle après EVENTS/MACRO/SETTINGS.
+                        self.last_left_tab = tab;
+                        self.send(EngineEvent::SetLeftTab(tab));
                     }
                 }
 

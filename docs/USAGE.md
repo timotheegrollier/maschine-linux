@@ -28,7 +28,7 @@ Le daemon :
 4. Mappe via `HardwareMapper` → `MidiEvent` + `LedState`
 5. Envoie à `Engine` (Project/Transport/Sampler)
 6. Avance le transport (PPQ 960) et déclenche les patterns de la scène active
-7. Render le sampler (pour l'instant vers dummy, PipeWire-JACK arrivera)
+7. Rend les voix du moteur; `--no-audio` avance aussi le transport avec un rendu muet pour tester l'interface.
 
 Logs : `RUST_LOG=debug maschine-linux -vv daemon`
 
@@ -79,10 +79,34 @@ La GUI native affiche en temps réel :
 - **Grille de pads 4×4** : disposition identique au hardware MK3 pour frappe directe à la souris ou écran tactile.
 - **Éditeur de son / synthétiseur** : sélecteur de présets 808 (Kick, Snare, Hi-Hats, Clap, Tom, Rimshot, Cowbell, SubBass...), réglage dynamique de gain, panoramique, filtre coupe-bas/passe-haut résonant et enveloppe ADSR.
 - **Mixer 8 groupes (A..H)** : faders de volume, indicateurs de crête, mute et solo.
+- **Importer un sample** : dans Sampler, renseigner le chemin d'un fichier WAV et lancer l'import. Le décodage se fait en arrière-plan; la GUI reste interactive. Le Sound sélectionné est remplacé et le chemin est enregistré dans le projet.
+
+Le Sample Editor officiel (enregistrement, plages de lecture, slicing et édition des zones depuis la MK3) n'est pas encore implémenté. L'écran EVENTS affiche actuellement des informations sans éditer les événements.
 
 ## Écrans matériels LCD (Bulk USB)
 
-Les 2 écrans couleur 480×272 sont pilotés à 30–60 FPS via USB bulk (Interface 5) dès le branchement du contrôleur, sans pilote propriétaire NI.
+Les deux LCD 480×272 sont pilotés en USB Bulk (Interface 5). Le rendu est comparé à 30 Hz maximum; les seules régions modifiées sont envoyées, avec un budget moyen de 1,6 Mo/s et une réécriture complète périodique pour resynchroniser les écrans. Les fenêtres doivent avoir une largeur paire (paires de pixels RGB565).
+
+Pour tester le workflow physique après compilation :
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo check -p maschine-engine --no-default-features
+cargo test --workspace
+cargo build --workspace --release
+./target/release/maschine-linux gui --no-audio
+```
+
+Sur la MK3, sélectionne **EVENTS**, puis **SAMPLER** : l'écran droit doit
+revenir à l'enveloppe du Sound. Tourne ensuite le knob 1; le volume affiché du
+Sound doit réagir dès le premier cran. La fenêtre GUI seule et un log de succès
+USB ne valident pas le contenu visible sur les deux LCD.
+
+Pour valider le chargement d'un sample, importe un WAV depuis Sampler, appuie
+sur `Ctrl+S`, puis ferme et rouvre le projet sauvegardé via l'option `--project`.
+Vérifie que le nom, la waveform et l'audition du Sound sont toujours présents. Les cas automatisés et leur
+correspondance avec les commandes CI sont décrits dans [TESTING.md](TESTING.md).
 
 ## Latence
 

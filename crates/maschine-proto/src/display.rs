@@ -1,4 +1,4 @@
-//! Bulk display — 2× 480×272 RGB565 + RLE encode.
+//! Bulk display — 2× 480×272 RGB565, fenêtres brutes alignées par paires.
 
 use crate::error::{ProtoError, Result};
 
@@ -126,6 +126,15 @@ impl DisplayFrame {
         }
         if self.w == 0 || self.h == 0 {
             return Err(ProtoError::InvalidDisplayData("w/h zero"));
+        }
+        // The MK3 LCD command stream counts RGB565 pixels in pairs. Each row
+        // must therefore contain an even number of pixels; otherwise the final
+        // pixel is not represented by the 24-bit pair count and the following
+        // blit/end bytes are consumed out of alignment by the controller.
+        if self.w % 2 != 0 {
+            return Err(ProtoError::InvalidDisplayData(
+                "display window width must be even (RGB565 pixel pairs)",
+            ));
         }
         if self.x as usize + self.w as usize > crate::consts::DISPLAY_WIDTH
             || self.y as usize + self.h as usize > crate::consts::DISPLAY_HEIGHT
@@ -305,6 +314,10 @@ impl FrameDiffer {
             .iter()
             .map(|&(y0, y1)| {
                 let (x0, x1) = self.col_range(next, y0, y1);
+                // Expand the dirty bounds horizontally to an even-pixel
+                // boundary so every window contains whole RGB565 pairs.
+                let x0 = x0 & !1;
+                let x1 = ((x1 + 1) & !1).min(self.w);
                 (x0 as u16, y0 as u16, (x1 - x0) as u16, (y1 - y0) as u16)
             })
             .collect();
@@ -531,7 +544,7 @@ mod tests {
 
     #[test]
     fn differ_first_diff_is_full_frame() {
-        let mut d = FrameDiffer::new(DisplayId::Left);
+        let d = FrameDiffer::new(DisplayId::Left);
         let frame = blank_pair(DisplayId::Left);
         let rects = d.diff(&frame);
         assert_eq!(rects.len(), 1);
@@ -609,6 +622,40 @@ mod tests {
     }
 
     #[test]
+    fn differ_expands_single_pixel_change_to_valid_rgb565_pair() {
+        let mut d = FrameDiffer::new(DisplayId::Right);
+        let mut frame = blank_pair(DisplayId::Right);
+        d.commit(&frame);
+        frame.pixels[271 * 480 + 479] = DisplayPixel::WHITE;
+
+        let rects = d.diff(&frame);
+        assert_eq!(rects.len(), 1);
+        assert_eq!(
+            (rects[0].x, rects[0].y, rects[0].w, rects[0].h),
+            (478, 271, 2, 1)
+        );
+        assert_eq!(rects[0].pixels.len() % 2, 0);
+        let wire = encode_bulk_transfer(&rects[0]).unwrap();
+        assert_eq!(&wire[16..20], &[0x00, 0x00, 0x00, 0x01]);
+        assert_eq!(&wire[wire.len() - 8..wire.len() - 4], &[0x03, 0, 0, 0]);
+        assert_eq!(&wire[wire.len() - 4..], &[0x40, 0, 0, 0]);
+    }
+
+    #[test]
+    fn odd_width_display_window_is_rejected() {
+        let frame = DisplayFrame {
+            display: DisplayId::Left,
+            x: 0,
+            y: 0,
+            w: 1,
+            h: 1,
+            pixels: vec![DisplayPixel::BLACK],
+        };
+        assert!(frame.validate().is_err());
+        assert!(encode_bulk_transfer(&frame).is_err());
+    }
+
+    #[test]
     fn differ_invalidate_forces_full_frame() {
         let mut d = FrameDiffer::new(DisplayId::Left);
         let frame = blank_pair(DisplayId::Left);
@@ -657,7 +704,7 @@ mod tests {
             (rng >> 32) as u32
         };
         for round in 0..12 {
-            let mut prev = frame.pixels.clone();
+            let prev = frame.pixels.clone();
             assert_eq!(d.prev, prev, "round {round}: differ désynchronisé");
             let changes = 5 + (next_u32() % 400) as usize;
             for _ in 0..changes {
@@ -673,6 +720,13 @@ mod tests {
                 }
             }
             let rects = d.diff(&frame);
+            for rect in &rects {
+                assert_eq!(rect.w % 2, 0, "round {round}: odd-width window");
+                assert!(
+                    encode_bulk_transfer(rect).is_ok(),
+                    "round {round}: invalid window"
+                );
+            }
             let mut applied = prev.clone();
             apply_rects(&mut applied, 480, &rects);
             if applied != frame.pixels {

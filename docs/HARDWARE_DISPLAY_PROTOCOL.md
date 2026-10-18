@@ -62,10 +62,17 @@ Définit la zone cible de dessin et l'écran :
 | **0x0E..0x0F** | `0x01 0x10` | Hauteur (uint16 Big-Endian = 272) |
 
 ### B. Commande Transmit (Offset 16..19 : 4 octets)
-Définit le nombre de paires de pixels (half-pixels) à transmettre :
-- Formule : `half_pixels = (largeur * hauteur) / 2 = 65 280 = 0x00FF00`
-- Format : Big-Endian 24 bits avec le premier octet écrasé par le code commande `0x00` (RAW stream).
-- Octets sur le câble : `[0x00, 0x00, 0xFF, 0x00]`.
+Définit le nombre de paires de pixels à transmettre :
+- Formule : `pixel_pairs = (largeur * hauteur) / 2 = 65 280 = 0x00FF00` pour une frame complète.
+- Format : opcode `0x00`, puis compteur 24 bits big-endian.
+- Octets sur le câble pour la frame complète : `[0x00, 0x00, 0xFF, 0x00]`.
+
+**Les fenêtres doivent avoir une largeur paire.** Les pixels RGB565 sont
+consommés deux par deux par le compteur. Une fenêtre impaire peut décaler la
+lecture de `blit` et `end`, puis bloquer les rafraîchissements suivants. Le
+différentiel aligne chaque rectangle sur une paire; l'encodeur rejette les
+largeurs impaires. La sonde de reprise est une fenêtre valide de 2×1 pixels
+(32 octets), jamais une fenêtre 1×1.
 
 ### C. Données Pixels (Offset 20..261139 : 261 120 octets)
 - `480 × 272 = 130 560` pixels.
@@ -77,13 +84,21 @@ Définit le nombre de paires de pixels (half-pixels) à transmettre :
 
 ---
 
-## 4. Contraintes temporelles et Watchdog firmware
+## 4. Cadence et reprise
 
-1. **Watchdog matériel :** Si aucun paquet d'affichage n'est reçu sur l'Endpoint 0x04 pendant **~2 secondes**, le contrôleur interne repasse les écrans en veille ou réaffiche le logo d'accueil (splash).
-2. **Fréquence recommandée :** Un rafraîchissement continu à **15 FPS (~66 ms)** maintient le watchdog actif avec une charge CPU négligeable (< 1.5% sur x86_64).
-3. **Monolithique vs Split :**
+1. Le thread compare les rendus à **30 Hz maximum**, mais ne transmet que les régions modifiées et limite le débit Bulk moyen à **1,6 Mo/s**.
+2. **Monolithique vs Split :**
    - L'envoi d'un buffer unique de 261 148 octets via `libusb_bulk_transfer` / `write_bulk` est pris en charge nativement par le contrôleur USB High-Speed (qui découpe automatiquement en paquets USB de 512 octets au niveau matériel).
    - Ne pas forcer un découpage manuel arbitraire de paquets dans le code userspace.
+
+Le thread renvoie une paire plein écran toutes les 2 secondes pour resynchroniser
+le framebuffer du contrôleur. Cette cadence est une stratégie logicielle de
+resynchronisation; elle ne prétend pas mesurer un watchdog firmware.
+
+Un retour `Ok` de `write_bulk` confirme seulement que l'USB a accepté les
+octets. Il ne confirme pas le rendu visuel du LCD; vérifier directement les
+changements de page, les couleurs et les valeurs des paramètres sur le
+contrôleur.
 
 ---
 

@@ -247,6 +247,19 @@ fn init_logger(verbose: u8) {
         .try_init();
 }
 
+/// Met le mapper matériel au même contexte que le moteur avant un nouvel input.
+/// En GUI, les onglets peuvent changer sans passer par le mapper ; sans cette
+/// synchro pré-événement, le premier cran de knob part vers l'ancienne vue.
+fn sync_mapper_context(
+    mapper: &mut HardwareMapper,
+    snap: &maschine_engine::engine::HardwareSnapshot,
+) {
+    mapper.group_focus = snap.group_focus;
+    mapper.active_sound = snap.active_sound;
+    mapper.left_tab = snap.left_tab;
+    mapper.right_tab = snap.right_tab;
+}
+
 fn main() -> anyhow::Result<()> {
     init_ctrlc();
     let cli = Cli::parse();
@@ -397,6 +410,7 @@ fn cmd_daemon(
     stress: bool,
 ) -> anyhow::Result<()> {
     println!("# maschine-linux daemon — Ctrl+C pour quitter");
+    let project_path = project.clone();
     let proj = if let Some(p) = project {
         println!("Chargement {p:?}");
         Project::load_json(&p)?
@@ -434,6 +448,9 @@ fn cmd_daemon(
     // Ajoute le kit complet 808 DSP (16 instruments analogiques authentiques)
     {
         engine.lock().load_default_808_kit();
+    }
+    if let Some(path) = project_path.as_deref() {
+        engine.lock().restore_project_samples(path)?;
     }
 
     // Audio — cpal
@@ -1205,10 +1222,7 @@ fn cmd_daemon(
     ) {
         let snap = engine.lock().hardware_snapshot();
         // Le mapper suit l'engine (la GUI peut aussi changer groupe/son/onglets).
-        mapper.group_focus = snap.group_focus;
-        mapper.active_sound = snap.active_sound;
-        mapper.left_tab = snap.left_tab;
-        mapper.right_tab = snap.right_tab;
+        sync_mapper_context(mapper, &snap);
         // Couleurs des pads = couleurs des Sounds du groupe focus (comme Maschine).
         for (index, color_index) in snap.pad_colors.iter().enumerate() {
             if let Some(color) = color_index.and_then(maschine_proto::color::Color::from_index) {
@@ -1335,6 +1349,11 @@ fn cmd_daemon(
                                 _ => {}
                             }
 
+                            // La GUI peut avoir changé de vue depuis le dernier
+                            // événement HID : router ce knob avec le contexte
+                            // moteur courant, pas celui mémorisé par le mapper.
+                            let context = engine_bg.lock().hardware_snapshot();
+                            sync_mapper_context(&mut mapper, &context);
                             let actions = mapper.handle_hardware_event(ev);
                             #[cfg(feature = "midi-alsa")]
                             if let Some(ref ports) = midi_ports {
@@ -2146,6 +2165,37 @@ fn cmd_audio_test(freq: f32, duration: f32, device: Option<String>) -> anyhow::R
     {
         let _ = (freq, duration, device);
         anyhow::bail!("feature `audio` non activée — rebuild avec --features audio");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gui_sampler_navigation_routes_next_hardware_knob_to_sound() {
+        let mut engine = Engine::new_demo(48000);
+        engine.handle_event(EngineEvent::SetRightTab(1)).unwrap();
+        engine.handle_event(EngineEvent::SetLeftTab(2)).unwrap();
+
+        let mut mapper = HardwareMapper::with_default();
+        mapper.left_tab = 0;
+        mapper.right_tab = 1;
+        let context = engine.hardware_snapshot();
+        sync_mapper_context(&mut mapper, &context);
+
+        let event = |value| {
+            HardwareEvent::Encoder(maschine_proto::hid_input::EncoderEvent {
+                id: 1,
+                value,
+                touched: true,
+            })
+        };
+        let _ = mapper.handle_hardware_event(event(100)); // baseline absolu
+        let actions = mapper.handle_hardware_event(event(101));
+        assert!(actions.contains(&MapperAction::SoundVolumeDelta(1.0)));
+        assert_eq!(mapper.left_tab, 2);
+        assert_eq!(mapper.right_tab, 0);
     }
 }
 

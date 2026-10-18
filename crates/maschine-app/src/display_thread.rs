@@ -7,7 +7,9 @@
 //!   finissent en timeout et les écrans se figent.
 //! - Le protocole accepte un **header de fenêtre** (`x/y/w/h`) : on n'envoie que
 //!   les régions modifiées ([`FrameDiffer`]), typiquement quelques Ko.
-//! - Un **budget d'octets** (~2,5 Mo/s) lisse les rafraîchissements complets
+//! - Les deux images sont comparées à 30 Hz (VU-mètres/animations inclus) et
+//!   une paire plein écran est renvoyée toutes les 2 s pour resynchroniser le MCU.
+//! - Un **budget d'octets** (~1,6 Mo/s) lisse les rafraîchissements complets
 //!   (changement de vue) sans jamais bloquer les petites mises à jour.
 //! - Toute erreur invalide le diff et force une frame complète ; après plusieurs
 //!   échecs : `clear_halt` + backoff, puis ré-acquisition de l'interface.
@@ -23,6 +25,8 @@ use std::time::{Duration, Instant};
 use maschine_engine::Engine;
 #[cfg(feature = "usb")]
 use maschine_hardware::usb::BulkHandle;
+#[cfg(all(test, feature = "usb"))]
+use maschine_proto::display::encode_bulk_transfer;
 #[cfg(feature = "usb")]
 use maschine_proto::display::{transfer_len, DisplayFrame, DisplayId, DisplayPixel, FrameDiffer};
 #[cfg(feature = "usb")]
@@ -48,6 +52,10 @@ const SLOW_TRANSFER: Duration = Duration::from_millis(120);
 /// Intervalle du log de statistiques écrans.
 #[cfg(feature = "usb")]
 const STATS_INTERVAL: Duration = Duration::from_secs(10);
+/// Réécriture complète périodique pour resynchroniser le framebuffer du MCU,
+/// même si un transfert précédent a été acquitté sans être appliqué à l'écran.
+#[cfg(feature = "usb")]
+const FULL_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 /// Backoff après erreur (min, max) — assez long pour laisser la file RX du
 /// MCU se vider avant de repousser des centaines de Ko.
 #[cfg(feature = "usb")]
@@ -120,6 +128,11 @@ impl ScreenState {
         self.differ.invalidate();
         self.pending_full = true;
     }
+
+    /// Force une réécriture complète au prochain envoi.
+    fn force_full(&mut self) {
+        self.pending_full = true;
+    }
 }
 
 /// Statistiques écrans (log périodique).
@@ -165,20 +178,20 @@ impl DisplayStats {
     }
 }
 
-/// Sonde de vie du MCU : fenêtre 1×1 px dans le coin bas-droit (30 octets).
+/// Sonde de vie du MCU : fenêtre 2×1 px dans le coin bas-droit (32 octets).
 ///
 /// Après une erreur, on ne renvoie les vraies frames que si cette
-/// micro-écriture passe : inutile de noyer une file RX saturée. Le pixel noir
-/// écrasé se resynchronise tout seul au diff suivant.
+/// micro-écriture passe : inutile de noyer une file RX saturée. Les deux pixels
+/// noirs écrasés se resynchronisent tout seuls au diff suivant.
 #[cfg(feature = "usb")]
 fn probe_frame() -> DisplayFrame {
     DisplayFrame {
         display: DisplayId::Right,
-        x: 479,
+        x: 478,
         y: 271,
-        w: 1,
+        w: 2,
         h: 1,
-        pixels: vec![DisplayPixel::BLACK],
+        pixels: vec![DisplayPixel::BLACK; 2],
     }
 }
 
@@ -283,10 +296,8 @@ pub fn spawn_display_thread(
                 };
                 let mut budget = BYTE_BURST;
                 let mut last_refill = Instant::now();
-                let mut last_revision = u64::MAX;
                 let mut last_check = Instant::now() - Duration::from_secs(10);
-                let mut last_send = last_check;
-                let mut pending = true;
+                let mut last_full_refresh = Instant::now() - FULL_REFRESH_INTERVAL;
                 let mut backoff_until: Option<Instant> = None;
                 let mut consecutive_errors = 0u32;
                 let mut soft_retries = 0u32;
@@ -318,24 +329,21 @@ pub fn spawn_display_thread(
                     last_refill = now;
                     budget = (budget + dt * BYTE_RATE).min(BYTE_BURST);
 
-                    let (snap, revision) = {
-                        let eng = engine.lock();
-                        (eng.snapshot(), eng.revision())
-                    };
-
-                    let dirty = revision != last_revision
-                        || pending
-                        || last_send.elapsed() > Duration::from_secs(2);
-                    if !dirty {
-                        std::thread::sleep(Duration::from_millis(3));
-                        continue;
+                    let snap = engine.lock().snapshot();
+                    // Le snapshot inclut les VU-mètres et les animations audio,
+                    // qui peuvent évoluer sans incrémenter `revision`. Le thread
+                    // est déjà cadencé à 30 Hz : comparer chaque frame permet
+                    // d'envoyer leurs diffs sans attendre une action utilisateur.
+                    let full_refresh_due = last_full_refresh.elapsed() >= FULL_REFRESH_INTERVAL;
+                    if full_refresh_due {
+                        left.force_full();
+                        right.force_full();
                     }
-                    last_revision = revision;
 
                     let mut failed = false;
 
                     // Sonde en reprise : après une erreur, vérifier d'abord que le
-                    // MCU re-accepte une micro-écriture (fenêtre 1×1 px ≈ 30 o),
+                    // MCU re-accepte une micro-écriture (fenêtre 2×1 px ≈ 32 o),
                     // avant de renvoyer de vraies frames — inutile de noyer une
                     // file RX saturée avec des centaines de Ko.
                     if consecutive_errors > 0 {
@@ -363,15 +371,16 @@ pub fn spawn_display_thread(
                             .map(|f| transfer_len(f.pixels.len()))
                             .sum();
 
-                        // Pas assez de budget : on réessaiera au prochain tick. Les
-                        // diffs ne sont pas commités → rien n'est perdu (coalescing).
+                        // Pas assez de budget : le prochain tick recalculera les
+                        // diffs depuis le dernier framebuffer confirmé.
                         if bytes as f64 > budget {
-                            pending = true;
                             std::thread::sleep(Duration::from_millis(10));
                             continue;
                         }
                         budget -= bytes as f64;
-                        stats.frames += 1;
+                        if bytes > 0 {
+                            stats.frames += 1;
+                        }
 
                         let left_result =
                             flush_screen(&mut bulk, &mut left, &left_frame, left_plan, &mut stats);
@@ -393,12 +402,14 @@ pub fn spawn_display_thread(
 
                     if failed {
                         consecutive_errors += 1;
-                        pending = true;
                         if let Some(delay) = backoff_for(consecutive_errors) {
                             // Le pipe peut être bloqué : halt + backoff exponentiel
                             // (assez long pour laisser la file RX du MCU se vider).
                             bulk.clear_stall();
-                            backoff_until = Some(now + delay);
+                            // Le transfert USB peut déjà avoir consommé jusqu'à
+                            // une seconde avant de retourner l'erreur : le backoff
+                            // doit partir de maintenant, pas du début de l'itération.
+                            backoff_until = Some(Instant::now() + delay);
                         } else {
                             // ── Escalade : ré-acquisition DOUCE de l'interface
                             // (release + claim + clear halt). Jamais de reset USB en
@@ -416,7 +427,7 @@ pub fn spawn_display_thread(
                                     left.invalidate();
                                     right.invalidate();
                                     consecutive_errors = 0;
-                                    backoff_until = Some(now + Duration::from_secs(cool));
+                                    backoff_until = Some(Instant::now() + Duration::from_secs(cool));
                                 }
                                 Err(e) => {
                                     // Device probablement parti (débranché) :
@@ -431,8 +442,9 @@ pub fn spawn_display_thread(
                     } else {
                         consecutive_errors = 0;
                         soft_retries = 0;
-                        pending = false;
-                        last_send = Instant::now();
+                        if full_refresh_due {
+                            last_full_refresh = Instant::now();
+                        }
                         if first_frame {
                             first_frame = false;
                             log::info!("✓ Écrans MK3 rafraîchis (première frame OK)");
@@ -460,4 +472,18 @@ pub fn spawn_display_thread(
         .map_err(|e| anyhow::anyhow!("spawn display thread: {e}"))?;
 
     Ok(DisplayThreadHandle { join, stop })
+}
+
+#[cfg(all(test, feature = "usb"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_probe_is_a_valid_rgb565_pixel_pair() {
+        let probe = probe_frame();
+        assert_eq!((probe.x, probe.y, probe.w, probe.h), (478, 271, 2, 1));
+        assert_eq!(transfer_len(probe.pixels.len()), 32);
+        let wire = encode_bulk_transfer(&probe).unwrap();
+        assert_eq!(&wire[16..20], &[0x00, 0x00, 0x00, 0x01]);
+    }
 }

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use crate::project::{BarsBeatsTicks, PatternEvent, Project, Scene, Section};
+use crate::project::{BarsBeatsTicks, PatternEvent, Project, Scene, Section, Zone};
 use crate::sampler::Sampler;
 use crate::sequencer::{Grid, Sequencer};
 use crate::transport::{Transport, TransportState};
@@ -170,6 +170,15 @@ pub enum EngineEvent {
         /// Path to WAV file
         path: std::path::PathBuf,
     },
+    /// Installe un WAV déjà décodé hors du verrou moteur/audio.
+    LoadPreparedSample {
+        /// Group 0..7
+        group: u8,
+        /// Sound 0..15
+        sound: u8,
+        /// Sample et métadonnées pré-calculées
+        zone: crate::sampler::ZoneMapping,
+    },
     /// Défilement preset dans le Browser (+/- step)
     BrowsePresetStep(i32),
     /// Sélection de la mesure à afficher / éditer
@@ -220,6 +229,12 @@ pub const DRUM_PRESET_NAMES: [&str; 16] = [
     "Synth Stab",
     "Sub Bass 808",
 ];
+
+/// Clé stable de runtime pour un Sound : le même pad d'un autre Group est un
+/// instrument distinct, comme dans le modèle Maschine.
+const fn sampler_sound_id(group: u8, sound: u8) -> crate::sampler::SoundId {
+    crate::sampler::sound_id(group, sound)
+}
 
 /// Snapshot lecture seule pour UI.
 #[derive(Debug, Clone)]
@@ -287,7 +302,7 @@ pub struct EngineSnapshot {
     /// Labels des 8 soft keys (boutons sous les écrans — contexte courant).
     pub soft_labels: [&'static str; 8],
     /// Enveloppe (min,max) du sample du Sound actif — waveform des écrans.
-    pub waveform: Option<Vec<(f32, f32)>>,
+    pub waveform: Option<Arc<[(f32, f32)]>>,
     /// Durée du sample du Sound actif (secondes).
     pub sample_duration: f32,
     /// Compteur de révision : change dès qu'un état a bougé (repaint UI/écrans).
@@ -597,8 +612,12 @@ impl Engine {
             master_level: self.master_meter,
             master_peak: self.master_peak_hold,
             soft_labels: self.soft_key_labels(),
-            waveform: self.sampler.waveform_envelope(self.active_sound, 120),
-            sample_duration: self.sampler.sample_duration_secs(self.active_sound),
+            waveform: self
+                .sampler
+                .waveform_envelope(sampler_sound_id(self.group_focus, self.active_sound), 512),
+            sample_duration: self
+                .sampler
+                .sample_duration_secs(sampler_sound_id(self.group_focus, self.active_sound)),
             revision: self.revision,
         }
     }
@@ -700,11 +719,13 @@ impl Engine {
         for (pad, _name, samp) in kit {
             let sample = std::sync::Arc::new(samp);
             self.preset_samples[pad as usize] = Some(sample.clone());
-            self.sampler.clear_sound(pad);
+            let sound_id = sampler_sound_id(0, pad);
+            self.sampler.clear_sound(sound_id);
             self.sampler.add_zone(
-                pad,
+                sound_id,
                 crate::sampler::ZoneMapping {
                     sample: Some(sample),
+                    waveform_cache: None,
                     sample_path: None,
                     sample_rate: self.transport.sample_rate,
                     root_key: 36 + pad,
@@ -723,6 +744,151 @@ impl Engine {
         self.transport.loop_enabled = true;
         self.transport.loop_start = 0;
         self.transport.loop_end = 2 * 4 * 960;
+    }
+
+    fn default_runtime_sampler(&self, project: &Project) -> Sampler {
+        let mut sampler = Sampler::new(self.transport.sample_rate);
+        for (group_index, group) in project.groups.iter().enumerate() {
+            let Ok(group_id) = u8::try_from(group_index) else {
+                continue;
+            };
+            for (sound_index, sound) in group.sounds.iter().enumerate() {
+                let Some(sound) = sound else { continue };
+                let saved_preset = DRUM_PRESET_NAMES
+                    .iter()
+                    .position(|name| *name == sound.name);
+                let preset = saved_preset.or((group_index == 0).then_some(sound_index));
+                let Some(preset) = preset.filter(|index| *index < 16) else {
+                    continue;
+                };
+                let sample = self.drum_preset_sample(preset as u8);
+                let sound_index = sound_index as u8;
+                sampler.add_zone(
+                    sampler_sound_id(group_id, sound_index),
+                    crate::sampler::ZoneMapping {
+                        sample: Some(sample),
+                        sample_path: None,
+                        sample_rate: self.transport.sample_rate,
+                        root_key: 36 + sound_index,
+                        lokey: 0,
+                        hikey: 127,
+                        lovel: 0,
+                        hivel: 127,
+                        choke_group: if preset == 2 || preset == 3 {
+                            Some(1)
+                        } else {
+                            None
+                        },
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+        sampler
+    }
+
+    /// Recharge les WAV référencés par le projet, résolus relativement au
+    /// fichier projet lorsqu'ils ne sont pas des chemins absolus.
+    pub fn restore_project_samples(&mut self, project_path: &std::path::Path) -> crate::Result<()> {
+        let project = Arc::clone(&self.project.read());
+        let sample_zones = Self::prepare_project_samples(&project, project_path)?;
+        self.sampler = self.default_runtime_sampler(&project);
+        for (sound_id, zones) in sample_zones {
+            self.sampler.clear_sound(sound_id);
+            for zone in zones {
+                self.sampler.add_zone(sound_id, zone);
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "sampler")]
+    fn prepare_project_samples(
+        project: &Project,
+        project_path: &std::path::Path,
+    ) -> crate::Result<Vec<(u16, Vec<crate::sampler::ZoneMapping>)>> {
+        let project_dir = project_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let mut result = Vec::new();
+        for (group_index, group) in project.groups.iter().enumerate() {
+            let group_id = u8::try_from(group_index).map_err(|_| {
+                crate::EngineError::Validation("project has more than 256 groups".to_string())
+            })?;
+            for (sound_index, sound) in group.sounds.iter().enumerate() {
+                let Some(sound) = sound else { continue };
+                let mut zones = Vec::new();
+                for mapping in &sound.zones {
+                    let Some(sample_path) = mapping.sample_path.as_deref() else {
+                        continue;
+                    };
+                    let path = std::path::Path::new(sample_path);
+                    let resolved = if path.is_absolute() {
+                        path.to_path_buf()
+                    } else {
+                        project_dir.join(path)
+                    };
+                    zones.push(Sampler::prepare_wav_for_zone(&resolved, mapping)?);
+                }
+                if !zones.is_empty() {
+                    result.push((sampler_sound_id(group_id, sound_index as u8), zones));
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    #[cfg(not(feature = "sampler"))]
+    fn prepare_project_samples(
+        _project: &Project,
+        _project_path: &std::path::Path,
+    ) -> crate::Result<Vec<(u16, Vec<crate::sampler::ZoneMapping>)>> {
+        Ok(Vec::new())
+    }
+
+    fn install_sample_zone(
+        &mut self,
+        group: u8,
+        sound: u8,
+        zone: crate::sampler::ZoneMapping,
+    ) -> crate::Result<()> {
+        if sound >= 16 || group as usize >= self.project.read().groups.len() {
+            return Err(crate::EngineError::Validation(format!(
+                "sample target out of range: group {group}, sound {sound}"
+            )));
+        }
+        let sample_path = zone.sample_path.clone().ok_or_else(|| {
+            crate::EngineError::Validation("loaded sample has no source path".to_string())
+        })?;
+        let sound_id = sampler_sound_id(group, sound);
+        self.sampler.clear_sound(sound_id);
+        self.sampler.add_zone(sound_id, zone.clone());
+
+        let mut guard = self.project.write();
+        let project = project_mut(&mut guard);
+        let group = &mut project.groups[group as usize];
+        let name = std::path::Path::new(&sample_path)
+            .file_stem()
+            .and_then(|part| part.to_str())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("Sample")
+            .to_string();
+        let target = &mut group.sounds[sound as usize];
+        let target_sound = target.get_or_insert_with(|| crate::project::Sound::new(&name, 78));
+        target_sound.name = name;
+        target_sound.zones = vec![Zone {
+            sample_path: Some(sample_path),
+            root_key: zone.root_key,
+            lokey: zone.lokey,
+            hikey: zone.hikey,
+            lovel: zone.lovel,
+            hivel: zone.hivel,
+            tune_cents: zone.tune_cents,
+            pan: zone.pan,
+            volume_db: zone.volume_db,
+            ..Zone::default()
+        }];
+        Ok(())
     }
 
     /// Réaligne l'horloge transport/sampler sur le taux du périphérique sans
@@ -756,7 +922,8 @@ impl Engine {
             self.preset_samples[i] = None;
             let new = self.drum_preset_sample(i as u8);
             self.preset_samples[i] = Some(new.clone());
-            self.sampler.replace_zone_sample(i as u8, &old, new, rate);
+            self.sampler
+                .replace_zone_sample(sampler_sound_id(0, i as u8), &old, new, rate);
         }
     }
 
@@ -806,15 +973,15 @@ impl Engine {
                 }
                 if pressed {
                     // trigger sampler pour le Sound du Group focus
-                    let sound = pad;
+                    let sound = sampler_sound_id(self.group_focus, pad);
                     let note = 36 + pad;
                     self.note_pad_activity(pad, velocity);
                     let guard = self.project.read();
-                    let group_gain = guard
+                    let (group_gain, group_pan) = guard
                         .groups
                         .get(self.group_focus as usize)
-                        .map(|g| 10.0f32.powf(g.volume_db / 20.0))
-                        .unwrap_or(1.0);
+                        .map(|g| (10.0f32.powf(g.volume_db / 20.0), g.pan))
+                        .unwrap_or((1.0, 0.0));
                     let (snd_gain, snd_pan, vparams) = guard
                         .groups
                         .get(self.group_focus as usize)
@@ -839,6 +1006,7 @@ impl Engine {
                         self.sampler.set_voice_gain(idx, group_gain * snd_gain);
                         self.sampler.set_voice_pan(idx, snd_pan);
                         self.sampler.set_voice_group(idx, self.group_focus);
+                        self.sampler.set_voice_group_pan(idx, group_pan);
                         self.sampler.set_voice_params(idx, &vparams);
                     }
                     // si Recording, ajoute event au pattern actif
@@ -847,7 +1015,8 @@ impl Engine {
                     }
                 } else {
                     let note = 36 + pad;
-                    self.sampler.note_off(pad, note);
+                    self.sampler
+                        .note_off(sampler_sound_id(self.group_focus, pad), note);
                 }
             }
             EngineEvent::Transport { play, rec, stop } => {
@@ -899,6 +1068,15 @@ impl Engine {
             }
             EngineEvent::Load(path) => {
                 let p = Project::load_json(&path)?;
+                let sample_zones = Self::prepare_project_samples(&p, &path)?;
+                let mut sampler = self.default_runtime_sampler(&p);
+                for (sound_id, zones) in sample_zones {
+                    sampler.clear_sound(sound_id);
+                    for zone in zones {
+                        sampler.add_zone(sound_id, zone);
+                    }
+                }
+                self.sampler = sampler;
                 self.transport.bpm = p.bpm;
                 *self.project.write() = Arc::new(p);
             }
@@ -932,9 +1110,19 @@ impl Engine {
             }
             EngineEvent::SetLeftTab(tab) => {
                 self.left_tab = tab.min(3);
+                // Une vue principale choisit son écran droit contextuel
+                // (SAMPLER, MIXER, BROWSER, PATTERN/STEP). Un ancien overlay
+                // EVENTS/MACRO/SETTINGS ne doit pas masquer cette transition.
+                self.right_tab = 0;
+                if self.left_tab != 0 {
+                    self.song_mode = false;
+                }
             }
             EngineEvent::SetRightTab(tab) => {
                 self.right_tab = tab.min(3);
+                if self.right_tab != 0 {
+                    self.song_mode = false;
+                }
             }
             EngineEvent::SelectSound(snd) => {
                 self.active_sound = snd.min(15);
@@ -944,12 +1132,20 @@ impl Engine {
                 sound,
                 volume_db,
             } => {
+                let mut gain_ratio = None;
                 let mut guard = self.project.write();
                 let proj = project_mut(&mut guard);
                 if let Some(g) = proj.groups.get_mut(group as usize) {
                     if let Some(s) = g.sounds.get_mut(sound as usize).and_then(|s| s.as_mut()) {
-                        s.volume_db = volume_db.clamp(-60.0, 12.0);
+                        let next = volume_db.clamp(-60.0, 12.0);
+                        gain_ratio = Some(10.0_f32.powf((next - s.volume_db) / 20.0));
+                        s.volume_db = next;
                     }
+                }
+                drop(guard);
+                if let Some(ratio) = gain_ratio {
+                    self.sampler
+                        .scale_sound_gain(sampler_sound_id(group, sound), ratio);
                 }
             }
             EngineEvent::SoundPan { group, sound, pan } => {
@@ -963,9 +1159,8 @@ impl Engine {
                         }
                     }
                 }
-                if group == self.group_focus {
-                    self.sampler.update_sound_pan(sound, p);
-                }
+                self.sampler
+                    .update_sound_pan(sampler_sound_id(group, sound), p);
             }
             EngineEvent::SoundFilterCutoff {
                 group,
@@ -988,7 +1183,8 @@ impl Engine {
                     }
                 }
                 if group == self.group_focus {
-                    self.sampler.update_sound_filter(sound, c, reso);
+                    self.sampler
+                        .update_sound_filter(sampler_sound_id(group, sound), c, reso);
                 }
             }
             EngineEvent::SoundFilterReso {
@@ -1012,7 +1208,8 @@ impl Engine {
                     }
                 }
                 if group == self.group_focus {
-                    self.sampler.update_sound_filter(sound, cutoff, r);
+                    self.sampler
+                        .update_sound_filter(sampler_sound_id(group, sound), cutoff, r);
                 }
             }
             EngineEvent::SoundAdsr {
@@ -1040,21 +1237,36 @@ impl Engine {
                     }
                 }
                 if group == self.group_focus {
-                    self.sampler.update_sound_adsr(sound, a, d, su, rel);
+                    self.sampler
+                        .update_sound_adsr(sampler_sound_id(group, sound), a, d, su, rel);
                 }
             }
             EngineEvent::GroupVolume { group, volume_db } => {
+                let mut gain_ratio = None;
                 let mut guard = self.project.write();
                 let proj = project_mut(&mut guard);
                 if let Some(g) = proj.groups.get_mut(group as usize) {
-                    g.volume_db = volume_db.clamp(-60.0, 12.0);
+                    let next = volume_db.clamp(-60.0, 12.0);
+                    gain_ratio = Some(10.0_f32.powf((next - g.volume_db) / 20.0));
+                    g.volume_db = next;
+                }
+                drop(guard);
+                if let Some(ratio) = gain_ratio {
+                    self.sampler.scale_group_gain(group, ratio);
                 }
             }
             EngineEvent::GroupPan { group, pan } => {
+                let mut next_pan = None;
                 let mut guard = self.project.write();
                 let proj = project_mut(&mut guard);
                 if let Some(g) = proj.groups.get_mut(group as usize) {
-                    g.pan = pan.clamp(-1.0, 1.0);
+                    let next = pan.clamp(-1.0, 1.0);
+                    next_pan = Some(next);
+                    g.pan = next;
+                }
+                drop(guard);
+                if let Some(pan) = next_pan {
+                    self.sampler.update_group_pan(group, pan);
                 }
             }
             EngineEvent::Variation => {
@@ -1243,11 +1455,13 @@ impl Engine {
                 let sr = self.transport.sample_rate;
                 let name = DRUM_PRESET_NAMES[preset_idx as usize];
                 let sample = self.drum_preset_sample(preset_idx);
-                self.sampler.clear_sound(sound);
+                let sound_id = sampler_sound_id(group, sound);
+                self.sampler.clear_sound(sound_id);
                 self.sampler.add_zone(
-                    sound,
+                    sound_id,
                     crate::sampler::ZoneMapping {
                         sample: Some(sample),
+                        waveform_cache: None,
                         sample_path: None,
                         sample_rate: sr,
                         root_key: 36 + sound,
@@ -1269,33 +1483,30 @@ impl Engine {
                 let mut guard = self.project.write();
                 let proj = project_mut(&mut guard);
                 if let Some(g) = proj.groups.get_mut(group as usize) {
-                    if let Some(s) = g.sounds.get_mut(sound as usize).and_then(|s| s.as_mut()) {
+                    if let Some(target) = g.sounds.get_mut(sound as usize) {
+                        let s = target.get_or_insert_with(|| crate::project::Sound::new(name, 78));
                         s.name = name.to_string();
+                        s.zones = vec![Zone {
+                            root_key: 36 + sound,
+                            ..Zone::default()
+                        }];
                     }
                 }
             }
             EngineEvent::LoadSample { group, sound, path } => {
-                self.sampler.clear_sound(sound);
                 #[cfg(feature = "sampler")]
                 {
-                    if let Err(e) = self.sampler.load_wav(sound, &path, 36 + sound) {
-                        log::error!("Failed to load sample: {e}");
-                    }
+                    let zone = Sampler::prepare_wav(&path, 36 + sound)?;
+                    self.install_sample_zone(group, sound, zone)?;
                 }
                 #[cfg(not(feature = "sampler"))]
                 {
-                    let _ = path;
+                    let _ = (group, sound, path);
                     log::warn!("Sampler feature not enabled");
                 }
-                let mut guard = self.project.write();
-                let proj = project_mut(&mut guard);
-                if let Some(g) = proj.groups.get_mut(group as usize) {
-                    if let Some(s) = g.sounds.get_mut(sound as usize).and_then(|s| s.as_mut()) {
-                        if let Some(file_name) = path.file_stem().and_then(|s| s.to_str()) {
-                            s.name = file_name.to_string();
-                        }
-                    }
-                }
+            }
+            EngineEvent::LoadPreparedSample { group, sound, zone } => {
+                self.install_sample_zone(group, sound, zone)?;
             }
             EngineEvent::BrowsePresetStep(step) => {
                 let next = (self.browser_preset_idx as i32 + step).rem_euclid(16) as u8;
@@ -1619,6 +1830,7 @@ impl Engine {
                                     &mut self.sampler,
                                     gi as u8,
                                     gain,
+                                    group.pan,
                                     &sg,
                                     &sp,
                                     &vp,
@@ -1651,6 +1863,7 @@ impl Engine {
         sampler: &mut Sampler,
         group: u8,
         group_gain: f32,
+        group_pan: f32,
         sound_gains: &[f32],
         sound_pans: &[f32],
         voice_params: &[crate::sampler::VoiceParams],
@@ -1703,10 +1916,17 @@ impl Engine {
                     (pat_len - prev_in_pat + local) as f64
                 };
                 let start_frame = ctx.offset(rel_ticks);
-                if let Some(idx) = sampler.note_on_at(sound, note, ev.velocity, note, start_frame) {
+                if let Some(idx) = sampler.note_on_at(
+                    sampler_sound_id(group, sound),
+                    note,
+                    ev.velocity,
+                    note,
+                    start_frame,
+                ) {
                     sampler.set_voice_gain(idx, group_gain * sg);
                     sampler.set_voice_pan(idx, sp);
                     sampler.set_voice_group(idx, group);
+                    sampler.set_voice_group_pan(idx, group_pan);
                     if let Some(vp) = voice_params.get(sound as usize) {
                         sampler.set_voice_params(idx, vp);
                     }
@@ -1730,7 +1950,7 @@ impl Engine {
             };
             // évite de couper la note à t=0 et seulement si la note a déjà sonné
             if off_triggered && end_tick > tick && tick <= new_tick {
-                sampler.note_off(ev.pad, ev.pitch);
+                sampler.note_off(sampler_sound_id(group, ev.pad), ev.pitch);
             }
         }
     }
@@ -1832,16 +2052,16 @@ impl Engine {
         group: u8,
         sound: u8,
         buckets: usize,
-    ) -> Option<Vec<(f32, f32)>> {
-        let _ = group;
-        self.sampler.waveform_envelope(sound, buckets)
+    ) -> Option<Arc<[(f32, f32)]>> {
+        self.sampler
+            .waveform_envelope(sampler_sound_id(group, sound), buckets)
     }
 
     /// Durée du sample d'un Sound (secondes).
     #[must_use]
     pub fn sample_duration_secs(&self, group: u8, sound: u8) -> f32 {
-        let _ = group;
-        self.sampler.sample_duration_secs(sound)
+        self.sampler
+            .sample_duration_secs(sampler_sound_id(group, sound))
     }
 
     /// Labels des 8 soft keys (boutons sous les écrans) pour la vue courante.
@@ -2180,6 +2400,132 @@ impl Engine {
 mod tests {
     use super::*;
 
+    fn write_test_wav(path: &std::path::Path, samples: &[i16], sample_rate: u32) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap();
+        for &sample in samples {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    fn test_temp_dir(label: &str) -> std::path::PathBuf {
+        static NEXT_DIR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let id = NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("maschine-{label}-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn wav_import_is_group_scoped_and_persisted_in_sound() {
+        let dir = test_temp_dir("group-sample");
+        let wav_path = dir.join("group-b.wav");
+        write_test_wav(&wav_path, &[i16::MIN, 0, i16::MAX], 24000);
+
+        let mut project = Project::new_demo();
+        project
+            .groups
+            .push(crate::project::Group::new("Group B", 22));
+        for scene in &mut project.scenes {
+            scene.patterns.push(None);
+        }
+        let mut engine = Engine::new(project, 48000);
+        engine.sampler_mut().add_zone(
+            sampler_sound_id(0, 0),
+            crate::sampler::ZoneMapping {
+                sample: Some(std::sync::Arc::new(vec![0.25, -0.25, 0.5, -0.5])),
+                sample_rate: 48000,
+                root_key: 36,
+                ..Default::default()
+            },
+        );
+        let group_a_waveform = engine.waveform_envelope(0, 0, 512).unwrap();
+        let zone = Sampler::prepare_wav(&wav_path, 36).unwrap();
+        engine
+            .handle_event(EngineEvent::LoadPreparedSample {
+                group: 1,
+                sound: 0,
+                zone,
+            })
+            .unwrap();
+
+        assert!(std::sync::Arc::ptr_eq(
+            &group_a_waveform,
+            &engine.waveform_envelope(0, 0, 512).unwrap()
+        ));
+        assert_eq!(engine.sample_duration_secs(1, 0), 3.0 / 24000.0);
+        let snapshot = engine.snapshot();
+        assert_eq!(
+            snapshot.project.groups[1].sounds[0].as_ref().unwrap().name,
+            "group-b"
+        );
+        assert_eq!(
+            snapshot.project.groups[1].sounds[0].as_ref().unwrap().zones[0]
+                .sample_path
+                .as_deref(),
+            Some(wav_path.canonicalize().unwrap().to_str().unwrap())
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn loading_project_rehydrates_relative_sample_paths() {
+        let dir = test_temp_dir("project-sample");
+        let samples_dir = dir.join("samples");
+        std::fs::create_dir_all(&samples_dir).unwrap();
+        let wav_path = samples_dir.join("tone.wav");
+        write_test_wav(&wav_path, &vec![8192; 24000], 24000);
+        let project_path = dir.join("project.json");
+        let mut project = Project::new_demo();
+        project.groups[0].sounds[0].as_mut().unwrap().zones[0].sample_path =
+            Some("samples/tone.wav".to_string());
+        project.save_json(&project_path).unwrap();
+
+        let mut engine = Engine::new_demo(48000);
+        engine
+            .handle_event(EngineEvent::Load(project_path.clone()))
+            .unwrap();
+
+        assert!((engine.sample_duration_secs(0, 0) - 1.0).abs() < 0.001);
+        let waveform = engine.waveform_envelope(0, 0, 512).unwrap();
+        assert_eq!(waveform.len(), 512);
+        assert!((waveform[0].0 - 0.25).abs() < 0.001);
+        assert!((waveform[0].1 - 0.25).abs() < 0.001);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn selecting_sampler_restores_contextual_right_screen_after_events() {
+        let mut eng = Engine::new_demo(48000);
+        eng.handle_event(EngineEvent::SetRightTab(1)).unwrap();
+        assert_eq!(eng.snapshot().right_tab, 1);
+
+        eng.handle_event(EngineEvent::SetLeftTab(2)).unwrap();
+        let snap = eng.snapshot();
+        assert_eq!(snap.left_tab, 2);
+        assert_eq!(snap.right_tab, 0);
+        assert!(!snap.song_mode);
+    }
+
+    #[test]
+    fn selecting_right_overlay_exits_song_mode() {
+        let mut eng = Engine::new_demo(48000);
+        eng.handle_event(EngineEvent::ToggleSongMode).unwrap();
+        assert!(eng.snapshot().song_mode);
+
+        eng.handle_event(EngineEvent::SetRightTab(1)).unwrap();
+        let snap = eng.snapshot();
+        assert_eq!(snap.right_tab, 1);
+        assert!(!snap.song_mode);
+    }
+
     #[test]
     fn toggle_step_is_silent_and_single_press() {
         let mut eng = Engine::new_demo(48000);
@@ -2365,6 +2711,50 @@ mod tests {
         })
         .unwrap();
         assert_eq!(eng.sampler.num_voices(), 1);
+    }
+
+    #[test]
+    fn sound_and_group_mix_edits_reach_active_voices_immediately() {
+        let mut engine = Engine::new_demo(48000);
+        engine
+            .handle_event(EngineEvent::Pad {
+                pad: 0,
+                velocity: 100,
+                pressed: true,
+            })
+            .unwrap();
+        let initial_gain = engine.sampler.voice_mix(0).unwrap().0;
+
+        engine
+            .handle_event(EngineEvent::SoundVolume {
+                group: 0,
+                sound: 0,
+                volume_db: -6.0,
+            })
+            .unwrap();
+        let expected_after_sound = initial_gain * 10.0_f32.powf(-6.0 / 20.0);
+        assert!((engine.sampler.voice_mix(0).unwrap().0 - expected_after_sound).abs() < 1e-5);
+
+        engine
+            .handle_event(EngineEvent::GroupVolume {
+                group: 0,
+                volume_db: 6.0,
+            })
+            .unwrap();
+        let expected_after_group = expected_after_sound * 10.0_f32.powf(6.0 / 20.0);
+        assert!((engine.sampler.voice_mix(0).unwrap().0 - expected_after_group).abs() < 1e-5);
+
+        engine
+            .handle_event(EngineEvent::SoundPan {
+                group: 0,
+                sound: 0,
+                pan: 0.3,
+            })
+            .unwrap();
+        engine
+            .handle_event(EngineEvent::GroupPan { group: 0, pan: 0.4 })
+            .unwrap();
+        assert!((engine.sampler.voice_mix(0).unwrap().1 - 0.7).abs() < 1e-5);
     }
 
     #[test]

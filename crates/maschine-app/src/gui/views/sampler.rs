@@ -1,5 +1,5 @@
-//! Vue SAMPLER — waveform réelle, enveloppe ADSR dessinée, filtre et
-//! paramètres du Sound actif (VOL/PAN/CUT/RESO + ADSR), style Maschine.
+//! Vue SAMPLER — import WAV, waveform, enveloppe ADSR, filtre et paramètres
+//! du Sound actif (VOL/PAN/CUT/RESO + ADSR), avec état dérivé du snapshot.
 
 use super::*;
 use crate::gui::app::GuiApp;
@@ -46,14 +46,8 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
             )
         });
 
-    let waveform = app
-        .engine
-        .lock()
-        .waveform_envelope(snap.group_focus, snap.active_sound, 512);
-    let duration = app
-        .engine
-        .lock()
-        .sample_duration_secs(snap.group_focus, snap.active_sound);
+    let waveform = snap.waveform.as_deref();
+    let duration = snap.sample_duration;
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -132,7 +126,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                         rect.center().y,
                         egui::Stroke::new(1.0_f32, c.border),
                     );
-                    match &waveform {
+                    match waveform {
                         Some(env) if !env.is_empty() => {
                             let mid = rect.center().y;
                             let half = rect.height() / 2.0 - 4.0;
@@ -154,7 +148,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                             painter.text(
                                 rect.center(),
                                 egui::Align2::CENTER_CENTER,
-                                "Aucun sample — chargez un preset dans le BROWSER",
+                                "Aucun sample — importe un WAV ou charge un preset 808",
                                 egui::FontId::proportional(12.0),
                                 c.text_muted,
                             );
@@ -169,7 +163,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
 
                     ui.add_space(4.0);
                     ui.label(
-                        egui::RichText::new("Waveform du sample chargé (Kit 808 / WAV importé)")
+                        egui::RichText::new("Aperçu du sample sélectionné")
                             .small()
                             .color(c.text_dim),
                     );
@@ -259,6 +253,34 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                         }
                     });
                 });
+            });
+
+            ui.add_space(8.0);
+
+            card_frame().show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new("SOURCE DU SAMPLE")
+                        .strong()
+                        .small()
+                        .color(c.accent),
+                );
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut app.sample_path_input)
+                            .hint_text("Chemin vers un fichier WAV mono ou multicanal")
+                            .desired_width(420.0),
+                    );
+                    if chip(ui, "IMPORTER WAV", false, c.accent_cyan) {
+                        app.load_sample_async(snap.group_focus, snap.active_sound);
+                    }
+                });
+                ui.label(
+                    egui::RichText::new(
+                        "Le décodage s'effectue en arrière-plan; le sample est enregistré avec le Sound.",
+                    )
+                    .small()
+                    .color(c.text_dim),
+                );
             });
 
             ui.add_space(8.0);

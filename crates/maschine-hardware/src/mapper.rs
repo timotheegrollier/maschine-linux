@@ -514,6 +514,13 @@ impl HardwareMapper {
         Self::new(MapperConfig::default())
     }
 
+    /// Sélectionne une vue principale et revient à l'écran droit contextuel.
+    fn select_left_tab(&mut self, tab: u8, actions: &mut Vec<MapperAction>) {
+        self.left_tab = tab;
+        self.right_tab = 0;
+        actions.push(MapperAction::SetLeftTab(tab));
+    }
+
     /// Traite un événement matériel complet et retourne la liste des actions à appliquer à l'engine.
     /// Accumule un delta de knob (ticks bruts) et renvoie la part entière
     /// écoulée. `rate` = unités par tick brut (1024 ticks = 1 tour de knob).
@@ -853,25 +860,20 @@ impl HardwareMapper {
 
                         // Onglets d'écrans dédiés
                         ButtonId::Arranger => {
-                            self.left_tab = 0;
-                            actions.push(MapperAction::SetLeftTab(0));
+                            self.select_left_tab(0, &mut actions);
                             actions.push(MapperAction::ToggleSongMode);
                         }
                         ButtonId::Mixer => {
-                            self.left_tab = 1;
-                            actions.push(MapperAction::SetLeftTab(1));
+                            self.select_left_tab(1, &mut actions);
                         }
                         ButtonId::Sampling => {
-                            self.left_tab = 2;
-                            actions.push(MapperAction::SetLeftTab(2));
+                            self.select_left_tab(2, &mut actions);
                         }
                         ButtonId::Browser => {
                             if self.left_tab == 3 {
-                                self.left_tab = 2; // Bascule retour SAMPLER
-                                actions.push(MapperAction::SetLeftTab(2));
+                                self.select_left_tab(2, &mut actions); // Retour SAMPLER
                             } else {
-                                self.left_tab = 3;
-                                actions.push(MapperAction::SetLeftTab(3));
+                                self.select_left_tab(3, &mut actions);
                             }
                         }
                         ButtonId::Settings => {
@@ -986,12 +988,10 @@ impl HardwareMapper {
                             actions.push(MapperAction::SetRightTab(2));
                         }
                         ButtonId::Plugin => {
-                            self.left_tab = 2; // SAMPLER / Sound Editor
-                            actions.push(MapperAction::SetLeftTab(2));
+                            self.select_left_tab(2, &mut actions); // SAMPLER / Sound Editor
                         }
                         ButtonId::ChannelMidi => {
-                            self.left_tab = 1; // MIXER
-                            actions.push(MapperAction::SetLeftTab(1));
+                            self.select_left_tab(1, &mut actions); // MIXER
                         }
                         // Verrou : sauvegarde instantanée (comme FileSave).
                         ButtonId::Lock => {
@@ -2292,5 +2292,26 @@ mod tests {
                 delta: 4.0
             }]
         );
+    }
+
+    #[test]
+    fn selecting_main_view_clears_events_overlay() {
+        let mut m = HardwareMapper::with_default();
+        let events = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Events,
+            pressed: true,
+            ts_ns: 1,
+        });
+        assert!(events.contains(&MapperAction::SetRightTab(1)));
+        assert_eq!(m.right_tab, 1);
+
+        let sampler = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Sampling,
+            pressed: true,
+            ts_ns: 2,
+        });
+        assert!(sampler.contains(&MapperAction::SetLeftTab(2)));
+        assert_eq!(m.left_tab, 2);
+        assert_eq!(m.right_tab, 0);
     }
 }

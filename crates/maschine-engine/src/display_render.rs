@@ -3780,6 +3780,22 @@ mod tests {
         check_pair(&r);
     }
 
+    #[test]
+    fn sampler_page_restores_sampler_on_right_after_events_overlay() {
+        let mut eng = Engine::new_demo(48000);
+        eng.handle_event(crate::engine::EngineEvent::SetRightTab(1))
+            .unwrap();
+        let snap = eng.snapshot();
+        let (_, events) = render_screens(&snap);
+        assert_eq!(events.pixels, render_events_right(&snap).pixels);
+
+        eng.handle_event(crate::engine::EngineEvent::SetLeftTab(2))
+            .unwrap();
+        let snap = eng.snapshot();
+        let (_, right) = render_screens(&snap);
+        assert_eq!(right.pixels, render_sampler_right(&snap).pixels);
+    }
+
     /// Rendu déterministe : un même snapshot donne des pixels identiques.
     #[test]
     fn render_is_deterministic() {

@@ -4,7 +4,7 @@
 //!
 //! - `hid_input` : parse reports `0x01` (boutons) et `0x02` (pads)
 //! - `hid_output` : encode reports `0x80` (LEDs boutons) et `0x81` (pads + touchstrip)
-//! - `display` : encode bulk RGB565 RLE pour les 2 écrans 480×272
+//! - `display` : encode bulk RGB565 raw par fenêtres pour les 2 écrans 480×272
 //! - `color` : palette indexée NI
 
 #![allow(missing_docs)]

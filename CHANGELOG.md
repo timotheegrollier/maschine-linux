@@ -2,13 +2,28 @@
 
 Tous les changements notables.
 
+### Sampler, persistance et fluidité
+- Les samples sont identifiés par paire Group/Sound : deux groupes peuvent utiliser le même numéro de pad sans partager ou arrêter la mauvaise voix.
+- L'import WAV est décodé en tâche de fond, vérifie les données avant de remplacer un Sound, corrige la normalisation PCM signé 32 bits et conserve le son en place si le fichier est invalide.
+- Les chemins et mappings de sample sont conservés avec le projet et les WAV relatifs sont rechargés à l'ouverture. Le volume et le pan de groupe/son sont appliqués aussi aux voix en cours.
+- La waveform est précalculée à l'import et partagée en lecture seule : la GUI et les LCD ne rescannent plus tout le fichier à chaque frame.
+- La fin des voix est maintenant traitée par suppression en place dans le rendu audio, sans buffer temporaire ni tri à chaque bloc.
+- Les tests couvrent l'isolation des groupes, le mapping/persistance WAV, le rechargement, le mix live, les wav PCM 32 bits et l'échec d'import sans perte de l'ancien son.
+- `docs/TESTING.md`, le README et le guide d'usage décrivent les validations CI et le contrôle manuel sur le matériel. Le périmètre Sampler/Events est distingué des fonctions complètes du logiciel officiel.
+
+### Correctifs issus de la validation LCD et du workflow (0.6.0)
+- **Désalignement du flux d'écran** : certains rectangles partiels avaient une largeur impaire alors que `transmit` compte des paires de pixels RGB565. La sonde de reprise était également en 1×1. Le différentiel élargit maintenant les rectangles à une largeur paire, le codec refuse les fenêtres impaires et la sonde envoie 2×1 pixels. Tests ajoutés pour le pixel unique au bord droit, le compteur de paires, l'encodage de la sonde et les rectangles aléatoires.
+- **Écran droit resté sur EVENTS** : sélectionner une vue principale réinitialise maintenant l'overlay droit et quitte SONG quand une vue hors ARRANGE est choisie. La page Sampler reprend donc son écran ADSR à droite après EVENTS/MACRO/SETTINGS; un clic sur Sampler déjà actif dans la GUI restaure également cette page.
+- **Premier knob après navigation GUI** : le mapper HID reprend désormais le contexte moteur avant chaque événement. Il applique le premier cran au Sound/Sampler courant au lieu d'utiliser le précédent onglet matériel.
+- Documentation mise à jour dans `docs/protocol.md`, `docs/HARDWARE_DISPLAY_PROTOCOL.md`, `docs/workflow.md`, `docs/USAGE.md`, `docs/architecture.md` et le README. Les documents distinguent maintenant l'acceptation USB d'une validation visuelle réelle des LCD.
+
 ## [0.6.0] - 2026-10-18
 
 ### Corrigé
 - **Écrans MK3 figés (2e vague)** :
   - **Abandon définitif à l'ouverture** : si une autre instance (gui/daemon resté ouvert) ou une ré-énumération USB tenait IF5, `claim IF5: Resource busy` tuait le thread écran sans réessai → écrans jamais rafraîchis. Le thread a désormais un **cycle de vie** : ouverture avec réessais (3 s), libération, réouverture à chaud quand l'interface redevient libre (+ log clair « nouvel essai dans 3 s »).
   - **Paquets interrompus non complétés** : le protocole est un flux de commandes MCU (header fenêtre + `transmit` + pixels + `blit` + `end`). Une écriture partielle laisse le parseur en attente du *reste exact* des pixels → tout envoi suivant décalé (écran figé pour toujours). `send_frame` complète désormais tout paquet interrompu avec **ses propres octets restants** puis `blit`+`end` (renvoie `Ok` si le paquet aboutit) ; à défaut (timeout, position inconnue) une **purge de noirs** (`blit`+`end`) remet le parseur en attente. 2 tests unitaires (`packet_tail`, cas réel 10588/7680).
-  - **Escalade douce** : sonde 1×1 px (30 o) avant de repousser de vraies frames après une erreur (inutile de noyer une file RX saturée) ; ré-acquisition douce (release + claim, **jamais de reset USB en cours de route** — il tuerait le flux audio partagé) après 8 erreurs consécutives, avec cooldown croissant (6→24 s) et invalidations ; réouverture complète uniquement si le device est parti. Backoff allongé (250 ms → 4 s).
+  - **Escalade douce** : sonde 2×1 px (32 o, paire RGB565 valide) avant de repousser de vraies frames après une erreur ; ré-acquisition douce (release + claim, **jamais de reset USB en cours de route** — il tuerait le flux audio partagé) après 8 erreurs consécutives, avec cooldown croissant (6→24 s) et invalidations ; réouverture complète uniquement si le device est parti. Backoff allongé (250 ms → 4 s).
   - **Plafond calibré** : débit moyen ramené 2,5 → **1,6 Mo/s** (rafale 560 Ko) — au-dessus de ~2 Mo/s soutenus, la file RX du MCU déborde et l'endpoint cesse d'accepter. Mesuré matériel : 70+ s consécutives sans erreur à 1,55 Mo/s / 17-20 FPS ; les wedges transitoires restants (états internes du MCU) se réparent seuls en ~10-20 s au lieu de figer l'écran définitivement.
 - **Tempête de logs à l'arrêt** : 18 M lignes POLLERR en une seconde (ALSA pendant le drop du stream cpal) → gestionnaire d'événements d'erreur limité en débit (1ʳᵉ erreur puis 1/1000).
 - **Écrans MK3 figés (1re vague)** : chaque rafraîchissement envoyait un frame complet non compressé (2 × 261 148 B ≈ 522 Ko) ; à 30 FPS ≈ 15,7 Mo/s → saturation du port USB, `short write`/`Operation timed out`, endpoint bloqué (écran figé). Remplacé par :

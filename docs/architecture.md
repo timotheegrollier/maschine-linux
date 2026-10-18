@@ -27,7 +27,7 @@ maschine-proto  ──► maschine-hardware ──► maschine-app (binary)
 | Thread | Prio | Affinité | Rôle |
 |---|---|---|---|
 | `hid-poll` | `SCHED_FIFO 70` (via `chrt` ou `rtkit`) | core isolé si possible | `poll` `/dev/hidraw3` (`bInterval 1ms`), parse `0x01`/`0x02`, push `HardwareEvent` |
-| `display` | `SCHED_OTHER nice -5` | - | coalesce dirty rects 16×16, RLE, bulk `0x04` |
+| `display` | `SCHED_OTHER nice -5` | - | comparer les rendus à 30 Hz, coalescer les rectangles RGB565 pairs, budget 1,6 Mo/s, bulk `0x04` |
 | `audio` | `SCHED_FIFO 80` (JACK/PipeWire) | - | `cpal`/`jack` callback : mixer Groups, voices, ADSR |
 | `engine` | `SCHED_OTHER` | - | sequencer, swing, quantize, automation |
 | `ui` | `SCHED_OTHER` | - | `egui` 60fps, lock-free snapshot du state |
@@ -54,18 +54,20 @@ Audio : `Engine::audio_callback(&mut [f32], frames, sample_rate)` appelé par `c
 
 - `Project` sérialisé en JSON `*.maschine-linux.json` (schéma versionné `schema_version: 1`). Binaire : `bincode` optionnel pour cache.
 - Migration : `serde` `#[serde(default)]` + `Project::migrate()`.
-- Autosave : toutes les 30s + sur `SIGTERM`, fichier `~/.local/share/maschine-linux/autosave/`.
+- Sauvegarde : `Ctrl+S` ou le bouton File/Save écrit `~/.local/share/maschine-linux/autosave.json`; une sauvegarde est également faite à la fermeture.
 
 ## Gestion d'erreurs
 
 - `thiserror` pour erreurs typées (`ProtoError`, `HardwareError`, `EngineError`), `anyhow` seulement dans `maschine-app` (CLI).
-- USB : retry exponentiel, guard `power-cycle needed` si bulk malformé (détecté par `header.0 != 0x84`).
+- USB écran : retry exponentiel, sonde de reprise 2×1 pixels, rectangles de largeur paire et ré-acquisition douce de l'interface après erreurs répétées.
 
 ## Tests
 
-- `maschine-proto` : unit + proptest (fuzz reports aléatoires), vecteurs capturés depuis `usbmon` réel.
-- `maschine-hardware` : mock `hidraw` via `tempfile` + `pipe`, test `nusb` seulement avec `#[ignore] --features hardware`.
-- `maschine-engine` : golden files JSON, property tests sequencer.
+- `maschine-proto` : tests codec HID/LCD, différentiel et reconstruction RGB565.
+- `maschine-hardware` : replay des entrées HID, mapping des contrôles, et tests purs de reprise short write USB.
+- `maschine-engine` : séquenceur, transport, mapping/persistance des WAV, DSP et transitions d'écrans.
+- `maschine-app` : intégration de workflow HID/GUI et sonde d'écran.
+- Les commandes exigées par la CI et la checklist physique sont détaillées dans [TESTING.md](TESTING.md).
 
 ## Sécurité
 

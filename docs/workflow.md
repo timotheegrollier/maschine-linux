@@ -53,14 +53,14 @@ La GUI reprend la séparation du workflow Maschine : une barre de transport comm
 - **Song** : timeline horizontale des sections, sélection directe, navigation précédente/suivante, duplication, suppression et longueur de section (1/2/4/8 mesures).
 - **Sequencer** : pas 16 × 16, navigation et longueur de pattern de 1/2/4/8 mesures, pads de pré-écoute et actions de groove. Les cellules sont préparées en une passe sur les événements pour garder l'édition fluide.
 - **Mixer** : volume, panoramique, mute et solo des groupes A–H, plus le master.
-- **Sampler** : sélection des 16 Sounds, volume, panoramique, filtre et enveloppe ADSR.
-- **Browser** : presets de drum synth 808 intégrés, chargés sur le Sound sélectionné. La GUI ne propose pas encore le chargement de samples externes, le slicing ni l'édition des zones.
+- **Sampler / Sound** : sélection des 16 Sounds, import WAV asynchrone, waveform, audition, volume, panoramique, filtre et enveloppe ADSR. Les chemins WAV sont enregistrés dans les zones du projet et rechargés à l'ouverture.
+- **Browser** : presets de drum synth 808 intégrés, chargés sur le Sound sélectionné. Le Browser ne parcourt pas encore la bibliothèque NI ni le système de fichiers.
 
 Le transport propose Play/Stop, Record, boucle, tempo et position BBT. Les pads GUI envoient le relâchement de note; les presets 808 sont mis en cache au chargement du kit.
 
 ## Écrans MK3 (480×272) & soft keys
 
-Les deux écrans physiques sont rendus par une fonction partagée (`display_render::render_screens`) : la GUI affiche exactement le même contenu (miroir). Un compteur de révision évite de renvoyer une frame USB tant que rien n'a bougé.
+Les deux écrans sont rendus par la même fonction (`display_render::render_screens`) : le panneau MK3 de la GUI est le miroir du contenu calculé pour le hardware. La boucle USB compare les rendus à 30 Hz, envoie seulement les rectangles modifiés (jusqu'à six), limite le débit moyen à 1,6 Mo/s et renvoie une paire plein écran toutes les 2 secondes pour resynchroniser le contrôleur.
 
 - **Écran gauche** : ARRANGE (8 groupes, pattern de la scène, VU réels), SCENES/IDEAS (mode SCENE), SONG (sections), MIXER A–D, SAMPLER (waveform + ADSR + infos), BROWSER (presets 808), STEP (grille du pattern complet + paramètres du pas sélectionné).
 - **Écran droit** : PATTERN (grille 16 sons × 16 pas + playhead), STEP (vélocités du Sound actif + curseur d'édition), SONG TIMELINE, MIXER master + groupe/sound focus, SAMPLER enveloppe plein écran, BROWSER chargement, EVENTS, MACRO, SETTINGS.
@@ -71,7 +71,17 @@ Les deux écrans physiques sont rendus par une fonction partagée (`display_rend
   - BROWSER : `PRES <</>>`, `SND <</>>`, `ECOUTE`, `CHARGER`, `METRO`, `LOOP`.
   - SCENE : `SCN 1..8`. SONG : `SEC <</>>`, `+SEC`, `IDEE`, scènes et `+SCN`.
 - **Encodeurs** : chaque écran affiche les 4 paramètres réellement pilotés par ses knobs (1–4 à gauche, 5–8 à droite) avec les valeurs live.
-- **Aucun écran figé** : toute action (y compris chaque cran de knob, la pose d'un pas, SWING, QUANTIZE, VARIATION, CLEAR, RESTART) invalide le compteur de révision. La boucle HID pose en plus un drapeau d'activité *sans verrou* : le thread d'écrans détecte le changement en ~3 ms et envoie sa frame, en prenant le verrou moteur au plus toutes les 33 ms (plafond USB ~30 FPS, partagé avec le callback audio `try_lock`), garde-fou de 2 s si rien ne bouge.
+- **Navigation entre vues** : choisir ARRANGE, MIXER, SAMPLER ou BROWSER remet l'écran droit sur la page liée à cette vue. EVENTS, MACRO et SETTINGS sont des vues de droite que l'on peut ensuite choisir explicitement. Recliquer la vue principale active dans la GUI revient à sa page droite contextuelle.
+- **GUI et commandes hardware synchronisées** : avant de mapper chaque nouvel événement HID, l'application reprend le groupe, le son et les onglets du moteur. Le premier cran de knob après un changement de page fait donc déjà l'action de la nouvelle page.
+- **Édition en direct** : les changements de volume, pan, filtre et ADSR atteignent aussi les voix déjà en cours; les gains et panoramiques Group/Sound se combinent sans écraser le niveau voisin.
+- **Alignement LCD** : chaque rectangle USB doit avoir une largeur paire, car le compteur Bulk représente des paires de pixels RGB565. Les rectangles du différentiel sont élargis au pixel voisin; les fenêtres impaires sont refusées avant l'envoi. Voir [le protocole matériel](HARDWARE_DISPLAY_PROTOCOL.md).
+- **Validation réelle** : les tests vérifient l'encodage, le rendu et le routage des contrôles. Un transfert USB accepté ne prouve pas que les pixels sont visibles; contrôler les deux LCD sur la MK3 après le lancement.
+
+### Référence officielle et périmètre actuel
+
+Le manuel MK3 décrit SAMPLING comme un Sample Editor lié au Sound focalisé : les boutons 1–4 choisissent RECORD, EDIT, SLICE et ZONE; EDIT règle notamment le play range, tandis que ZONE gère mapping, accordage et plages de touches/vélocité. Les huit boutons et knobs du contrôleur sont contextuels et leur fonction est affichée à l'écran ([manuel officiel, Sampling et sample mapping](https://docs.native-instruments.com/ni-tech-manuals/maschine-mk3-manual/en/sampling-and-sample-mapping), [référence rapide MK3](https://docs.native-instruments.com/ni-tech-manuals/maschine-mk3-manual/en/quick-reference)).
+
+Dans cette application, le bouton SAMPLING ouvre actuellement **Sampler / Sound** : import WAV depuis la GUI, waveform, audition, ADSR, filtre, volume et pan. L'import est décodé sur un thread de travail. Les pages d'enregistrement, d'édition destructive et de slicing, les play/selection ranges manipulables et l'édition des zones ne sont pas encore implémentés sur le contrôleur. L'écran EVENTS actuel est lui aussi une vue d'information; il ne propose pas encore l'édition événementielle position/hauteur/vélocité/longueur du mode officiel ([description officielle du mode EVENTS](https://docs.native-instruments.com/ni-tech-manuals/maschine-mk3-manual/en/quick-reference)).
 
 ## Mode STEP (façon logiciel officiel)
 

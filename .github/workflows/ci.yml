@@ -24,6 +24,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Check optional sampler-free engine
+        run: cargo check -p maschine-engine --no-default-features
       - name: Test
         run: cargo test --workspace
       - name: Build release

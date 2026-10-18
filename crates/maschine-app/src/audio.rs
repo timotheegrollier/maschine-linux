@@ -1,5 +1,6 @@
 //! Sortie audio via `cpal` vers MK3 (PipeWire).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -8,12 +9,39 @@ use parking_lot::Mutex;
 
 use maschine_engine::Engine;
 
+/// Statistiques temps réel du callback audio (atomiques, sans verrou) —
+/// utilisées par `--debug-latency` et affichables dans la GUI.
+#[derive(Debug, Default)]
+pub struct AudioStats {
+    /// Callbacks rendus (verrou obtenu).
+    pub callbacks: AtomicU64,
+    /// Callbacks où le verrou engine était occupé (silence de sécurité).
+    pub lock_misses: AtomicU64,
+    /// Durée max de traitement d'un callback (µs).
+    pub max_callback_us: AtomicU64,
+}
+
+impl AudioStats {
+    /// Comptabilise une passe (durée µs).
+    pub fn record(&self, us: u64) {
+        self.callbacks.fetch_add(1, Ordering::Relaxed);
+        self.max_callback_us.fetch_max(us, Ordering::Relaxed);
+    }
+
+    /// Comptabilise un échec de verrou (buffer de silence).
+    pub fn record_miss(&self) {
+        self.lock_misses.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// Gère le stream cpal.
 pub struct AudioOutput {
     _stream: cpal::Stream,
     #[allow(dead_code)]
     device_name: String,
     sample_rate: u32,
+    /// Statistiques temps réel partagées.
+    pub stats: Arc<AudioStats>,
 }
 
 impl AudioOutput {
@@ -112,11 +140,13 @@ impl AudioOutput {
         // Callback — gère stéréo ou 4ch
         let engine_clone = engine.clone();
         let channels = cpal_config.channels as usize;
+        let stats = Arc::new(AudioStats::default());
         let stream = match chosen_cfg.sample_format() {
             cpal::SampleFormat::F32 => {
                 let eng = engine_clone.clone();
+                let st = stats.clone();
                 let cb = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    audio_callback(data, &eng, cpal_config.sample_rate.0, channels, hp_dup);
+                    audio_callback(data, &eng, cpal_config.sample_rate.0, channels, hp_dup, &st);
                 };
                 match device.build_output_stream(
                     &cpal_config,
@@ -132,8 +162,16 @@ impl AudioOutput {
                         let mut cc_def = cpal_config.clone();
                         cc_def.buffer_size = cpal::BufferSize::Default;
                         let eng2 = engine_clone.clone();
+                        let st2 = stats.clone();
                         let cb2 = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                            audio_callback(data, &eng2, cc_def.sample_rate.0, channels, hp_dup);
+                            audio_callback(
+                                data,
+                                &eng2,
+                                cc_def.sample_rate.0,
+                                channels,
+                                hp_dup,
+                                &st2,
+                            );
                         };
                         device.build_output_stream(
                             &cc_def,
@@ -146,9 +184,17 @@ impl AudioOutput {
             }
             cpal::SampleFormat::I16 => {
                 let eng = engine_clone.clone();
+                let st = stats.clone();
                 let cb = move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
                     let mut tmp = vec![0.0f32; data.len()];
-                    audio_callback_f32(&mut tmp, &eng, cpal_config.sample_rate.0, channels, hp_dup);
+                    audio_callback_f32(
+                        &mut tmp,
+                        &eng,
+                        cpal_config.sample_rate.0,
+                        channels,
+                        hp_dup,
+                        &st,
+                    );
                     for (o, &s) in data.iter_mut().zip(tmp.iter()) {
                         *o = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
                     }
@@ -165,6 +211,7 @@ impl AudioOutput {
                         let mut cc_def = cpal_config.clone();
                         cc_def.buffer_size = cpal::BufferSize::Default;
                         let eng2 = engine_clone.clone();
+                        let st2 = stats.clone();
                         let cb2 = move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
                             let mut tmp = vec![0.0f32; data.len()];
                             audio_callback_f32(
@@ -173,6 +220,7 @@ impl AudioOutput {
                                 cc_def.sample_rate.0,
                                 channels,
                                 hp_dup,
+                                &st2,
                             );
                             for (o, &s) in data.iter_mut().zip(tmp.iter()) {
                                 *o = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
@@ -189,9 +237,17 @@ impl AudioOutput {
             }
             cpal::SampleFormat::U16 => {
                 let eng = engine_clone.clone();
+                let st = stats.clone();
                 let cb = move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
                     let mut tmp = vec![0.0f32; data.len()];
-                    audio_callback_f32(&mut tmp, &eng, cpal_config.sample_rate.0, channels, hp_dup);
+                    audio_callback_f32(
+                        &mut tmp,
+                        &eng,
+                        cpal_config.sample_rate.0,
+                        channels,
+                        hp_dup,
+                        &st,
+                    );
                     for (o, &s) in data.iter_mut().zip(tmp.iter()) {
                         *o = ((s.clamp(-1.0, 1.0) * 0.5 + 0.5) * u16::MAX as f32) as u16;
                     }
@@ -208,6 +264,7 @@ impl AudioOutput {
                         let mut cc_def = cpal_config.clone();
                         cc_def.buffer_size = cpal::BufferSize::Default;
                         let eng2 = engine_clone.clone();
+                        let st2 = stats.clone();
                         let cb2 = move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
                             let mut tmp = vec![0.0f32; data.len()];
                             audio_callback_f32(
@@ -216,6 +273,7 @@ impl AudioOutput {
                                 cc_def.sample_rate.0,
                                 channels,
                                 hp_dup,
+                                &st2,
                             );
                             for (o, &s) in data.iter_mut().zip(tmp.iter()) {
                                 *o = ((s.clamp(-1.0, 1.0) * 0.5 + 0.5) * u16::MAX as f32) as u16;
@@ -241,6 +299,7 @@ impl AudioOutput {
             _stream: stream,
             device_name: dev_name,
             sample_rate: actual_rate,
+            stats,
         })
     }
 
@@ -308,8 +367,9 @@ fn audio_callback(
     sample_rate: u32,
     channels: usize,
     hp_dup: bool,
+    stats: &AudioStats,
 ) {
-    audio_callback_f32(data, engine, sample_rate, channels, hp_dup);
+    audio_callback_f32(data, engine, sample_rate, channels, hp_dup, stats);
 }
 
 fn audio_callback_f32(
@@ -318,7 +378,9 @@ fn audio_callback_f32(
     sample_rate: u32,
     channels: usize,
     hp_dup: bool,
+    stats: &AudioStats,
 ) {
+    let started = std::time::Instant::now();
     let frames = data.len() / channels;
     if let Some(mut eng) = engine.try_lock() {
         if eng.transport.sample_rate != sample_rate {
@@ -360,7 +422,9 @@ fn audio_callback_f32(
         for s in data.iter_mut() {
             *s = s.clamp(-1.0, 1.0) * 0.85;
         }
+        stats.record(started.elapsed().as_micros() as u64);
     } else {
+        stats.record_miss();
         for s in data.iter_mut() {
             *s = 0.0;
         }

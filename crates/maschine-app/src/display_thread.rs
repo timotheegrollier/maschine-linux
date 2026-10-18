@@ -58,44 +58,24 @@ pub fn spawn_display_thread(engine: Arc<Mutex<Engine>>) -> anyhow::Result<Displa
             };
 
             let mut frame_count = 0u64;
+            let mut last_revision = u64::MAX;
 
             while !stop_clone.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(66)); // ~15 FPS
+                std::thread::sleep(Duration::from_millis(33)); // ~30 FPS
 
-                let snap = engine.lock().snapshot();
+                let (snap, revision) = {
+                    let eng = engine.lock();
+                    (eng.snapshot(), eng.revision())
+                };
 
-                let left_frame = if snap.song_mode {
-                    maschine_engine::display_render::render_arranger_left(&snap)
-                } else {
-                    match snap.left_tab {
-                        1 => maschine_engine::display_render::render_mixer_left(&snap),
-                        2 => maschine_engine::display_render::render_sampler_left(&snap),
-                        3 => maschine_engine::display_render::render_browser_left(&snap),
-                        _ => {
-                            if snap.song_mode {
-                                maschine_engine::display_render::render_arranger_left(&snap)
-                            } else {
-                                maschine_engine::display_render::render_daw_left(&snap)
-                            }
-                        }
-                    }
-                };
-                let right_frame = if snap.song_mode {
-                    maschine_engine::display_render::render_arranger_right(&snap)
-                } else if snap.left_tab == 2 && snap.right_tab == 0 {
-                    // SAMPLER + PATTERN : paire édition (VOL/PAN/CUT/RESO + ADSR).
-                    maschine_engine::display_render::render_sampler_right(&snap)
-                } else if snap.left_tab == 3 && snap.right_tab == 0 {
-                    // BROWSER : validation et chargement preset.
-                    maschine_engine::display_render::render_browser_right(&snap)
-                } else {
-                    match snap.right_tab {
-                        1 => maschine_engine::display_render::render_events_right(&snap),
-                        2 => maschine_engine::display_render::render_macro_right(&snap),
-                        3 => maschine_engine::display_render::render_settings_right(&snap),
-                        _ => maschine_engine::display_render::render_daw_right(&snap),
-                    }
-                };
+                // Ne renvoie une frame que si l'état a changé (ou garde-fou 5 s).
+                if revision == last_revision && frame_count > 0 && frame_count % 150 != 0 {
+                    continue;
+                }
+                last_revision = revision;
+
+                let (left_frame, right_frame) =
+                    maschine_engine::display_render::render_screens(&snap);
 
                 if let Err(e) = bulk.send_frame(&left_frame) {
                     log::warn!("Écran gauche send err: {e}");

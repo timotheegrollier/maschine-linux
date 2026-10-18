@@ -45,13 +45,40 @@ Section : { scene_id, length, name } // length peut être < scene length (trim)
 
 Réplique exacte : Pattern = objet référencé (éditer propage partout) vs Clip (Song-only, future). Scenes déclenchables via pads en Ideas view ou MIDI Note/ProgramChange.
 
-## Vues UI (future egui)
+## Vues de l'application
 
-- **Ideas View** : header Scenes (horizontal) + grid Groups (colonnes) × Patterns (lignes), highlight = assigné. Jam non-linéaire.
-- **Song View** : timeline + Sections (horizontal) + Patterns empilés vertical par Group. Loop brace, playhead.
-- **Pattern Editor** : Drum View (rows = Sounds 1-16) / Keyboard View (rows = pitches pour Sound focus), Mod lanes, step grid.
-- **Mixer** : strips Group + Master, meters, inserts.
-- **Sampler** : Record / Edit (trim, normalize, reverse) / Slice (transient/grid/BPM) / Zone (lokey/hikey/lovel/hivel, vel layers, round-robin seq, off_by, tune/pan, ADSR, filter) / Map View.
+La GUI reprend la séparation du workflow Maschine : une barre de transport commune, les groupes et scènes à gauche, puis un espace de travail dédié. Les boutons de vue restent synchronisés avec les onglets matériels MK3.
+
+- **Ideas** : scènes horizontales et matrice Group × Pattern. Cliquer un pattern l'assigne à la scène et met son groupe au focus. La scène peut être dupliquée/supprimée (avec ré-indexation automatique des sections du Song). Une scène peut être ajoutée depuis cette vue.
+- **Song** : timeline horizontale des sections, sélection directe, navigation précédente/suivante, duplication, suppression et longueur de section (1/2/4/8 mesures).
+- **Sequencer** : pas 16 × 16, navigation et longueur de pattern de 1/2/4/8 mesures, pads de pré-écoute et actions de groove. Les cellules sont préparées en une passe sur les événements pour garder l'édition fluide.
+- **Mixer** : volume, panoramique, mute et solo des groupes A–H, plus le master.
+- **Sampler** : sélection des 16 Sounds, volume, panoramique, filtre et enveloppe ADSR.
+- **Browser** : presets de drum synth 808 intégrés, chargés sur le Sound sélectionné. La GUI ne propose pas encore le chargement de samples externes, le slicing ni l'édition des zones.
+
+Le transport propose Play/Stop, Record, boucle, tempo et position BBT. Les pads GUI envoient le relâchement de note; les presets 808 sont mis en cache au chargement du kit.
+
+## Écrans MK3 (480×272) & soft keys
+
+Les deux écrans physiques sont rendus par une fonction partagée (`display_render::render_screens`) : la GUI affiche exactement le même contenu (miroir). Un compteur de révision évite de renvoyer une frame USB tant que rien n'a bougé.
+
+- **Écran gauche** : ARRANGE (8 groupes, pattern de la scène, VU réels), SCENES/IDEAS (mode SCENE), SONG (sections), MIXER A–D, SAMPLER (waveform + ADSR + infos), BROWSER (presets 808).
+- **Écran droit** : PATTERN (grille 16 sons × 16 pas + playhead), STEP (vélocités du Sound actif), SONG TIMELINE, MIXER master + groupe/sound focus, SAMPLER enveloppe plein écran, BROWSER chargement, EVENTS, MACRO, SETTINGS.
+- **Soft keys (8 boutons sous les écrans)** : action *contextuelle* décidée par le moteur (`EngineEvent::SoftKey`) et affichée en bas des écrans. Le bouton fait toujours ce que le label annonce, identiquement au hardware et dans la GUI.
+  - ARRANGE : `BAR 1..4` + longueur de pattern `1/2/4/8 MES`.
+  - MIXER : `GRP A..H` (focus groupe). SAMPLER : `SND 1..8` (Sound actif).
+  - BROWSER : `PRES <</>>`, `SND <</>>`, `ECOUTE`, `CHARGER`, `METRO`, `LOOP`.
+  - SCENE : `SCN 1..8`. SONG : `SEC <</>>`, `+SEC`, `IDEE`, scènes et `+SCN`.
+- **Encodeurs** : chaque écran affiche les 4 paramètres réellement pilotés par ses knobs (1–4 à gauche, 5–8 à droite) avec les valeurs live.
+
+## Instrumentation latence
+
+`maschine-linux daemon --debug-latency` (ou `gui --debug-latency`) journalise toutes les 2 s :
+
+- latence **HID→Engine** : nombre d'événements, dernier et max en µs par fenêtre ;
+- statistiques audio : callbacks, `lock_misses` (callback n'ayant pas pu prendre le lock → silence) et temps max de callback en µs.
+
+Le thread HID réveille immédiatement la GUI (`RepaintSignal`), et le snapshot moteur partage le projet en `Arc` (copy-on-write) : les lectures UI sont O(1) et seules les actions utilisateur clonent.
 
 ## Sampler
 
@@ -74,7 +101,7 @@ Réplique exacte : Pattern = objet référencé (éditer propage partout) vs Cli
 
 - `Project::save(path)` → JSON pretty + binaire bincode cache.
 - `schema_version: u32` pour migrations.
-- `EngineState` snapshot lock-free pour UI (`Arc<RwLock<Project>>` + `Arc<AtomicU64>` version).
+- Instantané UI lock-free : `Arc<RwLock<Arc<Project>>>` (copy-on-write au moment des écritures) + compteur de révision `AtomicU64`. `Engine::snapshot()` est O(1) (clone d'un `Arc`), les VU-mètres et l'enveloppe du Sound actif voyagent dans l'instantané.
 
 ## Mapping hardware MK3 complet
 
@@ -88,9 +115,8 @@ Réplique exacte : Pattern = objet référencé (éditer propage partout) vs Cli
   - *Shift + Droite* : extension de la longueur du pattern à 4 ou 8 mesures.
   - *Push* : pré-écoute one-shot du son ou validation preset.
 - **Écrans & Boutons d'écran 1..8** :
-  - *Boutons 1..4 (gauche)* : commutation des 4 vues principales (ARRANGE, MIXER, SAMPLER, BROWSER).
-  - *Boutons 5..8 (droite)* : sélection directe de Bar 1..4 (ou Shift + dimensionnement 1/2/4/8 mesures).
-  - *8 Potentiomètres rotatifs* : édition contextuelle des paramètres du son ou du mixeur.
+  - *Soft keys contextuels* : les 8 boutons sous les écrans exécutent l'action affichée en bas de l'écran (voir « Écrans MK3 & soft keys »). Même moteur d'action côté hardware et côté GUI.
+  - *8 Potentiomètres rotatifs* : édition contextuelle des paramètres du son ou du mixeur ; les slots d'encodeurs des écrans affichent ces mêmes paramètres avec leurs valeurs live.
 
 ## Exemple JSON minimal
 

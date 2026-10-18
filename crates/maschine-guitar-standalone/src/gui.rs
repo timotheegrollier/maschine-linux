@@ -64,6 +64,7 @@ struct GuitarFxApp {
     selected_input: usize,
     selected_output: usize,
     show_settings: bool,
+    #[allow(dead_code)] // horodatage du dernier paramètre (télémétrie future)
     last_param_update: std::time::Instant,
 }
 
@@ -183,7 +184,7 @@ impl eframe::App for GuitarFxApp {
 
                     // Audio devices
                     ui.label("Audio Input:");
-                    egui::ComboBox::from_id_source("input_device")
+                    egui::ComboBox::from_id_salt("input_device")
                         .selected_text(
                             &self.input_devices
                                 [self.selected_input.min(self.input_devices.len() - 1)],
@@ -195,7 +196,7 @@ impl eframe::App for GuitarFxApp {
                         });
 
                     ui.label("Audio Output:");
-                    egui::ComboBox::from_id_source("output_device")
+                    egui::ComboBox::from_id_salt("output_device")
                         .selected_text(
                             &self.output_devices
                                 [self.selected_output.min(self.output_devices.len() - 1)],

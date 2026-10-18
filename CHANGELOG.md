@@ -2,6 +2,28 @@
 
 Tous les changements notables.
 
+## [0.3.0] - 2026-10-18
+
+### Ajouté
+- **Refonte complète des 2 écrans MK3 (480×272)** dans le style du logiciel officiel : design system unifié (bandeau titre, rangées d'encodeurs, barre de soft keys), 16 vues contextuelles (ARRANGE, PATTERN, STEP, SONG, SCENES/IDEAS, MIXER ×2, SAMPLER ×2, BROWSER ×2, EVENTS, MACRO, SETTINGS), valeurs live par Sound/Groupe et VU-mètres réels.
+- **Soft keys contextuels unifiés** : `EngineEvent::SoftKey(u8)` + labels exposés dans l'instantané — le hardware, les écrans et la GUI exécutent et affichent exactement la même action (fini les boutons d'écran câblés en dur).
+- **Waveform + enveloppe ADSR dessinées** sur l'écran SAMPLER à partir du sample du Sound actif (enveloppe min/max par colonne).
+- **VU-mètres temps-réel** par Groupe (8) et Master avec peak hold et décroissance, calculés dans le callback audio et diffusés par l'instantané.
+- **Instrumentation `--debug-latency`** : latence HID→Engine (dernier/max par fenêtre de 2 s) et statistiques audio (`callbacks`, `lock_misses`, temps max de callback).
+- **Réveil immédiat de la GUI** (`RepaintSignal`) depuis le thread HID + repaint piloté par un compteur de révision (16 ms en lecture, 50 ms au repos) ; le thread d'écrans ne renvoie plus une frame que si l'état a bougé.
+- **Workflow Song/Scènes étendu** : `DuplicateScene`, `DeleteScene` (ré-indexation des sections), `DuplicateSection`, `DeleteSection`, `ResizeSection` (longueur 1/2/4/8/…), exposés dans la vue IDEAS de la GUI.
+- Test de fumée rendant toutes les vues d'écrans (garde-fou anti-panic) + tests des workflows section/scène.
+
+### Modifié
+- **Moteur temps-réel** : l'instantané partage le projet en `Arc` (copy-on-write via `Arc::make_mut`) — plus de clone du projet à chaque frame, lectures O(1) ; `ProjectHandle`/`ProjectWriteGuard` pour des écritures sûres.
+- **GUI egui entièrement réécrite** : thème unifié, widgets dédiés (knobs glisser/réinitialiser, faders dB, VU-mètres, pads sensibles à la vélocité, cellules de pas), vue IDEAS (scènes × patterns + Song), vue MIXER 8 strips + master, SAMPLER (waveform, ADSR, filtre), BROWSER (presets 808, pré-écoute, chargement), rail matériel MK3 avec miroir des écrans et soft keys.
+- `render_screens` partagé entre le thread d'affichage USB et le miroir GUI : les écrans physiques et la fenêtre affichent strictement la même paire de vues.
+
+### Corrigé
+- Transport : Play/Stop/REC (le stop n'est plus un no-op), redémarrage à zéro (`EngineEvent::Restart`).
+- Encodeurs d'écran : les slots affichent désormais les paramètres réellement pilotés par les 8 knobs (TEMPO/SWING/VOL PAN par groupe, VOL/PAN/CUT/RESO/ADSR par Sound, volumes A–H en MIXER, navigation BROWSER…).
+- Grille du séquenceur (mesures/pas), mapping des faders en dB, champs de la fenêtre de réglages audio (`ComboBox` non déprécié).
+
 ## [0.2.1] - 2026-10-14
 
 ### Corrigé

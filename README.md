@@ -4,7 +4,7 @@
 
 Langage principal : **Rust** (temps-réel, sécurité, pas de GC). Audio : PipeWire-JACK (`quantum 128`).
 
-## État actuel (0.2.1)
+## État actuel (0.3.0)
 
 Workspace Cargo avec 4 crates principaux :
 
@@ -14,6 +14,8 @@ Workspace Cargo avec 4 crates principaux :
 | `maschine-hardware` | Découverte USB (`hidraw` + `nusb`/`rusb` fallback), threads temps-réel, mapper hardware complet, modes Pad/Step/Keyboard/Chords |
 | `maschine-engine` | Domaine : Project/Group/Sound/Pattern/Scene/Section, Transport, Sequencer multi-mesures, Drum Synth 808 (16 instruments), Rendu double LCD 480×272 |
 | `maschine-app` | Binaire `maschine-linux` : Application native avec GUI `egui`, daemon headless, PipeWire low-latency |
+
+Temps-réel : l'instantané moteur est partagé en `Arc` (copy-on-write, lectures O(1)), un compteur de révision ne redessine que ce qui a changé, les VU-mètres sont calculés dans le callback audio et le thread HID réveille la GUI instantanément. Instrumentation : `--debug-latency` (HID→Engine, callbacks audio, misses).
 
 ## Prérequis Fedora 44
 
@@ -50,6 +52,9 @@ sudo target/release/maschine-linux
 
 # Lancer en mode daemon headless avec logs détaillés
 sudo target/release/maschine-linux daemon --verbose
+
+# Instrumentation temps-réel (latence HID→Engine + stats audio, toutes les 2 s)
+sudo target/release/maschine-linux daemon --debug-latency
 ```
 
 ## Architecture
@@ -94,9 +99,11 @@ GPL-3.0-or-later. Forks doivent publier les sources (AGPL non utilisée volontai
 - [x] Engine: Project JSON, Transport, Step sequencer multi-mesures, swing
 - [x] Drum Synth 808 temps-réel (16 instruments analogiques modélisés)
 - [x] GUI egui: Séquenceur 16 pistes, Grille 4×4 pads, Éditeur son/filtres, Mixer 8 groupes
-- [x] Écrans MK3: Double écran LCD couleur 480×272 temps-réel (ARRANGE, MIXER, SAMPLER, BROWSER)
+- [x] Écrans MK3: Double écran LCD couleur 480×272 temps-réel (ARRANGE, PATTERN/STEP, SONG, SCENES, MIXER, SAMPLER, BROWSER, EVENTS, MACRO, SETTINGS) avec soft keys contextuels (labels = actions réelles) et valeurs live
+- [x] Réactivité: snapshots `Arc<Project>` copy-on-write, repaint piloté par révision, VU-mètres réels par groupe + master (peak hold), `--debug-latency`
 - [x] Encodeur 4-D 4 directions & sélection de mesure / sound preview
 - [x] Sampler: zones, choke, ADSR, filtre biquad résonant
+- [x] Workflow Song/Scènes : dupliquer/supprimer section, longueur de section 1/2/4/8, dupliquer/supprimer scène (ré-indexation des sections)
 - [ ] Browser étendu: import kits SFZ/Hydrogen, tag search
 - [ ] Tests latence automatisés <6ms round-trip @128
 

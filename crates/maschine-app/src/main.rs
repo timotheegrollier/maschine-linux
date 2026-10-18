@@ -4,6 +4,7 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,8 +23,53 @@ use maschine_hardware::mapper::{HardwareMapper, MapperAction, MapperConfig, Sequ
 mod audio;
 #[cfg(feature = "usb")]
 mod display_thread;
+#[cfg(feature = "gui")]
+mod gui;
 mod hw_output;
 mod settings;
+
+/// Statistiques latence HID (mode `--debug-latency`) : événement brut →
+/// action appliquée dans l'Engine.
+#[derive(Default)]
+struct LatencyStats {
+    /// Événements traités (par intervalle de log).
+    hid_events: AtomicU64,
+    /// Durée du dernier événement (µs).
+    hid_last_us: AtomicU64,
+    /// Durée max de l'intervalle (µs).
+    hid_max_us: AtomicU64,
+}
+
+/// Boucle de log des stats latence (toutes les 2 s).
+fn spawn_latency_logger(
+    stats: Arc<LatencyStats>,
+    #[cfg(feature = "audio")] audio_stats: Option<Arc<audio::AudioStats>>,
+) {
+    std::thread::Builder::new()
+        .name("latency-logger".to_string())
+        .spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(2));
+            let ev = stats.hid_events.swap(0, Ordering::Relaxed);
+            let last = stats.hid_last_us.load(Ordering::Relaxed);
+            let max = stats.hid_max_us.swap(0, Ordering::Relaxed);
+            #[cfg(feature = "audio")]
+            let audio_txt = match &audio_stats {
+                Some(a) => format!(
+                    "audio: {} cb, {} miss, max {} µs",
+                    a.callbacks.swap(0, Ordering::Relaxed),
+                    a.lock_misses.swap(0, Ordering::Relaxed),
+                    a.max_callback_us.swap(0, Ordering::Relaxed),
+                ),
+                None => "audio: —".to_string(),
+            };
+            #[cfg(not(feature = "audio"))]
+            let audio_txt = "audio: —";
+            info!(
+                "⏱ LATENCE — HID→Engine: {ev} évts/2s, dernier {last} µs, max {max} µs • {audio_txt}"
+            );
+        })
+        .ok();
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "maschine-linux", version, about = "Maschine MK3 sur Fedora — daemon + engine", long_about = None)]
@@ -69,6 +115,9 @@ enum Commands {
         /// Canaux headphone (défaut: dupliquer main sur ch 2,3)
         #[arg(long, default_value = "duplicate")]
         headphone_mode: String,
+        /// Instrumentation latence : log HID→note_on et stats callback audio
+        #[arg(long)]
+        debug_latency: bool,
     },
     /// Gestion projet (new/save/load)
     Project {
@@ -195,6 +244,7 @@ fn main() -> anyhow::Result<()> {
             no_audio,
             no_led,
             headphone_mode,
+            debug_latency,
         } => cmd_daemon(
             project,
             midi_port,
@@ -203,6 +253,7 @@ fn main() -> anyhow::Result<()> {
             no_led,
             headphone_mode,
             false,
+            debug_latency,
         )?,
         Commands::Project { cmd } => cmd_project(cmd)?,
         Commands::LedTest { pad, color } => cmd_led_test(pad, color)?,
@@ -230,6 +281,7 @@ fn main() -> anyhow::Result<()> {
             false,
             "duplicate".to_string(),
             true,
+            false,
         )?,
     }
     Ok(())
@@ -309,6 +361,7 @@ fn cmd_hid_dump(duration: u64, hidraw: Option<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // handler CLI : 1 paramètre par option
 fn cmd_daemon(
     project: Option<PathBuf>,
     _midi_port: String,
@@ -317,6 +370,7 @@ fn cmd_daemon(
     no_led: bool,
     headphone_mode: String,
     with_gui: bool,
+    debug_latency: bool,
 ) -> anyhow::Result<()> {
     println!("# maschine-linux daemon — Ctrl+C pour quitter");
     let proj = if let Some(p) = project {
@@ -355,32 +409,7 @@ fn cmd_daemon(
     let engine = Arc::new(Mutex::new(Engine::new(proj, 48000)));
     // Ajoute le kit complet 808 DSP (16 instruments analogiques authentiques)
     {
-        let mut eng = engine.lock();
-        let kit = maschine_engine::generate_complete_808_kit(48000);
-        for (pad, _name, samp) in kit {
-            eng.sampler_mut().add_zone(
-                pad,
-                maschine_engine::sampler::ZoneMapping {
-                    sample: Some(std::sync::Arc::new(samp)),
-                    sample_path: None,
-                    sample_rate: 48000,
-                    root_key: 36 + pad,
-                    lokey: 0,
-                    hikey: 127,
-                    lovel: 0,
-                    hivel: 127,
-                    volume_db: 0.0,
-                    pan: 0.0,
-                    tune_cents: 0,
-                    choke_group: if pad == 2 || pad == 3 { Some(1) } else { None }, // Choke Closed HH <-> Open HH
-                    is_one_shot: true,
-                },
-            );
-        }
-        // Activer la boucle de transport par défaut (2 mesures = 7680 ticks à 960 PPQ)
-        eng.transport.loop_enabled = true;
-        eng.transport.loop_start = 0;
-        eng.transport.loop_end = 2 * 4 * 960;
+        engine.lock().load_default_808_kit();
     }
 
     // Audio — cpal
@@ -389,6 +418,9 @@ fn cmd_daemon(
     let hp_dup = headphone_mode == "duplicate";
 
     #[cfg(feature = "audio")]
+    // cpal::Stream n'est pas Send/Sync sur ALSA : l'AudioOutput vit dans ce
+    // mutex partagé avec le thread GUI (même thread d'accès en pratique).
+    #[allow(clippy::arc_with_non_send_sync)]
     let audio_shared: Arc<Mutex<Option<audio::AudioOutput>>> = Arc::new(Mutex::new(None));
     #[cfg(feature = "audio")]
     if no_audio {
@@ -404,7 +436,9 @@ fn cmd_daemon(
                 *audio_shared.lock() = Some(a);
             }
             Err(e) => {
-                log::error!("Audio démarrage échec: {e} — continue sans son (modifiable via paramètres)");
+                log::error!(
+                    "Audio démarrage échec: {e} — continue sans son (modifiable via paramètres)"
+                );
                 let _ = audio::AudioOutput::list_devices();
             }
         }
@@ -490,7 +524,8 @@ fn cmd_daemon(
                                 });
                             }
                             MidiEvent::Transport { play, rec, stop } => {
-                                let _ = eng.handle_event(EngineEvent::Transport { play, rec, stop });
+                                let _ =
+                                    eng.handle_event(EngineEvent::Transport { play, rec, stop });
                             }
                             _ => {}
                         }
@@ -526,14 +561,21 @@ fn cmd_daemon(
                     if pressed {
                         // La sélection suit le jeu (comme Maschine) : l'écran SAMPLER
                         // et l'édition GUI ciblent toujours le dernier pad touché.
-                        let _ = engine.lock().handle_event(EngineEvent::SelectSound(pad));
                         mapper.active_sound = pad;
+                        let mut eng = engine.lock();
+                        let _ = eng.handle_event(EngineEvent::SelectSound(pad));
+                        let _ = eng.handle_event(EngineEvent::Pad {
+                            pad,
+                            velocity,
+                            pressed,
+                        });
+                    } else {
+                        let _ = engine.lock().handle_event(EngineEvent::Pad {
+                            pad,
+                            velocity,
+                            pressed,
+                        });
                     }
-                    let _ = engine.lock().handle_event(EngineEvent::Pad {
-                        pad,
-                        velocity,
-                        pressed,
-                    });
                 }
                 MapperAction::ToggleStep { sound, bar, step } => {
                     log::debug!("STEP toggle sound={sound} bar={bar} step={step}");
@@ -997,6 +1039,11 @@ fn cmd_daemon(
                 MapperAction::ToggleMetronome => {
                     let _ = engine.lock().handle_event(EngineEvent::ToggleMetronome);
                 }
+                MapperAction::SoftKey(n) => {
+                    // Action contextuelle décidée par l'Engine : exactement ce
+                    // que le label affiché sous l'écran annonce.
+                    let _ = engine.lock().handle_event(EngineEvent::SoftKey(n));
+                }
                 MapperAction::SaveProject => {
                     let base = std::env::var("XDG_DATA_HOME")
                         .map(std::path::PathBuf::from)
@@ -1010,7 +1057,7 @@ fn cmd_daemon(
                     let autosave = autosave_dir.join("autosave.json");
                     let eng = engine.lock();
                     let snap = eng.snapshot();
-                    if let Ok(json) = serde_json::to_string_pretty(&snap.project) {
+                    if let Ok(json) = serde_json::to_string_pretty(&*snap.project) {
                         let _ = std::fs::write(&autosave, json);
                         log::info!("Autosave → {:?}", autosave);
                     }
@@ -1025,81 +1072,26 @@ fn cmd_daemon(
         mapper: &mut HardwareMapper,
         led_tx: &crossbeam_channel::Sender<maschine_proto::hid_output::LedState>,
     ) {
-        let snap = engine.lock().snapshot();
+        let snap = engine.lock().hardware_snapshot();
         // Le mapper suit l'engine (la GUI peut aussi changer groupe/son/onglets).
         mapper.group_focus = snap.group_focus;
         mapper.active_sound = snap.active_sound;
         mapper.left_tab = snap.left_tab;
         mapper.right_tab = snap.right_tab;
         // Couleurs des pads = couleurs des Sounds du groupe focus (comme Maschine).
-        if let Some(group) = snap.project.groups.get(snap.group_focus as usize) {
-            for i in 0..16 {
-                if let Some(snd) = group.sounds.get(i).and_then(|s| s.as_ref()) {
-                    if let Some(col) = maschine_proto::color::Color::from_index(snd.color) {
-                        mapper.set_pad_color(i, col);
-                    }
-                }
+        for (index, color_index) in snap.pad_colors.iter().enumerate() {
+            if let Some(color) = color_index.and_then(maschine_proto::color::Color::from_index) {
+                mapper.set_pad_color(index, color);
             }
         }
-        let is_p = snap.transport.is_playing();
-        let is_rec = snap.transport.state == maschine_engine::transport::TransportState::Recording;
-        let is_stopped = !is_p && !is_rec;
-        let num_bars = snap.pattern_bars.max(1);
-        let current_bar = ((snap.transport.tick / (4 * 960)) as usize) % num_bars;
-        let current_step = ((snap.transport.tick / 240) % 16) as usize;
-        let is_quarter_beat = (snap.transport.tick % 960) < 240 && is_p;
-
-        let mut active_steps = [false; 16];
-        // La mesure de référence est celle de l'engine (pas le miroir parfois
-        // daté du mapper) : sinon les LEDs de pas et le toggle visent une autre
-        // mesure que celle affichée/éditée.
-        let led_bar = snap.selected_bar;
-        let led_pat_idx = snap
-            .project
-            .active_pattern_index(snap.group_focus as usize, snap.active_scene);
-        if let Some(group) = snap.project.groups.get(snap.group_focus as usize) {
-            if let Some(pi) = led_pat_idx {
-                if let Some(pat) = group.patterns.get(pi) {
-                    let bar_offset = led_bar as u32 * 4 * 960;
-                    for e in &pat.events {
-                        if e.pad == mapper.active_sound
-                            && e.tick >= bar_offset
-                            && e.tick < bar_offset + (4 * 960)
-                        {
-                            let step_idx = ((e.tick - bar_offset) / 240) as usize;
-                            if step_idx < 16 {
-                                active_steps[step_idx] = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Infos scènes/patterns pour les modes SCENE/PATTERN.
-        let group_num_patterns = snap
-            .project
-            .groups
-            .get(snap.group_focus as usize)
-            .map(|g| g.patterns.len().min(16))
-            .unwrap_or(0);
-        let scene_pattern = snap.active_scene.and_then(|si| {
-            snap.project.scenes.get(si).and_then(|sc| {
-                sc.patterns
-                    .get(snap.group_focus as usize)
-                    .copied()
-                    .flatten()
-            })
-        });
-
         let led_info = SequencerLedInfo {
-            is_playing: is_p,
-            is_recording: is_rec,
-            is_stopped,
-            current_bar,
-            current_step,
-            is_quarter_beat,
-            active_steps,
+            is_playing: snap.is_playing,
+            is_recording: snap.is_recording,
+            is_stopped: snap.is_stopped,
+            current_bar: snap.current_bar,
+            current_step: snap.current_step,
+            is_quarter_beat: snap.is_quarter_beat,
+            active_steps: snap.active_steps,
             triggered_pads: snap.triggered_pads,
             master_vol: snap.master_volume,
             muted_groups: snap.muted_groups,
@@ -1112,11 +1104,11 @@ fn cmd_daemon(
             erase_mode: mapper.erase_mode,
             active_sound: snap.active_sound,
             active_scene: snap.active_scene,
-            num_scenes: snap.project.scenes.len().min(16),
-            group_num_patterns,
-            scene_pattern,
-            loop_enabled: snap.transport.loop_enabled,
-            metronome: snap.transport.metronome,
+            num_scenes: snap.num_scenes,
+            group_num_patterns: snap.group_num_patterns,
+            scene_pattern: snap.scene_pattern,
+            loop_enabled: snap.loop_enabled,
+            metronome: snap.metronome,
             selected_bar: snap.selected_bar,
             pattern_bars: snap.pattern_bars,
         };
@@ -1124,12 +1116,29 @@ fn cmd_daemon(
         let _ = led_tx.send(mapper.led_state().clone());
     }
 
+    // Latence (--debug-latency) + repaint temps réel (GUI).
+    let latency_stats = Arc::new(LatencyStats::default());
+    if debug_latency {
+        #[cfg(feature = "audio")]
+        spawn_latency_logger(
+            latency_stats.clone(),
+            audio_shared.lock().as_ref().map(|o| Arc::clone(&o.stats)),
+        );
+        #[cfg(not(feature = "audio"))]
+        spawn_latency_logger(latency_stats.clone());
+    }
+    #[cfg(feature = "gui")]
+    let repaint = gui::RepaintSignal::new();
+
     // ----- GUI mode: run event loop in background, GUI on main thread -----
     #[cfg(feature = "gui")]
     if with_gui {
         // Spawn HID event loop in background thread
         let engine_bg = engine.clone();
         let led_tx_bg = led_tx.clone();
+        let latency_bg = latency_stats.clone();
+        #[cfg(feature = "gui")]
+        let repaint_bg = repaint.clone();
         std::thread::Builder::new()
             .name("maschine-hid-loop".to_string())
             .spawn(move || {
@@ -1155,13 +1164,14 @@ fn cmd_daemon(
                     }
 
                     // Rafraîchissement régulier des LEDs physiques (30 FPS)
-                    if !no_led && last_led_sync.elapsed() >= Duration::from_millis(33) {
+                    if !no_led && last_led_sync.elapsed() >= Duration::from_millis(16) {
                         sync_hardware_leds(&engine_bg, &mut mapper, &led_tx_bg);
                         last_led_sync = std::time::Instant::now();
                     }
 
                     match rx.recv_timeout(Duration::from_millis(5)) {
                         Ok(ev) => {
+                            let t0 = std::time::Instant::now();
                             match &ev {
                                 HardwareEvent::Connected { serial } => {
                                     info!("✓ MK3 connectée serial={:?}", serial);
@@ -1176,11 +1186,15 @@ fn cmd_daemon(
                                     match id {
                                         ButtonId::Unknown(99, 2) => {
                                             let vol = *value as f32 / 1023.0;
-                                            let _ = engine_bg.lock().handle_event(EngineEvent::MasterVolume(vol));
+                                            let _ = engine_bg
+                                                .lock()
+                                                .handle_event(EngineEvent::MasterVolume(vol));
                                         }
                                         ButtonId::Unknown(99, 1) => {
                                             let vol = *value as f32 / 1023.0;
-                                            let _ = engine_bg.lock().handle_event(EngineEvent::HeadphoneVolume(vol));
+                                            let _ = engine_bg
+                                                .lock()
+                                                .handle_event(EngineEvent::HeadphoneVolume(vol));
                                         }
                                         _ => {}
                                     }
@@ -1203,6 +1217,13 @@ fn cmd_daemon(
                                 sync_hardware_leds(&engine_bg, &mut mapper, &led_tx_bg);
                                 last_led_sync = std::time::Instant::now();
                             }
+
+                            // Latence HID→Engine + réveil immédiat de la GUI.
+                            let us = t0.elapsed().as_micros() as u64;
+                            latency_bg.hid_events.fetch_add(1, Ordering::Relaxed);
+                            latency_bg.hid_last_us.store(us, Ordering::Relaxed);
+                            latency_bg.hid_max_us.fetch_max(us, Ordering::Relaxed);
+                            repaint_bg.notify();
                         }
                         Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                         Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
@@ -1216,9 +1237,9 @@ fn cmd_daemon(
         // Run GUI on main thread (required by egui/winit)
         info!("Lancement GUI egui avec hardware connecté…");
         #[cfg(feature = "audio")]
-        let gui_res = gui::run_with_engine(engine, audio_shared);
+        let gui_res = gui::run_with_engine(engine, audio_shared, repaint);
         #[cfg(not(feature = "audio"))]
-        let gui_res = gui::run_with_engine(engine);
+        let gui_res = gui::run_with_engine(engine, repaint);
         #[cfg(feature = "usb")]
         if let Some(h) = display_handle.take() {
             h.join();
@@ -1274,6 +1295,7 @@ fn cmd_daemon(
         // poll events avec timeout 5ms
         match rx.recv_timeout(Duration::from_millis(5)) {
             Ok(ev) => {
+                let t0 = std::time::Instant::now();
                 match &ev {
                     HardwareEvent::Connected { serial } => {
                         info!("✓ MK3 connectée serial={:?}", serial);
@@ -1292,7 +1314,9 @@ fn cmd_daemon(
                             }
                             ButtonId::Unknown(99, 1) => {
                                 let vol = *value as f32 / 1023.0;
-                                let _ = engine.lock().handle_event(EngineEvent::HeadphoneVolume(vol));
+                                let _ = engine
+                                    .lock()
+                                    .handle_event(EngineEvent::HeadphoneVolume(vol));
                             }
                             _ => {}
                         }
@@ -1315,6 +1339,11 @@ fn cmd_daemon(
                     sync_hardware_leds(&engine, &mut mapper, &led_tx);
                     last_led_sync = std::time::Instant::now();
                 }
+
+                let us = t0.elapsed().as_micros() as u64;
+                latency_stats.hid_events.fetch_add(1, Ordering::Relaxed);
+                latency_stats.hid_last_us.store(us, Ordering::Relaxed);
+                latency_stats.hid_max_us.fetch_max(us, Ordering::Relaxed);
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
@@ -1762,13 +1791,16 @@ fn cmd_display_probe() -> anyhow::Result<()> {
         println!("\n1. Ouverture USB context...");
         let ctx = rusb::Context::new()?;
         let devices = ctx.devices()?;
-        let dev = devices.iter().find(|d| {
-            if let Ok(desc) = d.device_descriptor() {
-                desc.vendor_id() == 0x17cc && desc.product_id() == 0x1600
-            } else {
-                false
-            }
-        }).ok_or_else(|| anyhow::anyhow!("Maschine MK3 (17cc:1600) non trouvée en USB"))?;
+        let dev = devices
+            .iter()
+            .find(|d| {
+                if let Ok(desc) = d.device_descriptor() {
+                    desc.vendor_id() == 0x17cc && desc.product_id() == 0x1600
+                } else {
+                    false
+                }
+            })
+            .ok_or_else(|| anyhow::anyhow!("Maschine MK3 (17cc:1600) non trouvée en USB"))?;
 
         let handle = dev.open()?;
         let _ = handle.set_auto_detach_kernel_driver(true);
@@ -1776,15 +1808,27 @@ fn cmd_display_probe() -> anyhow::Result<()> {
         println!("   ✓ Interface 5 (Maschine MK3 BD) réclamée !");
 
         // Helper: construit et envoie une frame complète selon le protocole de référence
-        let _send_solid = |handle: &rusb::DeviceHandle<rusb::Context>, display_id: u8, r: u8, g: u8, b: u8| -> anyhow::Result<()> {
+        let _send_solid = |handle: &rusb::DeviceHandle<rusb::Context>,
+                           display_id: u8,
+                           r: u8,
+                           g: u8,
+                           b: u8|
+         -> anyhow::Result<()> {
             let color = maschine_proto::display::DisplayPixel::from_rgb(r, g, b);
-            let did = if display_id == 0 { maschine_proto::display::DisplayId::Left } else { maschine_proto::display::DisplayId::Right };
+            let did = if display_id == 0 {
+                maschine_proto::display::DisplayId::Left
+            } else {
+                maschine_proto::display::DisplayId::Right
+            };
             let frame = maschine_proto::display::DisplayFrame::solid(did, color);
             let data = maschine_proto::display::encode_bulk_transfer(&frame)?;
 
-            println!("   Frame {:5} octets — header[0..20]: {:02x?}",
-                data.len(), &data[0..20]);
-            println!("   footer[-8..]: {:02x?}", &data[data.len()-8..]);
+            println!(
+                "   Frame {:5} octets — header[0..20]: {:02x?}",
+                data.len(),
+                &data[0..20]
+            );
+            println!("   footer[-8..]: {:02x?}", &data[data.len() - 8..]);
 
             let n = handle.write_bulk(0x04, &data, std::time::Duration::from_millis(2000))?;
             if n != data.len() {
@@ -1795,31 +1839,57 @@ fn cmd_display_probe() -> anyhow::Result<()> {
         };
 
         // Helper: split 4-write (ni-display)
-        let _send_split = |handle: &rusb::DeviceHandle<rusb::Context>, display_id: u8, r: u8, g: u8, b: u8| -> anyhow::Result<()> {
+        let _send_split = |handle: &rusb::DeviceHandle<rusb::Context>,
+                           display_id: u8,
+                           r: u8,
+                           g: u8,
+                           b: u8|
+         -> anyhow::Result<()> {
             let color = maschine_proto::display::DisplayPixel::from_rgb(r, g, b);
-            let did = if display_id == 0 { maschine_proto::display::DisplayId::Left } else { maschine_proto::display::DisplayId::Right };
+            let did = if display_id == 0 {
+                maschine_proto::display::DisplayId::Left
+            } else {
+                maschine_proto::display::DisplayId::Right
+            };
             let frame = maschine_proto::display::DisplayFrame::solid(did, color);
             let data = maschine_proto::display::encode_bulk_transfer(&frame)?;
             let timeout = std::time::Duration::from_millis(1000);
             handle.write_bulk(0x04, &data[0..16], timeout)?;
             handle.write_bulk(0x04, &data[16..20], timeout)?;
-            handle.write_bulk(0x04, &data[20..20+261120], timeout)?;
-            handle.write_bulk(0x04, &data[20+261120..], timeout)?;
+            handle.write_bulk(0x04, &data[20..20 + 261120], timeout)?;
+            handle.write_bulk(0x04, &data[20 + 261120..], timeout)?;
             Ok(())
         };
 
         // Helper: row-by-row (cabl)
-        let _send_row_by_row = |handle: &rusb::DeviceHandle<rusb::Context>, display_id: u8, r: u8, g: u8, b: u8| -> anyhow::Result<()> {
+        let _send_row_by_row = |handle: &rusb::DeviceHandle<rusb::Context>,
+                                display_id: u8,
+                                r: u8,
+                                g: u8,
+                                b: u8|
+         -> anyhow::Result<()> {
             let color = maschine_proto::display::DisplayPixel::from_rgb(r, g, b);
             let px_bytes = color.to_be_bytes();
             let timeout = std::time::Duration::from_millis(500);
             for row in 0..272u16 {
                 let mut pkt = Vec::with_capacity(20 + 480 * 2 + 8);
                 pkt.extend_from_slice(&[
-                    0x84, 0x00, display_id, 0x60,
-                    0x00, 0x00, 0x00, 0x00,
-                    0x00, 0x00, (row >> 8) as u8, (row & 0xFF) as u8,
-                    0x01, 0xE0, 0x00, 0x01,
+                    0x84,
+                    0x00,
+                    display_id,
+                    0x60,
+                    0x00,
+                    0x00,
+                    0x00,
+                    0x00,
+                    0x00,
+                    0x00,
+                    (row >> 8) as u8,
+                    (row & 0xFF) as u8,
+                    0x01,
+                    0xE0,
+                    0x00,
+                    0x01,
                 ]);
                 pkt.extend_from_slice(&[0x00, 0x00, 0x00, 0xF0]);
                 for _ in 0..480 {
@@ -1833,7 +1903,7 @@ fn cmd_display_probe() -> anyhow::Result<()> {
 
         println!("\n2. AFFICHAGE DE L'INTERFACE DAW OFFICIELLE SUR LES 2 ÉCRANS...");
         let mut snap = maschine_engine::EngineSnapshot {
-            project: maschine_engine::project::Project::new_demo(),
+            project: std::sync::Arc::new(maschine_engine::project::Project::new_demo()),
             transport: maschine_engine::transport::Transport::new(120.0, 48000),
             group_focus: 0,
             active_scene: Some(0),
@@ -1857,6 +1927,14 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             browser_preset_idx: 0,
             selected_bar: 0,
             pattern_bars: 2,
+            group_levels: [0.0; 8],
+            group_peaks: [0.0; 8],
+            master_level: 0.0,
+            master_peak: 0.0,
+            soft_labels: ["1", "2", "3", "4", "5", "6", "7", "8"],
+            waveform: None,
+            sample_duration: 0.0,
+            revision: 0,
         };
         snap.transport.state = maschine_engine::transport::TransportState::Playing;
 
@@ -1892,7 +1970,9 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             std::thread::sleep(std::time::Duration::from_millis(66));
         }
 
-        println!("   ✓ {frame_idx} frames de l'interface DAW rendues avec succès sur les 2 écrans.");
+        println!(
+            "   ✓ {frame_idx} frames de l'interface DAW rendues avec succès sur les 2 écrans."
+        );
         let _ = handle.release_interface(5);
         Ok(())
     }
@@ -1931,1101 +2011,5 @@ fn cmd_audio_test(freq: f32, duration: f32, device: Option<String>) -> anyhow::R
         anyhow::bail!("feature `audio` non activée — rebuild avec --features audio");
     }
 }
-
-#[cfg(feature = "gui")]
-mod gui {
-    use super::*;
-    use eframe::egui;
-
-    #[allow(dead_code)]
-    pub fn run(project: Option<PathBuf>) -> anyhow::Result<()> {
-        cmd_daemon(
-            project,
-            "Maschine MK3 Virtual".to_string(),
-            None,
-            false,
-            false,
-            "duplicate".to_string(),
-            true,
-        )
-    }
-
-    #[cfg(feature = "audio")]
-    pub fn run_with_engine(
-        engine: Arc<Mutex<Engine>>,
-        audio: Arc<Mutex<Option<audio::AudioOutput>>>,
-    ) -> anyhow::Result<()> {
-        run_native_gui(engine, Some(audio))
-    }
-
-    #[cfg(not(feature = "audio"))]
-    pub fn run_with_engine(engine: Arc<Mutex<Engine>>) -> anyhow::Result<()> {
-        run_native_gui(engine)
-    }
-
-    fn run_native_gui(
-        engine: Arc<Mutex<Engine>>,
-        #[cfg(feature = "audio")]
-        audio: Option<Arc<Mutex<Option<audio::AudioOutput>>>>,
-    ) -> anyhow::Result<()> {
-        let opts = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size([1280.0, 820.0])
-                .with_min_inner_size([960.0, 600.0]),
-            ..Default::default()
-        };
-        eframe::run_native(
-            "Maschine MK3 Linux",
-            opts,
-            Box::new(move |cc| {
-                let mut visuals = egui::Visuals::dark();
-                visuals.panel_fill = egui::Color32::from_rgb(22, 22, 30);
-                visuals.window_fill = egui::Color32::from_rgb(28, 28, 38);
-                visuals.extreme_bg_color = egui::Color32::from_rgb(12, 12, 18);
-                visuals.faint_bg_color = egui::Color32::from_rgb(32, 34, 44);
-                visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(40, 42, 55);
-                visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(55, 60, 80);
-                visuals.widgets.active.bg_fill = egui::Color32::from_rgb(70, 80, 110);
-                visuals.selection.bg_fill = egui::Color32::from_rgb(0, 140, 220);
-                cc.egui_ctx.set_visuals(visuals);
-
-                #[cfg(feature = "audio")]
-                let app = GuiApp::new(engine, audio);
-                #[cfg(not(feature = "audio"))]
-                let app = GuiApp::new(engine);
-
-                Ok(Box::new(app))
-            }),
-        )
-        .map_err(|e| anyhow::anyhow!("eframe: {e}"))?;
-        Ok(())
-    }
-
-    const PAD_COLORS: [egui::Color32; 16] = [
-        egui::Color32::from_rgb(230, 50, 50),
-        egui::Color32::from_rgb(230, 120, 30),
-        egui::Color32::from_rgb(230, 200, 0),
-        egui::Color32::from_rgb(120, 220, 0),
-        egui::Color32::from_rgb(0, 200, 80),
-        egui::Color32::from_rgb(0, 200, 180),
-        egui::Color32::from_rgb(0, 160, 230),
-        egui::Color32::from_rgb(50, 100, 230),
-        egui::Color32::from_rgb(120, 60, 230),
-        egui::Color32::from_rgb(180, 50, 220),
-        egui::Color32::from_rgb(220, 50, 150),
-        egui::Color32::from_rgb(200, 80, 80),
-        egui::Color32::from_rgb(160, 180, 0),
-        egui::Color32::from_rgb(0, 180, 130),
-        egui::Color32::from_rgb(80, 80, 200),
-        egui::Color32::from_rgb(200, 200, 210),
-    ];
-
-    const SOUND_NAMES: [&str; 16] = [
-        "Kick 808",
-        "Snare 808",
-        "Closed HH",
-        "Open HH",
-        "Tom Low",
-        "Tom Mid",
-        "Tom High",
-        "Clap 808",
-        "Rimshot",
-        "Shaker",
-        "Cowbell",
-        "Crash",
-        "Perc 1",
-        "Perc 2",
-        "Synth Stab",
-        "Sub Bass",
-    ];
-
-    struct GuiApp {
-        engine: Arc<Mutex<Engine>>,
-        #[cfg(feature = "audio")]
-        audio: Option<Arc<Mutex<Option<audio::AudioOutput>>>>,
-        show_settings: bool,
-        #[cfg(feature = "audio")]
-        available_devices: Vec<audio::AudioDeviceInfo>,
-        selected_device: String,
-        status_message: Option<(String, bool)>,
-        selected_bar: usize,
-    }
-
-    impl GuiApp {
-        #[cfg(feature = "audio")]
-        fn new(
-            engine: Arc<Mutex<Engine>>,
-            audio: Option<Arc<Mutex<Option<audio::AudioOutput>>>>,
-        ) -> Self {
-            let devices = audio::list_output_devices();
-            let current_dev = audio
-                .as_ref()
-                .and_then(|a| a.lock().as_ref().map(|o| o.device_name().to_string()))
-                .unwrap_or_else(|| "default".to_string());
-            let settings = settings::AppSettings::load();
-            let selected = settings.audio_device.unwrap_or(current_dev);
-            Self {
-                engine,
-                audio,
-                show_settings: false,
-                available_devices: devices,
-                selected_device: selected,
-                status_message: None,
-                selected_bar: 0,
-            }
-        }
-
-        #[cfg(not(feature = "audio"))]
-        fn new(engine: Arc<Mutex<Engine>>) -> Self {
-            Self {
-                engine,
-                show_settings: false,
-                selected_device: "disabled".to_string(),
-                status_message: None,
-                selected_bar: 0,
-            }
-        }
-
-        fn toggle_step(&self, pad: u8, tick: u32) {
-            self.engine.lock().toggle_step(pad, tick);
-        }
-
-        fn fill_four_on_the_floor(&self, pad: u8, bar: usize) {
-            self.engine.lock().fill_four_on_the_floor(pad, bar);
-        }
-
-        fn fill_eighths(&self, pad: u8, bar: usize) {
-            self.engine.lock().fill_eighths(pad, bar);
-        }
-
-        fn clear_bar(&self, bar: usize) {
-            self.engine.lock().clear_bar(bar);
-        }
-
-        fn reset_demo_groove(&self) {
-            self.engine.lock().reset_demo_groove();
-        }
-
-        #[cfg(feature = "audio")]
-        fn refresh_devices(&mut self) {
-            self.available_devices = audio::list_output_devices();
-        }
-
-        #[cfg(feature = "audio")]
-        fn switch_audio_device(&mut self, target: &str) {
-            if let Some(ref audio_holder) = self.audio {
-                // 1. Fermer et libérer explicitement l'ancien flux audio ALSA/PipeWire
-                {
-                    let mut guard = audio_holder.lock();
-                    *guard = None;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(30));
-
-                let hp_dup = true;
-                match audio::AudioOutput::open(self.engine.clone(), Some(target), hp_dup) {
-                    Ok(new_out) => {
-                        let dev_name = new_out.device_name().to_string();
-                        let rate = new_out.sample_rate();
-                        *audio_holder.lock() = Some(new_out);
-                        self.selected_device = dev_name.clone();
-                        self.status_message =
-                            Some((format!("✓ Connecté à '{dev_name}' ({rate} Hz)"), false));
-                        let mut s = settings::AppSettings::load();
-                        s.audio_device = Some(target.to_string());
-                        let _ = s.save();
-                    }
-                    Err(e) => {
-                        self.status_message = Some((
-                            format!("Erreur lors de l'ouverture de '{target}': {e}"),
-                            true,
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
-    impl eframe::App for GuiApp {
-        fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-            // Raccourci barre d'espace pour Play / Pause
-            if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
-                let mut eng = self.engine.lock();
-                let is_playing = eng.transport.is_playing();
-                if is_playing {
-                    eng.handle_event(EngineEvent::Transport {
-                        play: false,
-                        rec: false,
-                        stop: true,
-                    })
-                    .ok();
-                } else {
-                    eng.handle_event(EngineEvent::Transport {
-                        play: true,
-                        rec: false,
-                        stop: false,
-                    })
-                    .ok();
-                }
-            }
-
-            let snap = self.engine.lock().snapshot();
-
-            let cyan = egui::Color32::from_rgb(0, 200, 255);
-            let green = egui::Color32::from_rgb(80, 220, 100);
-            let red = egui::Color32::from_rgb(230, 60, 60);
-            let yellow = egui::Color32::from_rgb(255, 200, 0);
-            let dim = egui::Color32::from_rgb(140, 150, 170);
-
-            let is_playing = snap.transport.is_playing();
-            let current_step = ((snap.transport.tick / 240) % 16) as usize;
-            let current_bar =
-                ((snap.transport.tick / (4 * 960)) % (snap.pattern_bars.max(1) as u64)) as usize;
-            self.selected_bar = snap.selected_bar;
-
-            // ======== SINGLE TOP BAR (Title + Transport + BPM + Volume) ========
-            egui::TopBottomPanel::top("header").show(ctx, |ui| {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 10.0;
-
-                    // Logo & Status
-                    ui.colored_label(
-                        cyan,
-                        egui::RichText::new("⬣ MASCHINE LINUX").size(16.0).strong(),
-                    );
-                    ui.colored_label(green, egui::RichText::new("● HW OK").size(11.0));
-
-                    ui.separator();
-
-                    // Transport Buttons avec Play bien visible
-                    if is_playing {
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("■ STOP (Espace)")
-                                        .color(egui::Color32::WHITE)
-                                        .strong()
-                                        .size(13.0),
-                                )
-                                .fill(red)
-                                .min_size(egui::vec2(120.0, 26.0)),
-                            )
-                            .clicked()
-                        {
-                            self.engine
-                                .lock()
-                                .handle_event(EngineEvent::Transport {
-                                    play: false,
-                                    rec: false,
-                                    stop: true,
-                                })
-                                .ok();
-                        }
-                    } else {
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("▶ PLAY (Espace)")
-                                        .color(egui::Color32::BLACK)
-                                        .strong()
-                                        .size(13.0),
-                                )
-                                .fill(green)
-                                .min_size(egui::vec2(120.0, 26.0)),
-                            )
-                            .clicked()
-                        {
-                            self.engine
-                                .lock()
-                                .handle_event(EngineEvent::Transport {
-                                    play: true,
-                                    rec: false,
-                                    stop: false,
-                                })
-                                .ok();
-                        }
-                    }
-
-                    if ui.button(egui::RichText::new("⟲ Restart").strong()).clicked() {
-                        self.engine.lock().transport.tick = 0;
-                    }
-
-                    // Bouton boucle
-                    let loop_bg = if snap.transport.loop_enabled {
-                        egui::Color32::from_rgb(20, 60, 40)
-                    } else {
-                        egui::Color32::TRANSPARENT
-                    };
-                    let loop_txt_col = if snap.transport.loop_enabled {
-                        green
-                    } else {
-                        dim
-                    };
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("🔁 Boucle 2 Bars")
-                                    .color(loop_txt_col)
-                                    .strong(),
-                            )
-                            .fill(loop_bg),
-                        )
-                        .clicked()
-                    {
-                        let mut eng = self.engine.lock();
-                        eng.transport.loop_enabled = !eng.transport.loop_enabled;
-                    }
-
-                    ui.separator();
-
-                    // BPM
-                    ui.colored_label(
-                        yellow,
-                        egui::RichText::new(format!("{:.1} BPM", snap.transport.bpm)).strong(),
-                    );
-                    let mut bpm = snap.transport.bpm;
-                    if ui.add(egui::Slider::new(&mut bpm, 20.0..=300.0).show_value(false)).changed() {
-                        self.engine.lock().handle_event(EngineEvent::Bpm(bpm)).ok();
-                    }
-
-                    ui.separator();
-
-                    // BBT Counter
-                    ui.colored_label(
-                        egui::Color32::WHITE,
-                        egui::RichText::new(format!(
-                            "{:03}:{:02}:{:03}",
-                            snap.bbt.bars, snap.bbt.beats, snap.bbt.ticks
-                        ))
-                        .monospace()
-                        .strong()
-                        .size(13.0),
-                    );
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        #[cfg(feature = "audio")]
-                        {
-                            let (btn_txt, btn_col) = if self.show_settings {
-                                ("⚙ Fermer Paramètres", yellow)
-                            } else {
-                                ("⚙ Paramètres Audio", egui::Color32::WHITE)
-                            };
-                            if ui.button(egui::RichText::new(btn_txt).color(btn_col).strong()).clicked() {
-                                self.show_settings = !self.show_settings;
-                                if self.show_settings {
-                                    self.refresh_devices();
-                                }
-                            }
-
-                            ui.separator();
-
-                            let audio_opt = self.audio.as_ref().and_then(|a| {
-                                a.lock().as_ref().map(|o| (o.device_name().to_string(), o.sample_rate()))
-                            });
-                            if let Some((dev, rate)) = audio_opt {
-                                ui.colored_label(
-                                    green,
-                                    egui::RichText::new(format!("🔊 {dev} ({rate}Hz)")).size(12.0),
-                                );
-                            } else {
-                                ui.colored_label(
-                                    red,
-                                    egui::RichText::new("🔇 Pas d'audio").size(12.0),
-                                );
-                            }
-
-                            ui.separator();
-                        }
-
-                        ui.colored_label(
-                            dim,
-                            format!("Master: {:.0}%", snap.master_volume * 100.0),
-                        );
-                        ui.separator();
-                        ui.colored_label(dim, format!("Voices: {}", snap.num_voices));
-                    });
-                });
-                ui.add_space(6.0);
-            });
-
-            // ======== LEFT PANEL — Groups & Scenes ========
-            egui::SidePanel::left("groups_panel")
-                .default_width(170.0)
-                .min_width(140.0)
-                .show(ctx, |ui| {
-                    ui.add_space(6.0);
-                    ui.colored_label(cyan, egui::RichText::new("GROUPS").size(12.0).strong());
-                    ui.add_space(4.0);
-                    for (i, g) in snap.project.groups.iter().enumerate() {
-                        let focused = i as u8 == snap.group_focus;
-                        let group_char = (b'A' + i as u8) as char;
-                        let label =
-                            format!("{}: {} ({} pat)", group_char, g.name, g.patterns.len());
-                        let color = if focused {
-                            cyan
-                        } else {
-                            egui::Color32::from_rgb(180, 185, 200)
-                        };
-                        let bg = if focused {
-                            egui::Color32::from_rgb(30, 50, 80)
-                        } else {
-                            egui::Color32::TRANSPARENT
-                        };
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new(&label).color(color).size(12.0),
-                                )
-                                .fill(bg)
-                                .min_size(egui::vec2(ui.available_width(), 26.0)),
-                            )
-                            .clicked()
-                        {
-                            self.engine
-                                .lock()
-                                .handle_event(EngineEvent::GroupFocus(i as u8))
-                                .ok();
-                        }
-                    }
-                    ui.add_space(10.0);
-                    ui.colored_label(yellow, egui::RichText::new("SCENES").size(12.0).strong());
-                    ui.add_space(4.0);
-                    for (i, s) in snap.project.scenes.iter().enumerate() {
-                        let active = Some(i) == snap.active_scene;
-                        let color = if active {
-                            yellow
-                        } else {
-                            egui::Color32::from_rgb(180, 185, 200)
-                        };
-                        let bg = if active {
-                            egui::Color32::from_rgb(60, 50, 20)
-                        } else {
-                            egui::Color32::TRANSPARENT
-                        };
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new(&s.name).color(color).size(12.0),
-                                )
-                                .fill(bg)
-                                .min_size(egui::vec2(ui.available_width(), 24.0)),
-                            )
-                            .clicked()
-                        {
-                            self.engine.lock().handle_event(EngineEvent::Scene(i)).ok();
-                        }
-                    }
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.colored_label(
-                        dim,
-                        egui::RichText::new(format!("Projet: {}", snap.project.name)).size(11.0),
-                    );
-                });
-
-            // ======== CENTRAL PANEL — Step Sequencer & Pad Matrix ========
-            egui::CentralPanel::default().show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.add_space(4.0);
-
-                    // ── 1. SÉQUENCEUR PAS-À-PAS 16 PAS INTERACTIF ────────────────────────
-                    ui.horizontal(|ui| {
-                        ui.colored_label(cyan, egui::RichText::new("🎹 SÉQUENCEUR PAS-À-PAS (STEP SEQUENCER)").size(14.0).strong());
-                        ui.add_space(8.0);
-
-                        // Navigation Mesures Flèches < >
-                        if ui.button("◀").on_hover_text("Mesure précédente (< / 4D Gauche)").clicked() {
-                            let _ = self.engine.lock().handle_event(EngineEvent::PrevBar);
-                        }
-
-                        // Sélecteur dynamique de Mesures (Bar 1, Bar 2, Bar 3, Bar 4...)
-                        for b in 0..snap.pattern_bars {
-                            let is_curr = is_playing && current_bar == b;
-                            let is_sel = self.selected_bar == b;
-                            let bar_txt = if is_curr {
-                                format!("► Mesure {} ({}-{})", b + 1, b * 16 + 1, b * 16 + 16)
-                            } else {
-                                format!("Mesure {} ({}-{})", b + 1, b * 16 + 1, b * 16 + 16)
-                            };
-                            let col = if is_sel { yellow } else if is_curr { green } else { egui::Color32::WHITE };
-                            if ui.selectable_label(is_sel, egui::RichText::new(&bar_txt).color(col).strong()).clicked() {
-                                self.selected_bar = b;
-                                let _ = self.engine.lock().handle_event(EngineEvent::SelectBar(b));
-                            }
-                        }
-
-                        if ui.button("▶").on_hover_text("Mesure suivante (> / 4D Droite)").clicked() {
-                            let _ = self.engine.lock().handle_event(EngineEvent::NextBar);
-                        }
-
-                        ui.separator();
-                        ui.colored_label(dim, "Longueur :");
-                        for &len in &[1, 2, 4, 8] {
-                            if ui.selectable_label(snap.pattern_bars == len, format!("{}M", len)).clicked() {
-                                let _ = self.engine.lock().handle_event(EngineEvent::SetPatternBars(len));
-                            }
-                        }
-
-                        ui.separator();
-
-                        // Presets et Actions rapides
-                        if ui.button("🥁 4-on-Floor").on_hover_text("Met des Kicks sur tous les temps (1, 5, 9, 13)").clicked() {
-                            self.fill_four_on_the_floor(0, self.selected_bar);
-                        }
-                        if ui.button("🎩 8ths Hats").on_hover_text("Remplit les Charlestons fermés en croches").clicked() {
-                            self.fill_eighths(2, self.selected_bar);
-                        }
-                        if ui.button("✨ Reset 808").on_hover_text("Restaure le groove démo 808 d'origine").clicked() {
-                            self.reset_demo_groove();
-                        }
-                        if ui.button("🗑 Vider Mesure").on_hover_text("Supprime toutes les notes de la mesure active").clicked() {
-                            self.clear_bar(self.selected_bar);
-                        }
-                    });
-
-                    ui.add_space(6.0);
-
-                    // Récupère les events du pattern actif du groupe courant
-                    // (celui assigné dans la scène active, comme la lecture).
-                    let active_events: Vec<maschine_engine::project::PatternEvent> = snap
-                        .project
-                        .active_pattern_index(snap.group_focus as usize, snap.active_scene)
-                        .and_then(|pi| {
-                            snap.project
-                                .groups
-                                .get(snap.group_focus as usize)?
-                                .patterns
-                                .get(pi)
-                        })
-                        .map(|p| p.events.clone())
-                        .unwrap_or_default();
-
-                    // Timeline Step Header (1..16 avec découpage par temps)
-                    ui.horizontal(|ui| {
-                        ui.add_space(114.0); // Alignement avec le nom de l'instrument
-                        for step in 0..16 {
-                            let is_current = is_playing && (current_bar == self.selected_bar) && (current_step == step);
-                            let col = if is_current {
-                                cyan
-                            } else if step % 4 == 0 {
-                                egui::Color32::WHITE
-                            } else {
-                                dim
-                            };
-                            let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 18.0), egui::Sense::hover());
-                            let painter = ui.painter_at(rect);
-                            if is_current {
-                                painter.rect_filled(rect, 3.0, egui::Color32::from_rgb(0, 70, 90));
-                            }
-                            painter.text(
-                                rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                format!("{}", step + 1),
-                                egui::FontId::proportional(11.0),
-                                col,
-                            );
-                            if step % 4 == 3 && step < 15 {
-                                ui.add_space(4.0); // Séparateur de temps
-                            }
-                        }
-                    });
-
-                    // 16 Pistes complètes de percussion dans le séquenceur
-                    const SEQUENCER_PADS: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-
-                    for &pad_idx in &SEQUENCER_PADS {
-                        let pad_name = SOUND_NAMES[pad_idx as usize];
-                        let pad_color = PAD_COLORS[pad_idx as usize];
-
-                        ui.horizontal(|ui| {
-                            // Bouton d'écoute / nom d'instrument
-                            let btn_txt = format!("▶ {}", pad_name);
-                            if ui.add(
-                                egui::Button::new(egui::RichText::new(&btn_txt).color(pad_color).size(12.0).strong())
-                                    .fill(egui::Color32::from_rgb(25, 28, 36))
-                                    .min_size(egui::vec2(110.0, 26.0)),
-                            ).clicked() {
-                                let mut eng = self.engine.lock();
-                                let _ = eng.handle_event(EngineEvent::SelectSound(pad_idx));
-                                let _ = eng.handle_event(EngineEvent::Pad { pad: pad_idx, velocity: 115, pressed: true });
-                            }
-
-                            // 16 Pas (comparaison par case de 16e : tolère humanize/nudge)
-                            for step in 0..16 {
-                                let tick = (self.selected_bar as u32 * 3840) + (step as u32 * 240);
-                                let is_active = active_events.iter().any(|e| {
-                                    e.pad == pad_idx
-                                        && maschine_engine::project::same_step_cell(e.tick, tick)
-                                });
-                                let is_current = is_playing && (current_bar == self.selected_bar) && (current_step == step);
-
-                                let (rect, resp) = ui.allocate_exact_size(egui::vec2(28.0, 26.0), egui::Sense::click());
-                                let painter = ui.painter_at(rect);
-
-                                let bg = if is_active {
-                                    if is_current {
-                                        egui::Color32::from_rgb(
-                                            (pad_color.r() as u16 * 140 / 100).min(255) as u8,
-                                            (pad_color.g() as u16 * 140 / 100).min(255) as u8,
-                                            (pad_color.b() as u16 * 140 / 100).min(255) as u8,
-                                        )
-                                    } else {
-                                        pad_color
-                                    }
-                                } else if is_current {
-                                    egui::Color32::from_rgb(45, 65, 80)
-                                } else if resp.hovered() {
-                                    egui::Color32::from_rgb(40, 44, 56)
-                                } else if (step / 4) % 2 == 1 {
-                                    egui::Color32::from_rgb(26, 28, 36)
-                                } else {
-                                    egui::Color32::from_rgb(20, 22, 28)
-                                };
-
-                                painter.rect_filled(rect, 4.0, bg);
-
-                                let stroke_color = if is_current {
-                                    egui::Color32::WHITE
-                                } else if is_active {
-                                    egui::Color32::from_rgb(220, 220, 240)
-                                } else {
-                                    egui::Color32::from_rgb(45, 50, 65)
-                                };
-                                painter.rect_stroke(rect, 4.0, egui::Stroke::new(if is_current { 1.8_f32 } else { 1.0_f32 }, stroke_color), egui::StrokeKind::Outside);
-
-                                if is_active {
-                                    painter.circle_filled(rect.center(), 3.5, egui::Color32::BLACK);
-                                }
-
-                                if resp.clicked() {
-                                    self.toggle_step(pad_idx, tick);
-                                }
-
-                                if step % 4 == 3 && step < 15 {
-                                    ui.add_space(4.0);
-                                }
-                            }
-                        });
-                    }
-
-                    ui.add_space(14.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-
-                    // ── 2. GRILLE DE PADS 4x4 (JOUER EN DIRECT) ─────────────────────────
-                    ui.horizontal(|ui| {
-                        ui.colored_label(yellow, egui::RichText::new("🎛 GRILLE DE PADS 4x4 (JEU EN DIRECT & APERÇU)").size(14.0).strong());
-                        ui.colored_label(dim, "— Cliquez sur un pad pour jouer le sample 808 pleine dynamique");
-                    });
-                    ui.add_space(6.0);
-
-                    let pad_layout: [[u8; 4]; 4] = [
-                        [12, 13, 14, 15],
-                        [8,  9,  10, 11],
-                        [4,  5,  6,  7],
-                        [0,  1,  2,  3],
-                    ];
-
-                    for row in &pad_layout {
-                        ui.horizontal(|ui| {
-                            for &pad_idx in row {
-                                let color = PAD_COLORS[pad_idx as usize];
-                                let name = SOUND_NAMES[pad_idx as usize];
-
-                                let (rect, resp) = ui.allocate_exact_size(egui::vec2(142.0, 48.0), egui::Sense::click());
-                                let painter = ui.painter_at(rect);
-
-                                let bg = if resp.is_pointer_button_down_on() {
-                                    color
-                                } else if resp.hovered() {
-                                    egui::Color32::from_rgb(color.r() / 2, color.g() / 2, color.b() / 2)
-                                } else {
-                                    egui::Color32::from_rgb(color.r() / 4, color.g() / 4, color.b() / 4)
-                                };
-
-                                painter.rect_filled(rect, 6.0, bg);
-                                painter.rect_stroke(rect, 6.0, egui::Stroke::new(1.8_f32, color), egui::StrokeKind::Outside);
-
-                                // Numéro de Pad
-                                painter.text(
-                                    egui::pos2(rect.left() + 8.0, rect.top() + 8.0),
-                                    egui::Align2::LEFT_TOP,
-                                    format!("{}", pad_idx + 1),
-                                    egui::FontId::proportional(12.0),
-                                    color,
-                                );
-
-                                // Nom de l'instrument
-                                painter.text(
-                                    rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    name,
-                                    egui::FontId::proportional(13.0),
-                                    egui::Color32::WHITE,
-                                );
-
-                                if resp.clicked() {
-                                    let mut eng = self.engine.lock();
-                                    let _ = eng.handle_event(EngineEvent::SelectSound(pad_idx));
-                                    let _ = eng.handle_event(EngineEvent::Pad {
-                                        pad: pad_idx,
-                                        velocity: 115,
-                                        pressed: true,
-                                    });
-                                }
-                            }
-                        });
-                        ui.add_space(2.0);
-                    }
-
-                    ui.add_space(14.0);
-                    ui.separator();
-                    ui.add_space(6.0);
-
-                    // ── 3. ÉDITION SON / PAD / SAMPLE ─────────────────────────────
-                    // Accès : cliquez un pad ci-dessous (ou tapez un pad MK3) puis réglez.
-                    // Sur MK3 : bouton SAMPLING -> écran SAMPLER + knobs 1..4 = VOL/PAN/CUTOFF/RESO.
-                    ui.horizontal(|ui| {
-                        ui.colored_label(yellow, egui::RichText::new("🎚 ÉDITION SON / PAD / SAMPLE").size(14.0).strong());
-                        ui.colored_label(dim, "— MK3 : bouton SAMPLING, puis pads 1..16 + knobs");
-                    });
-                    ui.add_space(4.0);
-
-                    let sel = snap.active_sound as usize;
-                    // Sélecteur 16 pads
-                    ui.horizontal_wrapped(|ui| {
-                        for pad in 0..16u8 {
-                            let nm = SOUND_NAMES[pad as usize];
-                            let label = format!("{} {}", pad + 1, nm);
-                            let is_sel = pad as usize == sel;
-                            let btn = egui::Button::new(
-                                egui::RichText::new(&label)
-                                    .color(if is_sel { egui::Color32::BLACK } else { PAD_COLORS[pad as usize] })
-                                    .size(11.0)
-                                    .strong(),
-                            )
-                            .fill(if is_sel { PAD_COLORS[pad as usize] } else { egui::Color32::from_rgb(25, 28, 36) })
-                            .min_size(egui::vec2(118.0, 26.0));
-                            if ui.add(btn).clicked() {
-                                self.engine.lock().handle_event(EngineEvent::SelectSound(pad)).ok();
-                            }
-                        }
-                    });
-                    ui.add_space(4.0);
-
-                    if let Some(snd) = snap
-                        .project
-                        .groups
-                        .get(snap.group_focus as usize)
-                        .and_then(|g| g.sounds.get(sel).and_then(|s| s.as_ref()))
-                    {
-                        ui.horizontal(|ui| {
-                            ui.colored_label(cyan, egui::RichText::new(format!("PAD {:02} :", sel + 1)).strong().size(13.0));
-                            egui::ComboBox::from_id_salt("drum_preset_selector")
-                                .selected_text(snd.name.as_str())
-                                .show_ui(ui, |ui| {
-                                    for (idx, &pname) in maschine_engine::DRUM_PRESET_NAMES.iter().enumerate() {
-                                        if ui.selectable_label(snd.name == pname, pname).clicked() {
-                                            let mut eng = self.engine.lock();
-                                            let _ = eng.handle_event(EngineEvent::LoadDrumPreset {
-                                                group: snap.group_focus,
-                                                sound: sel as u8,
-                                                preset_idx: idx as u8,
-                                            });
-                                            let _ = eng.handle_event(EngineEvent::Pad {
-                                                pad: sel as u8,
-                                                velocity: 115,
-                                                pressed: true,
-                                            });
-                                        }
-                                    }
-                                });
-                            if ui.button("▶ Pré-écoute").clicked() {
-                                let mut eng = self.engine.lock();
-                                let _ = eng.handle_event(EngineEvent::Pad { pad: sel as u8, velocity: 115, pressed: true });
-                            }
-                            ui.colored_label(dim, format!("Groupe {} | choke: {:?}", (b'A' + snap.group_focus) as char, snd.choke_group));
-                        });
-                        // VOL / PAN / CUTOFF / RESO
-                        let mut vol = snd.volume_db;
-                        ui.horizontal(|ui| {
-                            ui.label(format!("Volume : {vol:+.1} dB"));
-                            if ui.add(egui::Slider::new(&mut vol, -60.0..=12.0)).changed() {
-                                self.engine.lock().handle_event(EngineEvent::SoundVolume { group: snap.group_focus, sound: sel as u8, volume_db: vol }).ok();
-                            }
-                        });
-                        let mut pan = snd.pan;
-                        ui.horizontal(|ui| {
-                            ui.label(format!("Pan : {pan:+.2} (L -1 / C 0 / R +1)"));
-                            if ui.add(egui::Slider::new(&mut pan, -1.0..=1.0)).changed() {
-                                self.engine.lock().handle_event(EngineEvent::SoundPan { group: snap.group_focus, sound: sel as u8, pan }).ok();
-                            }
-                        });
-                        let mut cutoff = snd.filter.cutoff_hz;
-                        ui.horizontal(|ui| {
-                            ui.label(format!("Cutoff : {:.0} Hz", cutoff));
-                            if ui.add(egui::Slider::new(&mut cutoff, 20.0..=20000.0).logarithmic(true)).changed() {
-                                self.engine.lock().handle_event(EngineEvent::SoundFilterCutoff { group: snap.group_focus, sound: sel as u8, cutoff_hz: cutoff }).ok();
-                            }
-                        });
-                        let mut reso = snd.filter.resonance;
-                        ui.horizontal(|ui| {
-                            ui.label(format!("Résonance : {:.0}%", reso * 100.0));
-                            if ui.add(egui::Slider::new(&mut reso, 0.0..=1.0)).changed() {
-                                self.engine.lock().handle_event(EngineEvent::SoundFilterReso { group: snap.group_focus, sound: sel as u8, resonance: reso }).ok();
-                            }
-                        });
-                        // ADSR
-                        ui.colored_label(dim, "Enveloppe AMP (ADSR) :");
-                        let mut a = snd.adsr.attack_ms;
-                        let mut d = snd.adsr.decay_ms;
-                        let mut s = snd.adsr.sustain;
-                        let mut r = snd.adsr.release_ms;
-                        let mut adsr_changed = false;
-                        ui.horizontal(|ui| {
-                            ui.label(format!("A {a:.1}ms"));
-                            if ui.add(egui::Slider::new(&mut a, 0.1..=500.0).logarithmic(true)).changed() { adsr_changed = true; }
-                            ui.label(format!("D {d:.0}ms"));
-                            if ui.add(egui::Slider::new(&mut d, 0.1..=2000.0).logarithmic(true)).changed() { adsr_changed = true; }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label(format!("S {:.0}%", s * 100.0));
-                            if ui.add(egui::Slider::new(&mut s, 0.0..=1.0)).changed() { adsr_changed = true; }
-                            ui.label(format!("R {r:.0}ms"));
-                            if ui.add(egui::Slider::new(&mut r, 0.1..=2000.0).logarithmic(true)).changed() { adsr_changed = true; }
-                        });
-                        if adsr_changed {
-                            self.engine.lock().handle_event(EngineEvent::SoundAdsr { group: snap.group_focus, sound: sel as u8, attack_ms: a, decay_ms: d, sustain: s, release_ms: r }).ok();
-                        }
-                        if let Some(z) = snd.zones.first() {
-                            ui.colored_label(dim, format!("Sample : {} | root {}", z.sample_path.clone().unwrap_or_else(|| "(synth 808)".to_string()), z.root_key));
-                        }
-                    } else {
-                        ui.colored_label(dim, "Pad vide dans ce groupe");
-                    }
-
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(6.0);
-
-                    // ── 4. LISTE DES PATTERNS ───────────────────────────────────────────
-                    ui.colored_label(yellow, egui::RichText::new(format!("PATTERNS DU GROUPE {}", (b'A' + snap.group_focus) as char)).size(13.0).strong());
-                    ui.add_space(4.0);
-
-                    if let Some(group) = snap.project.groups.get(snap.group_focus as usize) {
-                        for (pi, pat) in group.patterns.iter().enumerate() {
-                            ui.group(|ui| {
-                                ui.horizontal(|ui| {
-                                    ui.colored_label(cyan, egui::RichText::new(format!("[P{}]", pi + 1)).strong());
-                                    ui.colored_label(egui::Color32::WHITE, egui::RichText::new(&pat.name).strong().size(13.0));
-                                    ui.colored_label(dim, format!("{} notes programmées  |  Longueur : {} mesures ({} ticks)", pat.events.len(), pat.length.bars, pat.length));
-                                });
-                            });
-                        }
-                    } else {
-                        ui.colored_label(dim, "Aucun pattern dans le groupe actif");
-                    }
-                });
-            });
-
-            // ======== MODAL WINDOW: SETTINGS AUDIO ========
-            #[cfg(feature = "audio")]
-            if self.show_settings {
-                let mut settings_open = self.show_settings;
-                let mut switch_target: Option<String> = None;
-
-                egui::Window::new("⚙ Paramètres Audio — Choix de la Sortie Son")
-                    .open(&mut settings_open)
-                    .default_width(540.0)
-                    .min_width(460.0)
-                    .resizable(true)
-                    .collapsible(false)
-                    .show(ctx, |ui| {
-                        ui.add_space(4.0);
-
-                        let active_info = self.audio.as_ref().and_then(|a| {
-                            a.lock().as_ref().map(|o| (o.device_name().to_string(), o.sample_rate()))
-                        });
-
-                        ui.group(|ui| {
-                            ui.horizontal(|ui| {
-                                if let Some((ref dev, rate)) = active_info {
-                                    ui.colored_label(green, egui::RichText::new("●").size(18.0));
-                                    ui.vertical(|ui| {
-                                        ui.colored_label(
-                                            egui::Color32::WHITE,
-                                            egui::RichText::new(format!("Sortie active : {dev}")).strong().size(13.0),
-                                        );
-                                        ui.colored_label(dim, format!("Fréquence : {rate} Hz  |  Stéréo  |  Buffer actif"));
-                                    });
-                                } else {
-                                    ui.colored_label(red, egui::RichText::new("●").size(18.0));
-                                    ui.colored_label(red, egui::RichText::new("Aucun flux audio actif (choisissez une sortie ci-dessous)").strong());
-                                }
-                            });
-                        });
-
-                        ui.add_space(10.0);
-                        ui.colored_label(cyan, egui::RichText::new("SÉLECTION RAPIDE DE LA SORTIE").strong().size(12.0));
-                        ui.add_space(4.0);
-
-                        ui.horizontal(|ui| {
-                            let is_pc_active = active_info
-                                .as_ref()
-                                .map(|(n, _)| n == "default" || n == "pipewire" || n.contains("PCH") || n.contains("analog"))
-                                .unwrap_or(false);
-                            let pc_bg = if is_pc_active {
-                                egui::Color32::from_rgb(25, 70, 45)
-                            } else {
-                                egui::Color32::from_rgb(35, 40, 55)
-                            };
-
-                            if ui.add(
-                                egui::Button::new(
-                                    egui::RichText::new("🔊 Haut-parleurs PC (Défaut Système)")
-                                        .color(if is_pc_active { green } else { egui::Color32::WHITE })
-                                        .size(13.0)
-                                        .strong(),
-                                )
-                                .fill(pc_bg)
-                                .min_size(egui::vec2(250.0, 38.0)),
-                            ).clicked() {
-                                switch_target = Some("default".to_string());
-                            }
-
-                            let is_mk3_active = active_info
-                                .as_ref()
-                                .map(|(n, _)| n.to_lowercase().contains("mk3") || n.to_lowercase().contains("maschine"))
-                                .unwrap_or(false);
-                            let mk3_bg = if is_mk3_active {
-                                egui::Color32::from_rgb(25, 70, 45)
-                            } else {
-                                egui::Color32::from_rgb(35, 40, 55)
-                            };
-
-                            if ui.add(
-                                egui::Button::new(
-                                    egui::RichText::new("🎛 Maschine MK3 (Prises Hardware)")
-                                        .color(if is_mk3_active { green } else { egui::Color32::WHITE })
-                                        .size(13.0)
-                                        .strong(),
-                                )
-                                .fill(mk3_bg)
-                                .min_size(egui::vec2(250.0, 38.0)),
-                            ).clicked() {
-                                switch_target = Some("mk3".to_string());
-                            }
-                        });
-
-                        ui.add_space(12.0);
-                        ui.separator();
-                        ui.add_space(6.0);
-
-                        ui.horizontal(|ui| {
-                            ui.colored_label(yellow, egui::RichText::new("TOUS LES PÉRIPHÉRIQUES DÉTECTÉS").strong().size(12.0));
-                            if ui.button("⟲ Actualiser la liste").clicked() {
-                                self.refresh_devices();
-                            }
-                        });
-                        ui.add_space(4.0);
-
-                        egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
-                            for dev in &self.available_devices {
-                                let is_active = active_info.as_ref().map(|(n, _)| n == &dev.name).unwrap_or(false);
-                                let is_selected = self.selected_device == dev.name;
-
-                                let mut title = dev.name.clone();
-                                if dev.is_default {
-                                    title.push_str("  [Défaut Système]");
-                                }
-                                if dev.is_mk3 {
-                                    title.push_str("  [Maschine MK3]");
-                                }
-
-                                let text_col = if is_active {
-                                    green
-                                } else if is_selected {
-                                    cyan
-                                } else {
-                                    egui::Color32::from_rgb(200, 205, 220)
-                                };
-
-                                if ui.selectable_label(is_selected, egui::RichText::new(&title).color(text_col)).clicked() {
-                                    self.selected_device = dev.name.clone();
-                                }
-                            }
-                        });
-
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            if ui.button(egui::RichText::new("✔ Activer le périphérique sélectionné").strong()).clicked() {
-                                switch_target = Some(self.selected_device.clone());
-                            }
-                            ui.colored_label(dim, format!("Sélectionné : {}", self.selected_device));
-                        });
-
-                        ui.add_space(12.0);
-                        ui.separator();
-                        ui.add_space(6.0);
-
-                        ui.colored_label(cyan, egui::RichText::new("TEST SONORE IMMÉDIAT & VOLUMES").strong().size(12.0));
-                        ui.add_space(4.0);
-
-                        ui.horizontal(|ui| {
-                            if ui.button(egui::RichText::new("▶ Tester le Kick 808 (Pad 1)").color(green).strong().size(13.0)).clicked() {
-                                let mut eng = self.engine.lock();
-                                let _ = eng.handle_event(EngineEvent::Pad { pad: 0, velocity: 115, pressed: true });
-                            }
-                            if ui.button(egui::RichText::new("▶ Tester la Snare 808 (Pad 2)").strong().size(13.0)).clicked() {
-                                let mut eng = self.engine.lock();
-                                let _ = eng.handle_event(EngineEvent::Pad { pad: 1, velocity: 115, pressed: true });
-                            }
-                            if ui.button(egui::RichText::new("▶ Tester le Hi-Hat (Pad 3)").strong().size(13.0)).clicked() {
-                                let mut eng = self.engine.lock();
-                                let _ = eng.handle_event(EngineEvent::Pad { pad: 2, velocity: 110, pressed: true });
-                            }
-                            if ui.button(egui::RichText::new("▶ Tester le Clap (Pad 8)").strong().size(13.0)).clicked() {
-                                let mut eng = self.engine.lock();
-                                let _ = eng.handle_event(EngineEvent::Pad { pad: 7, velocity: 110, pressed: true });
-                            }
-                        });
-
-                        ui.add_space(6.0);
-                        let mut master_vol = snap.master_volume;
-                        let master_text = format!("{:.0}%", master_vol * 100.0);
-                        ui.horizontal(|ui| {
-                            ui.label("Volume Master :");
-                            if ui.add(egui::Slider::new(&mut master_vol, 0.0..=1.0).text(&master_text)).changed() {
-                                self.engine.lock().handle_event(EngineEvent::MasterVolume(master_vol)).ok();
-                            }
-                        });
-
-                        let mut hp_vol = snap.headphone_volume;
-                        let hp_text = format!("{:.0}%", hp_vol * 100.0);
-                        ui.horizontal(|ui| {
-                            ui.label("Volume Casque :");
-                            if ui.add(egui::Slider::new(&mut hp_vol, 0.0..=1.0).text(&hp_text)).changed() {
-                                self.engine.lock().handle_event(EngineEvent::HeadphoneVolume(hp_vol)).ok();
-                            }
-                        });
-
-                        if let Some((ref msg, is_err)) = self.status_message {
-                            ui.add_space(8.0);
-                            let col = if is_err { red } else { green };
-                            ui.colored_label(col, egui::RichText::new(msg).strong());
-                        }
-                    });
-
-                self.show_settings = settings_open;
-                if let Some(target) = switch_target {
-                    self.switch_audio_device(&target);
-                }
-            }
-
-            ctx.request_repaint_after(Duration::from_millis(33));
-        }
-    }
-}
-
 
 // ctrlc est initialisé en début de main via init_ctrlc()

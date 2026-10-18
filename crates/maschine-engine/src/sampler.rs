@@ -144,6 +144,8 @@ pub struct SamplerVoice {
     pub is_one_shot: bool,
     /// Index du Sound source (pour mise à jour filtre/ADSR en temps réel)
     pub sound: u8,
+    /// Groupe mixer 0..8 attribué par l'Engine (0xFF = hors groupe : clic, preview)
+    pub group: u8,
 }
 
 /// Phase ADSR.
@@ -176,6 +178,8 @@ pub struct Sampler {
     pub max_voices: usize,
     /// Sample rate engine
     pub sample_rate: u32,
+    /// Crête par groupe mixer (0..8) mise à jour à chaque `render` (avant release).
+    pub group_peak: [f32; 8],
 }
 
 impl Sampler {
@@ -295,6 +299,7 @@ impl Sampler {
             age: self.age_counter,
             is_one_shot: zone.is_one_shot,
             sound,
+            group: u8::MAX,
         };
         self.age_counter += 1;
         self.voices.push(voice);
@@ -346,6 +351,7 @@ impl Sampler {
             age: self.age_counter,
             is_one_shot: true,
             sound: 255,
+            group: u8::MAX,
         };
         self.age_counter += 1;
         self.voices.push(voice);
@@ -376,11 +382,15 @@ impl Sampler {
         for s in out.iter_mut() {
             *s = 0.0;
         }
+        for p in self.group_peak.iter_mut() {
+            *p = 0.0;
+        }
         let mut to_remove = Vec::new();
         for (idx, voice) in self.voices.iter_mut().enumerate() {
             let mut pos = voice.pos;
             let inc = voice.increment;
             let sample = &voice.sample;
+            let mut voice_peak = 0.0f32;
             for frame in 0..frames {
                 if pos >= sample.len() as f64 - 1.0 {
                     to_remove.push(idx);
@@ -456,11 +466,20 @@ impl Sampler {
                 let g = voice.gain * env;
                 // pan law -3dB
                 let (lg, rg) = pan_gains(voice.pan, g);
-                out[frame * 2] += s * lg;
-                out[frame * 2 + 1] += s * rg;
+                let l = s * lg;
+                let r = s * rg;
+                out[frame * 2] += l;
+                out[frame * 2 + 1] += r;
+                let mag = l.abs().max(r.abs());
+                if mag > voice_peak {
+                    voice_peak = mag;
+                }
                 pos += inc;
             }
             voice.pos = pos;
+            if voice.group < 8 && voice_peak > self.group_peak[voice.group as usize] {
+                self.group_peak[voice.group as usize] = voice_peak;
+            }
             if voice.adsr_phase == AdsrPhase::Off {
                 to_remove.push(idx);
             }
@@ -487,6 +506,66 @@ impl Sampler {
         if let Some(v) = self.voices.get_mut(idx) {
             v.pan = pan.clamp(-1.0, 1.0);
         }
+    }
+
+    /// Attribue une voix à un groupe mixer (0..8) pour le VU-mètre.
+    pub fn set_voice_group(&mut self, idx: usize, group: u8) {
+        if let Some(v) = self.voices.get_mut(idx) {
+            v.group = group;
+        }
+    }
+
+    /// Crêtes par groupe du dernier `render` (0..8).
+    #[must_use]
+    pub fn group_peaks(&self) -> [f32; 8] {
+        self.group_peak
+    }
+
+    /// Enveloppe (min,max) par bucket du premier sample du Sound — pour la
+    /// waveform de l'UI/écrans. `buckets` ≈ nombre de colonnes de pixels.
+    #[must_use]
+    pub fn waveform_envelope(&self, sound: u8, buckets: usize) -> Option<Vec<(f32, f32)>> {
+        if buckets == 0 {
+            return None;
+        }
+        let zones = self.zones.get(&sound)?;
+        let sample = zones.iter().find_map(|z| z.sample.as_ref())?;
+        if sample.is_empty() {
+            return None;
+        }
+        let n = sample.len();
+        let step = n as f32 / buckets as f32;
+        let mut out = Vec::with_capacity(buckets);
+        for b in 0..buckets {
+            let s = (b as f32 * step) as usize;
+            let e = (((b + 1) as f32 * step) as usize).min(n);
+            if s >= e {
+                out.push((0.0, 0.0));
+                continue;
+            }
+            let mut mn = f32::MAX;
+            let mut mx = f32::MIN;
+            for &v in &sample[s..e] {
+                if v < mn {
+                    mn = v;
+                }
+                if v > mx {
+                    mx = v;
+                }
+            }
+            out.push((mn, mx));
+        }
+        Some(out)
+    }
+
+    /// Durée en secondes du sample du Sound (0 si aucun).
+    #[must_use]
+    pub fn sample_duration_secs(&self, sound: u8) -> f32 {
+        self.zones
+            .get(&sound)
+            .and_then(|z| z.iter().find_map(|z| z.sample.as_ref()))
+            .map(|s| s.len() as f32 / self.sample_rate.max(1) as f32)
+            .unwrap_or(0.0)
     }
 
     /// Calcule les coefficients du filtre lowpass résonant biquad (RBJ).
@@ -536,7 +615,14 @@ impl Sampler {
     }
 
     /// Met à jour en temps réel l'enveloppe ADSR pour toutes les voix d'un son donné.
-    pub fn update_sound_adsr(&mut self, sound: u8, attack_ms: f32, decay_ms: f32, sustain: f32, release_ms: f32) {
+    pub fn update_sound_adsr(
+        &mut self,
+        sound: u8,
+        attack_ms: f32,
+        decay_ms: f32,
+        sustain: f32,
+        release_ms: f32,
+    ) {
         let sr = self.sample_rate.max(1) as f32;
         for v in &mut self.voices {
             if v.sound == sound {

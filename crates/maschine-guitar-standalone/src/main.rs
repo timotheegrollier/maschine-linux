@@ -2,6 +2,9 @@
 //!
 //! Audio: JACK (PipeWire) duplex + CPAL fallback
 //! GUI: egui/eframe with parameter knobs, VU meters, device selection
+// NOTE : crate hors périmètre maschine-linux — dead_code pré-existant toléré
+// (bridges GUI/audio conservés pour évolutions futures).
+#![allow(dead_code)]
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -29,7 +32,7 @@ mod config;
 mod params_bridge;
 
 use config::AppConfig;
-use params_bridge::{GuiParam, ParamsBridge};
+use params_bridge::ParamsBridge;
 
 /// Audio message from audio thread to GUI
 #[derive(Debug, Clone)]
@@ -52,6 +55,7 @@ pub enum GuiToAudio {
 
 /// Main application state
 #[derive(Clone)]
+#[allow(dead_code)] // champs conservés pour le metering/paramètres futurs
 struct App {
     config: AppConfig,
     params_bridge: Arc<ParamsBridge>,

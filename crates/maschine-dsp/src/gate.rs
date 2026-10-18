@@ -1,6 +1,5 @@
 //! Noise Gate with smooth attack/release
 
-
 /// Simple noise gate with lookahead-style envelope follower
 pub struct NoiseGate {
     envelope: f32,

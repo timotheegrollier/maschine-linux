@@ -2,11 +2,13 @@
 
 /// One-pole lowpass filter
 #[derive(Clone, Copy)]
+#[allow(dead_code)] // brique DSP conservée pour usages futurs du tone stack
 struct OnePoleLP {
     z1: f32,
     coeff: f32,
 }
 
+#[allow(dead_code)] // brique DSP conservée pour usages futurs du tone stack
 impl OnePoleLP {
     fn new() -> Self {
         Self {

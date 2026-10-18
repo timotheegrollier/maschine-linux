@@ -80,6 +80,7 @@ fn soft_clip(x: f32) -> f32 {
 }
 
 /// 1. Kick 808 lourd et percutant —
+///
 /// pitch drop rapide (220 Hz → 50 Hz), transitoire click + sous-basse résonante.
 pub fn generate_kick(sample_rate: u32) -> Vec<f32> {
     let sr = sample_rate as f32;
@@ -120,6 +121,7 @@ pub fn generate_kick(sample_rate: u32) -> Vec<f32> {
 }
 
 /// 2. Snare 808 tranchante —
+///
 /// double tonalité harmonique (~185Hz et ~330Hz) + burst de bruit blanc filtré passe-haut.
 pub fn generate_snare(sample_rate: u32) -> Vec<f32> {
     let sr = sample_rate as f32;
@@ -162,6 +164,7 @@ pub fn generate_snare(sample_rate: u32) -> Vec<f32> {
 }
 
 /// 3. Closed Hi-Hat 808 métallique et net —
+///
 /// cluster inharmonique 808 + passe-haut à 7 kHz, decay ultra rapide (45 ms).
 pub fn generate_closed_hh(sample_rate: u32) -> Vec<f32> {
     let sr = sample_rate as f32;
@@ -194,6 +197,7 @@ pub fn generate_closed_hh(sample_rate: u32) -> Vec<f32> {
 }
 
 /// 4. Open Hi-Hat 808 brillant —
+///
 /// même cluster métallique avec sustain et decay prolongé (350 ms).
 pub fn generate_open_hh(sample_rate: u32) -> Vec<f32> {
     let sr = sample_rate as f32;
@@ -225,6 +229,7 @@ pub fn generate_open_hh(sample_rate: u32) -> Vec<f32> {
 }
 
 /// 5. Hand Clap 808 authentique —
+///
 /// 3 micro-frappes espacées de 11ms + réverbération/queue diffuse.
 pub fn generate_clap(sample_rate: u32) -> Vec<f32> {
     let sr = sample_rate as f32;
@@ -334,6 +339,7 @@ pub fn generate_shaker(sample_rate: u32) -> Vec<f32> {
 }
 
 /// 9. Cowbell 808 mythique —
+///
 /// double onde carrée 540 Hz + 800 Hz passée dans un filtre résonant.
 pub fn generate_cowbell(sample_rate: u32) -> Vec<f32> {
     let sr = sample_rate as f32;

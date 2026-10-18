@@ -293,6 +293,9 @@ pub enum MapperAction {
     ToggleLoop,
     /// Bascule le métronome
     ToggleMetronome,
+    /// Soft key d'écran (1..8) — action contextuelle décidée par l'Engine
+    /// (les labels affichés sous les écrans correspondent exactement).
+    SoftKey(u8),
 }
 
 /// Données du séquenceur pour mettre à jour les LEDs du contrôleur physique
@@ -967,60 +970,12 @@ impl HardwareMapper {
                             actions.push(MapperAction::PlayPauseToggle);
                         }
 
-                        // Soft Buttons Écrans 1..8
-                        ButtonId::DisplayBtn(1) => {
-                            self.left_tab = 0;
-                            actions.push(MapperAction::SetLeftTab(0));
-                        }
-                        ButtonId::DisplayBtn(2) => {
-                            self.left_tab = 1;
-                            actions.push(MapperAction::SetLeftTab(1));
-                        }
-                        ButtonId::DisplayBtn(3) => {
-                            self.left_tab = 2;
-                            actions.push(MapperAction::SetLeftTab(2));
-                        }
-                        ButtonId::DisplayBtn(4) => {
-                            self.left_tab = 3;
-                            actions.push(MapperAction::SetLeftTab(3));
-                        }
-                        ButtonId::DisplayBtn(5) => {
-                            if self.shift_held {
-                                self.pattern_bars = 1;
-                                actions.push(MapperAction::SetPatternBars(1));
-                            } else {
-                                self.selected_bar = 0;
-                                actions.push(MapperAction::SelectBar(0));
-                            }
-                        }
-                        ButtonId::DisplayBtn(6) => {
-                            if self.shift_held {
-                                self.pattern_bars = 2;
-                                actions.push(MapperAction::SetPatternBars(2));
-                            } else {
-                                self.selected_bar = 1;
-                                actions.push(MapperAction::SelectBar(1));
-                            }
-                        }
-                        ButtonId::DisplayBtn(7) => {
-                            if self.shift_held {
-                                self.pattern_bars = 4;
-                                actions.push(MapperAction::SetPatternBars(4));
-                            } else {
-                                self.selected_bar = 2;
-                                actions.push(MapperAction::SelectBar(2));
-                            }
-                        }
-                        ButtonId::DisplayBtn(8) => {
-                            if self.left_tab == 3 {
-                                actions.push(MapperAction::LoadSelectedPreset);
-                            } else if self.shift_held {
-                                self.pattern_bars = 8;
-                                actions.push(MapperAction::SetPatternBars(8));
-                            } else {
-                                self.selected_bar = 3;
-                                actions.push(MapperAction::SelectBar(3));
-                            }
+                        // Soft Buttons Écrans 1..8 — actions contextuelles :
+                        // c'est l'Engine qui décide (labels = actions réelles
+                        // affichées en bas des écrans), le hardware ne fait que
+                        // transmettre.
+                        ButtonId::DisplayBtn(n @ 1..=8) => {
+                            actions.push(MapperAction::SoftKey(n));
                         }
                         _ => {}
                     }
@@ -1109,16 +1064,13 @@ impl HardwareMapper {
                             // Knob 2 (idx 1): Parcourt les presets drum synth (0..15) + pré-écoute
                             // Knob 8 (idx 7): Master volume
                             match idx {
-                                0 => actions
-                                    .push(MapperAction::BrowseSoundStep(delta.signum())),
+                                0 => actions.push(MapperAction::BrowseSoundStep(delta.signum())),
                                 1 => {
                                     self.browser_preset_idx = (self.browser_preset_idx as i32
                                         + delta.signum())
-                                        .rem_euclid(16)
+                                    .rem_euclid(16)
                                         as u8;
-                                    actions.push(MapperAction::BrowsePresetStep(
-                                        delta.signum()
-                                    ));
+                                    actions.push(MapperAction::BrowsePresetStep(delta.signum()));
                                 }
                                 7 => actions
                                     .push(MapperAction::MasterVolumeDelta(delta as f32 * 0.01)),
@@ -1810,8 +1762,10 @@ mod tests {
         assert_eq!(m.mode, ControllerMode::Step);
 
         // Test update LEDs
-        let mut info = SequencerLedInfo::default();
-        info.is_playing = true;
+        let mut info = SequencerLedInfo {
+            is_playing: true,
+            ..SequencerLedInfo::default()
+        };
         info.active_steps[0] = true;
         info.active_steps[4] = true;
         m.update_leds(&info);
@@ -2084,7 +2038,14 @@ mod tests {
             ts_ns: 2,
         });
         assert!(a.contains(&MapperAction::SelectSound(1)));
-        assert!(a.iter().any(|act| matches!(act, MapperAction::PadTrigger { pad: 1, velocity: 110, pressed: true })));
+        assert!(a.iter().any(|act| matches!(
+            act,
+            MapperAction::PadTrigger {
+                pad: 1,
+                velocity: 110,
+                pressed: true
+            }
+        )));
 
         // Pression 4D (EncoderPush) : One-shot preview, JAMAIS PlayPauseToggle
         let a = m.handle_hardware_event(HardwareEvent::Button {
@@ -2093,18 +2054,25 @@ mod tests {
             ts_ns: 3,
         });
         assert!(!a.contains(&MapperAction::PlayPauseToggle));
-        assert!(a.iter().any(|act| matches!(act, MapperAction::PadTrigger { pad: 1, velocity: 115, pressed: true })));
+        assert!(a.iter().any(|act| matches!(
+            act,
+            MapperAction::PadTrigger {
+                pad: 1,
+                velocity: 115,
+                pressed: true
+            }
+        )));
 
-        // DisplayBtn(7) -> Bar 3 (0-indexed 2)
+        // DisplayBtn(7) -> SoftKey(7) : action contextuelle décidée par l'Engine
+        // (le label affiché sous l'écran fait exactement ce que le bouton fait).
         let a = m.handle_hardware_event(HardwareEvent::Button {
             id: maschine_proto::ButtonId::DisplayBtn(7),
             pressed: true,
             ts_ns: 4,
         });
-        assert!(a.contains(&MapperAction::SelectBar(2)));
-        assert_eq!(m.selected_bar, 2);
+        assert!(a.contains(&MapperAction::SoftKey(7)));
 
-        // Shift + DisplayBtn(8) -> Pattern length 8 mesures
+        // Shift + DisplayBtn(8) -> SoftKey(8) (l'Engine applique le contexte).
         let _ = m.handle_hardware_event(HardwareEvent::Button {
             id: maschine_proto::ButtonId::Shift,
             pressed: true,
@@ -2115,8 +2083,7 @@ mod tests {
             pressed: true,
             ts_ns: 6,
         });
-        assert!(a.contains(&MapperAction::SetPatternBars(8)));
-        assert_eq!(m.pattern_bars, 8);
+        assert!(a.contains(&MapperAction::SoftKey(8)));
     }
 
     #[test]

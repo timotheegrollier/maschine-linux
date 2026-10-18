@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use crate::project::{BarsBeatsTicks, PatternEvent, Project};
+use crate::project::{BarsBeatsTicks, PatternEvent, Project, Scene, Section};
 use crate::sampler::Sampler;
 use crate::sequencer::{Grid, Sequencer};
 use crate::transport::{Transport, TransportState};
@@ -38,6 +38,8 @@ pub enum EngineEvent {
     GroupFocus(u8),
     /// Trigger Scene
     Scene(usize),
+    /// Crée une scène et la sélectionne
+    AddScene,
     /// Quantize pattern
     Quantize {
         /// Group idx
@@ -131,6 +133,23 @@ pub enum EngineEvent {
     NextSection,
     /// Section précédente dans le Song
     PrevSection,
+    /// Sélectionne une section du Song dans l'interface
+    SelectSection(usize),
+    /// Ajoute une section au Song pour la scène active
+    AddSection,
+    /// Supprime la section active du Song
+    DeleteSection,
+    /// Duplique la section active (insérée juste après)
+    DuplicateSection,
+    /// Redimensionne la section active (en mesures, 1..64)
+    ResizeSection {
+        /// Longueur en mesures
+        bars: usize,
+    },
+    /// Duplique la scène active (patterns compris)
+    DuplicateScene,
+    /// Supprime la scène active (au moins une scène conservée)
+    DeleteScene,
     /// Activer un pattern spécifique (group, pattern idx)
     PatternSelectIndex { group: u8, pattern: usize },
     /// Charge un preset d'instrument drum synth (0..15) sur un sound
@@ -161,6 +180,11 @@ pub enum EngineEvent {
     PrevBar,
     /// Définir la longueur du pattern en mesures (1, 2, 4, 8)
     SetPatternBars(usize),
+    /// Retour au début (bouton RESTART hardware)
+    Restart,
+    /// Soft key d'écran (1..8 : boutons sous les écrans) — action
+    /// contextuelle identique au hardware et à la GUI.
+    SoftKey(u8),
 }
 
 /// Noms des 16 presets de batterie DSP 808
@@ -186,8 +210,8 @@ pub const DRUM_PRESET_NAMES: [&str; 16] = [
 /// Snapshot lecture seule pour UI.
 #[derive(Debug, Clone)]
 pub struct EngineSnapshot {
-    /// Project clone (coûteux mais ok pour UI 60fps — on pourrait faire diff plus tard)
-    pub project: Project,
+    /// Projet partagé (O(1) — plus de clone du projet par frame).
+    pub project: Arc<Project>,
     /// Transport clone
     pub transport: Transport,
     /// Group focus
@@ -234,14 +258,64 @@ pub struct EngineSnapshot {
     pub selected_bar: usize,
     /// Nombre de mesures du pattern actif (1, 2, 4, 8)
     pub pattern_bars: usize,
+    /// VU-mètres lissés par groupe (0..8), 0.0..~1.0
+    pub group_levels: [f32; 8],
+    /// Peak hold par groupe
+    pub group_peaks: [f32; 8],
+    /// VU master lissé (post volume master)
+    pub master_level: f32,
+    /// Peak hold master
+    pub master_peak: f32,
+    /// Labels des 8 soft keys (boutons sous les écrans — contexte courant).
+    pub soft_labels: [&'static str; 8],
+    /// Enveloppe (min,max) du sample du Sound actif — waveform des écrans.
+    pub waveform: Option<Vec<(f32, f32)>>,
+    /// Durée du sample du Sound actif (secondes).
+    pub sample_duration: f32,
+    /// Compteur de révision : change dès qu'un état a bougé (repaint UI/écrans).
+    pub revision: u64,
+}
+
+/// Petit instantané utilisé par les LED MK3 à haute fréquence.
+/// Il évite de cloner tout le projet à chaque rafraîchissement matériel.
+#[derive(Debug, Clone)]
+pub struct HardwareSnapshot {
+    pub group_focus: u8,
+    pub active_sound: u8,
+    pub left_tab: u8,
+    pub right_tab: u8,
+    pub is_playing: bool,
+    pub is_recording: bool,
+    pub is_stopped: bool,
+    pub current_bar: usize,
+    pub current_step: usize,
+    pub is_quarter_beat: bool,
+    pub active_steps: [bool; 16],
+    pub triggered_pads: [bool; 16],
+    pub master_volume: f32,
+    pub muted_groups: u8,
+    pub soloed_groups: u8,
+    pub active_scene: Option<usize>,
+    pub num_scenes: usize,
+    pub group_num_patterns: usize,
+    pub scene_pattern: Option<usize>,
+    pub loop_enabled: bool,
+    pub metronome: bool,
+    pub selected_bar: usize,
+    pub pattern_bars: usize,
+    pub pad_colors: [Option<u8>; 16],
 }
 
 /// Engine principal.
 pub struct Engine {
-    project: Arc<RwLock<Project>>,
+    /// `Arc<RwLock<Arc<Project>>>` : lecture O(1) pour les snapshots (UI/écrans),
+    /// écriture copy-on-write via `Arc::make_mut` (actions utilisateur seulement).
+    project: Arc<RwLock<Arc<Project>>>,
     /// Transport (public pour accès sample_rate depuis audio thread)
     pub transport: Transport,
     sampler: Sampler,
+    /// Presets 808 pré-rendus, réutilisés par le Browser sans synthèse au clic.
+    preset_samples: Vec<Option<std::sync::Arc<Vec<f32>>>>,
     sequencer: Sequencer,
     group_focus: u8,
     active_scene: Option<usize>,
@@ -283,6 +357,61 @@ pub struct Engine {
     click_accent: std::sync::Arc<Vec<f32>>,
     /// Clic métronome normal (temps)
     click_normal: std::sync::Arc<Vec<f32>>,
+    /// VU-mètres : niveau lissé par groupe (0..8) + peak hold
+    group_meter: [f32; 8],
+    /// Peak hold par groupe
+    group_peak_hold: [f32; 8],
+    /// VU master lissé + peak hold (post volume master)
+    master_meter: f32,
+    /// Peak hold master
+    master_peak_hold: f32,
+    /// Compteur de révision (incrémenté à chaque changement d'état) :
+    /// l'UI et les écrans évitent de re-rendre/repaint inutilement.
+    revision: u64,
+}
+
+/// Copie-on-write du projet pour les écritures (les snapshots tiennent un `Arc`).
+fn project_mut<'g>(
+    guard: &'g mut parking_lot::RwLockWriteGuard<'_, Arc<Project>>,
+) -> &'g mut Project {
+    Arc::make_mut(&mut **guard)
+}
+
+/// Handle partagé du projet pour l'UI : `read()` O(1) (renvoie un `Arc<Project>`),
+/// `write()` applique un copy-on-write via `Arc::make_mut`.
+#[derive(Clone)]
+pub struct ProjectHandle(Arc<RwLock<Arc<Project>>>);
+
+impl ProjectHandle {
+    /// Lecture (verrou partagé, O(1) — ne clone pas le projet).
+    pub fn read(&self) -> parking_lot::RwLockReadGuard<'_, Arc<Project>> {
+        self.0.read()
+    }
+
+    /// Écriture copy-on-write.
+    pub fn write(&self) -> ProjectWriteGuard<'_> {
+        ProjectWriteGuard {
+            guard: self.0.write(),
+        }
+    }
+}
+
+/// Garde d'écriture projet : deref vers `Project`, `Arc::make_mut` à la demande.
+pub struct ProjectWriteGuard<'a> {
+    guard: parking_lot::RwLockWriteGuard<'a, Arc<Project>>,
+}
+
+impl std::ops::Deref for ProjectWriteGuard<'_> {
+    type Target = Project;
+    fn deref(&self) -> &Project {
+        &self.guard
+    }
+}
+
+impl std::ops::DerefMut for ProjectWriteGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Project {
+        Arc::make_mut(&mut *self.guard)
+    }
 }
 
 impl Engine {
@@ -302,9 +431,10 @@ impl Engine {
             std::sync::Arc::new(v)
         }
         Self {
-            project: Arc::new(RwLock::new(project)),
+            project: Arc::new(RwLock::new(Arc::new(project))),
             transport: Transport::new(bpm, sample_rate),
             sampler: Sampler::new(sample_rate),
+            preset_samples: vec![None; 16],
             sequencer: Sequencer::new(Grid::Sixteenth, 0.0),
             group_focus: 0,
             active_scene: Some(0),
@@ -328,6 +458,11 @@ impl Engine {
             controller_mode: 0,
             click_accent: click(sample_rate, 1760.0),
             click_normal: click(sample_rate, 880.0),
+            group_meter: [0.0; 8],
+            group_peak_hold: [0.0; 8],
+            master_meter: 0.0,
+            master_peak_hold: 0.0,
+            revision: 0,
         }
     }
 
@@ -341,13 +476,13 @@ impl Engine {
 
     /// Handle partagé du projet (pour UI).
     #[must_use]
-    pub fn project_handle(&self) -> Arc<RwLock<Project>> {
-        self.project.clone()
+    pub fn project_handle(&self) -> ProjectHandle {
+        ProjectHandle(Arc::clone(&self.project))
     }
 
-    /// Snapshot pour UI.
+    /// Snapshot pour UI — `project` est un `Arc` (O(1), pas de clone).
     pub fn snapshot(&self) -> EngineSnapshot {
-        let project = self.project.read().clone();
+        let project = Arc::clone(&self.project.read());
         let playing = self.transport.is_playing();
         let mut triggered_pads = [false; 16];
         if playing {
@@ -393,6 +528,104 @@ impl Engine {
             browser_preset_idx: self.browser_preset_idx,
             selected_bar,
             pattern_bars,
+            group_levels: self.group_meter,
+            group_peaks: self.group_peak_hold,
+            master_level: self.master_meter,
+            master_peak: self.master_peak_hold,
+            soft_labels: self.soft_key_labels(),
+            waveform: self.sampler.waveform_envelope(self.active_sound, 120),
+            sample_duration: self.sampler.sample_duration_secs(self.active_sound),
+            revision: self.revision,
+        }
+    }
+
+    /// Instantané compact pour synchroniser les LED sans cloner le projet.
+    pub fn hardware_snapshot(&self) -> HardwareSnapshot {
+        let project = self.project.read();
+        let playing = self.transport.is_playing();
+        let recording = self.transport.state == TransportState::Recording;
+        let pattern_bars = project
+            .active_pattern_index(self.group_focus as usize, self.active_scene)
+            .and_then(|pattern_index| {
+                project
+                    .groups
+                    .get(self.group_focus as usize)?
+                    .patterns
+                    .get(pattern_index)
+            })
+            .map(|pattern| (pattern.length.bars as usize).max(1))
+            .unwrap_or(2);
+        let selected_bar = self.selected_bar.min(pattern_bars.saturating_sub(1));
+        let current_bar = ((self.transport.tick / (4 * 960)) as usize) % pattern_bars;
+        let current_step = ((self.transport.tick / 240) % 16) as usize;
+        let mut triggered_pads = [false; 16];
+        if playing {
+            for (index, triggered) in triggered_pads.iter_mut().enumerate() {
+                *triggered = self.transport.tick <= self.pad_flash_until[index];
+            }
+        }
+
+        let mut active_steps = [false; 16];
+        let group = project.groups.get(self.group_focus as usize);
+        if let Some(pattern) = project
+            .active_pattern_index(self.group_focus as usize, self.active_scene)
+            .and_then(|pattern_index| group.and_then(|g| g.patterns.get(pattern_index)))
+        {
+            let bar_offset = selected_bar as u32 * 4 * 960;
+            for event in &pattern.events {
+                if event.pad == self.active_sound
+                    && event.tick >= bar_offset
+                    && event.tick < bar_offset + 4 * 960
+                {
+                    let step = ((event.tick - bar_offset) / 240) as usize;
+                    if step < active_steps.len() {
+                        active_steps[step] = true;
+                    }
+                }
+            }
+        }
+
+        let mut pad_colors = [None; 16];
+        if let Some(group) = group {
+            for (index, color) in pad_colors.iter_mut().enumerate() {
+                *color = group.sounds[index].as_ref().map(|sound| sound.color);
+            }
+        }
+        let group_num_patterns = group.map(|g| g.patterns.len().min(16)).unwrap_or(0);
+        let scene_pattern = self.active_scene.and_then(|scene_index| {
+            project
+                .scenes
+                .get(scene_index)
+                .and_then(|scene| scene.patterns.get(self.group_focus as usize))
+                .copied()
+                .flatten()
+        });
+
+        HardwareSnapshot {
+            group_focus: self.group_focus,
+            active_sound: self.active_sound,
+            left_tab: self.left_tab,
+            right_tab: self.right_tab,
+            is_playing: playing,
+            is_recording: recording,
+            is_stopped: !playing && !recording,
+            current_bar,
+            current_step,
+            is_quarter_beat: (self.transport.tick % 960) < 240 && playing,
+            active_steps,
+            triggered_pads,
+            master_volume: self.master_volume,
+            muted_groups: self.muted_groups,
+            soloed_groups: self.soloed_groups,
+            active_scene: self.active_scene,
+            num_scenes: project.scenes.len().min(16),
+            group_num_patterns,
+            scene_pattern,
+            loop_enabled: self.transport.loop_enabled,
+            metronome: self.transport.metronome,
+            selected_bar,
+            pattern_bars,
+            pad_colors,
         }
     }
 
@@ -400,10 +633,13 @@ impl Engine {
     pub fn load_default_808_kit(&mut self) {
         let kit = crate::drum_synth::generate_complete_808_kit(self.transport.sample_rate);
         for (pad, _name, samp) in kit {
+            let sample = std::sync::Arc::new(samp);
+            self.preset_samples[pad as usize] = Some(sample.clone());
+            self.sampler.clear_sound(pad);
             self.sampler.add_zone(
                 pad,
                 crate::sampler::ZoneMapping {
-                    sample: Some(std::sync::Arc::new(samp)),
+                    sample: Some(sample),
                     sample_path: None,
                     sample_rate: self.transport.sample_rate,
                     root_key: 36 + pad,
@@ -426,7 +662,8 @@ impl Engine {
 
     /// Humanise le pattern actif (légères variations de vélocité et micro-timing)
     pub fn humanize_active_pattern(&mut self) {
-        let mut proj = self.project.write();
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
         let pat_idx = proj.active_pattern_index(self.group_focus as usize, self.active_scene);
         if let Some(group) = proj.groups.get_mut(self.group_focus as usize) {
             if let Some(pi) = pat_idx {
@@ -439,7 +676,8 @@ impl Engine {
 
     /// Quantifie le pattern actif sur la grille courante
     pub fn quantize_active_pattern(&mut self) {
-        let mut proj = self.project.write();
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
         let pat_idx = proj.active_pattern_index(self.group_focus as usize, self.active_scene);
         if let Some(group) = proj.groups.get_mut(self.group_focus as usize) {
             if let Some(pi) = pat_idx {
@@ -452,6 +690,8 @@ impl Engine {
 
     /// Traite un `EngineEvent`.
     pub fn handle_event(&mut self, ev: EngineEvent) -> crate::Result<()> {
+        // Toute action utilisateur invalide l'affichage (repaint UI + écrans).
+        self.revision = self.revision.wrapping_add(1);
         match ev {
             EngineEvent::Pad {
                 pad,
@@ -495,6 +735,7 @@ impl Engine {
                     if let Some(idx) = self.sampler.note_on(sound, note, velocity, note) {
                         self.sampler.set_voice_gain(idx, group_gain * snd_gain);
                         self.sampler.set_voice_pan(idx, snd_pan);
+                        self.sampler.set_voice_group(idx, self.group_focus);
                         self.sampler.set_voice_params(idx, &vparams);
                     }
                     // si Recording, ajoute event au pattern actif
@@ -519,7 +760,7 @@ impl Engine {
             }
             EngineEvent::Bpm(bpm) => {
                 self.transport.bpm = bpm.clamp(20.0, 999.0);
-                self.project.write().bpm = self.transport.bpm;
+                project_mut(&mut self.project.write()).bpm = self.transport.bpm;
             }
             EngineEvent::GroupFocus(g) => {
                 self.group_focus = g.min(7);
@@ -530,8 +771,20 @@ impl Engine {
                     self.active_scene = Some(s);
                 }
             }
+            EngineEvent::AddScene => {
+                let mut guard = self.project.write();
+                let project = project_mut(&mut guard);
+                let index = project.scenes.len();
+                let group_count = project.groups.len();
+                project
+                    .scenes
+                    .push(Scene::new(&format!("Scene {}", index + 1), group_count));
+                self.active_scene = Some(index);
+                self.song_mode = false;
+            }
             EngineEvent::Quantize { group, pattern } => {
-                let mut proj = self.project.write();
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
                 if let Some(g) = proj.groups.get_mut(group) {
                     if let Some(p) = g.patterns.get_mut(pattern) {
                         self.sequencer.quantize_pattern(p);
@@ -544,7 +797,7 @@ impl Engine {
             EngineEvent::Load(path) => {
                 let p = Project::load_json(&path)?;
                 self.transport.bpm = p.bpm;
-                *self.project.write() = p;
+                *self.project.write() = Arc::new(p);
             }
             EngineEvent::MasterVolume(v) => {
                 self.master_volume = v.clamp(0.0, 1.0);
@@ -565,7 +818,8 @@ impl Engine {
             EngineEvent::PatternSelect { group, pattern } => {
                 // Select a pattern in the focused group for the active scene
                 if let Some(scene_idx) = self.active_scene {
-                    let mut proj = self.project.write();
+                    let mut guard = self.project.write();
+                    let proj = project_mut(&mut guard);
                     if let Some(scene) = proj.scenes.get_mut(scene_idx) {
                         if (group as usize) < scene.patterns.len() {
                             scene.patterns[group as usize] = Some(pattern);
@@ -587,7 +841,8 @@ impl Engine {
                 sound,
                 volume_db,
             } => {
-                let mut proj = self.project.write();
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
                 if let Some(g) = proj.groups.get_mut(group as usize) {
                     if let Some(s) = g.sounds.get_mut(sound as usize).and_then(|s| s.as_mut()) {
                         s.volume_db = volume_db.clamp(-60.0, 12.0);
@@ -597,7 +852,8 @@ impl Engine {
             EngineEvent::SoundPan { group, sound, pan } => {
                 let p = pan.clamp(-1.0, 1.0);
                 {
-                    let mut proj = self.project.write();
+                    let mut guard = self.project.write();
+                    let proj = project_mut(&mut guard);
                     if let Some(g) = proj.groups.get_mut(group as usize) {
                         if let Some(s) = g.sounds.get_mut(sound as usize).and_then(|s| s.as_mut()) {
                             s.pan = p;
@@ -616,7 +872,8 @@ impl Engine {
                 let c = cutoff_hz.clamp(20.0, 20000.0);
                 let mut reso = 0.0;
                 {
-                    let mut proj = self.project.write();
+                    let mut guard = self.project.write();
+                    let proj = project_mut(&mut guard);
                     if let Some(g) = proj.groups.get_mut(group as usize) {
                         if let Some(s) = g.sounds.get_mut(sound as usize).and_then(|s| s.as_mut()) {
                             s.filter.cutoff_hz = c;
@@ -639,7 +896,8 @@ impl Engine {
                 let r = resonance.clamp(0.0, 1.0);
                 let mut cutoff = 20000.0;
                 {
-                    let mut proj = self.project.write();
+                    let mut guard = self.project.write();
+                    let proj = project_mut(&mut guard);
                     if let Some(g) = proj.groups.get_mut(group as usize) {
                         if let Some(s) = g.sounds.get_mut(sound as usize).and_then(|s| s.as_mut()) {
                             s.filter.resonance = r;
@@ -667,7 +925,8 @@ impl Engine {
                 let su = sustain.clamp(0.0, 1.0);
                 let rel = release_ms.clamp(0.1, 5000.0);
                 {
-                    let mut proj = self.project.write();
+                    let mut guard = self.project.write();
+                    let proj = project_mut(&mut guard);
                     if let Some(g) = proj.groups.get_mut(group as usize) {
                         if let Some(s) = g.sounds.get_mut(sound as usize).and_then(|s| s.as_mut()) {
                             s.adsr.attack_ms = a;
@@ -682,13 +941,15 @@ impl Engine {
                 }
             }
             EngineEvent::GroupVolume { group, volume_db } => {
-                let mut proj = self.project.write();
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
                 if let Some(g) = proj.groups.get_mut(group as usize) {
                     g.volume_db = volume_db.clamp(-60.0, 12.0);
                 }
             }
             EngineEvent::GroupPan { group, pan } => {
-                let mut proj = self.project.write();
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
                 if let Some(g) = proj.groups.get_mut(group as usize) {
                     g.pan = pan.clamp(-1.0, 1.0);
                 }
@@ -736,8 +997,115 @@ impl Engine {
                     }
                 }
             }
+            EngineEvent::SelectSection(index) => {
+                if let Some(section) = self.project.read().song.get(index) {
+                    self.active_section = Some(index);
+                    self.active_scene = Some(section.scene);
+                }
+            }
+            EngineEvent::AddSection => {
+                let mut guard = self.project.write();
+                let project = project_mut(&mut guard);
+                let scene = self
+                    .active_scene
+                    .or_else(|| (!project.scenes.is_empty()).then_some(0));
+                if let Some(scene) = scene {
+                    let index = project.song.len();
+                    project.song.push(Section {
+                        scene,
+                        length: BarsBeatsTicks::new(2, 0, 0),
+                        name: format!("Section {}", index + 1),
+                    });
+                    self.active_scene = Some(scene);
+                    self.active_section = Some(index);
+                    self.song_mode = true;
+                }
+            }
             EngineEvent::PatternSelectIndex { group, pattern } => {
                 let _ = self.handle_event(EngineEvent::PatternSelect { group, pattern });
+            }
+            EngineEvent::DuplicateSection => {
+                let mut guard = self.project.write();
+                let project = project_mut(&mut guard);
+                if let Some(idx) = self.active_section {
+                    if let Some(sec) = project.song.get(idx).cloned() {
+                        let insert = idx + 1;
+                        project.song.insert(
+                            insert,
+                            Section {
+                                name: format!("{} copy", sec.name),
+                                ..sec
+                            },
+                        );
+                        self.active_section = Some(insert);
+                    }
+                }
+            }
+            EngineEvent::DeleteSection => {
+                let mut guard = self.project.write();
+                let project = project_mut(&mut guard);
+                if let Some(idx) = self.active_section {
+                    if idx < project.song.len() {
+                        project.song.remove(idx);
+                    }
+                    self.active_section = if project.song.is_empty() {
+                        None
+                    } else {
+                        Some(idx.min(project.song.len() - 1))
+                    };
+                }
+            }
+            EngineEvent::ResizeSection { bars } => {
+                let bars = bars.clamp(1, 64);
+                let mut guard = self.project.write();
+                let project = project_mut(&mut guard);
+                if let Some(idx) = self.active_section {
+                    if let Some(sec) = project.song.get_mut(idx) {
+                        sec.length = BarsBeatsTicks::new(bars as u16, 0, 0);
+                    }
+                }
+            }
+            EngineEvent::DuplicateScene => {
+                let mut guard = self.project.write();
+                let project = project_mut(&mut guard);
+                if let Some(idx) = self.active_scene {
+                    if let Some(scene) = project.scenes.get(idx).cloned() {
+                        let insert = idx + 1;
+                        project.scenes.insert(
+                            insert,
+                            Scene {
+                                name: format!("{} copy", scene.name),
+                                ..scene
+                            },
+                        );
+                        self.active_scene = Some(insert);
+                    }
+                }
+            }
+            EngineEvent::DeleteScene => {
+                let mut guard = self.project.write();
+                let project = project_mut(&mut guard);
+                if project.scenes.len() > 1 {
+                    if let Some(idx) = self.active_scene {
+                        if idx < project.scenes.len() {
+                            project.scenes.remove(idx);
+                            // Sections : retire celles de la scène supprimée,
+                            // recale les indices supérieurs.
+                            project.song.retain(|s| s.scene != idx);
+                            for sec in &mut project.song {
+                                if sec.scene > idx {
+                                    sec.scene -= 1;
+                                }
+                            }
+                            self.active_scene = Some(idx.min(project.scenes.len() - 1));
+                            self.active_section = if project.song.is_empty() {
+                                None
+                            } else {
+                                Some(self.active_section.unwrap_or(0).min(project.song.len() - 1))
+                            };
+                        }
+                    }
+                }
             }
             EngineEvent::EraseSound { group, sound } => {
                 self.erase_sound(group, sound);
@@ -768,30 +1136,15 @@ impl Engine {
                 sound,
                 preset_idx,
             } => {
+                let preset_idx = preset_idx.min(15);
                 let sr = self.transport.sample_rate;
-                let (name, samp) = match preset_idx {
-                    0 => ("Kick 808", crate::drum_synth::generate_kick(sr)),
-                    1 => ("Snare 808", crate::drum_synth::generate_snare(sr)),
-                    2 => ("Closed HH", crate::drum_synth::generate_closed_hh(sr)),
-                    3 => ("Open HH", crate::drum_synth::generate_open_hh(sr)),
-                    4 => ("Tom Low", crate::drum_synth::generate_tom(sr, 85.0)),
-                    5 => ("Tom Mid", crate::drum_synth::generate_tom(sr, 130.0)),
-                    6 => ("Tom High", crate::drum_synth::generate_tom(sr, 185.0)),
-                    7 => ("Clap 808", crate::drum_synth::generate_clap(sr)),
-                    8 => ("Rimshot", crate::drum_synth::generate_rimshot(sr)),
-                    9 => ("Shaker", crate::drum_synth::generate_shaker(sr)),
-                    10 => ("Cowbell", crate::drum_synth::generate_cowbell(sr)),
-                    11 => ("Crash", crate::drum_synth::generate_crash(sr)),
-                    12 => ("Perc 1", crate::drum_synth::generate_perc(sr, 880.0)),
-                    13 => ("Perc 2", crate::drum_synth::generate_perc(sr, 1250.0)),
-                    14 => ("Synth Stab", crate::drum_synth::generate_synth_stab(sr)),
-                    _ => ("Sub Bass 808", crate::drum_synth::generate_sub_bass(sr)),
-                };
+                let name = DRUM_PRESET_NAMES[preset_idx as usize];
+                let sample = self.drum_preset_sample(preset_idx);
                 self.sampler.clear_sound(sound);
                 self.sampler.add_zone(
                     sound,
                     crate::sampler::ZoneMapping {
-                        sample: Some(std::sync::Arc::new(samp)),
+                        sample: Some(sample),
                         sample_path: None,
                         sample_rate: sr,
                         root_key: 36 + sound,
@@ -810,18 +1163,15 @@ impl Engine {
                         is_one_shot: true,
                     },
                 );
-                let mut proj = self.project.write();
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
                 if let Some(g) = proj.groups.get_mut(group as usize) {
                     if let Some(s) = g.sounds.get_mut(sound as usize).and_then(|s| s.as_mut()) {
                         s.name = name.to_string();
                     }
                 }
             }
-            EngineEvent::LoadSample {
-                group,
-                sound,
-                path,
-            } => {
+            EngineEvent::LoadSample { group, sound, path } => {
                 self.sampler.clear_sound(sound);
                 #[cfg(feature = "sampler")]
                 {
@@ -834,7 +1184,8 @@ impl Engine {
                     let _ = path;
                     log::warn!("Sampler feature not enabled");
                 }
-                let mut proj = self.project.write();
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
                 if let Some(g) = proj.groups.get_mut(group as usize) {
                     if let Some(s) = g.sounds.get_mut(sound as usize).and_then(|s| s.as_mut()) {
                         if let Some(file_name) = path.file_stem().and_then(|s| s.to_str()) {
@@ -873,9 +1224,18 @@ impl Engine {
             EngineEvent::PrevBar => {
                 self.selected_bar = self.selected_bar.saturating_sub(1);
             }
+            EngineEvent::Restart => {
+                self.transport.tick = 0;
+                self.transport.tick_fraction = 0.0;
+                self.selected_bar = 0;
+            }
+            EngineEvent::SoftKey(n) => {
+                return self.handle_soft_key(n);
+            }
             EngineEvent::SetPatternBars(bars) => {
                 let bars_clamped = bars.clamp(1, 16) as u16;
-                let mut proj = self.project.write();
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
                 let pat_idx =
                     proj.active_pattern_index(self.group_focus as usize, self.active_scene);
                 if let Some(g) = proj.groups.get_mut(self.group_focus as usize) {
@@ -900,31 +1260,45 @@ impl Engine {
 
     /// Joue un aperçu sonore immédiat d'un preset drum synth (pour pré-écoute dans le browser)
     pub fn preview_preset(&mut self, preset_idx: u8) {
-        let sr = self.transport.sample_rate;
-        let samp = match preset_idx {
-            0 => crate::drum_synth::generate_kick(sr),
-            1 => crate::drum_synth::generate_snare(sr),
-            2 => crate::drum_synth::generate_closed_hh(sr),
-            3 => crate::drum_synth::generate_open_hh(sr),
-            4 => crate::drum_synth::generate_tom(sr, 85.0),
-            5 => crate::drum_synth::generate_tom(sr, 130.0),
-            6 => crate::drum_synth::generate_tom(sr, 185.0),
-            7 => crate::drum_synth::generate_clap(sr),
-            8 => crate::drum_synth::generate_rimshot(sr),
-            9 => crate::drum_synth::generate_shaker(sr),
-            10 => crate::drum_synth::generate_cowbell(sr),
-            11 => crate::drum_synth::generate_crash(sr),
-            12 => crate::drum_synth::generate_perc(sr, 880.0),
-            13 => crate::drum_synth::generate_perc(sr, 1250.0),
-            14 => crate::drum_synth::generate_synth_stab(sr),
-            _ => crate::drum_synth::generate_sub_bass(sr),
+        let sample = self.drum_preset_sample(preset_idx.min(15));
+        self.sampler.play_raw(&sample, 0.7);
+    }
+
+    fn drum_preset_sample(&self, preset_idx: u8) -> std::sync::Arc<Vec<f32>> {
+        if let Some(sample) = self
+            .preset_samples
+            .get(preset_idx as usize)
+            .and_then(Option::as_ref)
+        {
+            return sample.clone();
+        }
+
+        let sample_rate = self.transport.sample_rate;
+        let sample = match preset_idx {
+            0 => crate::drum_synth::generate_kick(sample_rate),
+            1 => crate::drum_synth::generate_snare(sample_rate),
+            2 => crate::drum_synth::generate_closed_hh(sample_rate),
+            3 => crate::drum_synth::generate_open_hh(sample_rate),
+            4 => crate::drum_synth::generate_tom(sample_rate, 85.0),
+            5 => crate::drum_synth::generate_tom(sample_rate, 130.0),
+            6 => crate::drum_synth::generate_tom(sample_rate, 185.0),
+            7 => crate::drum_synth::generate_clap(sample_rate),
+            8 => crate::drum_synth::generate_rimshot(sample_rate),
+            9 => crate::drum_synth::generate_shaker(sample_rate),
+            10 => crate::drum_synth::generate_cowbell(sample_rate),
+            11 => crate::drum_synth::generate_crash(sample_rate),
+            12 => crate::drum_synth::generate_perc(sample_rate, 880.0),
+            13 => crate::drum_synth::generate_perc(sample_rate, 1250.0),
+            14 => crate::drum_synth::generate_synth_stab(sample_rate),
+            _ => crate::drum_synth::generate_sub_bass(sample_rate),
         };
-        self.sampler.play_raw(&std::sync::Arc::new(samp), 0.7);
+        std::sync::Arc::new(sample)
     }
 
     /// Efface toutes les notes d'un son dans le pattern actif du groupe (mode ERASE + pad).
     pub fn erase_sound(&mut self, group: u8, sound: u8) {
-        let mut proj = self.project.write();
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
         let pat_idx = proj.active_pattern_index(group as usize, self.active_scene);
         if let Some(g) = proj.groups.get_mut(group as usize) {
             if let Some(pi) = pat_idx {
@@ -946,7 +1320,8 @@ impl Engine {
         } else {
             self.click_normal.clone()
         };
-        self.sampler.play_raw(&sample, if accent { 0.5 } else { 0.32 });
+        self.sampler
+            .play_raw(&sample, if accent { 0.5 } else { 0.32 });
     }
 
     /// Avance le transport + séquenceur, déclenche les notes des patterns.
@@ -954,6 +1329,9 @@ impl Engine {
         let prev_tick = self.transport.tick;
         self.transport.advance_samples(samples);
         let new_tick = self.transport.tick;
+        if new_tick != prev_tick {
+            self.revision = self.revision.wrapping_add(1);
+        }
         if !self.transport.is_playing() {
             return;
         }
@@ -967,7 +1345,8 @@ impl Engine {
             }
         }
         // Pour chaque Group, joue les events du pattern actif de la scène courante
-        let proj = self.project.read().clone(); // clone pour éviter borrow sampler
+        // (verrou lecture O(1) : plus de clone du projet dans le callback audio !)
+        let proj = self.project.read();
 
         // Mode Song : détermine la scène active selon la position dans le Song
         if self.song_mode && !proj.song.is_empty() {
@@ -1006,8 +1385,7 @@ impl Engine {
                         if let Some(group) = proj.groups.get(gi) {
                             if let Some(pat) = group.patterns.get(*pat_idx) {
                                 let gain = 10.0f32.powf(group.volume_db / 20.0);
-                                let mut vp =
-                                    [crate::sampler::VoiceParams::default(); 16];
+                                let mut vp = [crate::sampler::VoiceParams::default(); 16];
                                 let mut sg = [1.0f32; 16];
                                 let mut sp = [0.0f32; 16];
                                 for s in 0..16 {
@@ -1046,12 +1424,13 @@ impl Engine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)] // contexte de trigger (pattern + position + sampler)
     fn trigger_pattern_events(
         pat: &crate::project::Pattern,
         prev_tick: u64,
         new_tick: u64,
         sampler: &mut Sampler,
-        _group: u8,
+        group: u8,
         group_gain: f32,
         sound_gains: &[f32],
         sound_pans: &[f32],
@@ -1097,6 +1476,7 @@ impl Engine {
                 if let Some(idx) = sampler.note_on(sound, note, ev.velocity, note) {
                     sampler.set_voice_gain(idx, group_gain * sg);
                     sampler.set_voice_pan(idx, sp);
+                    sampler.set_voice_group(idx, group);
                     if let Some(vp) = voice_params.get(sound as usize) {
                         sampler.set_voice_params(idx, vp);
                     }
@@ -1123,7 +1503,8 @@ impl Engine {
 
     fn record_pad_event(&mut self, pad: u8, velocity: u8) {
         let focus = self.group_focus as usize;
-        let mut proj = self.project.write();
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
         if let Some(group) = proj.groups.get_mut(focus) {
             if group.patterns.is_empty() {
                 group.patterns.push(crate::project::Pattern::new(
@@ -1157,12 +1538,167 @@ impl Engine {
     /// Render audio stéréo — à appeler depuis callback cpal/jack.
     pub fn render_audio(&mut self, out: &mut [f32]) {
         self.sampler.render(out);
-        // Apply master volume
+        // VU-mètres : crêtes par groupe du sampler, attaque immédiate / release
+        // exponentiel par bloc (≈ -20 dB en 300 ms), peak hold plus lent (~1,7 s).
+        let peaks = self.sampler.group_peaks();
+        for (g, p) in peaks.iter().enumerate() {
+            let p = p.clamp(0.0, 4.0);
+            self.group_meter[g] = if p > self.group_meter[g] {
+                p
+            } else {
+                self.group_meter[g] * 0.98
+            };
+            self.group_peak_hold[g] = if p > self.group_peak_hold[g] {
+                p
+            } else {
+                self.group_peak_hold[g] * 0.996
+            };
+        }
+        // Volume master + crête master (post-volume = ce qu'on entend).
         let mv = self.master_volume;
+        let mut peak = 0.0f32;
         for s in out.iter_mut() {
             *s *= mv;
+            let a = s.abs();
+            if a > peak {
+                peak = a;
+            }
         }
-        // TODO: mixer groups, master
+        self.master_meter = if peak > self.master_meter {
+            peak
+        } else {
+            self.master_meter * 0.98
+        };
+        self.master_peak_hold = if peak > self.master_peak_hold {
+            peak
+        } else {
+            self.master_peak_hold * 0.996
+        };
+    }
+
+    /// Sélectionne un preset du browser (curseur) sans pré-écoute.
+    pub fn set_browser_preset(&mut self, idx: u8) {
+        self.browser_preset_idx = idx.min(15);
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Enveloppe waveform du Sound actif (pour l'UI/écrans) — `buckets` = colonnes.
+    #[must_use]
+    pub fn waveform_envelope(
+        &self,
+        group: u8,
+        sound: u8,
+        buckets: usize,
+    ) -> Option<Vec<(f32, f32)>> {
+        let _ = group;
+        self.sampler.waveform_envelope(sound, buckets)
+    }
+
+    /// Durée du sample d'un Sound (secondes).
+    #[must_use]
+    pub fn sample_duration_secs(&self, group: u8, sound: u8) -> f32 {
+        let _ = group;
+        self.sampler.sample_duration_secs(sound)
+    }
+
+    /// Labels des 8 soft keys (boutons sous les écrans) pour la vue courante.
+    /// Les mêmes labels sont dessinés en bas des 2 écrans et affichés dans la
+    /// GUI : le bouton fait toujours ce que le label annonce.
+    #[must_use]
+    pub fn soft_key_labels(&self) -> [&'static str; 8] {
+        if self.song_mode {
+            return [
+                "SEC <", "SEC >", "+SEC", "IDEE", "SCN <", "SCN >", "+SCN", "SCN 1",
+            ];
+        }
+        if self.scene_mode {
+            return [
+                "SCN 1", "SCN 2", "SCN 3", "SCN 4", "SCN 5", "SCN 6", "SCN 7", "SCN 8",
+            ];
+        }
+        match self.left_tab {
+            1 => [
+                "GRP A", "GRP B", "GRP C", "GRP D", "GRP E", "GRP F", "GRP G", "GRP H",
+            ],
+            2 => [
+                "SND 1", "SND 2", "SND 3", "SND 4", "SND 5", "SND 6", "SND 7", "SND 8",
+            ],
+            3 => [
+                "PRES <", "PRES >", "SND <", "SND >", "ECOUTE", "CHARGER", "METRO", "LOOP",
+            ],
+            _ => [
+                "BAR 1", "BAR 2", "BAR 3", "BAR 4", "1 MES", "2 MES", "4 MES", "8 MES",
+            ],
+        }
+    }
+
+    /// Exécute l'action contextuelle d'une soft key d'écran (1..8).
+    fn handle_soft_key(&mut self, n: u8) -> crate::Result<()> {
+        let idx = (n.saturating_sub(1) as usize).min(7);
+        if self.song_mode {
+            return match idx {
+                0 => self.handle_event(EngineEvent::PrevSection),
+                1 => self.handle_event(EngineEvent::NextSection),
+                2 => self.handle_event(EngineEvent::AddSection),
+                3 => self.handle_event(EngineEvent::ToggleSongMode),
+                4 => {
+                    let scene = self.active_scene.unwrap_or(0).saturating_sub(1);
+                    self.handle_event(EngineEvent::Scene(scene))
+                }
+                5 => {
+                    let n_scenes = self.project.read().scenes.len();
+                    let scene =
+                        (self.active_scene.unwrap_or(0) + 1).min(n_scenes.saturating_sub(1));
+                    self.handle_event(EngineEvent::Scene(scene))
+                }
+                6 => self.handle_event(EngineEvent::AddScene),
+                _ => self.handle_event(EngineEvent::Scene(0)),
+            };
+        }
+        if self.scene_mode {
+            // Mode SCENES : les 8 soft keys sélectionnent les scènes 1..8.
+            let n_scenes = self.project.read().scenes.len();
+            let scene = idx.min(n_scenes.saturating_sub(1));
+            return self.handle_event(EngineEvent::Scene(scene));
+        }
+        match self.left_tab {
+            1 => self.handle_event(EngineEvent::GroupFocus(idx as u8)),
+            2 => self.handle_event(EngineEvent::SelectSound(idx as u8)),
+            3 => match idx {
+                0 => self.handle_event(EngineEvent::BrowsePresetStep(-1)),
+                1 => self.handle_event(EngineEvent::BrowsePresetStep(1)),
+                2 => {
+                    let s = self.active_sound.saturating_sub(1);
+                    self.handle_event(EngineEvent::SelectSound(s))
+                }
+                3 => {
+                    let s = (self.active_sound + 1).min(15);
+                    self.handle_event(EngineEvent::SelectSound(s))
+                }
+                4 => {
+                    let preset = self.browser_preset_idx;
+                    self.preview_preset(preset);
+                    Ok(())
+                }
+                5 => {
+                    let (g, s, p) = (self.group_focus, self.active_sound, self.browser_preset_idx);
+                    self.handle_event(EngineEvent::LoadDrumPreset {
+                        group: g,
+                        sound: s,
+                        preset_idx: p,
+                    })
+                }
+                6 => self.handle_event(EngineEvent::ToggleMetronome),
+                _ => self.handle_event(EngineEvent::ToggleLoop),
+            },
+            _ => match idx {
+                0..=3 => self.handle_event(EngineEvent::SelectBar(idx)),
+                4 => self.handle_event(EngineEvent::SetPatternBars(1)),
+                5 => self.handle_event(EngineEvent::SetPatternBars(2)),
+                6 => self.handle_event(EngineEvent::SetPatternBars(4)),
+                _ => self.handle_event(EngineEvent::SetPatternBars(8)),
+            },
+        }
     }
 
     /// Master volume 0.0..1.0
@@ -1175,6 +1711,12 @@ impl Engine {
     #[must_use]
     pub fn headphone_volume(&self) -> f32 {
         self.headphone_volume
+    }
+
+    /// Compteur de révision : change dès qu'un état a bougé (UI/écrans).
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Transport mutable (pour UI).
@@ -1192,8 +1734,9 @@ impl Engine {
     /// Change swing.
     pub fn set_swing(&mut self, swing: f32) {
         self.transport.swing = swing.clamp(0.0, 1.0);
+        self.revision = self.revision.wrapping_add(1);
         self.sequencer.swing = self.transport.swing;
-        self.project.write().swing = self.transport.swing;
+        project_mut(&mut self.project.write()).swing = self.transport.swing;
     }
 
     /// Group focus actif.
@@ -1209,7 +1752,8 @@ impl Engine {
     /// supprime tous les doublons de la case : un seul appui suffit toujours.
     pub fn toggle_step(&mut self, pad: u8, tick: u32) {
         let group_idx = self.group_focus as usize;
-        let mut proj = self.project.write();
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
         let pat_idx = proj.active_pattern_index(group_idx, self.active_scene);
         if let Some(group) = proj.groups.get_mut(group_idx) {
             if group.patterns.is_empty() {
@@ -1240,7 +1784,8 @@ impl Engine {
     /// Remplit les temps 1, 2, 3, 4 pour un pad (ex: Kick 4-on-the-Floor)
     pub fn fill_four_on_the_floor(&mut self, pad: u8, bar: usize) {
         let group_idx = self.group_focus as usize;
-        let mut proj = self.project.write();
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
         let pat_idx = proj.active_pattern_index(group_idx, self.active_scene);
         if let Some(group) = proj.groups.get_mut(group_idx) {
             if let Some(pi) = pat_idx {
@@ -1266,7 +1811,8 @@ impl Engine {
     /// Remplit les croches (8ths) pour un pad (ex: Charlestons)
     pub fn fill_eighths(&mut self, pad: u8, bar: usize) {
         let group_idx = self.group_focus as usize;
-        let mut proj = self.project.write();
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
         let pat_idx = proj.active_pattern_index(group_idx, self.active_scene);
         if let Some(group) = proj.groups.get_mut(group_idx) {
             if let Some(pi) = pat_idx {
@@ -1292,7 +1838,8 @@ impl Engine {
     /// Supprime toutes les notes d'une mesure donnée
     pub fn clear_bar(&mut self, bar: usize) {
         let group_idx = self.group_focus as usize;
-        let mut proj = self.project.write();
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
         let pat_idx = proj.active_pattern_index(group_idx, self.active_scene);
         if let Some(group) = proj.groups.get_mut(group_idx) {
             if let Some(pi) = pat_idx {
@@ -1309,7 +1856,8 @@ impl Engine {
     /// Réinitialise le pattern avec le groove 808 complet
     pub fn reset_demo_groove(&mut self) {
         let demo_proj = crate::project::Project::new_demo();
-        let mut proj = self.project.write();
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
         if let Some(demo_g) = demo_proj.groups.first() {
             if let Some(demo_p) = demo_g.patterns.first() {
                 if let Some(g) = proj.groups.get_mut(0) {
@@ -1555,5 +2103,69 @@ mod tests {
         // Maintenant NextBar peut aller jusqu'à mesure 3 (0-indexed)
         eng.handle_event(EngineEvent::SelectBar(3)).unwrap();
         assert_eq!(eng.snapshot().selected_bar, 3);
+    }
+
+    #[test]
+    fn section_workflow_duplicate_resize_delete() {
+        let mut eng = Engine::new_demo(48000);
+        eng.handle_event(EngineEvent::AddSection).unwrap();
+        eng.handle_event(EngineEvent::AddSection).unwrap();
+        let n = eng.snapshot().project.song.len();
+        assert!(n >= 2);
+
+        // Duplique la section active (insérée juste après, sélectionnée).
+        eng.handle_event(EngineEvent::DuplicateSection).unwrap();
+        assert_eq!(eng.snapshot().project.song.len(), n + 1);
+
+        // Redimensionne la section active.
+        eng.handle_event(EngineEvent::ResizeSection { bars: 4 })
+            .unwrap();
+        let snap = eng.snapshot();
+        let idx = snap.active_section.unwrap();
+        assert_eq!(snap.project.song[idx].length.bars, 4);
+
+        // Supprime la section active.
+        eng.handle_event(EngineEvent::DeleteSection).unwrap();
+        assert_eq!(eng.snapshot().project.song.len(), n);
+
+        // Supprime toutes les sections : plus de section active, pas de panic.
+        while !eng.snapshot().project.song.is_empty() {
+            eng.handle_event(EngineEvent::DeleteSection).unwrap();
+        }
+        assert_eq!(eng.snapshot().active_section, None);
+    }
+
+    #[test]
+    fn scene_workflow_duplicate_delete_reindexes_sections() {
+        let mut eng = Engine::new_demo(48000);
+        eng.handle_event(EngineEvent::AddScene).unwrap(); // scène 2 active
+        eng.handle_event(EngineEvent::AddSection).unwrap(); // section sur scène 2
+        let scenes = eng.snapshot().project.scenes.len();
+        assert!(scenes >= 2);
+
+        // Duplique la scène active.
+        eng.handle_event(EngineEvent::DuplicateScene).unwrap();
+        assert_eq!(eng.snapshot().project.scenes.len(), scenes + 1);
+
+        // Supprime la scène active (la copie) : les sections de la scène 2
+        // restent, aucun index ne pointe hors limites.
+        eng.handle_event(EngineEvent::DeleteScene).unwrap();
+        let snap = eng.snapshot();
+        assert_eq!(snap.project.scenes.len(), scenes);
+        for sec in &snap.project.song {
+            assert!(sec.scene < snap.project.scenes.len());
+        }
+
+        // Impossible de supprimer la dernière scène.
+        while eng.snapshot().project.scenes.len() > 1 {
+            eng.handle_event(EngineEvent::DeleteScene).unwrap();
+        }
+        eng.handle_event(EngineEvent::DeleteScene).unwrap();
+        let snap = eng.snapshot();
+        assert_eq!(snap.project.scenes.len(), 1);
+        for sec in &snap.project.song {
+            assert!(sec.scene == 0);
+        }
+        assert_eq!(snap.active_scene, Some(0));
     }
 }

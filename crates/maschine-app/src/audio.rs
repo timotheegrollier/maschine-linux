@@ -2,6 +2,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -262,6 +263,27 @@ impl AudioOutput {
     }
 }
 
+/// Gestionnaire d'événements d'erreur cpal, limité en débit *temporel*.
+///
+/// L'arrêt du daemon fait remonter des tempêtes d'événements ALSA
+/// (POLLERR pendant le drop du stream) : des millions d'événements en une
+/// seconde. On journalise la première erreur puis au plus une par seconde.
+fn event_logger(stats: Arc<AudioStats>) -> impl FnMut(cpal::StreamError) + Send + 'static {
+    let mut logged_at: Option<Instant> = None;
+    let mut total: u64 = 0;
+    move |err: cpal::StreamError| {
+        stats.errors.fetch_add(1, Ordering::Relaxed);
+        total += 1;
+        let now = Instant::now();
+        if logged_at
+            .map_or(true, |t| now.duration_since(t) >= Duration::from_secs(1))
+        {
+            log::warn!("cpal stream event: {err} (erreur audio #{total})");
+            logged_at = Some(now);
+        }
+    }
+}
+
 /// Construit le stream F32 et branche le callback.
 fn build_f32_stream(
     device: &cpal::Device,
@@ -272,7 +294,7 @@ fn build_f32_stream(
     stats: Arc<AudioStats>,
 ) -> Result<cpal::Stream, cpal::BuildStreamError> {
     let sr = cfg.sample_rate.0;
-    let st_err = stats.clone();
+    let mut st_err = event_logger(stats.clone());
     let st_cb = stats;
     device.build_output_stream(
         cfg,
@@ -280,8 +302,7 @@ fn build_f32_stream(
             audio_callback_f32(data, &engine, sr, channels, hp_dup, &st_cb);
         },
         move |err| {
-            st_err.errors.fetch_add(1, Ordering::Relaxed);
-            log::warn!("cpal stream event: {err}");
+            st_err(err);
         },
         None,
     )
@@ -297,7 +318,7 @@ fn build_i16_stream(
     stats: Arc<AudioStats>,
 ) -> Result<cpal::Stream, cpal::BuildStreamError> {
     let sr = cfg.sample_rate.0;
-    let st_err = stats.clone();
+    let mut st_err = event_logger(stats.clone());
     let st_cb = stats;
     // Scratch pré-alloué : aucune allocation dans le callback.
     let mut tmp: Vec<f32> = vec![0.0; 8192 * 2];
@@ -320,8 +341,7 @@ fn build_i16_stream(
             }
         },
         move |err| {
-            st_err.errors.fetch_add(1, Ordering::Relaxed);
-            log::warn!("cpal stream event: {err}");
+            st_err(err);
         },
         None,
     )
@@ -337,7 +357,7 @@ fn build_u16_stream(
     stats: Arc<AudioStats>,
 ) -> Result<cpal::Stream, cpal::BuildStreamError> {
     let sr = cfg.sample_rate.0;
-    let st_err = stats.clone();
+    let mut st_err = event_logger(stats.clone());
     let st_cb = stats;
     let mut tmp: Vec<f32> = vec![0.0; 8192 * 2];
     device.build_output_stream(
@@ -359,8 +379,7 @@ fn build_u16_stream(
             }
         },
         move |err| {
-            st_err.errors.fetch_add(1, Ordering::Relaxed);
-            log::warn!("cpal stream event: {err}");
+            st_err(err);
         },
         None,
     )

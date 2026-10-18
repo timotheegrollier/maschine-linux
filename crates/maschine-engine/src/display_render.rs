@@ -535,6 +535,52 @@ pub fn draw_text(
     }
 }
 
+/// Dessine du texte avec une fenêtre verticale du glyphe (trackers denses).
+///
+/// `row_from`/`row_to` sélectionnent les rangées du glyphe 8×16 à dessiner
+/// (0..16). Permet de faire tenir une ligne de texte dans 9 px de haut.
+#[allow(clippy::too_many_arguments)]
+fn draw_text_clipped(
+    frame: &mut DisplayFrame,
+    x: usize,
+    y: usize,
+    text: &str,
+    fg: DisplayPixel,
+    bg: DisplayPixel,
+    row_from: usize,
+    row_to: usize,
+) {
+    let fw = frame.w as usize;
+    let fh = frame.h as usize;
+    let mut cx = x;
+    for c in text.chars() {
+        let ascii = c as usize;
+        let glyph = if (32..=126).contains(&ascii) {
+            &FONT_8X16_BASIC[ascii - 32]
+        } else {
+            &FONT_8X16_BASIC[0]
+        };
+        for (row, bits) in glyph.iter().enumerate().take(row_to.min(16)).skip(row_from) {
+            let py = y + row;
+            if py >= fh {
+                continue;
+            }
+            let bits = *bits;
+            for col in 0..8 {
+                let px = cx + col;
+                if px >= fw {
+                    continue;
+                }
+                let idx = py * fw + px;
+                if idx < frame.pixels.len() {
+                    frame.pixels[idx] = if (bits & (0x80 >> col)) != 0 { fg } else { bg };
+                }
+            }
+        }
+        cx += 8;
+    }
+}
+
 /// Remplis un rectangle
 pub fn fill_rect(
     frame: &mut DisplayFrame,
@@ -737,11 +783,22 @@ fn note_name(pitch: u8) -> String {
 
 /// Longueur d'un pas en notation musicale (1/16, 1/8...) ou en ticks.
 fn fmt_len(ticks: u32) -> String {
-    if ticks % 240 == 0 {
-        format!("{}/16", ticks / 240)
-    } else {
-        format!("{ticks}t")
+    if ticks == 0 {
+        // Longueur par défaut : un pas (double-croche).
+        return "1/16".to_string();
     }
+    if ticks % 120 == 0 {
+        return match ticks / 120 {
+            1 => "1/32".to_string(),
+            2 => "1/16".to_string(),
+            4 => "1/8".to_string(),
+            8 => "1/4".to_string(),
+            16 => "1/2".to_string(),
+            32 => "1/1".to_string(),
+            n => format!("{}t", n * 120),
+        };
+    }
+    format!("{ticks}t")
 }
 
 fn draw_char_scaled(
@@ -829,18 +886,79 @@ fn line(frame: &mut DisplayFrame, mut x0: i32, mut y0: i32, x1: i32, y1: i32, co
     }
 }
 
-/// Bandeau titre avec filet accent (haut des 2 écrans).
-fn header(frame: &mut DisplayFrame, p: &Pal, title: &str, right: &str) {
-    fill_rect(frame, 0, 0, SCR_W, 22, p.panel);
-    fill_rect(frame, 0, 0, 4, 22, p.accent);
-    draw_text(frame, 10, 3, title, p.white, p.panel);
-    let mut txt = right.to_string();
-    if txt.len() * 8 > SCR_W - 60 {
-        txt = trunc(&txt, (SCR_W - 60) / 8);
+/// Bandeau titre : titre, contexte, activité des pads et VU master.
+///
+/// Toutes les vues partagent ce chrome : barre accent, titre, info contexte à
+/// droite, ruban d'activité des 16 pads (flashs du jeu + du séquenceur) et
+/// mini VU master (niveau + peak).
+fn header(frame: &mut DisplayFrame, p: &Pal, snap: &EngineSnapshot, title: &str, right: &str) {
+    const H: usize = 26;
+    fill_rect(frame, 0, 0, SCR_W, H, p.panel);
+    fill_rect(frame, 0, 0, 4, H, p.accent);
+    draw_text(frame, 10, 5, title, p.white, p.panel);
+
+    // Ruban d'activité 16 pads (segments 2 px) — la « vie » du morceau.
+    let seg_w = 2usize;
+    let gap = 1usize;
+    let strip_w = 16 * seg_w + 15 * gap;
+    let strip_x = SCR_W - 10 - strip_w;
+    let strip_y = 8usize;
+    for i in 0..16usize {
+        let x = strip_x + i * (seg_w + gap);
+        let act = snap.pad_activity[i].clamp(0.0, 1.0);
+        let col = if act > 0.02 {
+            let base = hue_color(i);
+            // Intensité ≈ vélocité : on éclaircit le segment actif.
+            let (r, g, b) = rgb565_to_rgb(base);
+            let f = 0.35 + 0.65 * act;
+            DisplayPixel::from_rgb(
+                (r as f32 * f) as u8,
+                (g as f32 * f) as u8,
+                (b as f32 * f) as u8,
+            )
+        } else {
+            p.track
+        };
+        fill_rect(frame, x, strip_y, seg_w, H - strip_y - 6, col);
     }
-    let l = txt.len() * 8;
-    draw_text(frame, SCR_W - l - 10, 3, &txt, p.dim, p.panel);
-    fill_rect(frame, 0, 22, SCR_W, 1, p.border);
+
+    // Mini VU master vertical (niveau + peak hold).
+    let vu_x = strip_x - 10;
+    vu_v(
+        frame,
+        p,
+        vu_x,
+        5,
+        5,
+        H - 11,
+        snap.master_level,
+        snap.master_peak,
+    );
+
+    let avail = (vu_x.saturating_sub(6 + 10)) / 8;
+    let txt = trunc(right, avail);
+    let l = txt.chars().count() * 8;
+    draw_text(frame, vu_x - 10 - l, 5, &txt, p.dim, p.panel);
+    fill_rect(frame, 0, H, SCR_W, 1, p.border);
+}
+
+/// Convertit un pixel RGB565 en (r, g, b) 8 bits.
+fn rgb565_to_rgb(px: DisplayPixel) -> (u8, u8, u8) {
+    let v = px.0;
+    let r5 = ((v >> 11) & 0x1F) as u8;
+    let g6 = ((v >> 5) & 0x3F) as u8;
+    let b5 = (v & 0x1F) as u8;
+    (
+        (r5 << 3) | (r5 >> 2),
+        (g6 << 2) | (g6 >> 4),
+        (b5 << 3) | (b5 >> 2),
+    )
+}
+
+/// Panneau sombre avec bordure (bloc de contenu).
+fn panel(frame: &mut DisplayFrame, p: &Pal, x: usize, y: usize, w: usize, h: usize) {
+    fill_rect(frame, x, y, w, h, p.panel);
+    draw_rect_outline(frame, x, y, w, h, p.border);
 }
 
 /// Rangée de 4 soft keys (celles de ce côté de l'écran) : labels = actions.
@@ -852,28 +970,24 @@ fn footer_softkeys(
     active: &[bool; 8],
 ) {
     let y = SCR_H - FOOTER_H;
+    fill_rect(frame, 0, y - 2, SCR_W, FOOTER_H + 2, p.bg);
     for i in 0..4 {
         let idx = start + i;
-        let x = i * 120;
+        let x = i * 120 + 3;
+        let w = 114;
+        let h = FOOTER_H - 4;
         let on = active.get(idx).copied().unwrap_or(false);
         let bg = if on { p.accent } else { p.panel };
         let fg = if on { p.bg } else { p.dim };
-        fill_rect(frame, x + 2, y, 116, FOOTER_H - 2, bg);
-        draw_rect_outline(
-            frame,
-            x + 2,
-            y,
-            116,
-            FOOTER_H - 2,
-            if on { p.accent } else { p.border },
-        );
+        fill_rect(frame, x, y, w, h, bg);
+        draw_rect_outline(frame, x, y, w, h, if on { p.white } else { p.border });
         let label = labels[idx];
-        let tx = x + 2 + (116usize.saturating_sub(label.len() * 8)) / 2;
-        draw_text(frame, tx, y + 3, label, fg, bg);
+        let tx = x + (w.saturating_sub(label.len() * 8)) / 2;
+        draw_text(frame, tx, y + 2, label, fg, bg);
     }
 }
 
-/// Barre horizontale de valeur.
+/// Barre horizontale de valeur avec graduations (25/50/75 %).
 #[allow(clippy::too_many_arguments)] // helpers de dessin : coordonnées explicites
 fn bar_h(
     frame: &mut DisplayFrame,
@@ -886,9 +1000,16 @@ fn bar_h(
     color: DisplayPixel,
 ) {
     fill_rect(frame, x, y, w, h, p.track);
+    // Graduations discrètes sous la barre (repères de réglage).
+    for q in [25usize, 50, 75] {
+        let tick = x + w * q / 100;
+        fill_rect(frame, tick, y + h - 2, 1, 2, p.bg);
+    }
     let f = (frac.clamp(0.0, 1.0) * w as f32) as usize;
     if f > 0 {
         fill_rect(frame, x, y, f.min(w), h, color);
+        // Liseré clair sur le dessus de la barre (relief).
+        fill_rect(frame, x, y, f.min(w), 1, p.white);
     }
 }
 
@@ -928,6 +1049,10 @@ fn vu_v(
     peak: f32,
 ) {
     fill_rect(frame, x, y, w, h, p.track);
+    // Graduations légères (repères -6/-12/-24 dB sur l'échelle linéaire).
+    for q in [25usize, 50, 75] {
+        fill_rect(frame, x, y + h - h * q / 100, w, 1, p.panel);
+    }
     let f = (level.clamp(0.0, 1.0) * h as f32) as usize;
     if f > 0 {
         fill_rect(frame, x, y + h - f.min(h), w, f.min(h), p.vu(level));
@@ -936,6 +1061,22 @@ fn vu_v(
         let pf = ((peak.clamp(0.0, 1.0) * h as f32) as usize).clamp(1, h.saturating_sub(1));
         fill_rect(frame, x, y + h - pf, w, 2, p.white);
     }
+}
+
+/// Ligne « clé → valeur » : clé à gauche (atténuée), valeur alignée à droite.
+fn kv_row(
+    frame: &mut DisplayFrame,
+    p: &Pal,
+    x: usize,
+    y: usize,
+    key: &str,
+    value: &str,
+    vcol: DisplayPixel,
+) {
+    draw_text(frame, x, y, &trunc(key, 15), p.muted, p.panel);
+    let v = trunc(value, 18);
+    let vx = (x + 196).saturating_sub(v.len() * 8);
+    draw_text(frame, vx, y, &v, vcol, p.panel);
 }
 
 /// Pastille d'état (M, S, onglet de mode...).
@@ -976,10 +1117,11 @@ fn encoder_row(frame: &mut DisplayFrame, p: &Pal, slots: &[EncSlot<'_>; 4]) {
             Some((l, v, n, c)) => (*l, v.as_str(), *n, *c),
             None => ("--", "", 0.0, p.border),
         };
-        fill_rect(frame, x, y, 110, ENC_H, p.panel);
-        draw_rect_outline(frame, x, y, 110, ENC_H, p.border);
-        draw_text(frame, x + 6, y + 4, &trunc(label, 13), p.muted, p.panel);
-        draw_text(frame, x + 6, y + 20, &trunc(value, 13), p.white, p.panel);
+        panel(frame, p, x, y, 110, ENC_H);
+        // Encoche accent en haut du slot (repère d'encodeur physique).
+        fill_rect(frame, x, y, 3, 10, color);
+        draw_text(frame, x + 8, y + 3, &trunc(label, 12), p.muted, p.panel);
+        draw_text(frame, x + 8, y + 20, &trunc(value, 12), p.white, p.panel);
         bar_h(frame, p, x + 6, y + ENC_H - 10, 98, 5, norm, color);
     }
 }
@@ -1055,6 +1197,10 @@ fn draw_waveform(
     draw_rect_outline(frame, x, y, w, h, p.border);
     let cy = y + h / 2;
     fill_rect(frame, x + 1, cy, w - 2, 1, p.track);
+    // Repères d'amplitude (±50 %) — lisibilité du niveau.
+    for q in [1usize, 3] {
+        fill_rect(frame, x + 1, y + h * q / 4, w - 2, 1, p.panel2);
+    }
     if buckets.is_empty() {
         center_text(frame, y + h / 2 - 8, "AUCUN SAMPLE", p.muted, p.panel);
         center_text(
@@ -1076,7 +1222,16 @@ fn draw_waveform(
         let t = t.max(y as i32 + 1) as usize;
         let b = b.min((y + h) as i32 - 2) as usize;
         if b >= t {
-            fill_rect(frame, px, t, 2, b - t + 1, p.green);
+            // Dégradé par amplitude : crête jaune, corps vert, bas cyan.
+            let amp = mn.abs().max(mx.abs()).clamp(0.0, 1.0);
+            let color = if amp > 0.72 {
+                p.yellow
+            } else if amp > 0.4 {
+                p.green
+            } else {
+                p.cyan
+            };
+            fill_rect(frame, px, t, 2, b - t + 1, color);
         }
     }
 }
@@ -1109,24 +1264,59 @@ fn draw_adsr(
     let xs = xd + ((0.4 / total) * iw as f32) as usize;
     let xr = (x0 + iw).min(xs + ((r / total) * iw as f32) as usize);
 
+    // Aire sous l'enveloppe (lecture immédiate) : colonnes interpolées.
+    let lerp_y = |x0: usize, y0: usize, x1: usize, y1: usize, x: usize| -> usize {
+        if x1 <= x0 {
+            return y1;
+        }
+        let t = (x.saturating_sub(x0)) as f32 / (x1 - x0) as f32;
+        (y0 as f32 + (y1 as f32 - y0 as f32) * t) as usize
+    };
+    let ytop = y + 8;
+    for px in x0..=xr {
+        let cy = if px <= xa {
+            lerp_y(x0, yb, xa, ytop, px)
+        } else if px <= xd {
+            lerp_y(xa, ytop, xd, yt, px)
+        } else if px <= xs {
+            yt
+        } else {
+            lerp_y(xs, yt, xr, yb, px)
+        };
+        if cy < yb {
+            fill_rect(frame, px, cy, 1, yb - cy, p.panel2);
+        }
+    }
+
     line(
         frame,
         x0 as i32,
         yb as i32,
         xa as i32,
-        y as i32 + 8,
+        ytop as i32,
         p.accent,
     );
     line(
         frame,
         xa as i32,
-        y as i32 + 8,
+        ytop as i32,
         xd as i32,
         yt as i32,
         p.accent,
     );
     line(frame, xd as i32, yt as i32, xs as i32, yt as i32, p.accent);
     line(frame, xs as i32, yt as i32, xr as i32, yb as i32, p.accent);
+    // Points de rupture (A/D/S/R) : repères blancs.
+    for (px, py) in [(x0, yb), (xa, ytop), (xd, yt), (xs, yt), (xr, yb)] {
+        fill_rect(
+            frame,
+            px.saturating_sub(1),
+            py.saturating_sub(1),
+            3,
+            3,
+            p.white,
+        );
+    }
     fill_rect(frame, x0, yb, iw, 1, p.track);
     draw_text(
         frame,
@@ -1161,99 +1351,114 @@ pub fn render_daw_left(snap: &EngineSnapshot) -> DisplayFrame {
     header(
         &mut frame,
         &p,
+        snap,
         "ARRANGE",
         &format!("{scene_lbl} | {:.0} BPM", snap.transport.bpm),
     );
 
-    // Bandeau transport : état + position mes/pas + loop/métro.
-    let (state_txt, state_col) = if recording {
-        ("ENREG", p.red)
+    // ── Bandeau transport : état, position, loop/métro (pastilles) ──
+    let (state_txt, state_col, state_on) = if recording {
+        ("ENREG", p.red, true)
     } else if playing {
-        ("LECTURE", p.green)
+        ("LECTURE", p.green, true)
     } else {
-        ("STOP", p.panel2)
+        ("STOP", p.track, false)
     };
-    pill(
-        &mut frame,
-        &p,
-        8,
-        27,
-        84,
-        state_txt,
-        state_col,
-        playing || recording,
-    );
+    pill(&mut frame, &p, 8, 30, 80, state_txt, state_col, state_on);
     let bar = tick_bar(snap) + 1;
     let step = tick_step(snap) + 1;
     draw_text(
         &mut frame,
-        100,
-        28,
-        &format!("BAR {bar}  PAS {step:>2}"),
-        p.white,
+        98,
+        31,
+        &format!("BAR {bar:>2}.{step:02}"),
+        if playing { p.white } else { p.dim },
         p.bg,
     );
     draw_text(
         &mut frame,
-        232,
-        28,
-        &format!("MES {} / {}", snap.selected_bar + 1, snap.pattern_bars),
+        206,
+        31,
+        &format!("MES {}/{}", snap.selected_bar + 1, snap.pattern_bars),
         p.dim,
         p.bg,
     );
-    draw_text(
+    pill(
         &mut frame,
-        360,
-        28,
+        &p,
+        264,
+        30,
+        56,
         "LOOP",
-        if snap.transport.loop_enabled {
-            p.cyan
-        } else {
-            p.track
-        },
-        p.bg,
+        p.cyan,
+        snap.transport.loop_enabled,
     );
+    pill(
+        &mut frame,
+        &p,
+        326,
+        30,
+        64,
+        "METRO",
+        p.cyan,
+        snap.transport.metronome,
+    );
+    // Foyer courant : groupe + Sound, couleur du groupe.
+    let fch = hue_color(snap.group_focus as usize);
+    fill_rect(&mut frame, 390, 30, 82, 18, p.panel);
+    draw_rect_outline(&mut frame, 390, 30, 82, 18, p.border);
+    fill_rect(&mut frame, 390, 30, 3, 18, fch);
     draw_text(
         &mut frame,
-        424,
-        28,
-        "METRO",
-        if snap.transport.metronome {
-            p.cyan
-        } else {
-            p.track
-        },
-        p.bg,
+        398,
+        31,
+        &format!(
+            "{} S{:02}",
+            group_letter(snap.group_focus),
+            snap.active_sound + 1
+        ),
+        p.white,
+        p.panel,
     );
-    fill_rect(&mut frame, 0, 45, SCR_W, 1, p.border);
+    fill_rect(&mut frame, 0, 50, SCR_W, 1, p.border);
 
-    // Liste des 8 groupes : lettre, nom, pattern, M/S, VU temps réel.
-    let mut y = 50;
+    // ── Liste des 8 groupes : chip couleur, nom, pattern, M/S, VU ──
+    let mut y = 54;
     for gi in 0..8usize {
         let g = snap.project.groups.get(gi);
         let focused = gi == snap.group_focus as usize;
         let row_bg = if focused { p.panel2 } else { p.bg };
         if focused {
             fill_rect(&mut frame, 0, y - 2, SCR_W, 17, row_bg);
+            fill_rect(&mut frame, 0, y - 2, 2, 17, p.accent);
         }
         let letter = (b'A' + gi as u8) as char;
         let gcolor = hue_color(gi);
+        let has_sound = g.is_some();
         let (lbg, lfg) = if focused {
             (gcolor, p.bg)
+        } else if has_sound {
+            (p.panel, gcolor)
         } else {
-            (p.panel, p.dim)
+            (p.panel, p.muted)
         };
-        fill_rect(&mut frame, 6, y - 1, 13, 14, lbg);
-        draw_char(&mut frame, 9, y - 2, letter, lfg, lbg);
+        fill_rect(&mut frame, 5, y - 1, 14, 15, lbg);
+        draw_char(&mut frame, 8, y - 1, letter, lfg, lbg);
         let name = g
             .map(|g| trunc(&g.name, 13))
             .unwrap_or_else(|| "--".to_string());
         draw_text(
             &mut frame,
             24,
-            y - 2,
+            y - 1,
             &name,
-            if g.is_some() { p.white } else { p.muted },
+            if focused {
+                p.white
+            } else if has_sound {
+                p.dim
+            } else {
+                p.muted
+            },
             row_bg,
         );
 
@@ -1262,40 +1467,27 @@ pub fn render_daw_left(snap: &EngineSnapshot) -> DisplayFrame {
             .and_then(|i| g.and_then(|g| g.patterns.get(i)))
             .map(|pat| {
                 format!(
-                    "{} ({}m)",
-                    trunc(&pat.name, 10),
+                    "{} {}m",
+                    trunc(&pat.name, 9),
                     (pat.length.bars as usize).max(1)
                 )
             })
             .unwrap_or_else(|| "--".to_string());
-        draw_text(&mut frame, 148, y - 2, &pat_txt, p.dim, row_bg);
+        draw_text(&mut frame, 134, y - 1, &pat_txt, p.dim, row_bg);
 
+        // M / S : pastilles réelles (remplies quand actives).
         let muted = snap.muted_groups & (1 << gi) != 0;
         let soloed = snap.soloed_groups & (1 << gi) != 0;
-        draw_text(
-            &mut frame,
-            272,
-            y - 2,
-            "M",
-            if muted { p.red } else { p.track },
-            row_bg,
-        );
-        draw_text(
-            &mut frame,
-            286,
-            y - 2,
-            "S",
-            if soloed { p.yellow } else { p.track },
-            row_bg,
-        );
+        pill(&mut frame, &p, 244, y - 1, 16, "M", p.red, muted);
+        pill(&mut frame, &p, 264, y - 1, 16, "S", p.yellow, soloed);
 
         vu_h(
             &mut frame,
             &p,
-            306,
-            y,
-            126,
-            8,
+            288,
+            y + 2,
+            142,
+            9,
             snap.group_levels[gi],
             snap.group_peaks[gi],
         );
@@ -1303,9 +1495,9 @@ pub fn render_daw_left(snap: &EngineSnapshot) -> DisplayFrame {
         draw_text(
             &mut frame,
             438,
-            y - 2,
+            y - 1,
             &format!("{vol:>4.0}"),
-            p.muted,
+            if focused { p.white } else { p.muted },
             row_bg,
         );
         y += 17;
@@ -1359,6 +1551,7 @@ pub fn render_daw_right(snap: &EngineSnapshot) -> DisplayFrame {
     header(
         &mut frame,
         &p,
+        snap,
         "PATTERN",
         &format!(
             "GRP {} | {} | {} ev",
@@ -1368,73 +1561,105 @@ pub fn render_daw_right(snap: &EngineSnapshot) -> DisplayFrame {
         ),
     );
 
-    // Masque d'événements de la mesure sélectionnée (16 sons x 16 pas).
+    // Masque d'événements de la mesure sélectionnée (16 sons × 16 pas) avec
+    // la vélocité max par case (hauteur de cellule).
     let bar_offset = snap.selected_bar as u32 * TICKS_PER_BAR as u32;
-    let mut mask = [[false; 16]; 16];
+    let mut mask = [[0u8; 16]; 16];
     if let Some(pt) = pat {
         for e in &pt.events {
             if e.tick >= bar_offset && e.tick < bar_offset + TICKS_PER_BAR as u32 {
                 let st = ((e.tick - bar_offset) / TICKS_PER_STEP as u32) as usize;
                 let pad = e.pad as usize;
                 if st < 16 && pad < 16 {
-                    mask[pad][st] = true;
+                    mask[pad][st] = mask[pad][st].max(e.velocity);
                 }
             }
         }
     }
 
-    // Règle des 16 pas + repère de mesure sélectionnée.
-    let gx = 88usize;
+    let gx = 84usize;
     let cw = 24usize;
+    let cur_bar = tick_bar(snap);
+    let cur_step = tick_step(snap);
+    let show_playhead = playing && cur_bar == snap.selected_bar;
+
+    // Règle des 16 pas : numéros, temps forts plus clairs, barres de temps.
     for s in 0..16usize {
         let x = gx + s * cw;
         let quad = s % 4 == 0;
         draw_text(
             &mut frame,
             x + 8,
-            28,
+            30,
             &format!("{}", s + 1),
             if quad { p.dim } else { p.muted },
             p.bg,
         );
+        if quad {
+            fill_rect(&mut frame, x - 2, 44, 1, 148, p.track);
+        }
     }
-    fill_rect(&mut frame, 0, 45, SCR_W, 1, p.border);
+    // Séparation règle / grille.
+    fill_rect(&mut frame, 0, 47, SCR_W, 1, p.border);
+    // Barre du header : le pas courant (repère supérieur).
+    if show_playhead {
+        fill_rect(&mut frame, gx + cur_step * cw - 2, 44, cw, 3, p.accent);
+        fill_rect(&mut frame, gx + cur_step * cw - 2, 47, cw, 1, p.border);
+    }
 
-    let cur_bar = tick_bar(snap);
-    let cur_step = tick_step(snap);
-    let show_playhead = playing && cur_bar == snap.selected_bar;
-
-    let mut y = 48;
+    let mut y = 50;
     for (snd, row) in mask.iter().enumerate() {
         let is_active = snd == snap.active_sound as usize;
         let row_bg = if is_active { p.panel2 } else { p.bg };
         if is_active {
-            fill_rect(&mut frame, 0, y - 1, SCR_W, 10, row_bg);
+            fill_rect(&mut frame, 0, y - 2, SCR_W, 9, row_bg);
         }
+        // Label « tracker » : glyphe rogné (9 px de haut = pitch des lignes).
         let label = format!("{:02} {}", snd + 1, trunc(&sound_name(snap, snd), 8));
-        draw_text(
+        draw_text_clipped(
             &mut frame,
             4,
-            y - 3,
+            y - 6,
             &label,
             if is_active { p.white } else { p.muted },
             row_bg,
+            4,
+            13,
         );
-        for (st, on) in row.iter().enumerate() {
+        // LED d'activité du Sound (jeu + séquenceur).
+        let act = snap.pad_activity[snd].clamp(0.0, 1.0);
+        if act > 0.02 {
+            let (r, g, b) = rgb565_to_rgb(hue_color(snd));
+            let f = 0.4 + 0.6 * act;
+            let col = DisplayPixel::from_rgb(
+                (r as f32 * f) as u8,
+                (g as f32 * f) as u8,
+                (b as f32 * f) as u8,
+            );
+            fill_rect(&mut frame, 76, y - 4, 3, 8, col);
+        }
+        for (st, vel) in row.iter().enumerate() {
             let x = gx + st * cw;
-            let col = if *on { hue_color(snd) } else { p.track };
-            fill_rect(&mut frame, x + 2, y, cw - 4, 8, col);
-            if *on && is_active {
-                draw_rect_outline(&mut frame, x + 2, y, cw - 4, 8, p.white);
+            let cell_y = y - 2;
+            let cell_h = 8usize;
+            if *vel > 0 {
+                // Hauteur ∝ vélocité : les frappes fortes se voient à l'œil.
+                let h = (2 + (*vel as usize * (cell_h - 2)) / 127).clamp(2, cell_h);
+                let col = hue_color(snd);
+                fill_rect(&mut frame, x + 2, cell_y + (cell_h - h), cw - 6, h, col);
+                fill_rect(&mut frame, x + 2, cell_y + (cell_h - h), cw - 6, 1, p.white);
+            } else if st % 4 == 0 {
+                fill_rect(&mut frame, x + 2, cell_y + cell_h / 2, cw - 6, 2, p.track);
             }
         }
         y += 9;
     }
 
+    // Playhead : ligne verticale sur la colonne courante (fin et nette).
     if show_playhead {
-        let x = gx + cur_step * cw;
-        draw_rect_outline(&mut frame, x + 1, 45, cw - 2, 148, p.white);
-        fill_rect(&mut frame, x + 2, 26, cw - 4, 3, p.white);
+        let x = gx + cur_step * cw - 2;
+        fill_rect(&mut frame, x, 48, 1, 144, p.accent);
+        fill_rect(&mut frame, x + cw - 1, 48, 1, 144, p.accent);
     }
 
     // Encodeurs réels 5..8 : VOL SND, CUTOFF, RESO, MASTER.
@@ -1486,7 +1711,8 @@ pub fn render_step_right(snap: &EngineSnapshot) -> DisplayFrame {
     header(
         &mut frame,
         &p,
-        "STEP",
+        snap,
+        "STEP / GRILLE",
         &format!(
             "PAS {:02}/{:02} M{} | GRP {} SND {:02} {}",
             cursor + 1,
@@ -1507,10 +1733,62 @@ pub fn render_step_right(snap: &EngineSnapshot) -> DisplayFrame {
     let show_cursor = cursor / 16 == snap.selected_bar;
     let pad_hue = hue_color(snap.active_sound as usize);
 
+    // ── Bandeau du pas édité : position, vélocité, longueur, note ──
+    let sel_ev = pat.and_then(|pt| {
+        let start = cursor as u32 * TICKS_PER_STEP as u32;
+        pt.events.iter().find(|e| {
+            e.pad == snap.active_sound && e.tick >= start && e.tick < start + TICKS_PER_STEP as u32
+        })
+    });
+    panel(&mut frame, &p, 8, 30, SCR_W - 16, 20);
+    fill_rect(&mut frame, 8, 30, 3, 20, pad_hue);
+    draw_text(
+        &mut frame,
+        18,
+        32,
+        &format!("M{} PAS {:02}", snap.selected_bar + 1, cursor_step + 1),
+        p.white,
+        p.panel,
+    );
+    let (vel_txt, len_txt, note_txt) = match sel_ev {
+        Some(ev) => (
+            format!("{:>3}", ev.velocity),
+            fmt_len(ev.length_ticks),
+            format!("{} {}", ev.pitch, note_name(ev.pitch)),
+        ),
+        None => ("---".to_string(), "--".to_string(), "--".to_string()),
+    };
+    draw_text(
+        &mut frame,
+        150,
+        32,
+        &format!("VEL {vel_txt}"),
+        p.cyan,
+        p.panel,
+    );
+    draw_text(
+        &mut frame,
+        246,
+        32,
+        &format!("LEN {len_txt}"),
+        p.dim,
+        p.panel,
+    );
+    draw_text(
+        &mut frame,
+        356,
+        32,
+        &format!("NOTE {note_txt}"),
+        p.dim,
+        p.panel,
+    );
+
+    // ── Grille des 16 pas : hauteur ∝ vélocité ──
     let x0 = 16usize;
     let cw = 28usize;
-    let top = 52usize;
+    let top = 56usize;
     let bot = 168usize;
+    let pad_area_h = (bot - top) as f32;
     for st in 0..16usize {
         let x = x0 + st * cw;
         let cell_start = bar_offset + st as u32 * TICKS_PER_STEP as u32;
@@ -1524,17 +1802,23 @@ pub fn render_step_right(snap: &EngineSnapshot) -> DisplayFrame {
             })
             .map(|e| e.velocity)
             .unwrap_or(0);
-        fill_rect(&mut frame, x, top, cw - 2, bot - top, p.panel);
+        // Fond : temps forts plus contrastés (repère de lecture).
+        let bg = if st % 4 == 0 { p.panel } else { p.bg };
+        fill_rect(&mut frame, x, top, cw - 2, bot - top, bg);
         if vel > 0 {
-            let fh = (((bot - top) as f32 * (vel as f32 / 127.0)) as usize).max(3);
+            let fh = ((pad_area_h * (vel as f32 / 127.0)) as usize).max(5);
             fill_rect(&mut frame, x + 1, bot - fh, cw - 4, fh, pad_hue);
+            fill_rect(&mut frame, x + 1, bot - fh, cw - 4, 1, p.white);
+            // Valeur de vélocité au-dessus de la barre (lisible sans cadre).
+            let vt = format!("{vel}");
+            let tx = x + (cw - 2).saturating_sub(vt.len() * 8) / 2;
             draw_text(
                 &mut frame,
-                x + 6,
-                bot - fh - 14,
-                &format!("{vel}"),
+                tx,
+                (bot - fh).saturating_sub(17),
+                &vt,
                 p.white,
-                p.bg,
+                if (bot - fh) >= 17 { p.bg } else { pad_hue },
             );
         }
         draw_rect_outline(
@@ -1548,26 +1832,21 @@ pub fn render_step_right(snap: &EngineSnapshot) -> DisplayFrame {
         draw_text(
             &mut frame,
             x + 8,
-            174,
+            172,
             &format!("{}", st + 1),
             if st % 4 == 0 { p.dim } else { p.muted },
             p.bg,
         );
         if show_playhead && st == cur_step {
+            fill_rect(&mut frame, x, top - 5, cw - 2, 3, p.accent);
             draw_rect_outline(&mut frame, x - 1, top - 1, cw, bot - top + 2, p.white);
         } else if show_cursor && st == cursor_step {
             // Curseur d'édition (pas sélectionné par les pads / le scroll).
+            fill_rect(&mut frame, x, top - 5, cw - 2, 3, pad_hue);
             draw_rect_outline(&mut frame, x - 1, top - 1, cw, bot - top + 2, p.accent);
             draw_rect_outline(&mut frame, x - 2, top - 2, cw + 2, bot - top + 4, p.accent);
         }
     }
-    center_text(
-        &mut frame,
-        192,
-        "K5=SCROLL | 4D<> = SCROLL | PADS = STEPS",
-        p.muted,
-        p.bg,
-    );
 
     let s_db = focus_sound(snap).map(|s| s.volume_db).unwrap_or(0.0);
     let cut = focus_sound(snap)
@@ -1615,7 +1894,8 @@ pub fn render_step_left(snap: &EngineSnapshot) -> DisplayFrame {
     header(
         &mut frame,
         &p,
-        "STEP",
+        snap,
+        "STEP / PAS",
         &format!(
             "PAS {:02}/{:02} | GRP {} | SND {:02} {}",
             cursor + 1,
@@ -1847,6 +2127,7 @@ pub fn render_arranger_left(snap: &EngineSnapshot) -> DisplayFrame {
     header(
         &mut frame,
         &p,
+        snap,
         "SONG",
         &format!(
             "{}/{} sections | {:.0} BPM",
@@ -1944,6 +2225,7 @@ pub fn render_arranger_right(snap: &EngineSnapshot) -> DisplayFrame {
     header(
         &mut frame,
         &p,
+        snap,
         "SONG TIMELINE",
         &format!("{} mesures | BAR {}", total_bars.max(1), tick_bar(snap) + 1),
     );
@@ -2091,6 +2373,7 @@ pub fn render_scenes_left(snap: &EngineSnapshot) -> DisplayFrame {
     header(
         &mut frame,
         &p,
+        snap,
         "IDEAS | SCENES",
         &format!("{} scenes | PADS = SCENES", snap.project.scenes.len()),
     );
@@ -2186,42 +2469,72 @@ pub fn render_mixer_left(snap: &EngineSnapshot) -> DisplayFrame {
     header(
         &mut frame,
         &p,
+        snap,
         "MIXER",
         &format!("GRP A-D | MASTER {:.0}%", snap.master_volume * 100.0),
     );
 
+    // 4 tranches de console (une par groupe A-D) : chip, VU vertical avec
+    // échelle dB, valeur, pan, M/S.
     for gi in 0..4usize {
-        let col = gi % 2;
-        let row = gi / 2;
-        let x = 8 + col * 236;
-        let y = 28 + row * 84;
+        let x = 8 + gi * 118;
+        let y = 30usize;
+        let w = 110usize;
+        let h = 156usize;
         let focused = gi == snap.group_focus as usize;
-        let bg = if focused { p.panel2 } else { p.panel };
-        fill_rect(&mut frame, x, y, 226, 78, bg);
-        draw_rect_outline(
-            &mut frame,
-            x,
-            y,
-            226,
-            78,
-            if focused { p.accent } else { p.border },
-        );
+        panel(&mut frame, &p, x, y, w, h);
+        if focused {
+            draw_rect_outline(&mut frame, x - 1, y - 1, w + 2, h + 2, p.accent);
+            fill_rect(&mut frame, x - 1, y - 1, 3, 3, p.accent);
+            fill_rect(&mut frame, x + w - 2, y - 1, 3, 3, p.accent);
+        }
         let gcolor = hue_color(gi);
+        let has = snap.project.groups.get(gi).is_some();
         let (lbg, lfg) = if focused {
             (gcolor, p.bg)
+        } else if has {
+            (p.track, gcolor)
         } else {
-            (p.track, p.dim)
+            (p.track, p.muted)
         };
-        fill_rect(&mut frame, x + 6, y + 6, 14, 16, lbg);
-        draw_char(&mut frame, x + 9, y + 5, group_letter(gi as u8), lfg, lbg);
+        fill_rect(&mut frame, x + 5, y + 4, 14, 16, lbg);
+        draw_char(&mut frame, x + 8, y + 4, group_letter(gi as u8), lfg, lbg);
         draw_text(
             &mut frame,
-            x + 26,
-            y + 6,
+            x + 23,
+            y + 4,
             &trunc(&group_name(snap, gi), 10),
-            p.white,
-            bg,
+            if has { p.white } else { p.muted },
+            p.panel,
         );
+
+        // VU vertical + échelle dB + LED de clip.
+        let vu_y = y + 24;
+        let vu_hh = 72usize;
+        vu_v(
+            &mut frame,
+            &p,
+            x + 10,
+            vu_y,
+            26,
+            vu_hh,
+            snap.group_levels[gi],
+            snap.group_peaks[gi],
+        );
+        let clipped = snap.group_peaks[gi] >= 0.995;
+        fill_rect(
+            &mut frame,
+            x + 41,
+            vu_y - 1,
+            5,
+            5,
+            if clipped { p.red } else { p.track },
+        );
+        for (label, dy) in [("0", 0usize), ("-6", 18), ("-12", 36), ("-24", 54)] {
+            draw_text(&mut frame, x + 50, vu_y + dy, label, p.muted, p.panel);
+            fill_rect(&mut frame, x + 38, vu_y + dy + 8, 4, 1, p.track);
+        }
+
         let vol = snap
             .project
             .groups
@@ -2229,39 +2542,35 @@ pub fn render_mixer_left(snap: &EngineSnapshot) -> DisplayFrame {
             .map(|g| g.volume_db)
             .unwrap_or(0.0);
         let pan = snap.project.groups.get(gi).map(|g| g.pan).unwrap_or(0.0);
-        let db_txt = fmt_db(vol);
         draw_text(
             &mut frame,
-            x + 226 - 8 - db_txt.len() * 8,
-            y + 6,
-            &db_txt,
-            p.white,
-            bg,
+            x + 10,
+            y + 100,
+            &fmt_db(vol),
+            if vol > -0.5 { p.white } else { p.dim },
+            p.panel,
+        );
+        draw_text(
+            &mut frame,
+            x + 10,
+            y + 118,
+            &format!("PAN {}", fmt_pan(pan)),
+            p.muted,
+            p.panel,
         );
         let muted = snap.muted_groups & (1 << gi) != 0;
         let soloed = snap.soloed_groups & (1 << gi) != 0;
-        draw_text(
-            &mut frame,
-            x + 26,
-            y + 26,
-            &format!("PAN {}", fmt_pan(pan)),
-            p.muted,
-            bg,
-        );
-        pill(&mut frame, &p, x + 150, y + 24, 30, "M", p.red, muted);
-        pill(&mut frame, &p, x + 186, y + 24, 30, "S", p.yellow, soloed);
-        // Grand VU horizontal.
-        vu_h(
+        pill(&mut frame, &p, x + 10, y + 138, 36, "MUTE", p.red, muted);
+        pill(
             &mut frame,
             &p,
-            x + 6,
-            y + 50,
-            214,
-            12,
-            snap.group_levels[gi],
-            snap.group_peaks[gi],
+            x + 52,
+            y + 138,
+            36,
+            "SOLO",
+            p.yellow,
+            soloed,
         );
-        let _ = col;
     }
 
     let gvols = [
@@ -2298,110 +2607,157 @@ pub fn render_mixer_right(snap: &EngineSnapshot) -> DisplayFrame {
     header(
         &mut frame,
         &p,
+        snap,
         "MIXER | MASTER",
         &format!("GRP {} focus", group_letter(snap.group_focus)),
     );
 
-    // Master : grand VU vertical + valeur.
-    draw_text(&mut frame, 8, 28, "MASTER", p.dim, p.bg);
+    // ── Section MASTER (moitié gauche) ─────────────────────────────────
+    panel(&mut frame, &p, 8, 30, 226, 156);
+    draw_text(&mut frame, 16, 36, "MASTER", p.accent, p.panel);
+    fill_rect(&mut frame, 16, 54, 60, 1, p.track);
+
+    let mdb = lin_db(snap.master_volume);
+    // Grand VU vertical + échelle dB + LED de clip.
     vu_v(
         &mut frame,
         &p,
-        16,
-        40,
-        26,
-        122,
+        20,
+        62,
+        34,
+        102,
         snap.master_level,
         snap.master_peak,
     );
-    let mdb = lin_db(snap.master_volume);
+    for (label, dy) in [("0", 0usize), ("-6", 25), ("-12", 50), ("-24", 75)] {
+        draw_text(&mut frame, 58, 62 + dy, label, p.muted, p.panel);
+        fill_rect(&mut frame, 54, 70 + dy, 3, 1, p.track);
+    }
+    let clipped = snap.master_peak >= 0.995;
+    fill_rect(
+        &mut frame,
+        20,
+        54,
+        8,
+        6,
+        if clipped { p.red } else { p.track },
+    );
     draw_text_scaled(
         &mut frame,
-        56,
-        44,
+        100,
+        58,
         &fmt_db(mdb),
         2,
         if mdb > -0.5 { p.red } else { p.white },
-        p.bg,
+        p.panel,
+    );
+    draw_text(
+        &mut frame,
+        100,
+        94,
+        &format!("VOL {:>3.0}%", snap.master_volume * 100.0),
+        p.dim,
+        p.panel,
+    );
+    draw_text(
+        &mut frame,
+        100,
+        112,
+        &format!("CASQUE {:>3.0}%", snap.headphone_volume * 100.0),
+        p.muted,
+        p.panel,
+    );
+    pill(
+        &mut frame,
+        &p,
+        100,
+        130,
+        58,
+        "LOOP",
+        p.cyan,
+        snap.transport.loop_enabled,
+    );
+    pill(
+        &mut frame,
+        &p,
+        164,
+        130,
+        66,
+        "METRO",
+        p.cyan,
+        snap.transport.metronome,
     );
     bar_h(
         &mut frame,
         &p,
-        56,
-        92,
-        160,
-        10,
+        100,
+        152,
+        132,
+        8,
         snap.master_volume,
         p.accent,
     );
     draw_text(
         &mut frame,
-        56,
-        106,
-        &format!("VOL {:>3.0}%", snap.master_volume * 100.0),
+        100,
+        164,
+        &format!("BPM {:.0}  |  {} voix", snap.transport.bpm, snap.num_voices),
         p.dim,
-        p.bg,
+        p.panel,
     );
-    draw_text(
-        &mut frame,
-        56,
-        126,
-        &format!("CASQUE {:>3.0}%", snap.headphone_volume * 100.0),
-        p.muted,
-        p.bg,
-    );
-    let loop_txt = if snap.transport.loop_enabled {
-        "LOOP ON"
-    } else {
-        "LOOP OFF"
-    };
-    draw_text(&mut frame, 56, 146, loop_txt, p.muted, p.bg);
 
-    // Groupe focus.
+    // ── Section FOYER : groupe + Sound (moitié droite) ─────────────────
+    let gi = snap.group_focus as usize;
+    let gcolor = hue_color(gi);
     let gvol = focus_group(snap).map(|g| g.volume_db).unwrap_or(0.0);
     let gpan = focus_group(snap).map(|g| g.pan).unwrap_or(0.0);
-    let gi = snap.group_focus as usize;
     let muted = snap.muted_groups & (1 << gi) != 0;
     let soloed = snap.soloed_groups & (1 << gi) != 0;
+    panel(&mut frame, &p, 242, 30, 230, 66);
+    fill_rect(&mut frame, 242, 30, 3, 66, gcolor);
+    fill_rect(&mut frame, 252, 36, 14, 16, gcolor);
+    draw_char(
+        &mut frame,
+        255,
+        36,
+        group_letter(snap.group_focus),
+        p.bg,
+        gcolor,
+    );
     draw_text(
         &mut frame,
-        250,
-        28,
+        272,
+        36,
         &format!(
             "GROUPE {} {}",
             group_letter(snap.group_focus),
-            trunc(&group_name(snap, gi), 8)
+            trunc(&group_name(snap, gi), 11)
         ),
         p.white,
-        p.bg,
+        p.panel,
     );
-    vu_v(
+    vu_h(
         &mut frame,
         &p,
-        250,
-        42,
-        18,
-        62,
+        252,
+        58,
+        212,
+        10,
         snap.group_levels[gi.min(7)],
         snap.group_peaks[gi.min(7)],
     );
-    draw_text(&mut frame, 276, 42, &fmt_db(gvol), p.white, p.bg);
     draw_text(
         &mut frame,
-        276,
-        60,
-        &format!("PAN {}", fmt_pan(gpan)),
+        252,
+        74,
+        &format!("{}  PAN {}", fmt_db(gvol), fmt_pan(gpan)),
         p.dim,
-        p.bg,
+        p.panel,
     );
-    pill(&mut frame, &p, 276, 78, 28, "M", p.red, muted);
-    pill(&mut frame, &p, 310, 78, 28, "S", p.yellow, soloed);
-    let pat_txt = active_pattern(snap)
-        .map(|pt| format!("PAT {}", trunc(&pt.name, 9)))
-        .unwrap_or_else(|| "PAT --".to_string());
-    draw_text(&mut frame, 276, 98, &pat_txt, p.muted, p.bg);
+    pill(&mut frame, &p, 372, 72, 44, "MUTE", p.red, muted);
+    pill(&mut frame, &p, 420, 72, 44, "SOLO", p.yellow, soloed);
 
-    // Sound focus.
+    // Sound focus : réglages + enveloppe ADSR.
     let s_name = sound_name(snap, snap.active_sound as usize);
     let s_db = focus_sound(snap).map(|s| s.volume_db).unwrap_or(0.0);
     let s_pan = focus_sound(snap).map(|s| s.pan).unwrap_or(0.0);
@@ -2409,30 +2765,41 @@ pub fn render_mixer_right(snap: &EngineSnapshot) -> DisplayFrame {
         .map(|s| s.filter.cutoff_hz)
         .unwrap_or(20000.0);
     let reso = focus_sound(snap).map(|s| s.filter.resonance).unwrap_or(0.0);
+    let adsr = focus_sound(snap)
+        .map(|s| s.adsr.clone())
+        .unwrap_or_default();
+    panel(&mut frame, &p, 242, 102, 230, 88);
+    fill_rect(&mut frame, 242, 102, 3, 88, p.accent);
     draw_text(
         &mut frame,
-        250,
-        116,
-        &format!("SON {:02} {}", snap.active_sound + 1, trunc(&s_name, 8)),
+        252,
+        108,
+        &format!("SON {:02} {}", snap.active_sound + 1, trunc(&s_name, 12)),
         p.white,
-        p.bg,
+        p.panel,
     );
     draw_text(
         &mut frame,
-        276,
-        134,
-        &format!("{}  PAN {}", fmt_db(s_db), fmt_pan(s_pan)),
+        252,
+        126,
+        &format!(
+            "{}  PAN {}  CUT {}",
+            fmt_db(s_db),
+            fmt_pan(s_pan),
+            fmt_hz(cut)
+        ),
         p.dim,
-        p.bg,
+        p.panel,
     );
     draw_text(
         &mut frame,
-        250,
-        152,
-        &format!("CUT {}  RESO {:.0}%", fmt_hz(cut), reso * 100.0),
+        424,
+        126,
+        &format!("R{:.0}%", reso * 100.0),
         p.muted,
-        p.bg,
+        p.panel,
     );
+    draw_adsr(&mut frame, &p, 252, 142, 218, 44, &adsr);
 
     let mut slots: [EncSlot<'_>; 4] = [None, None, None, None];
     for (i, gi) in (4..8usize).enumerate() {
@@ -2472,6 +2839,7 @@ pub fn render_sampler_left(snap: &EngineSnapshot) -> DisplayFrame {
     header(
         &mut frame,
         &p,
+        snap,
         "SAMPLER",
         &format!(
             "GRP {} | SND {:02} {} | {:.2}s",
@@ -2580,6 +2948,7 @@ pub fn render_sampler_right(snap: &EngineSnapshot) -> DisplayFrame {
     header(
         &mut frame,
         &p,
+        snap,
         "SAMPLER | ENVELOPPE",
         &format!("SND {:02} {}", snap.active_sound + 1, trunc(&s_name, 12)),
     );
@@ -2681,6 +3050,7 @@ pub fn render_browser_left(snap: &EngineSnapshot) -> DisplayFrame {
     header(
         &mut frame,
         &p,
+        snap,
         "BROWSER | KIT 808",
         &format!(
             "PRESET {}/16 | MASTER {:.0}%",
@@ -2763,6 +3133,7 @@ pub fn render_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
     header(
         &mut frame,
         &p,
+        snap,
         "BROWSER | CHARGER",
         &format!("PRESET {}/16", idx + 1),
     );
@@ -2834,6 +3205,7 @@ pub fn render_events_right(snap: &EngineSnapshot) -> DisplayFrame {
     header(
         &mut frame,
         &p,
+        snap,
         "EVENTS",
         &format!(
             "GRP {} | {} | {} ev",
@@ -2865,12 +3237,35 @@ pub fn render_events_right(snap: &EngineSnapshot) -> DisplayFrame {
         );
     }
 
-    let mut y = 30usize;
+    // En-tête de colonnes + règle.
+    draw_text(&mut frame, 8, 28, "SON", p.muted, p.bg);
+    draw_text(&mut frame, 170, 28, "PAS", p.muted, p.bg);
+    draw_text(&mut frame, 250, 28, "VEL", p.muted, p.bg);
+    draw_text(&mut frame, 340, 28, "LEN", p.muted, p.bg);
+    draw_text(&mut frame, 424, 28, "NOTE", p.muted, p.bg);
+    fill_rect(&mut frame, 8, 45, SCR_W - 16, 1, p.border);
+
+    let playing = snap.transport.is_playing();
+    let cur_step = tick_step(snap);
+    let show_now = playing && tick_bar(snap) == snap.selected_bar;
+
+    let mut y = 50usize;
     for (i, e) in events.iter().take(8).enumerate() {
-        if i % 2 == 0 {
-            fill_rect(&mut frame, 0, y - 2, SCR_W, 18, p.panel);
-        }
         let step = ((e.tick - bar_offset) / TICKS_PER_STEP as u32) as usize;
+        let is_now = show_now && step == cur_step;
+        let row_bg = if is_now {
+            p.panel2
+        } else if i % 2 == 0 {
+            p.panel
+        } else {
+            p.bg
+        };
+        if is_now {
+            fill_rect(&mut frame, 0, y - 1, SCR_W, 17, row_bg);
+            fill_rect(&mut frame, 0, y - 1, 3, 17, p.accent);
+        } else if i % 2 == 0 {
+            fill_rect(&mut frame, 0, y - 1, SCR_W, 17, row_bg);
+        }
         draw_text(
             &mut frame,
             8,
@@ -2880,49 +3275,65 @@ pub fn render_events_right(snap: &EngineSnapshot) -> DisplayFrame {
                 e.pad + 1,
                 trunc(&sound_name(snap, e.pad as usize), 10)
             ),
-            p.white,
-            p.panel,
+            if is_now { p.white } else { p.dim },
+            row_bg,
         );
         draw_text(
             &mut frame,
             170,
             y,
             &format!("PAS {:02}", step + 1),
-            p.dim,
-            p.panel,
+            if is_now { p.accent } else { p.dim },
+            row_bg,
         );
         draw_text(
             &mut frame,
             250,
             y,
-            &format!("VEL {:>3}", e.velocity),
+            &format!("{:>3}", e.velocity),
             p.cyan,
-            p.panel,
+            row_bg,
+        );
+        // Petite barre de vélocité (repère immédiat).
+        bar_h(
+            &mut frame,
+            &p,
+            286,
+            y + 5,
+            40,
+            6,
+            e.velocity as f32 / 127.0,
+            p.cyan,
         );
         draw_text(
             &mut frame,
             340,
             y,
-            &format!("LEN {}", e.length_ticks / TICKS_PER_STEP as u32),
+            &fmt_len(e.length_ticks),
             p.muted,
-            p.panel,
+            row_bg,
         );
         draw_text(
             &mut frame,
-            420,
+            424,
             y,
-            &format!("{:>3}", e.pitch),
+            &format!("{:>3} {}", e.pitch, note_name(e.pitch)),
             p.muted,
-            p.panel,
+            row_bg,
         );
-        y += 18;
+        y += 17;
     }
-    if total > events.len() && !events.is_empty() {
+    // Résumé : seulement si la place le permet (sinon le header donne le total).
+    if total > events.len() && !events.is_empty() && events.len() <= 6 {
         draw_text(
             &mut frame,
             8,
             y + 2,
-            &format!("{} ev au total dans le pattern", total),
+            &format!(
+                "{} ev au total dans le pattern — M{} ci-dessus",
+                total,
+                snap.selected_bar + 1
+            ),
             p.muted,
             p.bg,
         );
@@ -2961,7 +3372,7 @@ pub fn render_events_right(snap: &EngineSnapshot) -> DisplayFrame {
 pub fn render_macro_right(snap: &EngineSnapshot) -> DisplayFrame {
     let p = Pal::new();
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
-    header(&mut frame, &p, "MACRO", "MASTER / GROUPE");
+    header(&mut frame, &p, snap, "MACRO", "MASTER / GROUPE");
 
     let gvol = focus_group(snap).map(|g| g.volume_db).unwrap_or(0.0);
     let s_db = focus_sound(snap).map(|s| s.volume_db).unwrap_or(0.0);
@@ -3028,7 +3439,7 @@ pub fn render_macro_right(snap: &EngineSnapshot) -> DisplayFrame {
 pub fn render_settings_right(snap: &EngineSnapshot) -> DisplayFrame {
     let p = Pal::new();
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
-    header(&mut frame, &p, "SETTINGS", "PROJET / TRANSPORT");
+    header(&mut frame, &p, snap, "SETTINGS", "PROJET / TRANSPORT");
 
     let mut modes = Vec::new();
     if snap.scene_mode {
@@ -3054,52 +3465,175 @@ pub fn render_settings_right(snap: &EngineSnapshot) -> DisplayFrame {
     };
     let pad_map = std::env::var("MASCHINE_PAD_MAP").unwrap_or_else(|_| "hw".to_string());
 
-    let lines = [
-        format!("PROJET {}", trunc(&snap.project.name, 24)),
-        format!(
-            "{} GROUPES | {} SCENES | {} SECTIONS",
-            snap.project.groups.len(),
+    // ── Carte PROJET ──
+    panel(&mut frame, &p, 8, 30, 226, 78);
+    fill_rect(&mut frame, 8, 30, 3, 78, p.accent);
+    draw_text(
+        &mut frame,
+        18,
+        34,
+        &format!("PROJET  v{}", snap.project.schema_version),
+        p.accent,
+        p.panel,
+    );
+    fill_rect(&mut frame, 18, 50, 40, 1, p.track);
+    kv_row(
+        &mut frame,
+        &p,
+        18,
+        54,
+        "Nom",
+        &trunc(&snap.project.name, 18),
+        p.white,
+    );
+    kv_row(
+        &mut frame,
+        &p,
+        18,
+        72,
+        "Groupes",
+        &format!("{}", snap.project.groups.len()),
+        p.cyan,
+    );
+    kv_row(
+        &mut frame,
+        &p,
+        18,
+        90,
+        "Scenes / Sect.",
+        &format!(
+            "{} / {}",
             snap.project.scenes.len(),
             snap.project.song.len()
         ),
-        format!("SCHEMA v{}", snap.project.schema_version),
-        format!(
-            "MASTER {:.0}% | CASQUE {:.0}%",
+        p.cyan,
+    );
+
+    // ── Carte TRANSPORT ──
+    panel(&mut frame, &p, 8, 112, 226, 78);
+    fill_rect(&mut frame, 8, 112, 3, 78, p.green);
+    draw_text(&mut frame, 18, 116, "TRANSPORT", p.green, p.panel);
+    fill_rect(&mut frame, 18, 132, 40, 1, p.track);
+    let (st_txt, st_col) = if snap.transport.is_playing() {
+        ("PLAY", p.green)
+    } else {
+        ("STOP", p.dim)
+    };
+    kv_row(&mut frame, &p, 18, 136, "Etat", st_txt, st_col);
+    kv_row(
+        &mut frame,
+        &p,
+        18,
+        154,
+        "BPM / Swing",
+        &format!(
+            "{:.1} / {:.0}%",
+            snap.transport.bpm,
+            snap.project.swing * 100.0
+        ),
+        p.white,
+    );
+    pill(
+        &mut frame,
+        &p,
+        18,
+        172,
+        52,
+        "LOOP",
+        p.cyan,
+        snap.transport.loop_enabled,
+    );
+    pill(
+        &mut frame,
+        &p,
+        78,
+        172,
+        58,
+        "METRO",
+        p.cyan,
+        snap.transport.metronome,
+    );
+    draw_text(
+        &mut frame,
+        146,
+        176,
+        &format!("bar {}.{}", tick_bar(snap) + 1, tick_step(snap) + 1),
+        p.muted,
+        p.panel,
+    );
+
+    // ── Carte AUDIO / JEU ──
+    panel(&mut frame, &p, 242, 30, 230, 78);
+    fill_rect(&mut frame, 242, 30, 3, 78, p.cyan);
+    draw_text(&mut frame, 252, 34, "AUDIO / JEU", p.cyan, p.panel);
+    fill_rect(&mut frame, 252, 50, 40, 1, p.track);
+    kv_row(
+        &mut frame,
+        &p,
+        252,
+        54,
+        "Taux",
+        &format!("{:.1} kHz", snap.transport.sample_rate as f32 / 1000.0),
+        p.white,
+    );
+    kv_row(
+        &mut frame,
+        &p,
+        252,
+        72,
+        "Voix",
+        &format!("{}", snap.num_voices),
+        p.cyan,
+    );
+    kv_row(
+        &mut frame,
+        &p,
+        252,
+        90,
+        "Master / Casque",
+        &format!(
+            "{:.0}% / {:.0}%",
             snap.master_volume * 100.0,
             snap.headphone_volume * 100.0
         ),
-        format!(
-            "TRANSPORT {} | {:.1} BPM | TICK {}",
-            if snap.transport.is_playing() {
-                "PLAY"
-            } else {
-                "STOP"
-            },
-            snap.transport.bpm,
-            snap.transport.tick
+        p.white,
+    );
+
+    // ── Carte FOCUS ──
+    panel(&mut frame, &p, 242, 112, 230, 78);
+    fill_rect(
+        &mut frame,
+        242,
+        112,
+        3,
+        78,
+        hue_color(snap.group_focus as usize),
+    );
+    draw_text(&mut frame, 252, 116, "FOCUS", p.muted, p.panel);
+    fill_rect(&mut frame, 252, 132, 40, 1, p.track);
+    draw_text(
+        &mut frame,
+        252,
+        136,
+        &format!(
+            "{} / S{:02} {}",
+            group_letter(snap.group_focus),
+            snap.active_sound + 1,
+            trunc(&sound_name(snap, snap.active_sound as usize), 10)
         ),
-        format!(
-            "LOOP {} | METRO {} | SWING {:.0}%",
-            if snap.transport.loop_enabled {
-                "ON"
-            } else {
-                "OFF"
-            },
-            if snap.transport.metronome {
-                "ON"
-            } else {
-                "OFF"
-            },
-            snap.project.swing * 100.0
-        ),
-        format!("MODES PADS: {} | JEU: {ctrl}", modes.join("+")),
-        format!("PAD MAP: {pad_map}"),
-    ];
-    let mut y = 30usize;
-    for line in &lines {
-        draw_text(&mut frame, 8, y, line, p.dim, p.bg);
-        y += 18;
-    }
+        p.white,
+        p.panel,
+    );
+    kv_row(
+        &mut frame,
+        &p,
+        252,
+        154,
+        "Pads / Jeu",
+        &format!("{} / {ctrl}", modes.join("+")),
+        p.dim,
+    );
+    kv_row(&mut frame, &p, 252, 172, "Pad map", &pad_map, p.muted);
 
     let cut = focus_sound(snap)
         .map(|s| s.filter.cutoff_hz)
@@ -3159,6 +3693,8 @@ pub fn render_screens(snap: &EngineSnapshot) -> (DisplayFrame, DisplayFrame) {
         render_sampler_right(snap)
     } else if snap.left_tab == 3 && snap.right_tab == 0 {
         render_browser_right(snap)
+    } else if snap.left_tab == 1 && snap.right_tab == 0 {
+        render_mixer_right(snap)
     } else if snap.left_tab == 0 && snap.right_tab == 0 && snap.controller_mode == 3 {
         render_step_right(snap)
     } else {
@@ -3242,5 +3778,61 @@ mod tests {
         let (l, r) = render_screens(&snap);
         check_pair(&l);
         check_pair(&r);
+    }
+
+    /// Rendu déterministe : un même snapshot donne des pixels identiques.
+    #[test]
+    fn render_is_deterministic() {
+        let mut eng = Engine::new_demo(48000);
+        eng.advance(4800);
+        let snap = eng.snapshot();
+        let (l1, r1) = render_screens(&snap);
+        let (l2, r2) = render_screens(&snap);
+        assert_eq!(l1.pixels, l2.pixels);
+        assert_eq!(r1.pixels, r2.pixels);
+    }
+
+    /// Les 16 vues ne sont pas toutes identiques (sanity : le dispatch fonctionne).
+    #[test]
+    fn views_are_not_all_identical() {
+        let mut eng = Engine::new_demo(48000);
+        eng.advance(4800);
+        let mut hashes = std::collections::BTreeSet::new();
+        for left_tab in 0..4u8 {
+            for right_tab in 0..4u8 {
+                let mut snap = eng.snapshot();
+                snap.left_tab = left_tab;
+                snap.right_tab = right_tab;
+                snap.controller_mode = if left_tab == 0 { 3 } else { 0 };
+                let (l, _r) = render_screens(&snap);
+                // FNV-1a simplifié sur les premiers pixels (pour limiter le coût).
+                let mut h = 0u64;
+                for px in &l.pixels {
+                    h ^= px.0 as u64;
+                    h = h.wrapping_mul(0x9e3779b97f4a7c15);
+                }
+                hashes.insert(h);
+            }
+        }
+        // Au moins 4 rendus gauches distincts.
+        assert!(hashes.len() >= 4);
+    }
+
+    /// L'activité pad décroît et bump la révision.
+    #[test]
+    fn pad_activity_decays_and_bumps_revision() {
+        let mut eng = Engine::new_demo(48000);
+        let r0 = eng.snapshot().revision;
+        eng.note_pad_activity(0, 100);
+        let s1 = eng.snapshot();
+        assert!(s1.pad_activity[0] > 0.5);
+        // La décroissance (advance) bump la révision.
+        eng.advance(1);
+        let s2 = eng.snapshot();
+        assert!(s2.revision > r0);
+        // Avance ~300 ms → décroissance notable.
+        eng.advance(14400);
+        let s3 = eng.snapshot();
+        assert!(s3.pad_activity[0] < s1.pad_activity[0]);
     }
 }

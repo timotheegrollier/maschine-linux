@@ -2054,6 +2054,7 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             song_mode: false,
             active_section: None,
             triggered_pads: [false; 16],
+            pad_activity: [0.0; 16],
             scene_mode: false,
             pattern_mode: false,
             select_mode: false,

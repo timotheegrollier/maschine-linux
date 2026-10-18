@@ -1,18 +1,56 @@
 //! Thread de rafraîchissement des 2 écrans MK3 via USB Bulk (IF5).
+//!
+//! Stratégie « diff incrémental » (0.6.0) :
+//!
+//! - Une frame pleine pèse **261 148 octets** (480×272 RGB565 + header). Envoyer
+//!   les 2 écrans à 30 FPS = ~15,7 Mo/s : le device sature, les écritures bulk
+//!   finissent en timeout et les écrans se figent.
+//! - Le protocole accepte un **header de fenêtre** (`x/y/w/h`) : on n'envoie que
+//!   les régions modifiées ([`FrameDiffer`]), typiquement quelques Ko.
+//! - Un **budget d'octets** (~2,5 Mo/s) lisse les rafraîchissements complets
+//!   (changement de vue) sans jamais bloquer les petites mises à jour.
+//! - Toute erreur invalide le diff et force une frame complète ; après plusieurs
+//!   échecs : `clear_halt` + backoff, puis ré-acquisition de l'interface.
 
 #[cfg(feature = "usb")]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "usb")]
 use std::sync::Arc;
 #[cfg(feature = "usb")]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "usb")]
 use maschine_engine::Engine;
 #[cfg(feature = "usb")]
 use maschine_hardware::usb::BulkHandle;
 #[cfg(feature = "usb")]
+use maschine_proto::display::{transfer_len, DisplayFrame, DisplayId, FrameDiffer};
+#[cfg(feature = "usb")]
 use parking_lot::Mutex;
+
+/// Plafond de rafraîchissement (~30 FPS) : laisse du temps au device.
+#[cfg(feature = "usb")]
+const MIN_INTERVAL: Duration = Duration::from_millis(33);
+/// Débit moyen autorisé pour les écrans (octets/s).
+#[cfg(feature = "usb")]
+const BYTE_RATE: f64 = 2_500_000.0;
+/// Rafale maximale (une paire pleine écran ≈ 522 Ko tient dedans).
+#[cfg(feature = "usb")]
+const BYTE_BURST: f64 = 700_000.0;
+/// Seuil « transfert lent » (au-delà, on log + compteur).
+#[cfg(feature = "usb")]
+const SLOW_TRANSFER: Duration = Duration::from_millis(120);
+/// Intervalle du log de statistiques écrans.
+#[cfg(feature = "usb")]
+const STATS_INTERVAL: Duration = Duration::from_secs(10);
+/// Backoff après erreur (min, max).
+#[cfg(feature = "usb")]
+const BACKOFF_MIN: Duration = Duration::from_millis(150);
+#[cfg(feature = "usb")]
+const BACKOFF_MAX: Duration = Duration::from_secs(2);
+/// Nombre d'erreurs consécutives avant ré-acquisition de l'interface.
+#[cfg(feature = "usb")]
+const ERRORS_BEFORE_REACQUIRE: u32 = 4;
 
 /// Handle du thread display
 #[cfg(feature = "usb")]
@@ -38,12 +76,123 @@ impl DisplayThreadHandle {
     }
 }
 
+/// État d'un écran : diff + besoin éventuel d'une frame pleine.
+#[cfg(feature = "usb")]
+struct ScreenState {
+    differ: FrameDiffer,
+    pending_full: bool,
+}
+
+#[cfg(feature = "usb")]
+impl ScreenState {
+    fn new(display: DisplayId) -> Self {
+        Self {
+            differ: FrameDiffer::new(display),
+            pending_full: true,
+        }
+    }
+
+    /// Régions à envoyer pour amener l'écran à jour.
+    fn plan(&self, frame: &DisplayFrame) -> Vec<DisplayFrame> {
+        if self.pending_full {
+            vec![frame.to_full()]
+        } else {
+            self.differ.diff(frame)
+        }
+    }
+
+    /// Marque l'écran comme synchronisé avec `frame`.
+    fn commit(&mut self, frame: &DisplayFrame) {
+        self.differ.commit(frame);
+        self.pending_full = false;
+    }
+
+    /// Invalide (prochain envoi = frame pleine).
+    fn invalidate(&mut self) {
+        self.differ.invalidate();
+        self.pending_full = true;
+    }
+}
+
+/// Statistiques écrans (log périodique).
+#[cfg(feature = "usb")]
+#[derive(Default)]
+struct DisplayStats {
+    frames: u64,
+    bytes: u64,
+    rects: u64,
+    errors: u64,
+    slow: u64,
+    since: Option<Instant>,
+}
+
+#[cfg(feature = "usb")]
+impl DisplayStats {
+    fn log(&mut self) {
+        let now = Instant::now();
+        let Some(since) = self.since else {
+            self.since = Some(now);
+            return;
+        };
+        let dt = now.duration_since(since).as_secs_f64();
+        if dt < STATS_INTERVAL.as_secs_f64() {
+            return;
+        }
+        if self.frames > 0 {
+            log::debug!(
+                "Écrans: {:.1} FPS, {:.0} Ko/s, {:.1} régions/frame, {} err, {} lents",
+                self.frames as f64 / dt,
+                self.bytes as f64 / dt / 1024.0,
+                self.rects as f64 / self.frames as f64,
+                self.errors,
+                self.slow,
+            );
+        }
+        self.frames = 0;
+        self.bytes = 0;
+        self.rects = 0;
+        self.errors = 0;
+        self.slow = 0;
+        self.since = Some(now);
+    }
+}
+
+/// Envoie un plan (régions) puis commite ; en cas d'erreur invalide l'écran.
+#[cfg(feature = "usb")]
+fn flush_screen(
+    bulk: &mut BulkHandle,
+    state: &mut ScreenState,
+    frame: &DisplayFrame,
+    plan: Vec<DisplayFrame>,
+    stats: &mut DisplayStats,
+) -> Result<(), String> {
+    for region in &plan {
+        let started = Instant::now();
+        let bytes = bulk
+            .send_frame(region)
+            .map_err(|e| format!("bulk write: {e}"))?;
+        let elapsed = started.elapsed();
+        stats.bytes += bytes as u64;
+        stats.rects += 1;
+        if elapsed > SLOW_TRANSFER {
+            stats.slow += 1;
+            log::debug!(
+                "Écran {:?}: transfert lent {} ms ({} octets)",
+                region.display,
+                elapsed.as_millis(),
+                bytes
+            );
+        }
+    }
+    state.commit(frame);
+    Ok(())
+}
+
 /// Lance le thread de rafraîchissement des 2 écrans MK3 via USB Bulk (IF5).
 ///
 /// `activity` est un drapeau *sans verrou* posé par la boucle HID à chaque action
 /// utilisateur : le thread détecte l'activité en ~3 ms mais ne verrouille le
-/// moteur qu'au plus toutes les 33 ms (le callback audio prend ce même verrou
-/// en `try_lock` — on ne veut pas l'augmenter).
+/// moteur qu'au plus toutes les 33 ms (le callback audio prend ce même verrou).
 #[cfg(feature = "usb")]
 pub fn spawn_display_thread(
     engine: Arc<Mutex<Engine>>,
@@ -54,67 +203,201 @@ pub fn spawn_display_thread(
     let join = std::thread::Builder::new()
         .name("maschine-display".to_string())
         .spawn(move || {
-            let mut bulk = match BulkHandle::open() {
-                Ok(b) => {
-                    log::info!("✓ Écrans USB Bulk ouvert (IF5)");
-                    b
-                }
-                Err(e) => {
-                    log::warn!("Impossible d'ouvrir l'accès USB Bulk pour les écrans: {e}");
+            // ── Cycle de vie : (ré)ouverture du Bulk, puis boucle de refresh ──
+            // Une autre instance (gui/daemon) peut tenir IF5 au démarrage, et la MK3
+            // peut être débranchée pendant l'exécution : au lieu d'abandonner
+            // (écrans figés définitivement), on réessaie toutes les 3 s puis on
+            // rouvre l'interface à chaud quand elle est disponible à nouveau.
+            'lifecycle: loop {
+                if stop_clone.load(Ordering::Relaxed) {
                     return;
                 }
-            };
-
-            let mut frame_count = 0u64;
-            let mut last_revision = u64::MAX;
-            let mut last_check = std::time::Instant::now() - Duration::from_secs(10);
-            let mut last_send = last_check;
-
-            while !stop_clone.load(Ordering::Relaxed) {
-                // Réveil court (3 ms) : réactivité immédiate aux actions utilisateur
-                // sans marteler le verrou du moteur (partagé avec l'audio).
-                let active = activity.swap(false, Ordering::Relaxed);
-                if last_check.elapsed() < Duration::from_millis(33) {
-                    // Plafond ~30 FPS (2 x 261 Ko par frame en USB Bulk).
-                    std::thread::sleep(Duration::from_millis(if active { 2 } else { 3 }));
-                    continue;
-                }
-                last_check = std::time::Instant::now();
-
-                let (snap, revision) = {
-                    let eng = engine.lock();
-                    (eng.snapshot(), eng.revision())
+                let mut open_fails = 0u32;
+                let mut bulk = 'open: loop {
+                    if stop_clone.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    match BulkHandle::open() {
+                        Ok(b) => break 'open b,
+                        Err(e) => {
+                            open_fails += 1;
+                            if open_fails == 1 || open_fails % 10 == 0 {
+                                log::warn!(
+                                    "Impossible d'ouvrir l'accès USB Bulk pour les écrans: {e} \
+                                     (nouvel essai dans 3 s)"
+                                );
+                            }
+                        }
+                    }
+                    for _ in 0..30 {
+                        if stop_clone.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
                 };
+                log::info!("✓ Écrans USB Bulk ouvert (IF5)");
 
-                if revision == last_revision && last_send.elapsed() < Duration::from_secs(2) {
-                    // Rien de neuf : aucun envoi (garde-fou 2 s pour absorber
-                    // toute modification qui aurait manqué l'invalidation).
-                    std::thread::sleep(Duration::from_millis(3));
-                    continue;
-                }
-                last_revision = revision;
-                last_send = std::time::Instant::now();
+                let mut left = ScreenState::new(DisplayId::Left);
+                let mut right = ScreenState::new(DisplayId::Right);
+                let mut stats = DisplayStats {
+                    since: Some(Instant::now()),
+                    ..DisplayStats::default()
+                };
+                let mut budget = BYTE_BURST;
+                let mut last_refill = Instant::now();
+                let mut last_revision = u64::MAX;
+                let mut last_check = Instant::now() - Duration::from_secs(10);
+                let mut last_send = last_check;
+                let mut pending = true;
+                let mut backoff_until: Option<Instant> = None;
+                let mut consecutive_errors = 0u32;
+                let mut reacquires_in_row = 0u32;
+                let mut first_frame = true;
 
-                let (left_frame, right_frame) =
-                    maschine_engine::display_render::render_screens(&snap);
+                while !stop_clone.load(Ordering::Relaxed) {
+                    let now = Instant::now();
 
-                if let Err(e) = bulk.send_frame(&left_frame) {
+                    // Backoff après erreur : on laisse le device respirer.
+                    if let Some(until) = backoff_until {
+                        if now < until {
+                            std::thread::sleep(Duration::from_millis(20));
+                            continue;
+                        }
+                        backoff_until = None;
+                    }
+
+                    // Réveil court (2-3 ms) : réactivité immédiate aux actions
+                    // utilisateur sans marteler le verrou du moteur (partagé audio).
+                    let active = activity.swap(false, Ordering::Relaxed);
+                    if now.duration_since(last_check) < MIN_INTERVAL {
+                        std::thread::sleep(Duration::from_millis(if active { 2 } else { 3 }));
+                        continue;
+                    }
+                    last_check = now;
+
+                    // Budget octets : recharge linéaire, plafonnée à la rafale.
+                    let dt = now.duration_since(last_refill).as_secs_f64();
+                    last_refill = now;
+                    budget = (budget + dt * BYTE_RATE).min(BYTE_BURST);
+
+                    let (snap, revision) = {
+                        let eng = engine.lock();
+                        (eng.snapshot(), eng.revision())
+                    };
+
+                    let dirty = revision != last_revision
+                        || pending
+                        || last_send.elapsed() > Duration::from_secs(2);
+                    if !dirty {
+                        std::thread::sleep(Duration::from_millis(3));
+                        continue;
+                    }
+                    last_revision = revision;
+
+                    let (left_frame, right_frame) =
+                        maschine_engine::display_render::render_screens(&snap);
+                    let left_plan = left.plan(&left_frame);
+                    let right_plan = right.plan(&right_frame);
+                    let bytes: usize = left_plan
+                        .iter()
+                        .chain(right_plan.iter())
+                        .map(|f| transfer_len(f.pixels.len()))
+                        .sum();
+
+                    // Pas assez de budget : on réessaiera au prochain tick. Les diffs
+                    // ne sont pas commités, donc rien n'est perdu (coalescing naturel).
+                    if bytes as f64 > budget {
+                        pending = true;
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    budget -= bytes as f64;
+                    stats.frames += 1;
+
+                    let left_result =
+                        flush_screen(&mut bulk, &mut left, &left_frame, left_plan, &mut stats);
+                    let right_result =
+                        flush_screen(&mut bulk, &mut right, &right_frame, right_plan, &mut stats);
+
+                    let mut failed = false;
+                if let Err(e) = left_result {
+                    failed = true;
+                    stats.errors += 1;
+                    left.invalidate();
                     log::warn!("Écran gauche send err: {e}");
                 }
-                if let Err(e) = bulk.send_frame(&right_frame) {
+                if let Err(e) = right_result {
+                    failed = true;
+                    stats.errors += 1;
+                    right.invalidate();
                     log::warn!("Écran droit send err: {e}");
                 }
 
-                frame_count += 1;
-                if frame_count == 1 {
-                    log::info!("✓ Écrans MK3 rafraîchis (première frame OK)");
-                }
-            }
+                if failed {
+                    consecutive_errors += 1;
+                    // Le pipe peut être bloqué : halt + backoff exponentiel.
+                    bulk.clear_stall();
+                    pending = true;
+                    let backoff = BACKOFF_MIN * 2u32.saturating_pow(consecutive_errors.min(5) - 1);
+                    backoff_until = Some(Instant::now() + backoff.min(BACKOFF_MAX));
+                    if consecutive_errors >= ERRORS_BEFORE_REACQUIRE {
+                            match bulk.reacquire() {
+                                Ok(()) => {
+                                    log::info!(
+                                        "Écrans: interface ré-acquise après {consecutive_errors} erreurs"
+                                    );
+                                    reacquires_in_row += 1;
+                                    if reacquires_in_row >= 2 {
+                                        // Deux ré-acquisitions de suite n'ont pas
+                                        // stoppé l'hémorragie : on rouvre tout
+                                        // (Drop = release + reset du device).
+                                        log::warn!(
+                                            "Écrans: {} ré-acquisitions sans succès — réouverture complète",
+                                            reacquires_in_row
+                                        );
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    // L'interface est morte (device parti ?) : on sort
+                                    // vers la boucle de réouverture du cycle de vie.
+                                    log::warn!(
+                                        "Écrans: ré-acquisition échouée ({e}) — réouverture"
+                                    );
+                                    break;
+                                }
+                            }
+                            consecutive_errors = 0;
+                        }
+                    } else {
+                        consecutive_errors = 0;
+                        reacquires_in_row = 0;
+                        pending = false;
+                        last_send = Instant::now();
+                        if first_frame {
+                            first_frame = false;
+                            log::info!("✓ Écrans MK3 rafraîchis (première frame OK)");
+                        }
+                    }
 
-            // Ne pas envoyer de frame noire : on libère l'interface pour que le firmware
-            // de la MK3 réaffiche son écran par défaut (logo Maschine).
-            std::thread::sleep(Duration::from_millis(200));
-            log::info!("✓ Interface écrans libérée (logo MK3 par défaut)");
+                    stats.log();
+                }
+
+                if stop_clone.load(Ordering::Relaxed) {
+                    // Ne pas envoyer de frame noire : on libère l'interface pour que le
+                    // firmware de la MK3 réaffiche son écran par défaut (logo Maschine).
+                    std::thread::sleep(Duration::from_millis(200));
+                    log::info!("✓ Interface écrans libérée (logo MK3 par défaut)");
+                    return;
+                }
+                // Interface perdue (device débranché, ré-énumération, ImportError) :
+                // on libère tout et on repasse par la boucle d'ouverture.
+                drop(bulk);
+                log::warn!("Écrans: interface perdue — réouverture dans 3 s");
+                std::thread::sleep(Duration::from_secs(3));
+                continue 'lifecycle;
+            }
         })
         .map_err(|e| anyhow::anyhow!("spawn display thread: {e}"))?;
 

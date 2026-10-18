@@ -256,6 +256,8 @@ pub struct EngineSnapshot {
     pub active_section: Option<usize>,
     /// Pads flashés par le séquenceur (lecture pattern) — pour LEDs + GUI
     pub triggered_pads: [bool; 16],
+    /// Activité récente des pads (1.0 → 0.0) — animation des écrans
+    pub pad_activity: [f32; 16],
     /// Mode SCENE (pads déclenchent les scènes) — miroir du mapper pour les écrans
     pub scene_mode: bool,
     /// Mode PATTERN (pads sélectionnent le pattern)
@@ -291,6 +293,11 @@ pub struct EngineSnapshot {
     /// Compteur de révision : change dès qu'un état a bougé (repaint UI/écrans).
     pub revision: u64,
 }
+
+// ── Constantes moteur ───────────────────────────────────────────────────
+
+/// Décroissance de l'activité des pads (u/s) : ~170 ms de 1.0 à 0.0.
+const PAD_ACTIVITY_DECAY: f32 = 6.0;
 
 /// Petit instantané utilisé par les LED MK3 à haute fréquence.
 /// Il évite de cloner tout le projet à chaque rafraîchissement matériel.
@@ -367,6 +374,8 @@ pub struct Engine {
     pub active_section: Option<usize>,
     /// Flash pads jusqu'à ce tick (séquenceur) — 16 pads
     pad_flash_until: [u64; 16],
+    /// Activité récente des pads (1.0 → 0.0, décroit) — animation écrans
+    pad_activity: [f32; 16],
     /// Modes workflow (miroirs du mapper pour les écrans)
     pub scene_mode: bool,
     pub pattern_mode: bool,
@@ -502,6 +511,7 @@ impl Engine {
             song_mode: false,
             active_section: None,
             pad_flash_until: [0; 16],
+            pad_activity: [0.0; 16],
             scene_mode: false,
             pattern_mode: false,
             select_mode: false,
@@ -572,6 +582,7 @@ impl Engine {
             song_mode: self.song_mode,
             active_section: self.active_section,
             triggered_pads,
+            pad_activity: self.pad_activity,
             scene_mode: self.scene_mode,
             pattern_mode: self.pattern_mode,
             select_mode: self.select_mode,
@@ -797,6 +808,7 @@ impl Engine {
                     // trigger sampler pour le Sound du Group focus
                     let sound = pad;
                     let note = 36 + pad;
+                    self.note_pad_activity(pad, velocity);
                     let guard = self.project.read();
                     let group_gain = guard
                         .groups
@@ -1500,6 +1512,19 @@ impl Engine {
 
     /// Avance le transport + séquenceur, déclenche les notes des patterns.
     pub fn advance(&mut self, samples: u64) {
+        // Décroissance de l'activité des pads (animation écrans, ~170 ms).
+        let dt = samples as f32 / self.transport.sample_rate.max(1) as f32;
+        let mut activity_alive = false;
+        for v in &mut self.pad_activity {
+            if *v > 0.0 {
+                *v = (*v - dt * PAD_ACTIVITY_DECAY).max(0.0);
+                activity_alive = true;
+            }
+        }
+        if activity_alive {
+            self.revision = self.revision.wrapping_add(1);
+        }
+
         let prev_tick = self.transport.tick;
         let frac_before = self.transport.tick_fraction;
         self.transport.advance_samples(samples);
@@ -1601,6 +1626,7 @@ impl Engine {
                                     &mut self.pad_flash_until,
                                     new_tick,
                                     &ctx,
+                                    &mut self.pad_activity,
                                 );
                             }
                         }
@@ -1608,6 +1634,13 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// Marque l'activité d'un pad (animation écrans) — 0..1 selon vélocité.
+    pub fn note_pad_activity(&mut self, pad: u8, velocity: u8) {
+        let index = (pad as usize).min(15);
+        let level = (velocity as f32 / 127.0).clamp(0.35, 1.0);
+        self.pad_activity[index] = self.pad_activity[index].max(level);
     }
 
     #[allow(clippy::too_many_arguments)] // contexte de trigger (pattern + position + sampler)
@@ -1625,6 +1658,7 @@ impl Engine {
         flash_until: &mut [u64; 16],
         now_tick: u64,
         ctx: &BlockCtx,
+        activity: &mut [f32; 16],
     ) {
         let pat_len = pat.length.to_ticks() as u64;
         if pat_len == 0 || prev_tick == new_tick {
@@ -1680,6 +1714,10 @@ impl Engine {
                 // Flash LED du pad (fenêtre d'une triple-croche : bref et net).
                 if (sound as usize) < 16 {
                     flash_until[sound as usize] = now_tick + 120;
+                    let level = (ev.velocity as f32 / 127.0).clamp(0.35, 1.0);
+                    if level > activity[sound as usize] {
+                        activity[sound as usize] = level;
+                    }
                 }
             }
             // Note-off / longueur : déclenche release quand la fin de l'événement est franchie

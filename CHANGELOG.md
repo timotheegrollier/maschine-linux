@@ -2,6 +2,38 @@
 
 Tous les changements notables.
 
+## [0.6.0] - 2026-10-18
+
+### Corrigé
+- **Écrans MK3 figés (2e vague)** :
+  - **Abandon définitif à l'ouverture** : si une autre instance (gui/daemon resté ouvert) ou une ré-énumération USB tenait IF5, `claim IF5: Resource busy` tuait le thread écran sans réessai → écrans jamais rafraîchis. Le thread a désormais un **cycle de vie** : ouverture avec réessais (3 s), libération, réouverture à chaud quand l'interface redevient libre (+ log clair « nouvel essai dans 3 s »).
+  - **Paquets interrompus non complétés** : le protocole est un flux de commandes MCU (header fenêtre + `transmit` + pixels + `blit` + `end`). Une écriture partielle laisse le parseur en attente du *reste exact* des pixels → tout envoi suivant décalé (écran figé pour toujours). `send_frame` complète désormais tout paquet interrompu avec **ses propres octets restants** puis `blit`+`end` (renvoie `Ok` si le paquet aboutit) ; à défaut (timeout, position inconnue) une **purge de noirs** (`blit`+`end`) remet le parseur en attente. 2 tests unitaires (`packet_tail`, cas réel 10588/7680).
+  - **Escalade** : si 2 ré-acquisitions successives ne stoppent pas les erreurs → réouverture complète (Drop = release + reset USB). Purge en timeout court (60 ms).
+- **Tempête de logs à l'arrêt** : 18 M lignes POLLERR en une seconde (ALSA pendant le drop du stream cpal) → gestionnaire d'événements d'erreur limité en débit (1ʳᵉ erreur puis 1/1000).
+- **Écrans MK3 figés (1re vague)** : chaque rafraîchissement envoyait un frame complet non compressé (2 × 261 148 B ≈ 522 Ko) ; à 30 FPS ≈ 15,7 Mo/s → saturation du port USB, `short write`/`Operation timed out`, endpoint bloqué (écran figé). Remplacé par :
+  - **Diff incrémental par régions** (`FrameDiffer`, proto) : runs verticaux de rangées modifiées, bbox X par run, fusion au-delà de 6 rectangles, frame pleine si la surface sale dépasse 55 % ; header fenêtre `x/y/w/h` ; saut des frames identiques.
+  - **Budget d'octets** 2,5 Mo/s (rafale 700 Ko) avec coalescing (diffs non commités si budget insuffisant) ; récupération USB (`clear_stall` + backoff + `reacquire` après 4 erreurs) ; invalidation → frame pleine après erreur.
+  - `send_frame → Result<usize>` (timeout 1 s si >100 Ko, sinon 250 ms), `clear_stall()`, `reacquire()` (stubs mis à jour) ; `display_thread.rs` réécrit (diff, budget, backoff, réacquisition, stats 10 s, commits conditionnels).
+  - Bug corrigé dans `col_range` (`x1 = x + 1` écrasait le max → `if x + 1 > x1`) ; 8 tests ajoutés dont la propriété `differ_always_reconstructs_exactly` et la régression `debug_synthetic_rows`.
+- **Dispatch MIXER** : `render_mixer_right` était du code mort (l'écran droit MIXER affichait PATTERN) → branché pour `left_tab == 1 && right_tab == 0`.
+
+### Modifié
+- **Audio** : déjà livré en 0.5.0 (buffer 64 frames ≈ 1,3 ms, limiteur master + `KIT_HEADROOM`, kit au taux device, anti-clics) — inchangé.
+- **Design des 2 écrans** : chrome commun (header 26 px avec ruban d'activité 16 pads + mini VU master, panneaux bordés, encodeurs avec encoche accent, soft keys remplies), labels denses « tracker » via `draw_text_clipped` (glyphes rognés 9 px), palette cohérente.
+- `pad_activity: [f32; 16]` (décroissance ~170 ms, `PAD_ACTIVITY_DECAY = 6.0`) pour animer les écrans (jeu + séquenceur), bump de `revision` pendant la décroissance ; alimenté par les pads et `trigger_pattern_events`.
+- **ARRANGE gauche** : bandeau transport à pastilles, chip « A S01 », lignes groupes avec pilules M/S et VU 142 px.
+- **PATTERN droit** : vélocités par hauteur, lignes de temps, labels tracker, LED activité, playhead.
+- **STEP droit** : bandeau M/PAS/VEL/LEN/NOTE, barres vélocité numérotées, curseur/playhead.
+- **MIXER** : 4 tranches de console (VU vertical + échelle dB + LED clip, M/S, pan), section master (grand VU + dB + LOOP/METRO + barre), section foyer (groupe + sound + ADSR).
+- **SAMPLER** : waveform dégradé par amplitude + repères, ADSR rempli + points de rupture.
+- **EVENTS** : tableau à colonnes (SON/PAS/VEL/LEN/NOTE), barres de vélocité, noms de note, mise en évidence de l'événement joué.
+- **SETTINGS** : 4 cartes (PROJET / TRANSPORT / AUDIO-JEU / FOCUS) à clés/valeurs alignées.
+- **STEP** : titres différenciés « STEP / GRILLE » (gauche) et « STEP / PAS » (droite).
+
+### Ajouté
+- Tests : `render_is_deterministic`, `views_are_not_all_identical`, `pad_activity_decays_and_bumps_revision` (display_render) ; tests proto diff déjà présents (27 verts) ; workspace : 94 tests verts.
+- `note_pad_activity` rendu public.
+
 ## [0.5.0] - 2026-10-18
 
 ### Corrigé

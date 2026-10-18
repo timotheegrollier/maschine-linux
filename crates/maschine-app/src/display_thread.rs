@@ -24,7 +24,7 @@ use maschine_engine::Engine;
 #[cfg(feature = "usb")]
 use maschine_hardware::usb::BulkHandle;
 #[cfg(feature = "usb")]
-use maschine_proto::display::{transfer_len, DisplayFrame, DisplayId, FrameDiffer};
+use maschine_proto::display::{transfer_len, DisplayFrame, DisplayId, DisplayPixel, FrameDiffer};
 #[cfg(feature = "usb")]
 use parking_lot::Mutex;
 
@@ -32,25 +32,33 @@ use parking_lot::Mutex;
 #[cfg(feature = "usb")]
 const MIN_INTERVAL: Duration = Duration::from_millis(33);
 /// Débit moyen autorisé pour les écrans (octets/s).
+///
+/// Calibré **sous le mur matériel du MCU** : au-dessus de ~2 Mo/s soutenus,
+/// la file RX du MCU déborde et l'endpoint cesse d'accepter (écritures en
+/// timeout, écran figé). Mesuré sain : 1,6 Mo/s tient indéfiniment ; à 2,4 Mo/s
+/// le wedge apparaît après ~20-30 s.
 #[cfg(feature = "usb")]
-const BYTE_RATE: f64 = 2_500_000.0;
+const BYTE_RATE: f64 = 1_600_000.0;
 /// Rafale maximale (une paire pleine écran ≈ 522 Ko tient dedans).
 #[cfg(feature = "usb")]
-const BYTE_BURST: f64 = 700_000.0;
+const BYTE_BURST: f64 = 560_000.0;
 /// Seuil « transfert lent » (au-delà, on log + compteur).
 #[cfg(feature = "usb")]
 const SLOW_TRANSFER: Duration = Duration::from_millis(120);
 /// Intervalle du log de statistiques écrans.
 #[cfg(feature = "usb")]
 const STATS_INTERVAL: Duration = Duration::from_secs(10);
-/// Backoff après erreur (min, max).
+/// Backoff après erreur (min, max) — assez long pour laisser la file RX du
+/// MCU se vider avant de repousser des centaines de Ko.
 #[cfg(feature = "usb")]
-const BACKOFF_MIN: Duration = Duration::from_millis(150);
+const BACKOFF_MIN: Duration = Duration::from_millis(250);
 #[cfg(feature = "usb")]
-const BACKOFF_MAX: Duration = Duration::from_secs(2);
-/// Nombre d'erreurs consécutives avant ré-acquisition de l'interface.
+const BACKOFF_MAX: Duration = Duration::from_secs(4);
+/// Nombre d'erreurs consécutives sans succès avant ré-acquisition douce de
+/// l'interface (jamais de reset USB en cours de route : il tuerait le flux
+/// audio qui partage le même device).
 #[cfg(feature = "usb")]
-const ERRORS_BEFORE_REACQUIRE: u32 = 4;
+const ERRORS_BEFORE_REACQUIRE: u32 = 8;
 
 /// Handle du thread display
 #[cfg(feature = "usb")]
@@ -157,6 +165,35 @@ impl DisplayStats {
     }
 }
 
+/// Sonde de vie du MCU : fenêtre 1×1 px dans le coin bas-droit (30 octets).
+///
+/// Après une erreur, on ne renvoie les vraies frames que si cette
+/// micro-écriture passe : inutile de noyer une file RX saturée. Le pixel noir
+/// écrasé se resynchronise tout seul au diff suivant.
+#[cfg(feature = "usb")]
+fn probe_frame() -> DisplayFrame {
+    DisplayFrame {
+        display: DisplayId::Right,
+        x: 479,
+        y: 271,
+        w: 1,
+        h: 1,
+        pixels: vec![DisplayPixel::BLACK],
+    }
+}
+
+/// Durée d'attente après le `n`-ième échec consécutif ; `None` ⇒ escalade
+/// (ré-acquisition douce de l'interface) nécessaire.
+#[cfg(feature = "usb")]
+fn backoff_for(n: u32) -> Option<Duration> {
+    if n >= ERRORS_BEFORE_REACQUIRE {
+        None
+    } else {
+        let exp = n.min(4).saturating_sub(1);
+        Some((BACKOFF_MIN * 2u32.saturating_pow(exp)).min(BACKOFF_MAX))
+    }
+}
+
 /// Envoie un plan (régions) puis commite ; en cas d'erreur invalide l'écran.
 #[cfg(feature = "usb")]
 fn flush_screen(
@@ -252,7 +289,7 @@ pub fn spawn_display_thread(
                 let mut pending = true;
                 let mut backoff_until: Option<Instant> = None;
                 let mut consecutive_errors = 0u32;
-                let mut reacquires_in_row = 0u32;
+                let mut soft_retries = 0u32;
                 let mut first_frame = true;
 
                 while !stop_clone.load(Ordering::Relaxed) {
@@ -295,84 +332,105 @@ pub fn spawn_display_thread(
                     }
                     last_revision = revision;
 
-                    let (left_frame, right_frame) =
-                        maschine_engine::display_render::render_screens(&snap);
-                    let left_plan = left.plan(&left_frame);
-                    let right_plan = right.plan(&right_frame);
-                    let bytes: usize = left_plan
-                        .iter()
-                        .chain(right_plan.iter())
-                        .map(|f| transfer_len(f.pixels.len()))
-                        .sum();
-
-                    // Pas assez de budget : on réessaiera au prochain tick. Les diffs
-                    // ne sont pas commités, donc rien n'est perdu (coalescing naturel).
-                    if bytes as f64 > budget {
-                        pending = true;
-                        std::thread::sleep(Duration::from_millis(10));
-                        continue;
-                    }
-                    budget -= bytes as f64;
-                    stats.frames += 1;
-
-                    let left_result =
-                        flush_screen(&mut bulk, &mut left, &left_frame, left_plan, &mut stats);
-                    let right_result =
-                        flush_screen(&mut bulk, &mut right, &right_frame, right_plan, &mut stats);
-
                     let mut failed = false;
-                if let Err(e) = left_result {
-                    failed = true;
-                    stats.errors += 1;
-                    left.invalidate();
-                    log::warn!("Écran gauche send err: {e}");
-                }
-                if let Err(e) = right_result {
-                    failed = true;
-                    stats.errors += 1;
-                    right.invalidate();
-                    log::warn!("Écran droit send err: {e}");
-                }
 
-                if failed {
-                    consecutive_errors += 1;
-                    // Le pipe peut être bloqué : halt + backoff exponentiel.
-                    bulk.clear_stall();
-                    pending = true;
-                    let backoff = BACKOFF_MIN * 2u32.saturating_pow(consecutive_errors.min(5) - 1);
-                    backoff_until = Some(Instant::now() + backoff.min(BACKOFF_MAX));
-                    if consecutive_errors >= ERRORS_BEFORE_REACQUIRE {
+                    // Sonde en reprise : après une erreur, vérifier d'abord que le
+                    // MCU re-accepte une micro-écriture (fenêtre 1×1 px ≈ 30 o),
+                    // avant de renvoyer de vraies frames — inutile de noyer une
+                    // file RX saturée avec des centaines de Ko.
+                    if consecutive_errors > 0 {
+                        match bulk.send_frame(&probe_frame()) {
+                            Ok(n) => stats.bytes += n as u64,
+                            Err(e) => {
+                                stats.errors += 1;
+                                left.invalidate();
+                                right.invalidate();
+                                bulk.clear_stall();
+                                log::warn!("Écrans: sonde KO ({e})");
+                                failed = true;
+                            }
+                        }
+                    }
+
+                    if !failed {
+                        let (left_frame, right_frame) =
+                            maschine_engine::display_render::render_screens(&snap);
+                        let left_plan = left.plan(&left_frame);
+                        let right_plan = right.plan(&right_frame);
+                        let bytes: usize = left_plan
+                            .iter()
+                            .chain(right_plan.iter())
+                            .map(|f| transfer_len(f.pixels.len()))
+                            .sum();
+
+                        // Pas assez de budget : on réessaiera au prochain tick. Les
+                        // diffs ne sont pas commités → rien n'est perdu (coalescing).
+                        if bytes as f64 > budget {
+                            pending = true;
+                            std::thread::sleep(Duration::from_millis(10));
+                            continue;
+                        }
+                        budget -= bytes as f64;
+                        stats.frames += 1;
+
+                        let left_result =
+                            flush_screen(&mut bulk, &mut left, &left_frame, left_plan, &mut stats);
+                        let right_result =
+                            flush_screen(&mut bulk, &mut right, &right_frame, right_plan, &mut stats);
+                        if let Err(e) = left_result {
+                            failed = true;
+                            stats.errors += 1;
+                            left.invalidate();
+                            log::warn!("Écran gauche send err: {e}");
+                        }
+                        if let Err(e) = right_result {
+                            failed = true;
+                            stats.errors += 1;
+                            right.invalidate();
+                            log::warn!("Écran droit send err: {e}");
+                        }
+                    }
+
+                    if failed {
+                        consecutive_errors += 1;
+                        pending = true;
+                        if let Some(delay) = backoff_for(consecutive_errors) {
+                            // Le pipe peut être bloqué : halt + backoff exponentiel
+                            // (assez long pour laisser la file RX du MCU se vider).
+                            bulk.clear_stall();
+                            backoff_until = Some(now + delay);
+                        } else {
+                            // ── Escalade : ré-acquisition DOUCE de l'interface
+                            // (release + claim + clear halt). Jamais de reset USB en
+                            // cours de route : il tuerait le flux audio qui partage
+                            // ce device. Cooldown croissant pour laisser la file se
+                            // vider puis repartir sur des frames pleines.
                             match bulk.reacquire() {
                                 Ok(()) => {
-                                    log::info!(
-                                        "Écrans: interface ré-acquise après {consecutive_errors} erreurs"
+                                    soft_retries += 1;
+                                    let cool = 3u64 * (1u64 << soft_retries.min(3));
+                                    log::warn!(
+                                        "Écrans: ré-acquisition douce n°{soft_retries} après \
+                                         {consecutive_errors} erreurs — reprise dans {cool} s"
                                     );
-                                    reacquires_in_row += 1;
-                                    if reacquires_in_row >= 2 {
-                                        // Deux ré-acquisitions de suite n'ont pas
-                                        // stoppé l'hémorragie : on rouvre tout
-                                        // (Drop = release + reset du device).
-                                        log::warn!(
-                                            "Écrans: {} ré-acquisitions sans succès — réouverture complète",
-                                            reacquires_in_row
-                                        );
-                                        break;
-                                    }
+                                    left.invalidate();
+                                    right.invalidate();
+                                    consecutive_errors = 0;
+                                    backoff_until = Some(now + Duration::from_secs(cool));
                                 }
                                 Err(e) => {
-                                    // L'interface est morte (device parti ?) : on sort
-                                    // vers la boucle de réouverture du cycle de vie.
+                                    // Device probablement parti (débranché) :
+                                    // réouverture complète via le cycle de vie.
                                     log::warn!(
-                                        "Écrans: ré-acquisition échouée ({e}) — réouverture"
+                                        "Écrans: ré-acquisition échouée ({e}) — réouverture complète"
                                     );
                                     break;
                                 }
                             }
-                            consecutive_errors = 0;
                         }
                     } else {
                         consecutive_errors = 0;
-                        reacquires_in_row = 0;
+                        soft_retries = 0;
                         pending = false;
                         last_send = Instant::now();
                         if first_frame {

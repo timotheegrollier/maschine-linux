@@ -275,9 +275,7 @@ fn event_logger(stats: Arc<AudioStats>) -> impl FnMut(cpal::StreamError) + Send 
         stats.errors.fetch_add(1, Ordering::Relaxed);
         total += 1;
         let now = Instant::now();
-        if logged_at
-            .map_or(true, |t| now.duration_since(t) >= Duration::from_secs(1))
-        {
+        if logged_at.map_or(true, |t| now.duration_since(t) >= Duration::from_secs(1)) {
             log::warn!("cpal stream event: {err} (erreur audio #{total})");
             logged_at = Some(now);
         }

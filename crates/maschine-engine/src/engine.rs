@@ -180,6 +180,20 @@ pub enum EngineEvent {
     PrevBar,
     /// Définir la longueur du pattern en mesures (1, 2, 4, 8)
     SetPatternBars(usize),
+    /// Swing 0..1 (knob SWING : synchro séquenceur + écrans)
+    Swing(f32),
+    /// Sélectionne le pas édité du step sequencer (index absolu)
+    StepCursor(usize),
+    /// Défile la grille du step sequencer (delta en pas, +/-)
+    StepScroll(i32),
+    /// Vélocité du pas sélectionné (delta 1..127)
+    StepVelocityDelta(i32),
+    /// Position (nudge) du pas sélectionné (delta en ticks)
+    StepNudgeTicks(i32),
+    /// Longueur du pas sélectionné (delta en pas de 1/16)
+    StepLengthDelta(i32),
+    /// Pitch du pas sélectionné (delta en demi-tons)
+    StepPitchDelta(i32),
     /// Retour au début (bouton RESTART hardware)
     Restart,
     /// Soft key d'écran (1..8 : boutons sous les écrans) — action
@@ -256,6 +270,8 @@ pub struct EngineSnapshot {
     pub browser_preset_idx: u8,
     /// Mesure sélectionnée pour l'affichage / édition pas-à-pas (0-indexed : 0, 1, 2, 3...)
     pub selected_bar: usize,
+    /// Pas sélectionné dans le step sequencer (index absolu 0..pattern_bars*16-1)
+    pub step_cursor: usize,
     /// Nombre de mesures du pattern actif (1, 2, 4, 8)
     pub pattern_bars: usize,
     /// VU-mètres lissés par groupe (0..8), 0.0..~1.0
@@ -303,6 +319,8 @@ pub struct HardwareSnapshot {
     pub metronome: bool,
     pub selected_bar: usize,
     pub pattern_bars: usize,
+    /// Pas sélectionné du step sequencer (index absolu)
+    pub step_cursor: usize,
     pub pad_colors: [Option<u8>; 16],
 }
 
@@ -338,6 +356,9 @@ pub struct Engine {
     pub active_sound: u8,
     /// Mesure sélectionnée pour l'édition et l'affichage (0..pattern_bars-1)
     pub selected_bar: usize,
+    /// Curseur du step sequencer : pas sélectionné (index absolu dans le
+    /// pattern, 0..pattern_bars*16-1) — les knobs éditent ce pas.
+    pub step_cursor: usize,
     /// Index preset sélectionné dans le Browser
     pub browser_preset_idx: u8,
     /// Mode Song (arranger) vs Ideas (scènes)
@@ -447,6 +468,7 @@ impl Engine {
             right_tab: 0,
             active_sound: 0,
             selected_bar: 0,
+            step_cursor: 0,
             browser_preset_idx: 0,
             song_mode: false,
             active_section: None,
@@ -502,6 +524,7 @@ impl Engine {
             .map(|p| (p.length.bars as usize).max(1))
             .unwrap_or(2);
         let selected_bar = self.selected_bar.min(pattern_bars.saturating_sub(1));
+        let step_cursor = self.step_cursor.min(pattern_bars * 16 - 1);
 
         EngineSnapshot {
             project,
@@ -527,6 +550,7 @@ impl Engine {
             controller_mode: self.controller_mode,
             browser_preset_idx: self.browser_preset_idx,
             selected_bar,
+            step_cursor,
             pattern_bars,
             group_levels: self.group_meter,
             group_peaks: self.group_peak_hold,
@@ -625,6 +649,7 @@ impl Engine {
             metronome: self.transport.metronome,
             selected_bar,
             pattern_bars,
+            step_cursor: self.step_cursor.min(pattern_bars * 16 - 1),
             pad_colors,
         }
     }
@@ -662,6 +687,7 @@ impl Engine {
 
     /// Humanise le pattern actif (légères variations de vélocité et micro-timing)
     pub fn humanize_active_pattern(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
         let pat_idx = proj.active_pattern_index(self.group_focus as usize, self.active_scene);
@@ -676,6 +702,7 @@ impl Engine {
 
     /// Quantifie le pattern actif sur la grille courante
     pub fn quantize_active_pattern(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
         let pat_idx = proj.active_pattern_index(self.group_focus as usize, self.active_scene);
@@ -1232,6 +1259,89 @@ impl Engine {
             EngineEvent::SoftKey(n) => {
                 return self.handle_soft_key(n);
             }
+            EngineEvent::Swing(v) => {
+                self.set_swing(v);
+            }
+            EngineEvent::StepCursor(step) => {
+                self.step_cursor = step;
+                self.selected_bar = step / 16;
+            }
+            EngineEvent::StepScroll(delta) => {
+                let total = self.pattern_total_steps();
+                if total > 0 {
+                    let next = (self.step_cursor as i64 + delta as i64).clamp(0, total as i64 - 1)
+                        as usize;
+                    self.step_cursor = next;
+                    self.selected_bar = next / 16;
+                }
+            }
+            EngineEvent::StepVelocityDelta(delta) => {
+                let pad = self.active_sound;
+                let (start, end) = self.step_window();
+                let _ = self.with_active_pattern(|pat| {
+                    if let Some(ev) = pat
+                        .events
+                        .iter_mut()
+                        .find(|e| e.pad == pad && e.tick >= start && e.tick < end)
+                    {
+                        ev.velocity = (ev.velocity as i32 + delta).clamp(1, 127) as u8;
+                    }
+                });
+            }
+            EngineEvent::StepNudgeTicks(delta) => {
+                let pad = self.active_sound;
+                let (start, end) = self.step_window();
+                let _ = self.with_active_pattern(|pat| {
+                    let len_ticks = (pat.length.bars as u32).max(1) * 4 * 960;
+                    let idx = pat
+                        .events
+                        .iter()
+                        .position(|e| e.pad == pad && e.tick >= start && e.tick < end);
+                    if let Some(i) = idx {
+                        let t = (pat.events[i].tick as i64 + delta as i64)
+                            .clamp(0, len_ticks as i64 - 1) as u32;
+                        pat.events[i].tick = t;
+                        // Fusionne avec un pas voisin si on glisse dans sa cellule.
+                        let keep = i;
+                        let mut seen = 0usize;
+                        pat.events.retain(|e| {
+                            let this = seen;
+                            seen += 1;
+                            !(this != keep
+                                && e.pad == pad
+                                && crate::project::same_step_cell(e.tick, t))
+                        });
+                        pat.events.sort_by_key(|e| e.tick);
+                    }
+                });
+            }
+            EngineEvent::StepLengthDelta(delta) => {
+                let pad = self.active_sound;
+                let (start, end) = self.step_window();
+                let _ = self.with_active_pattern(|pat| {
+                    if let Some(ev) = pat
+                        .events
+                        .iter_mut()
+                        .find(|e| e.pad == pad && e.tick >= start && e.tick < end)
+                    {
+                        ev.length_ticks =
+                            (ev.length_ticks as i32 + delta * 240).clamp(30, 3840 * 8) as u32;
+                    }
+                });
+            }
+            EngineEvent::StepPitchDelta(delta) => {
+                let pad = self.active_sound;
+                let (start, end) = self.step_window();
+                let _ = self.with_active_pattern(|pat| {
+                    if let Some(ev) = pat
+                        .events
+                        .iter_mut()
+                        .find(|e| e.pad == pad && e.tick >= start && e.tick < end)
+                    {
+                        ev.pitch = (ev.pitch as i32 + delta).clamp(0, 127) as u8;
+                    }
+                });
+            }
             EngineEvent::SetPatternBars(bars) => {
                 let bars_clamped = bars.clamp(1, 16) as u16;
                 let mut guard = self.project.write();
@@ -1616,6 +1726,12 @@ impl Engine {
                 "SCN 1", "SCN 2", "SCN 3", "SCN 4", "SCN 5", "SCN 6", "SCN 7", "SCN 8",
             ];
         }
+        if self.controller_mode == 3 && self.left_tab == 0 {
+            // Mode STEP : navigation dans la grille + longueur du pattern.
+            return [
+                "PAS <", "PAS >", "BAR <", "BAR >", "1 MES", "2 MES", "4 MES", "8 MES",
+            ];
+        }
         match self.left_tab {
             1 => [
                 "GRP A", "GRP B", "GRP C", "GRP D", "GRP E", "GRP F", "GRP G", "GRP H",
@@ -1660,6 +1776,19 @@ impl Engine {
             let n_scenes = self.project.read().scenes.len();
             let scene = idx.min(n_scenes.saturating_sub(1));
             return self.handle_event(EngineEvent::Scene(scene));
+        }
+        if self.controller_mode == 3 && self.left_tab == 0 {
+            // Mode STEP : PAS <, PAS >, BAR <, BAR > puis longueurs 1/2/4/8.
+            return match idx {
+                0 => self.handle_event(EngineEvent::StepScroll(-1)),
+                1 => self.handle_event(EngineEvent::StepScroll(1)),
+                2 => self.handle_event(EngineEvent::StepScroll(-16)),
+                3 => self.handle_event(EngineEvent::StepScroll(16)),
+                4 => self.handle_event(EngineEvent::SetPatternBars(1)),
+                5 => self.handle_event(EngineEvent::SetPatternBars(2)),
+                6 => self.handle_event(EngineEvent::SetPatternBars(4)),
+                _ => self.handle_event(EngineEvent::SetPatternBars(8)),
+            };
         }
         match self.left_tab {
             1 => self.handle_event(EngineEvent::GroupFocus(idx as u8)),
@@ -1745,12 +1874,52 @@ impl Engine {
         self.group_focus
     }
 
+    /// Invalide l'affichage : les écrans se redessinent au prochain frame.
+    /// À appeler après toute mutation du projet faite hors `handle_event`.
+    pub fn invalidate_display(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Fenêtre de ticks du pas sélectionné (début, fin).
+    fn step_window(&self) -> (u32, u32) {
+        let start = (self.step_cursor as u32) * 240;
+        (start, start + 240)
+    }
+
+    /// Nombre total de pas du pattern actif (mesures x 16).
+    fn pattern_total_steps(&self) -> usize {
+        let proj = self.project.read();
+        proj.active_pattern_index(self.group_focus as usize, self.active_scene)
+            .and_then(|pi| proj.groups.get(self.group_focus as usize)?.patterns.get(pi))
+            .map(|p| (p.length.bars as usize).max(1) * 16)
+            .unwrap_or(32)
+    }
+
+    /// Exécute `f` sur le pattern actif du groupe focus (scène active).
+    fn with_active_pattern<F: FnOnce(&mut crate::project::Pattern)>(&mut self, f: F) -> bool {
+        let group_idx = self.group_focus as usize;
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
+        let pat_idx = proj.active_pattern_index(group_idx, self.active_scene);
+        if let (Some(group), Some(pi)) = (proj.groups.get_mut(group_idx), pat_idx) {
+            if let Some(pat) = group.patterns.get_mut(pi) {
+                f(pat);
+                return true;
+            }
+        }
+        false
+    }
+
     /// Bascule une note à un pas donné (tick) pour le pad donné dans le pattern actif.
     /// Façon Maschine : silencieux — poser un pas ne joue aucun son, l'aperçu
     /// se fait en mode Pad ou via les boutons ▶ de la GUI.
     /// La comparaison se fait par case de 16e (tolère humanize/nudge) et
     /// supprime tous les doublons de la case : un seul appui suffit toujours.
     pub fn toggle_step(&mut self, pad: u8, tick: u32) {
+        // Le pas touché devient le pas sélectionné (les knobs l'éditent).
+        self.selected_bar = (tick / (4 * 960)) as usize;
+        self.step_cursor = (tick / 240) as usize;
+        self.revision = self.revision.wrapping_add(1);
         let group_idx = self.group_focus as usize;
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
@@ -1837,6 +2006,7 @@ impl Engine {
 
     /// Supprime toutes les notes d'une mesure donnée
     pub fn clear_bar(&mut self, bar: usize) {
+        self.revision = self.revision.wrapping_add(1);
         let group_idx = self.group_focus as usize;
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
@@ -1855,6 +2025,7 @@ impl Engine {
 
     /// Réinitialise le pattern avec le groove 808 complet
     pub fn reset_demo_groove(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
         let demo_proj = crate::project::Project::new_demo();
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
@@ -1905,6 +2076,83 @@ mod tests {
                 .all(|e| e.pad != 15));
         }
         assert_eq!(eng.sampler.num_voices(), 0);
+    }
+
+    #[test]
+    fn step_mode_edits_selected_step_and_scrolls_grid() {
+        let mut eng = Engine::new_demo(48000);
+        eng.clear_bar(0);
+        eng.clear_bar(1);
+        // Sélectionne le son 3 puis pose un pas sur son pas 0.
+        eng.handle_event(EngineEvent::SelectSound(3)).unwrap();
+        eng.toggle_step(3, 0);
+        // Le pas touché devient le pas sélectionné (curseur + mesure).
+        assert_eq!(eng.step_cursor, 0);
+        assert_eq!(eng.selected_bar, 0);
+
+        // Édition par les knobs 1-4 : VEL / POS / LEN / PITCH du pas sélectionné.
+        eng.handle_event(EngineEvent::StepVelocityDelta(-15))
+            .unwrap();
+        eng.handle_event(EngineEvent::StepNudgeTicks(20)).unwrap();
+        eng.handle_event(EngineEvent::StepLengthDelta(1)).unwrap();
+        eng.handle_event(EngineEvent::StepPitchDelta(2)).unwrap();
+        {
+            let guard = eng.project_handle();
+            let proj = guard.read();
+            let ev = proj.groups[0].patterns[0]
+                .events
+                .iter()
+                .find(|e| e.pad == 3 && e.tick < 240)
+                .expect("le pas posé existe toujours");
+            assert_eq!(ev.velocity, 100); // 115 - 15
+            assert_eq!(ev.tick, 20); // nudge +20 ticks
+            assert_eq!(ev.length_ticks, 360); // 120 + 240 (1 pas de 1/16)
+            assert_eq!(ev.pitch, 41); // 36 + pad(3) + 2
+        }
+
+        // Scroll de la grille complète : le curseur avance, la mesure suit.
+        eng.handle_event(EngineEvent::StepScroll(20)).unwrap();
+        assert_eq!(eng.step_cursor, 20);
+        assert_eq!(eng.selected_bar, 1);
+        // Bornes : début et fin du pattern (2 mesures = 32 pas).
+        eng.handle_event(EngineEvent::StepScroll(-100)).unwrap();
+        assert_eq!(eng.step_cursor, 0);
+        assert_eq!(eng.selected_bar, 0);
+        eng.handle_event(EngineEvent::StepScroll(999)).unwrap();
+        assert_eq!(eng.step_cursor, 31);
+        assert_eq!(eng.selected_bar, 1);
+
+        // Le curseur est exposé aux écrans / aux LEDs.
+        assert_eq!(eng.hardware_snapshot().step_cursor, 31);
+
+        // Pas vide : pas d'édition fantôme, pas de panic.
+        eng.handle_event(EngineEvent::StepVelocityDelta(5)).unwrap();
+        eng.handle_event(EngineEvent::StepPitchDelta(1)).unwrap();
+    }
+
+    #[test]
+    fn swing_knob_goes_through_engine_and_syncs_sequencer() {
+        let mut eng = Engine::new_demo(48000);
+        let before = eng.revision;
+        eng.handle_event(EngineEvent::Swing(0.25)).unwrap();
+        assert!((eng.transport.swing - 0.25).abs() < 1e-6);
+        assert!((eng.sequencer.swing - 0.25).abs() < 1e-6);
+        assert!((eng.project.read().swing - 0.25).abs() < 1e-6);
+        assert_ne!(eng.revision, before, "l'affichage doit être invalidé");
+    }
+
+    #[test]
+    fn step_cursor_soft_keys_scroll_and_set_length() {
+        let mut eng = Engine::new_demo(48000);
+        eng.controller_mode = 3;
+        eng.left_tab = 0;
+        eng.handle_event(EngineEvent::SoftKey(2)).unwrap(); // PAS >
+        assert_eq!(eng.step_cursor, 1);
+        eng.handle_event(EngineEvent::SoftKey(4)).unwrap(); // BAR >
+        assert_eq!(eng.step_cursor, 17);
+        assert_eq!(eng.selected_bar, 1);
+        eng.handle_event(EngineEvent::SoftKey(7)).unwrap(); // 4 MES
+        assert_eq!(eng.hardware_snapshot().pattern_bars, 4);
     }
 
     #[test]

@@ -2,6 +2,27 @@
 
 Tous les changements notables.
 
+## [0.4.0] - 2026-10-18
+
+### Ajouté
+- **Mode STEP fidèle au logiciel officiel** : curseur de pas (`step_cursor`, index absolu dans le pattern), le pad touché devient le pas sélectionné, édition du pas par les knobs 1–4 (`VEL`, `POS` nudge en ticks, `LEN`, `PITCH` + nom de note), **SCROLL de la grille du pattern complet au knob 5** et à l'encodeur 4-D `<`/`>`, knobs 6–8 = `VOL SND`/`CUTOFF`/`RESO`.
+- Nouveaux événements moteur `Swing`, `StepCursor`, `StepScroll`, `StepVelocityDelta`, `StepNudgeTicks`, `StepLengthDelta`, `StepPitchDelta` (+ actions mapper et tests).
+- **Écran gauche STEP** : grille du pattern complet (une ligne par mesure), case du curseur encadrée, tête de lecture, détail live du pas sélectionné et slots 1–4. **Écran droit STEP** : contour orange du pas édité, `PAS n/n` dans le bandeau, slot 5 = `SCROLL`.
+- Soft keys STEP : `PAS <</>>`, `BAR <</>>`, longueurs `1/2/4/8 MES`.
+- Curseur d'édition visible sur les pads à l'arrêt (blanc) dans la couleur du son pour les pas programmés.
+- Test `engine` de bout en bout : pose + édition + scroll du curseur ; tests mapper (knobs STEP, accumulateur, clamp des tours rapides, 4-D en STEP).
+
+### Modifié
+- **Vitesse des knobs recalibrée** (« les knobs tournent trop vite ») : mise à l'échelle faite **une seule fois** dans l'app (le mapper émet des ticks bruts), grains type logiciel officiel : ≈1.5 BPM/cran (TEMPO), 0.03 dB (volumes), 0.001 (pan/reso/master/sustain), **CUTOFF exponentiel** `2^(ticks/384)` (≈2.7 octaves/tour, ≈1 demi-ton/cran), ADSR 0.5–1 ms/cran, presets/sons du BROWSER par cran.
+- Les tours rapides de knob (delta > 128 ticks) sont **limités au lieu d'être jetés** : plus de mouvements perdus.
+- Éncodeur 4-D `<`/`>` en mode STEP : défile la grille d'un pas au lieu de changer de mesure.
+- Le thread d'écrans réveille sa boucle toutes les 3 ms (drapeau d'activité sans verrou posé par la boucle HID) et envoie dès qu'un changement est prêt : réactivité de quelques millisecondes, verrou moteur pris au plus toutes les 33 ms (plafond USB ~30 FPS, garde-fou de 2 s) — **0 miss audio** conservé.
+
+### Corrigé
+- **Écrans qui « ne répondaient pas »** : `Swing` écrivait le projet en direct sans synchroniser le séquenceur ni invalider l'affichage ; `toggle_step`, `clear_bar`, humanize/quantize, reset du groove et DUPLICATE BAR modifiaient le projet sans bump de révision (les écrans restaient figés jusqu'à la garde de 5 s). Tout passe désormais par l'Engine (`EngineEvent::Swing`, `invalidate_display`) et rafraîchit l'affichage.
+- `RESTART` passe par `EngineEvent::Restart` (remise à zéro + invalidation immédiate du BBT affiché).
+- Le knob SWING agit maintenant réellement sur la lecture (le séquenceur utilisait l'ancienne valeur).
+
 ## [0.3.0] - 2026-10-18
 
 ### Ajouté

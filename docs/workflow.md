@@ -62,14 +62,28 @@ Le transport propose Play/Stop, Record, boucle, tempo et position BBT. Les pads 
 
 Les deux écrans physiques sont rendus par une fonction partagée (`display_render::render_screens`) : la GUI affiche exactement le même contenu (miroir). Un compteur de révision évite de renvoyer une frame USB tant que rien n'a bougé.
 
-- **Écran gauche** : ARRANGE (8 groupes, pattern de la scène, VU réels), SCENES/IDEAS (mode SCENE), SONG (sections), MIXER A–D, SAMPLER (waveform + ADSR + infos), BROWSER (presets 808).
-- **Écran droit** : PATTERN (grille 16 sons × 16 pas + playhead), STEP (vélocités du Sound actif), SONG TIMELINE, MIXER master + groupe/sound focus, SAMPLER enveloppe plein écran, BROWSER chargement, EVENTS, MACRO, SETTINGS.
+- **Écran gauche** : ARRANGE (8 groupes, pattern de la scène, VU réels), SCENES/IDEAS (mode SCENE), SONG (sections), MIXER A–D, SAMPLER (waveform + ADSR + infos), BROWSER (presets 808), STEP (grille du pattern complet + paramètres du pas sélectionné).
+- **Écran droit** : PATTERN (grille 16 sons × 16 pas + playhead), STEP (vélocités du Sound actif + curseur d'édition), SONG TIMELINE, MIXER master + groupe/sound focus, SAMPLER enveloppe plein écran, BROWSER chargement, EVENTS, MACRO, SETTINGS.
 - **Soft keys (8 boutons sous les écrans)** : action *contextuelle* décidée par le moteur (`EngineEvent::SoftKey`) et affichée en bas des écrans. Le bouton fait toujours ce que le label annonce, identiquement au hardware et dans la GUI.
   - ARRANGE : `BAR 1..4` + longueur de pattern `1/2/4/8 MES`.
+  - STEP : `PAS <</>>` (curseur d'un pas), `BAR <</>>` (d'une mesure), `1/2/4/8 MES`.
   - MIXER : `GRP A..H` (focus groupe). SAMPLER : `SND 1..8` (Sound actif).
   - BROWSER : `PRES <</>>`, `SND <</>>`, `ECOUTE`, `CHARGER`, `METRO`, `LOOP`.
   - SCENE : `SCN 1..8`. SONG : `SEC <</>>`, `+SEC`, `IDEE`, scènes et `+SCN`.
 - **Encodeurs** : chaque écran affiche les 4 paramètres réellement pilotés par ses knobs (1–4 à gauche, 5–8 à droite) avec les valeurs live.
+- **Aucun écran figé** : toute action (y compris chaque cran de knob, la pose d'un pas, SWING, QUANTIZE, VARIATION, CLEAR, RESTART) invalide le compteur de révision. La boucle HID pose en plus un drapeau d'activité *sans verrou* : le thread d'écrans détecte le changement en ~3 ms et envoie sa frame, en prenant le verrou moteur au plus toutes les 33 ms (plafond USB ~30 FPS, partagé avec le callback audio `try_lock`), garde-fou de 2 s si rien ne bouge.
+
+## Mode STEP (façon logiciel officiel)
+
+Le mode STEP s'active avec le bouton **STEP** du hardware (ou la GUI). L'onglet gauche reste sur ARRANGE : la page STEP remplace alors ARRANGE sur les écrans.
+
+- **Pads 1..16** : basculent le pas correspondant du Sound actif dans la mesure affichée (silencieux, doublon supprimé via `same_step_cell`). Le pad touché devient le **pas sélectionné** : la grille des écrans et le curseur LED le suivent.
+- **Curseur (`Engine::step_cursor`)** : pas sélectionné (index absolu 0..`pattern_bars*16-1`). Il détermine la mesure affichée (`selected_bar = curseur / 16`) et la fenêtre des 4 knobs d'édition.
+- **Knobs 1–4 = édition du pas sélectionné** : `VEL` (vélocité), `POS` (nudge en ticks), `LEN` (longueur en pas de 1/16), `PITCH` (demi-tons). Un accumulateur côté mapper transforme la rotation continue en incréments entiers (~1 cran ≈ 32 ticks bruts).
+- **Knob 5 = SCROLL** : défile la grille du pattern complet (32 pas pour 2 mesures, jusqu'à 128 pas) ; les knobs 6–8 restent `VOL SND`, `CUTOFF`, `RESO` du Sound actif.
+- **Encodeur 4-D `<` / `>` et flèches** : défilent la grille d'un pas (le mode STEP prend la main sur la navigation par mesure).
+- **Écran gauche** : grille du pattern complet (une ligne par mesure, 16 cases), case du curseur encadrée en orange, tête de lecture blanche, détail du pas (`VEL`, `POS`, `LEN`, `PITCH` avec nom de note) et slots 1–4.
+- **Écran droit** : grille détaillée de la mesure (hauteur = vélocité), contour orange sur le pas édité, `PAS n/n` dans le bandeau, slot 5 = `SCROLL`, 6–8 = `VOL SND`, `CUTOFF`, `RESO`.
 
 ## Instrumentation latence
 
@@ -107,16 +121,23 @@ Le thread HID réveille immédiatement la GUI (`RepaintSignal`), et le snapshot 
 
 - **Pads 1..16** :
   - *Mode PAD* : déclenchement du son correspondant du groupe focus avec vélocité et pression dynamiques. Rendu one-shot sans bouclage accidentel.
-  - *Mode STEP* : bascule silencieuse du pas correspondant (0..15) dans la mesure sélectionnée (`selected_bar`). Curseur playhead blanc en direct.
+  - *Mode STEP* : bascule silencieuse du pas correspondant (0..15) dans la mesure sélectionnée (`selected_bar`) ; le pad devient le pas sélectionné (curseur orange sur les écrans, blanc sur les pads à l'arrêt). Les knobs 1–5 éditent le pas (VEL/POS/LEN/PITCH) et défilent la grille (SCROLL) — voir « Mode STEP ».
   - *Modes SCENE / PATTERN / ERASE / SELECT* : gestion directe du workflow Maschine.
 - **Encodeur 4-D** :
   - *Haut / Bas* : changement rapide du son sélectionné (`active_sound`) avec pré-écoute instantanée ; navigation des presets dans le Browser.
-  - *Gauche / Droite* (ou `<` / `>`) : navigation entre les mesures (`selected_bar`).
+  - *Gauche / Droite* (ou `<` / `>`) : navigation entre les mesures (`selected_bar`) — **en mode STEP**, défilent la grille d'un pas.
   - *Shift + Droite* : extension de la longueur du pattern à 4 ou 8 mesures.
   - *Push* : pré-écoute one-shot du son ou validation preset.
+  - *Focus TEMPO / VOLUME / SWING* (boutons dédiés) : 0.5 BPM, 0.01 de master, 0.01 de swing par cran (divisés par 2 avec Shift).
 - **Écrans & Boutons d'écran 1..8** :
   - *Soft keys contextuels* : les 8 boutons sous les écrans exécutent l'action affichée en bas de l'écran (voir « Écrans MK3 & soft keys »). Même moteur d'action côté hardware et côté GUI.
   - *8 Potentiomètres rotatifs* : édition contextuelle des paramètres du son ou du mixeur ; les slots d'encodeurs des écrans affichent ces mêmes paramètres avec leurs valeurs live.
+- **Vitesse des knobs** (mise à l'échelle *une seule fois* dans `main.rs`, pas par tick brut ni par cran ≈ 32 ticks) :
+  - ARRANGE : TEMPO 0.05 BPM (≈1.5 BPM/cran, Shift ÷10), SWING 0.001, VOL GRP/SND 0.03 dB, PAN 0.001, MASTER 0.001.
+  - CUTOFF : échelle exponentielle `2^(ticks/384)` — ≈2.7 octaves par tour, ≈1 demi-ton par cran (naturel de 20 Hz à 20 kHz).
+  - RESO 0.001. SAMPLER : ATTACK 0.5 ms, DECAY/RELEASE 1 ms, SUSTAIN 0.001 par tick.
+  - MIXER : 0.03 dB par tick sur les 8 groupes. BROWSER : son/preset par cran (accumulateur), MASTER 0.001.
+  - Un tour rapide (delta brut > 128 ticks) est **limité**, jamais jeté : le knob ne « perd » plus de mouvements.
 
 ## Exemple JSON minimal
 

@@ -722,6 +722,28 @@ fn fmt_hz(hz: f32) -> String {
     }
 }
 
+/// Nom de note MIDI (convention NI : 36 = C1).
+fn note_name(pitch: u8) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let p = pitch as i32;
+    format!(
+        "{}{}",
+        NAMES[(p.rem_euclid(12)) as usize],
+        p.div_euclid(12) - 2
+    )
+}
+
+/// Longueur d'un pas en notation musicale (1/16, 1/8...) ou en ticks.
+fn fmt_len(ticks: u32) -> String {
+    if ticks % 240 == 0 {
+        format!("{}/16", ticks / 240)
+    } else {
+        format!("{ticks}t")
+    }
+}
+
 fn draw_char_scaled(
     frame: &mut DisplayFrame,
     x: usize,
@@ -1459,17 +1481,20 @@ pub fn render_step_right(snap: &EngineSnapshot) -> DisplayFrame {
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     let playing = snap.transport.is_playing();
     let name = sound_name(snap, snap.active_sound as usize);
+    let total_steps = snap.pattern_bars.max(1) * 16;
+    let cursor = snap.step_cursor.min(total_steps.saturating_sub(1));
     header(
         &mut frame,
         &p,
         "STEP",
         &format!(
-            "GRP {} | SND {:02} {} | MES {}/{}",
+            "PAS {:02}/{:02} M{} | GRP {} SND {:02} {}",
+            cursor + 1,
+            total_steps,
+            snap.selected_bar + 1,
             group_letter(snap.group_focus),
             snap.active_sound + 1,
-            trunc(&name, 10),
-            snap.selected_bar + 1,
-            snap.pattern_bars
+            trunc(&name, 10)
         ),
     );
 
@@ -1478,6 +1503,8 @@ pub fn render_step_right(snap: &EngineSnapshot) -> DisplayFrame {
     let cur_bar = tick_bar(snap);
     let cur_step = tick_step(snap);
     let show_playhead = playing && cur_bar == snap.selected_bar;
+    let cursor_step = cursor % 16;
+    let show_cursor = cursor / 16 == snap.selected_bar;
     let pad_hue = hue_color(snap.active_sound as usize);
 
     let x0 = 16usize;
@@ -1486,11 +1513,13 @@ pub fn render_step_right(snap: &EngineSnapshot) -> DisplayFrame {
     let bot = 168usize;
     for st in 0..16usize {
         let x = x0 + st * cw;
+        let cell_start = bar_offset + st as u32 * TICKS_PER_STEP as u32;
         let vel = pat
             .and_then(|pt| {
                 pt.events.iter().find(|e| {
                     e.pad == snap.active_sound
-                        && e.tick == bar_offset + st as u32 * TICKS_PER_STEP as u32
+                        && e.tick >= cell_start
+                        && e.tick < cell_start + TICKS_PER_STEP as u32
                 })
             })
             .map(|e| e.velocity)
@@ -1526,12 +1555,16 @@ pub fn render_step_right(snap: &EngineSnapshot) -> DisplayFrame {
         );
         if show_playhead && st == cur_step {
             draw_rect_outline(&mut frame, x - 1, top - 1, cw, bot - top + 2, p.white);
+        } else if show_cursor && st == cursor_step {
+            // Curseur d'édition (pas sélectionné par les pads / le scroll).
+            draw_rect_outline(&mut frame, x - 1, top - 1, cw, bot - top + 2, p.accent);
+            draw_rect_outline(&mut frame, x - 2, top - 2, cw + 2, bot - top + 4, p.accent);
         }
     }
     center_text(
         &mut frame,
         192,
-        "PADS = SON | SOFT 1-4 = MESURES 5-8 = LONGUEUR",
+        "K5=SCROLL | 4D<> = SCROLL | PADS = STEPS",
         p.muted,
         p.bg,
     );
@@ -1541,21 +1574,22 @@ pub fn render_step_right(snap: &EngineSnapshot) -> DisplayFrame {
         .map(|s| s.filter.cutoff_hz)
         .unwrap_or(20000.0);
     let reso = focus_sound(snap).map(|s| s.filter.resonance).unwrap_or(0.0);
+    let cursor_norm = cursor as f32 / total_steps.saturating_sub(1).max(1) as f32;
     let slots = [
-        Some(("5:VOL SND", fmt_db(s_db), db_norm(s_db), p.cyan)),
         Some((
-            "6:CUTOFF",
+            "5:SCROLL",
+            format!("PAS {:02}/{:02}", cursor + 1, total_steps),
+            cursor_norm,
+            p.accent,
+        )),
+        Some(("6:VOL SND", fmt_db(s_db), db_norm(s_db), p.cyan)),
+        Some((
+            "7:CUTOFF",
             fmt_hz(cut),
             ((cut - 20.0) / 19980.0).clamp(0.0, 1.0),
             p.cyan,
         )),
-        Some(("7:RESO", format!("{:.0}%", reso * 100.0), reso, p.cyan)),
-        Some((
-            "8:MASTER",
-            format!("{:.0}%", snap.master_volume * 100.0),
-            snap.master_volume,
-            p.accent,
-        )),
+        Some(("8:RESO", format!("{:.0}%", reso * 100.0), reso, p.cyan)),
     ];
     encoder_row(&mut frame, &p, &slots);
 
@@ -1567,6 +1601,238 @@ pub fn render_step_right(snap: &EngineSnapshot) -> DisplayFrame {
         active[4 + i] = *v == snap.pattern_bars;
     }
     footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    frame
+}
+
+/// Écran gauche — vue STEP : pas sélectionné + grille du pattern complet.
+#[must_use]
+pub fn render_step_left(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
+    let total_steps = snap.pattern_bars.max(1) * 16;
+    let cursor = snap.step_cursor.min(total_steps.saturating_sub(1));
+    let name = sound_name(snap, snap.active_sound as usize);
+    header(
+        &mut frame,
+        &p,
+        "STEP",
+        &format!(
+            "PAS {:02}/{:02} | GRP {} | SND {:02} {}",
+            cursor + 1,
+            total_steps,
+            group_letter(snap.group_focus),
+            snap.active_sound + 1,
+            trunc(&name, 10)
+        ),
+    );
+
+    let pat = active_pattern(snap);
+    let pad_hue = hue_color(snap.active_sound as usize);
+    let playing = snap.transport.is_playing();
+    let cur_bar = tick_bar(snap);
+    let cur_step = tick_step(snap);
+
+    // Pas édité : événement du son actif dans la fenêtre du curseur.
+    let sel = pat.and_then(|pt| {
+        let start = cursor as u32 * TICKS_PER_STEP as u32;
+        pt.events.iter().find(|e| {
+            e.pad == snap.active_sound && e.tick >= start && e.tick < start + TICKS_PER_STEP as u32
+        })
+    });
+
+    // Grille du pattern complet : une ligne par mesure, 16 cases par ligne.
+    let rows = snap.pattern_bars.clamp(1, 8);
+    let row_h = if rows <= 4 { 22usize } else { 16 };
+    let top = 30usize;
+    let x0 = 44usize;
+    let cw = 26usize;
+    for bar in 0..rows {
+        let y = top + bar * row_h;
+        let focused_bar = bar == cursor / 16;
+        if focused_bar {
+            fill_rect(&mut frame, 4, y - 1, SCR_W - 8, row_h, p.panel);
+        }
+        draw_text(
+            &mut frame,
+            8,
+            y + (row_h.saturating_sub(16)) / 2,
+            &format!("M{}", bar + 1),
+            if focused_bar { p.accent } else { p.muted },
+            if focused_bar { p.panel } else { p.bg },
+        );
+        for st in 0..16usize {
+            let x = x0 + st * cw;
+            let cell_start = (bar * 16 + st) as u32 * TICKS_PER_STEP as u32;
+            let has = pat
+                .map(|pt| {
+                    pt.events.iter().any(|e| {
+                        e.pad == snap.active_sound
+                            && e.tick >= cell_start
+                            && e.tick < cell_start + TICKS_PER_STEP as u32
+                    })
+                })
+                .unwrap_or(false);
+            let ch = row_h - 4;
+            let cy = y + 1;
+            let cell_bg = if has {
+                pad_hue
+            } else if st % 4 == 0 {
+                p.panel2
+            } else {
+                p.track
+            };
+            fill_rect(&mut frame, x, cy, cw - 2, ch, cell_bg);
+            if st % 4 == 0 {
+                draw_rect_outline(&mut frame, x, cy, cw - 2, ch, p.border);
+            }
+            let is_cursor = bar * 16 + st == cursor;
+            let is_playhead = playing && cur_bar == bar && cur_step == st;
+            if is_playhead {
+                draw_rect_outline(&mut frame, x - 1, cy - 1, cw, ch + 2, p.white);
+            } else if is_cursor {
+                draw_rect_outline(&mut frame, x - 1, cy - 1, cw, ch + 2, p.accent);
+                draw_rect_outline(&mut frame, x - 2, cy - 2, cw + 2, ch + 4, p.accent);
+            }
+        }
+    }
+
+    // Détail du pas sélectionné.
+    let info_y = top + rows * row_h + 4;
+    match sel {
+        Some(ev) => {
+            let cell_start = (ev.tick / TICKS_PER_STEP as u32) * TICKS_PER_STEP as u32;
+            let off = ev.tick as i32 - cell_start as i32;
+            draw_text(
+                &mut frame,
+                8,
+                info_y,
+                &format!(
+                    "VEL {}  POS {:+}t  LEN {}  PITCH {} {}",
+                    ev.velocity,
+                    off,
+                    fmt_len(ev.length_ticks),
+                    ev.pitch,
+                    note_name(ev.pitch)
+                ),
+                p.white,
+                p.bg,
+            );
+        }
+        None => {
+            draw_text(
+                &mut frame,
+                8,
+                info_y,
+                "PAS VIDE - APPUIE UN PAD POUR LE POSER",
+                p.muted,
+                p.bg,
+            );
+        }
+    }
+    draw_text(
+        &mut frame,
+        8,
+        info_y + 14,
+        "K1-4 EDITER LE PAS | K5 SCROLL | 4D<> SCROLL | PADS STEPS",
+        p.muted,
+        p.bg,
+    );
+
+    // Carte du pas sélectionné : remplit l'espace libre des patterns courts.
+    let card_top = info_y + 30;
+    let card_bottom = SCR_H - FOOTER_H - ENC_H - 8;
+    if card_bottom > card_top + 24 {
+        let card_h = card_bottom - card_top;
+        fill_rect(&mut frame, 6, card_top, SCR_W - 12, card_h, p.panel);
+        draw_rect_outline(&mut frame, 6, card_top, SCR_W - 12, card_h, p.border);
+        draw_text_scaled(
+            &mut frame,
+            18,
+            card_top + 11,
+            &format!("PAS {:02}", cursor + 1),
+            2,
+            p.white,
+            p.panel,
+        );
+        let vel = sel.map(|e| e.velocity).unwrap_or(0);
+        draw_text(&mut frame, 128, card_top + 8, "VELOCITE", p.muted, p.panel);
+        bar_h(
+            &mut frame,
+            &p,
+            128,
+            card_top + 22,
+            220,
+            10,
+            vel as f32 / 127.0,
+            p.cyan,
+        );
+        draw_text(
+            &mut frame,
+            360,
+            card_top + 8,
+            &format!("{vel:>3}"),
+            p.white,
+            p.panel,
+        );
+        if card_h >= 56 {
+            let detail = match sel {
+                Some(ev) => format!(
+                    "MES {} PAS {}  NOTE {} {}  LEN {}",
+                    cursor / 16 + 1,
+                    cursor % 16 + 1,
+                    ev.pitch,
+                    note_name(ev.pitch),
+                    fmt_len(ev.length_ticks)
+                ),
+                None => format!(
+                    "MES {} PAS {}  AUCUN PAS ICI",
+                    cursor / 16 + 1,
+                    cursor % 16 + 1
+                ),
+            };
+            draw_text(&mut frame, 18, card_top + 40, &detail, p.dim, p.panel);
+        }
+    }
+
+    let (vel_s, vel_n) = sel
+        .map(|e| (format!("{}", e.velocity), e.velocity as f32 / 127.0))
+        .unwrap_or_else(|| ("--".to_string(), 0.0));
+    let (pos_s, pos_n) = sel
+        .map(|e| {
+            let cell_start = (e.tick / TICKS_PER_STEP as u32) * TICKS_PER_STEP as u32;
+            let off = e.tick as i32 - cell_start as i32;
+            (format!("{off:+}t"), 0.5 + off as f32 / 480.0)
+        })
+        .unwrap_or_else(|| ("--".to_string(), 0.5));
+    let (len_s, len_n) = sel
+        .map(|e| {
+            (
+                fmt_len(e.length_ticks),
+                (e.length_ticks as f32 / 1920.0).clamp(0.0, 1.0),
+            )
+        })
+        .unwrap_or_else(|| ("--".to_string(), 0.0));
+    let (pit_s, pit_n) = sel
+        .map(|e| {
+            (
+                format!("{} {}", e.pitch, note_name(e.pitch)),
+                ((e.pitch as f32 - 24.0) / 72.0).clamp(0.0, 1.0),
+            )
+        })
+        .unwrap_or_else(|| ("--".to_string(), 0.0));
+    let slots = [
+        Some(("1:VELOCITE", vel_s, vel_n, p.cyan)),
+        Some(("2:POSITION", pos_s, pos_n, p.cyan)),
+        Some(("3:LONGUEUR", len_s, len_n, p.cyan)),
+        Some(("4:PITCH", pit_s, pit_n, p.cyan)),
+    ];
+    encoder_row(&mut frame, &p, &slots);
+
+    let mut active = [false; 8];
+    for (i, v) in [1usize, 2, 4, 8].iter().enumerate() {
+        active[4 + i] = *v == snap.pattern_bars;
+    }
+    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
     frame
 }
 
@@ -2878,7 +3144,13 @@ pub fn render_screens(snap: &EngineSnapshot) -> (DisplayFrame, DisplayFrame) {
             1 => render_mixer_left(snap),
             2 => render_sampler_left(snap),
             3 => render_browser_left(snap),
-            _ => render_daw_left(snap),
+            _ => {
+                if snap.controller_mode == 3 {
+                    render_step_left(snap)
+                } else {
+                    render_daw_left(snap)
+                }
+            }
         }
     };
     let right = if snap.song_mode {

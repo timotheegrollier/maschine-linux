@@ -482,18 +482,23 @@ fn cmd_daemon(
         }
     };
 
+    // Drapeau d'activité utilisateur pour le thread d'écrans : posé sans verrou
+    // par la boucle HID, consommé par le thread d'affichage (réactivité ~3 ms).
+    let display_activity = Arc::new(std::sync::atomic::AtomicBool::new(true));
+
     // Display bulk (optionnel, feature usb)
     #[cfg(feature = "usb")]
-    let mut display_handle = match display_thread::spawn_display_thread(engine.clone()) {
-        Ok(h) => {
-            log::info!("✓ Thread affichage écran MK3 démarré");
-            Some(h)
-        }
-        Err(e) => {
-            log::warn!("Thread affichage écran échec: {e}");
-            None
-        }
-    };
+    let mut display_handle =
+        match display_thread::spawn_display_thread(engine.clone(), display_activity.clone()) {
+            Ok(h) => {
+                log::info!("✓ Thread affichage écran MK3 démarré");
+                Some(h)
+            }
+            Err(e) => {
+                log::warn!("Thread affichage écran échec: {e}");
+                None
+            }
+        };
 
     // MIDI ports (ALSA Seq)
     #[cfg(feature = "midi-alsa")]
@@ -540,6 +545,24 @@ fn cmd_daemon(
         }
     };
 
+    /// Vitesses des knobs d'écran, par tick brut (1024 ticks = 1 tour de knob,
+    /// soit ~32 ticks par cran mécanique). Calibré pour qu'un cran ait le grain
+    /// du logiciel officiel (~1 dB, ~3%, ~1 demi-ton de cutoff, ~1.5 BPM).
+    mod knob_rate {
+        pub const BPM: f32 = 0.05;
+        pub const SWING: f32 = 0.001;
+        pub const VOL_DB: f32 = 0.03;
+        pub const PAN: f32 = 0.001;
+        /// Octaves de cutoff par tick : ~2.7 octaves par tour, ~1 demi-ton par cran.
+        pub const CUTOFF_OCT: f32 = 1.0 / 384.0;
+        pub const RESO: f32 = 0.001;
+        pub const MASTER: f32 = 0.001;
+        pub const ATTACK_MS: f32 = 0.5;
+        pub const DECAY_MS: f32 = 1.0;
+        pub const SUSTAIN: f32 = 0.001;
+        pub const RELEASE_MS: f32 = 1.0;
+    }
+
     // Helper : applique les actions du HardwareMapper à l'Engine
     #[allow(unused_variables)]
     fn apply_mapper_actions(
@@ -582,6 +605,29 @@ fn cmd_daemon(
                     let tick = (bar as u32 * 4 * 960) + (step as u32 * 240);
                     engine.lock().toggle_step(sound, tick);
                 }
+                MapperAction::StepVelocityDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::StepVelocityDelta(delta));
+                }
+                MapperAction::StepNudgeTicks(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::StepNudgeTicks(delta));
+                }
+                MapperAction::StepLengthDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::StepLengthDelta(delta));
+                }
+                MapperAction::StepPitchDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::StepPitchDelta(delta));
+                }
+                MapperAction::StepScroll(delta) => {
+                    let _ = engine.lock().handle_event(EngineEvent::StepScroll(delta));
+                }
                 MapperAction::PlayPauseToggle => {
                     let mut eng = engine.lock();
                     let is_playing = eng.transport.is_playing();
@@ -617,26 +663,28 @@ fn cmd_daemon(
                     });
                 }
                 MapperAction::Restart => {
-                    let mut eng = engine.lock();
-                    eng.transport.tick = 0;
+                    // Passe par l'Engine : remise à zéro du transport + invalidation
+                    // des écrans (le BBT affiché suit immédiatement).
+                    let _ = engine.lock().handle_event(EngineEvent::Restart);
                 }
                 MapperAction::BpmDelta(delta) => {
                     let mut eng = engine.lock();
-                    let new_bpm = (eng.transport.bpm + delta).clamp(20.0, 999.0);
+                    let new_bpm = (eng.transport.bpm + delta * knob_rate::BPM).clamp(20.0, 999.0);
                     let _ = eng.handle_event(EngineEvent::Bpm(new_bpm));
                 }
                 MapperAction::BpmSet(bpm) => {
                     let _ = engine.lock().handle_event(EngineEvent::Bpm(bpm));
                 }
                 MapperAction::SwingDelta(delta) => {
-                    let proj = engine.lock().project_handle();
-                    let new_sw = (proj.read().swing + delta).clamp(0.0, 1.0);
-                    proj.write().swing = new_sw;
+                    let mut eng = engine.lock();
+                    let current = eng.project_handle().read().swing;
+                    let new_sw = (current + delta * knob_rate::SWING).clamp(0.0, 1.0);
+                    let _ = eng.handle_event(EngineEvent::Swing(new_sw));
                 }
                 MapperAction::MasterVolumeDelta(delta) => {
                     let mut eng = engine.lock();
                     let current = eng.snapshot().master_volume;
-                    let new_vol = (current + delta).clamp(0.0, 1.0);
+                    let new_vol = (current + delta * knob_rate::MASTER).clamp(0.0, 1.0);
                     let _ = eng.handle_event(EngineEvent::MasterVolume(new_vol));
                 }
                 MapperAction::GroupVolumeDelta(delta) => {
@@ -648,7 +696,7 @@ fn cmd_daemon(
                         .get(gf as usize)
                         .map(|g| g.volume_db)
                         .unwrap_or(0.0);
-                    let new_db = (current + delta * 3.0).clamp(-60.0, 12.0);
+                    let new_db = (current + delta * knob_rate::VOL_DB).clamp(-60.0, 12.0);
                     let _ = engine.lock().handle_event(EngineEvent::GroupVolume {
                         group: gf,
                         volume_db: new_db,
@@ -663,7 +711,7 @@ fn cmd_daemon(
                         .get(gf as usize)
                         .map(|g| g.pan)
                         .unwrap_or(0.0);
-                    let new_pan = (current + delta * 0.1).clamp(-1.0, 1.0);
+                    let new_pan = (current + delta * knob_rate::PAN).clamp(-1.0, 1.0);
                     let _ = engine.lock().handle_event(EngineEvent::GroupPan {
                         group: gf,
                         pan: new_pan,
@@ -680,7 +728,7 @@ fn cmd_daemon(
                         .and_then(|g| g.sounds.get(snd as usize).and_then(|s| s.as_ref()))
                         .map(|s| s.volume_db)
                         .unwrap_or(0.0);
-                    let new_db = (current + delta * 0.5).clamp(-60.0, 12.0);
+                    let new_db = (current + delta * knob_rate::VOL_DB).clamp(-60.0, 12.0);
                     let _ = engine.lock().handle_event(EngineEvent::SoundVolume {
                         group: gf,
                         sound: snd,
@@ -698,7 +746,7 @@ fn cmd_daemon(
                         .and_then(|g| g.sounds.get(snd as usize).and_then(|s| s.as_ref()))
                         .map(|s| s.pan)
                         .unwrap_or(0.0);
-                    let new_pan = (current + delta * 0.05).clamp(-1.0, 1.0);
+                    let new_pan = (current + delta * knob_rate::PAN).clamp(-1.0, 1.0);
                     let _ = engine.lock().handle_event(EngineEvent::SoundPan {
                         group: gf,
                         sound: snd,
@@ -716,9 +764,10 @@ fn cmd_daemon(
                         .and_then(|g| g.sounds.get(snd as usize).and_then(|s| s.as_ref()))
                         .map(|s| s.filter.cutoff_hz)
                         .unwrap_or(20000.0);
-                    // Échelle exponentielle musicale : ~1 ton par cran, réponse naturelle de 20 Hz à 20 kHz
+                    // Échelle exponentielle musicale : ~2.7 octaves par tour de knob,
+                    // soit ~6% par cran de 32 ticks (20 Hz -> 20 kHz en ~3.5 tours).
                     let base = if current <= 20.0 { 20000.0 } else { current };
-                    let factor = 2.0f32.powf(delta / 300.0);
+                    let factor = 2.0f32.powf(delta * knob_rate::CUTOFF_OCT);
                     let new_cutoff = (base * factor).clamp(20.0, 20000.0);
                     let _ = engine.lock().handle_event(EngineEvent::SoundFilterCutoff {
                         group: gf,
@@ -737,7 +786,7 @@ fn cmd_daemon(
                         .and_then(|g| g.sounds.get(snd as usize).and_then(|s| s.as_ref()))
                         .map(|s| s.filter.resonance)
                         .unwrap_or(0.0);
-                    let new_reso = (current + delta).clamp(0.0, 1.0);
+                    let new_reso = (current + delta * knob_rate::RESO).clamp(0.0, 1.0);
                     let _ = engine.lock().handle_event(EngineEvent::SoundFilterReso {
                         group: gf,
                         sound: snd,
@@ -765,7 +814,7 @@ fn cmd_daemon(
                         let _ = engine.lock().handle_event(EngineEvent::SoundAdsr {
                             group: gf,
                             sound: snd,
-                            attack_ms: (a + delta).clamp(0.1, 5000.0),
+                            attack_ms: (a + delta * knob_rate::ATTACK_MS).clamp(0.1, 5000.0),
                             decay_ms: d,
                             sustain: su,
                             release_ms: r,
@@ -794,7 +843,7 @@ fn cmd_daemon(
                             group: gf,
                             sound: snd,
                             attack_ms: a,
-                            decay_ms: (d + delta).clamp(0.1, 5000.0),
+                            decay_ms: (d + delta * knob_rate::DECAY_MS).clamp(0.1, 5000.0),
                             sustain: su,
                             release_ms: r,
                         });
@@ -823,7 +872,7 @@ fn cmd_daemon(
                             sound: snd,
                             attack_ms: a,
                             decay_ms: d,
-                            sustain: (su + delta * 0.05).clamp(0.0, 1.0),
+                            sustain: (su + delta * knob_rate::SUSTAIN).clamp(0.0, 1.0),
                             release_ms: r,
                         });
                     }
@@ -852,7 +901,7 @@ fn cmd_daemon(
                             attack_ms: a,
                             decay_ms: d,
                             sustain: su,
-                            release_ms: (r + delta).clamp(0.1, 5000.0),
+                            release_ms: (r + delta * knob_rate::RELEASE_MS).clamp(0.1, 5000.0),
                         });
                     }
                 }
@@ -864,7 +913,7 @@ fn cmd_daemon(
                         .get(group as usize)
                         .map(|g| g.volume_db)
                         .unwrap_or(0.0);
-                    let new_db = (current + delta).clamp(-60.0, 12.0);
+                    let new_db = (current + delta * knob_rate::VOL_DB).clamp(-60.0, 12.0);
                     let _ = engine.lock().handle_event(EngineEvent::GroupVolume {
                         group,
                         volume_db: new_db,
@@ -994,6 +1043,8 @@ fn cmd_daemon(
                             }
                         }
                     }
+                    drop(guard);
+                    engine.lock().invalidate_display();
                 }
                 MapperAction::ModeSwitch(mode) => {
                     mapper.mode = mode;
@@ -1092,6 +1143,7 @@ fn cmd_daemon(
             current_step: snap.current_step,
             is_quarter_beat: snap.is_quarter_beat,
             active_steps: snap.active_steps,
+            step_cursor: snap.step_cursor,
             triggered_pads: snap.triggered_pads,
             master_vol: snap.master_volume,
             muted_groups: snap.muted_groups,
@@ -1137,6 +1189,7 @@ fn cmd_daemon(
         let engine_bg = engine.clone();
         let led_tx_bg = led_tx.clone();
         let latency_bg = latency_stats.clone();
+        let display_activity_bg = display_activity.clone();
         #[cfg(feature = "gui")]
         let repaint_bg = repaint.clone();
         std::thread::Builder::new()
@@ -1212,6 +1265,7 @@ fn cmd_daemon(
                                 }
                             }
                             apply_mapper_actions(&engine_bg, &mut mapper, actions);
+                            display_activity_bg.store(true, Ordering::Relaxed);
 
                             if !no_led {
                                 sync_hardware_leds(&engine_bg, &mut mapper, &led_tx_bg);
@@ -1334,6 +1388,7 @@ fn cmd_daemon(
                     }
                 }
                 apply_mapper_actions(&engine, &mut mapper, actions);
+                display_activity.store(true, Ordering::Relaxed);
 
                 if !no_led {
                     sync_hardware_leds(&engine, &mut mapper, &led_tx);
@@ -1926,6 +1981,7 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             controller_mode: 0,
             browser_preset_idx: 0,
             selected_bar: 0,
+            step_cursor: 0,
             pattern_bars: 2,
             group_levels: [0.0; 8],
             group_peaks: [0.0; 8],

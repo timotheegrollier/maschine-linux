@@ -250,6 +250,7 @@ fn fuzz_full_workflow_no_panic() {
             current_step: 3,
             is_quarter_beat: true,
             active_steps: [true; 16],
+            step_cursor: 0,
             triggered_pads: snap.triggered_pads,
             master_vol: 0.8,
             muted_groups: 1,

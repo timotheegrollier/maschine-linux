@@ -4,7 +4,7 @@
 
 Langage principal : **Rust** (temps-réel, sécurité, pas de GC). Audio : PipeWire-JACK (`quantum 128`).
 
-## État actuel (0.3.0)
+## État actuel (0.4.0)
 
 Workspace Cargo avec 4 crates principaux :
 
@@ -96,10 +96,10 @@ GPL-3.0-or-later. Forks doivent publier les sources (AGPL non utilisée volontai
 - [x] Proto codec + tests
 - [x] Hardware hidraw + nusb bulk, retry/power-cycle guard
 - [x] ALSA Seq bridge & JACK MIDI
-- [x] Engine: Project JSON, Transport, Step sequencer multi-mesures, swing
+- [x] Engine: Project JSON, Transport, Step sequencer multi-mesures, swing, mode STEP (curseur de pas éditable : VEL/POS/LEN/PITCH au knob, scroll de la grille complète)
 - [x] Drum Synth 808 temps-réel (16 instruments analogiques modélisés)
 - [x] GUI egui: Séquenceur 16 pistes, Grille 4×4 pads, Éditeur son/filtres, Mixer 8 groupes
-- [x] Écrans MK3: Double écran LCD couleur 480×272 temps-réel (ARRANGE, PATTERN/STEP, SONG, SCENES, MIXER, SAMPLER, BROWSER, EVENTS, MACRO, SETTINGS) avec soft keys contextuels (labels = actions réelles) et valeurs live
+- [x] Écrans MK3: Double écran LCD couleur 480×272 temps-réel (ARRANGE, PATTERN/STEP, SONG, SCENES, MIXER, SAMPLER, BROWSER, EVENTS, MACRO, SETTINGS) avec soft keys contextuels (labels = actions réelles), valeurs live et rafraîchissement immédiat à chaque action (~30 FPS maxi)
 - [x] Réactivité: snapshots `Arc<Project>` copy-on-write, repaint piloté par révision, VU-mètres réels par groupe + master (peak hold), `--debug-latency`
 - [x] Encodeur 4-D 4 directions & sélection de mesure / sound preview
 - [x] Sampler: zones, choke, ADSR, filtre biquad résonant

@@ -38,9 +38,17 @@ impl DisplayThreadHandle {
     }
 }
 
-/// Lance le thread de rafraîchissement des 2 écrans MK3 via USB Bulk (IF5)
+/// Lance le thread de rafraîchissement des 2 écrans MK3 via USB Bulk (IF5).
+///
+/// `activity` est un drapeau *sans verrou* posé par la boucle HID à chaque action
+/// utilisateur : le thread détecte l'activité en ~3 ms mais ne verrouille le
+/// moteur qu'au plus toutes les 33 ms (le callback audio prend ce même verrou
+/// en `try_lock` — on ne veut pas l'augmenter).
 #[cfg(feature = "usb")]
-pub fn spawn_display_thread(engine: Arc<Mutex<Engine>>) -> anyhow::Result<DisplayThreadHandle> {
+pub fn spawn_display_thread(
+    engine: Arc<Mutex<Engine>>,
+    activity: Arc<AtomicBool>,
+) -> anyhow::Result<DisplayThreadHandle> {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = stop.clone();
     let join = std::thread::Builder::new()
@@ -59,20 +67,33 @@ pub fn spawn_display_thread(engine: Arc<Mutex<Engine>>) -> anyhow::Result<Displa
 
             let mut frame_count = 0u64;
             let mut last_revision = u64::MAX;
+            let mut last_check = std::time::Instant::now() - Duration::from_secs(10);
+            let mut last_send = last_check;
 
             while !stop_clone.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(33)); // ~30 FPS
+                // Réveil court (3 ms) : réactivité immédiate aux actions utilisateur
+                // sans marteler le verrou du moteur (partagé avec l'audio).
+                let active = activity.swap(false, Ordering::Relaxed);
+                if last_check.elapsed() < Duration::from_millis(33) {
+                    // Plafond ~30 FPS (2 x 261 Ko par frame en USB Bulk).
+                    std::thread::sleep(Duration::from_millis(if active { 2 } else { 3 }));
+                    continue;
+                }
+                last_check = std::time::Instant::now();
 
                 let (snap, revision) = {
                     let eng = engine.lock();
                     (eng.snapshot(), eng.revision())
                 };
 
-                // Ne renvoie une frame que si l'état a changé (ou garde-fou 5 s).
-                if revision == last_revision && frame_count > 0 && frame_count % 150 != 0 {
+                if revision == last_revision && last_send.elapsed() < Duration::from_secs(2) {
+                    // Rien de neuf : aucun envoi (garde-fou 2 s pour absorber
+                    // toute modification qui aurait manqué l'invalidation).
+                    std::thread::sleep(Duration::from_millis(3));
                     continue;
                 }
                 last_revision = revision;
+                last_send = std::time::Instant::now();
 
                 let (left_frame, right_frame) =
                     maschine_engine::display_render::render_screens(&snap);

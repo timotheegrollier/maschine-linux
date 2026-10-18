@@ -239,6 +239,16 @@ pub enum MapperAction {
         /// Delta relatif
         delta: f32,
     },
+    /// Mode STEP : vélocité du pas sélectionné (delta entier)
+    StepVelocityDelta(i32),
+    /// Mode STEP : position (nudge) du pas sélectionné (delta en ticks)
+    StepNudgeTicks(i32),
+    /// Mode STEP : longueur du pas sélectionné (delta en pas de 1/16)
+    StepLengthDelta(i32),
+    /// Mode STEP : pitch du pas sélectionné (delta en demi-tons)
+    StepPitchDelta(i32),
+    /// Mode STEP : défile la grille du pattern (delta en pas, +/-)
+    StepScroll(i32),
     /// Navigation browser : pas de son (+/-1 par cran)
     BrowseSoundStep(i32),
     /// Navigation browser : pas de preset drum (+/-1 par cran)
@@ -308,6 +318,8 @@ pub struct SequencerLedInfo {
     pub current_step: usize,
     pub is_quarter_beat: bool,
     pub active_steps: [bool; 16],
+    /// Pas sélectionné (curseur d'édition step sequencer, 0..pattern_bars*16-1)
+    pub step_cursor: usize,
     pub triggered_pads: [bool; 16],
     pub master_vol: f32,
     pub muted_groups: u8,
@@ -389,6 +401,8 @@ pub struct HardwareMapper {
     pub prev_main_encoder: Option<u8>,
     /// Dernières valeurs des 8 knobs d'écran
     pub prev_knobs: [Option<u16>; 8],
+    /// Accumulateurs fractionnaires des knobs (valeurs entières : pas, pitch...)
+    knob_carry: [f32; 8],
     /// Historique des taps tempo
     tap_timestamps: Vec<std::time::Instant>,
     /// Bouton Shift enfoncé
@@ -464,6 +478,7 @@ impl HardwareMapper {
             pattern_bars: 2,
             prev_main_encoder: None,
             prev_knobs: [None; 8],
+            knob_carry: [0.0; 8],
             tap_timestamps: Vec::new(),
             shift_held: false,
             mute_held: false,
@@ -500,6 +515,15 @@ impl HardwareMapper {
     }
 
     /// Traite un événement matériel complet et retourne la liste des actions à appliquer à l'engine.
+    /// Accumule un delta de knob (ticks bruts) et renvoie la part entière
+    /// écoulée. `rate` = unités par tick brut (1024 ticks = 1 tour de knob).
+    fn knob_steps(&mut self, idx: usize, delta: i32, rate: f32) -> i32 {
+        self.knob_carry[idx] += delta as f32 * rate;
+        let whole = self.knob_carry[idx].trunc();
+        self.knob_carry[idx] -= whole;
+        whole as i32
+    }
+
     pub fn handle_hardware_event(&mut self, ev: HardwareEvent) -> Vec<MapperAction> {
         let mut actions = Vec::new();
         match ev {
@@ -871,14 +895,22 @@ impl HardwareMapper {
 
                         // Navigation 4D & Flèches < >
                         ButtonId::FourWayLeft | ButtonId::Left => {
-                            self.selected_bar = self.selected_bar.saturating_sub(1);
-                            actions.push(MapperAction::SelectBar(self.selected_bar));
+                            if self.mode == ControllerMode::Step && self.left_tab == 0 {
+                                // Mode STEP : défile la grille d'un pas.
+                                actions.push(MapperAction::StepScroll(-1));
+                            } else {
+                                self.selected_bar = self.selected_bar.saturating_sub(1);
+                                actions.push(MapperAction::SelectBar(self.selected_bar));
+                            }
                         }
                         ButtonId::FourWayRight | ButtonId::Right => {
                             if self.shift_held {
                                 let new_len = if self.pattern_bars < 4 { 4 } else { 8 };
                                 self.pattern_bars = new_len;
                                 actions.push(MapperAction::SetPatternBars(new_len));
+                            } else if self.mode == ControllerMode::Step && self.left_tab == 0 {
+                                // Mode STEP : défile la grille d'un pas.
+                                actions.push(MapperAction::StepScroll(1));
                             } else {
                                 self.selected_bar = (self.selected_bar + 1)
                                     .min(self.pattern_bars.saturating_sub(1));
@@ -999,16 +1031,20 @@ impl HardwareMapper {
                         } else {
                             match self.encoder_focus {
                                 EncoderFocus::Tempo => {
-                                    let step = if self.shift_held { 1.0 } else { 0.5 };
+                                    // Valeurs en « ticks bruts » (l'app applique 0.05 BPM/tick) :
+                                    // 0.5 BPM par cran, 0.25 avec Shift.
+                                    let step = if self.shift_held { 5.0 } else { 10.0 };
                                     actions.push(MapperAction::BpmDelta(delta as f32 * step));
                                 }
                                 EncoderFocus::Volume => {
-                                    let step = if self.shift_held { 0.05 } else { 0.01 };
+                                    // 10 ticks = 0.01 de volume master par cran.
+                                    let step = if self.shift_held { 5.0 } else { 10.0 };
                                     actions
                                         .push(MapperAction::MasterVolumeDelta(delta as f32 * step));
                                 }
                                 EncoderFocus::Swing => {
-                                    let step = if self.shift_held { 0.05 } else { 0.01 };
+                                    // 10 ticks = 0.01 de swing par cran.
+                                    let step = if self.shift_held { 5.0 } else { 10.0 };
                                     actions.push(MapperAction::SwingDelta(delta as f32 * step));
                                 }
                             }
@@ -1022,85 +1058,118 @@ impl HardwareMapper {
                         _ => 0,
                     };
                     self.prev_knobs[idx] = Some(new_val);
-                    if delta != 0 && delta.abs() < 50 {
-                        // Knobs pilotés par l'onglet gauche (comme Maschine : les 8 potards
-                        // sous écrans éditent la page affichée).
-                        if self.left_tab == 1 {
-                            // MIXER : knobs 1..8 = volumes des groupes A..H.
+                    // Les grands deltas (tours rapides) sont limités, pas jetés :
+                    // le knob reste toujours réactif.
+                    let delta = delta.clamp(-128, 128);
+                    if delta != 0 {
+                        if self.mode == ControllerMode::Step && self.left_tab == 0 {
+                            // STEP : 1 VEL, 2 POSITION, 3 LONGUEUR, 4 PITCH,
+                            // 5 SCROLL (grille complète), 6 VOL SND, 7 CUTOFF, 8 RESO.
+                            // Les valeurs entières (pas, demi-tons, vélocité) passent
+                            // par un accumulateur : ~1 cran de knob = ~32 ticks bruts.
+                            match idx {
+                                0 => {
+                                    let d = self.knob_steps(idx, delta, 0.1);
+                                    if d != 0 {
+                                        actions.push(MapperAction::StepVelocityDelta(d));
+                                    }
+                                }
+                                1 => {
+                                    let d = self.knob_steps(idx, delta, 0.25);
+                                    if d != 0 {
+                                        actions.push(MapperAction::StepNudgeTicks(d));
+                                    }
+                                }
+                                2 => {
+                                    let d = self.knob_steps(idx, delta, 0.01);
+                                    if d != 0 {
+                                        actions.push(MapperAction::StepLengthDelta(d));
+                                    }
+                                }
+                                3 => {
+                                    let d = self.knob_steps(idx, delta, 0.025);
+                                    if d != 0 {
+                                        actions.push(MapperAction::StepPitchDelta(d));
+                                    }
+                                }
+                                4 => {
+                                    let d = self.knob_steps(idx, delta, 0.03125);
+                                    if d != 0 {
+                                        actions.push(MapperAction::StepScroll(d.clamp(-4, 4)));
+                                    }
+                                }
+                                5 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
+                                6 => {
+                                    actions.push(MapperAction::SoundFilterCutoffDelta(delta as f32))
+                                }
+                                7 => actions.push(MapperAction::SoundFilterResoDelta(delta as f32)),
+                                _ => {}
+                            }
+                        } else if self.left_tab == 1 {
+                            // MIXER : knobs 1..8 = volumes des groupes A..H (dB).
                             if idx < 8 {
                                 actions.push(MapperAction::GroupVolumeDeltaFor {
                                     group: idx as u8,
-                                    delta: delta as f32 * 0.02,
+                                    delta: delta as f32,
                                 });
                             }
                         } else if self.left_tab == 2 {
                             // SAMPLER : son actif. 1-4 = VOL/PAN/CUTOFF/RESO,
-                            // 5-8 = ATTACK/DECAY/SUSTAIN/RELEASE.
+                            // 5-8 = ATTACK/DECAY/SUSTAIN/RELEASE. Deltas bruts :
+                            // l'app les met à l'échelle (~1 tour = toute la plage).
                             match idx {
-                                0 => {
-                                    actions.push(MapperAction::SoundVolumeDelta(delta as f32 * 0.5))
+                                0 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
+                                1 => actions.push(MapperAction::SoundPanDelta(delta as f32)),
+                                2 => {
+                                    actions.push(MapperAction::SoundFilterCutoffDelta(delta as f32))
                                 }
-                                1 => actions.push(MapperAction::SoundPanDelta(delta as f32 * 0.02)),
-                                2 => actions.push(MapperAction::SoundFilterCutoffDelta(
-                                    delta as f32 * 50.0,
-                                )),
-                                3 => actions
-                                    .push(MapperAction::SoundFilterResoDelta(delta as f32 * 0.02)),
-                                4 => {
-                                    actions.push(MapperAction::SoundAttackDelta(delta as f32 * 1.0))
-                                }
-                                5 => {
-                                    actions.push(MapperAction::SoundDecayDelta(delta as f32 * 8.0))
-                                }
-                                6 => actions
-                                    .push(MapperAction::SoundSustainDelta(delta as f32 * 0.004)),
-                                7 => actions
-                                    .push(MapperAction::SoundReleaseDelta(delta as f32 * 8.0)),
-                                _ => {}
+                                3 => actions.push(MapperAction::SoundFilterResoDelta(delta as f32)),
+                                4 => actions.push(MapperAction::SoundAttackDelta(delta as f32)),
+                                5 => actions.push(MapperAction::SoundDecayDelta(delta as f32)),
+                                6 => actions.push(MapperAction::SoundSustainDelta(delta as f32)),
+                                _ => actions.push(MapperAction::SoundReleaseDelta(delta as f32)),
                             }
                         } else if self.left_tab == 3 {
                             // BROWSER :
-                            // Knob 1 (idx 0): Pad cible à éditer (0..15)
-                            // Knob 2 (idx 1): Parcourt les presets drum synth (0..15) + pré-écoute
-                            // Knob 8 (idx 7): Master volume
+                            // Knob 1 (idx 0) : cible Sound (pads), par cran.
+                            // Knob 2 (idx 1) : presets 808, par cran + pré-écoute.
+                            // Knob 8 (idx 7) : master.
                             match idx {
-                                0 => actions.push(MapperAction::BrowseSoundStep(delta.signum())),
-                                1 => {
-                                    self.browser_preset_idx = (self.browser_preset_idx as i32
-                                        + delta.signum())
-                                    .rem_euclid(16)
-                                        as u8;
-                                    actions.push(MapperAction::BrowsePresetStep(delta.signum()));
+                                0 => {
+                                    let d = self.knob_steps(idx, delta, 0.03125);
+                                    if d != 0 {
+                                        actions.push(MapperAction::BrowseSoundStep(d.clamp(-1, 1)));
+                                    }
                                 }
-                                7 => actions
-                                    .push(MapperAction::MasterVolumeDelta(delta as f32 * 0.01)),
+                                1 => {
+                                    let d = self.knob_steps(idx, delta, 0.03125).clamp(-1, 1);
+                                    if d != 0 {
+                                        self.browser_preset_idx =
+                                            (self.browser_preset_idx as i32 + d).rem_euclid(16)
+                                                as u8;
+                                        actions.push(MapperAction::BrowsePresetStep(d));
+                                    }
+                                }
+                                7 => actions.push(MapperAction::MasterVolumeDelta(delta as f32)),
                                 _ => {}
                             }
                         } else {
-                            // ARRANGE (tab 0) :
-                            // Gauche : 1:TEMPO, 2:SWING, 3:GRP VOL, 4:GRP PAN
-                            // Droite : 5:TUNE/VOL, 6:CUTOFF, 7:RESO, 8:MASTER
+                            // ARRANGE (tab 0) : 1 TEMPO, 2 SWING, 3 VOL GRP, 4 PAN GRP,
+                            // 5 VOL SND, 6 CUTOFF, 7 RESO, 8 MASTER.
                             match idx {
                                 0 => {
-                                    let step = if self.shift_held { 0.1 } else { 1.0 };
-                                    actions.push(MapperAction::BpmDelta(delta as f32 * step));
+                                    let fine = if self.shift_held { 0.1 } else { 1.0 };
+                                    actions.push(MapperAction::BpmDelta(delta as f32 * fine));
                                 }
-                                1 => actions.push(MapperAction::SwingDelta(delta as f32 * 0.01)),
-                                2 => {
-                                    actions.push(MapperAction::GroupVolumeDelta(delta as f32 * 0.5))
+                                1 => actions.push(MapperAction::SwingDelta(delta as f32)),
+                                2 => actions.push(MapperAction::GroupVolumeDelta(delta as f32)),
+                                3 => actions.push(MapperAction::GroupPanDelta(delta as f32)),
+                                4 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
+                                5 => {
+                                    actions.push(MapperAction::SoundFilterCutoffDelta(delta as f32))
                                 }
-                                3 => actions.push(MapperAction::GroupPanDelta(delta as f32 * 0.05)),
-                                4 => {
-                                    actions.push(MapperAction::SoundVolumeDelta(delta as f32 * 0.5))
-                                }
-                                5 => actions.push(MapperAction::SoundFilterCutoffDelta(
-                                    delta as f32 * 50.0,
-                                )),
-                                6 => actions
-                                    .push(MapperAction::SoundFilterResoDelta(delta as f32 * 0.02)),
-                                7 => actions
-                                    .push(MapperAction::MasterVolumeDelta(delta as f32 * 0.02)),
-                                _ => {}
+                                6 => actions.push(MapperAction::SoundFilterResoDelta(delta as f32)),
+                                _ => actions.push(MapperAction::MasterVolumeDelta(delta as f32)),
                             }
                         }
                     }
@@ -1549,16 +1618,19 @@ impl HardwareMapper {
                     }
                 }
                 ControllerMode::Step => {
+                    // Curseur d'édition (pas sélectionné) : visible à l'arrêt.
+                    let edit_cursor = info.step_cursor % 16;
                     for s in 0..16 {
-                        let is_cursor = info.is_playing
+                        let is_playhead = info.is_playing
                             && (info.current_bar == self.selected_bar)
                             && (info.current_step == s);
+                        let is_edit = !info.is_playing && s == edit_cursor;
                         if self.pad_flash(s, now) {
                             self.led_state.set_pad(s, white);
                         // Blanc frappe (prioritaire sur curseur)
-                        } else if is_cursor {
+                        } else if is_playhead || is_edit {
                             self.led_state.set_pad(s, white);
-                        // Blanc curseur
+                        // Blanc curseur (tête de lecture ou édition)
                         } else if info.active_steps[s] {
                             let col = self.pad_colors[self.active_sound as usize];
                             self.led_state.set_pad(s, col); // Couleur du son programmé
@@ -2115,5 +2187,110 @@ mod tests {
         // Release silencieux
         let a = m.handle_hardware_event(pad_ev(7, false, 2));
         assert!(a.is_empty());
+    }
+
+    fn knob_ev(id: u8, value: u16, ts_ns: u64) -> HardwareEvent {
+        use maschine_proto::hid_input::EncoderEvent;
+        let _ = ts_ns;
+        HardwareEvent::Encoder(EncoderEvent {
+            id,
+            value: value & 0x3FF,
+            touched: true,
+        })
+    }
+
+    #[test]
+    fn step_mode_knobs_edit_selected_step() {
+        let mut m = HardwareMapper::with_default();
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Step,
+            pressed: true,
+            ts_ns: 0,
+        });
+        assert_eq!(m.mode, ControllerMode::Step);
+        m.left_tab = 0;
+
+        // Knob 2 (POSITION) : 4 ticks bruts = +1 tick de nudge (accumulateur).
+        let _ = m.handle_hardware_event(knob_ev(2, 100, 1));
+        let mut got = Vec::new();
+        for i in 0..4u16 {
+            got.extend(m.handle_hardware_event(knob_ev(2, 101 + i, 2 + u64::from(i))));
+        }
+        assert!(
+            got.contains(&MapperAction::StepNudgeTicks(1)),
+            "got={got:?}"
+        );
+
+        // Knob 5 (SCROLL) : 32 ticks bruts = +1 pas dans la grille.
+        let _ = m.handle_hardware_event(knob_ev(5, 200, 10));
+        let mut got = Vec::new();
+        for i in 0..32u16 {
+            got.extend(m.handle_hardware_event(knob_ev(5, 201 + i, 11 + u64::from(i))));
+        }
+        assert_eq!(
+            got.iter()
+                .filter(|a| matches!(a, MapperAction::StepScroll(1)))
+                .count(),
+            1,
+            "got={got:?}"
+        );
+
+        // Knob 6 = VOL SND : delta brut transmis tel quel (mis à l'échelle par l'app).
+        let _ = m.handle_hardware_event(knob_ev(6, 300, 100));
+        let a = m.handle_hardware_event(knob_ev(6, 303, 101));
+        assert!(a.contains(&MapperAction::SoundVolumeDelta(3.0)), "a={a:?}");
+    }
+
+    #[test]
+    fn step_mode_four_way_scrolls_grid() {
+        let mut m = HardwareMapper::with_default();
+        m.mode = ControllerMode::Step;
+        m.left_tab = 0;
+
+        // 4D droite -> défile la grille d'un pas (ne change pas la mesure locale).
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::FourWayRight,
+            pressed: true,
+            ts_ns: 0,
+        });
+        assert_eq!(a, vec![MapperAction::StepScroll(1)]);
+        assert_eq!(m.selected_bar, 0);
+
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::FourWayLeft,
+            pressed: true,
+            ts_ns: 1,
+        });
+        assert_eq!(a, vec![MapperAction::StepScroll(-1)]);
+    }
+
+    #[test]
+    fn fast_knob_turns_are_clamped_not_dropped() {
+        let mut m = HardwareMapper::with_default();
+        m.left_tab = 0;
+        let _ = m.handle_hardware_event(knob_ev(1, 0, 0));
+        // Tour rapide : 200 ticks d'un coup -> limité à 128, jamais jeté.
+        let a = m.handle_hardware_event(knob_ev(1, 200, 1));
+        assert_eq!(a.len(), 1, "a={a:?}");
+        match a[0] {
+            MapperAction::BpmDelta(d) => assert!((d - 128.0).abs() < f32::EPSILON, "d={d}"),
+            ref other => panic!("attendu BpmDelta, obtenu {other:?}"),
+        }
+    }
+
+    #[test]
+    fn step_mode_knobs_are_inert_off_step_page() {
+        let mut m = HardwareMapper::with_default();
+        m.mode = ControllerMode::Step;
+        m.left_tab = 1; // Page MIXER : les knobs restent les volumes de groupe.
+        let _ = m.handle_hardware_event(knob_ev(1, 0, 0));
+        let a = m.handle_hardware_event(knob_ev(1, 4, 1));
+        assert_eq!(
+            a,
+            vec![MapperAction::GroupVolumeDeltaFor {
+                group: 0,
+                delta: 4.0
+            }]
+        );
     }
 }

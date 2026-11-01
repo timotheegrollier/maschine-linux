@@ -98,6 +98,10 @@ impl Project {
                 hivel: 127,
                 ..Default::default()
             });
+            if i == 14 {
+                s.name = "Acid 303".to_string();
+                s.synth = Some(crate::acid_synth::AcidParams::preset_classic_acid());
+            }
             g.sounds[i] = Some(s);
         }
         // Pattern 1 : Groove 808 complet 2 mesures (Kick, Snare, Hi-Hats, Clap, Toms)
@@ -157,6 +161,37 @@ impl Project {
         // Fill percussif fin de mesure (Toms)
         add_note(4, 1, 3, 1, 85); // Tom Low
         add_note(5, 1, 3, 3, 90); // Tom Mid
+
+        // Ligne Acid TB-303 (Pad 14, C minor acid riff avec accents et slides)
+        let mut add_acid_note =
+            |bar: u32, beat: u32, sixteenth: u32, pitch: u8, vel: u8, len: u32| {
+                let tick = (bar * 4 * 960) + (beat * 960) + (sixteenth * 240);
+                pat.events.push(PatternEvent {
+                    pad: 14,
+                    tick,
+                    velocity: vel,
+                    length_ticks: len,
+                    pitch,
+                });
+            };
+        // Mesure 1
+        add_acid_note(0, 0, 0, 36, 100, 200); // C2
+        add_acid_note(0, 0, 2, 36, 90, 200); // C2
+        add_acid_note(0, 1, 0, 39, 105, 200); // D#2
+        add_acid_note(0, 1, 2, 48, 120, 240); // C3 (Accent!)
+        add_acid_note(0, 2, 0, 46, 110, 240); // A#2 (Slide)
+        add_acid_note(0, 2, 2, 43, 95, 200); // G2
+        add_acid_note(0, 3, 0, 41, 100, 200); // F2
+        add_acid_note(0, 3, 2, 39, 105, 200); // D#2
+                                              // Mesure 2
+        add_acid_note(1, 0, 0, 36, 105, 200); // C2
+        add_acid_note(1, 0, 2, 36, 95, 200); // C2
+        add_acid_note(1, 1, 0, 48, 125, 240); // C3 (Accent!)
+        add_acid_note(1, 1, 2, 51, 115, 240); // D#3 (Slide)
+        add_acid_note(1, 2, 0, 48, 100, 200); // C3
+        add_acid_note(1, 2, 2, 46, 95, 200); // A#2
+        add_acid_note(1, 3, 0, 43, 110, 200); // G2
+        add_acid_note(1, 3, 2, 38, 105, 200); // D2
 
         g.patterns.push(pat);
         p.groups.push(g);
@@ -334,6 +369,9 @@ pub struct Sound {
     /// Filtre
     #[serde(default)]
     pub filter: Filter,
+    /// Synthétiseur optionnel (ex. TB-303 Acid)
+    #[serde(default)]
+    pub synth: Option<crate::acid_synth::AcidParams>,
 }
 
 fn default_poly() -> u8 {
@@ -356,6 +394,7 @@ impl Sound {
             zones: Vec::new(),
             adsr: Adsr::default(),
             filter: Filter::default(),
+            synth: None,
         }
     }
 }

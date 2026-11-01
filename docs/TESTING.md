@@ -14,6 +14,7 @@ Ce guide associe chaque promesse documentée à une vérification concrète. Les
 | Navigation moteur | `cargo test -p maschine-engine selecting_sampler_restores_contextual_right_screen_after_events` | SAMPLER reprend son écran droit après EVENTS; changement de vue hors ARRANGE quitte le mode Song. |
 | Import et restitution WAV | `cargo test -p maschine-engine` | WAV PCM 32 bits signé, état conservé si l'import échoue, waveform mise en cache, isolation des Groups, écriture des mappings dans le projet et rechargement d'un chemin relatif. |
 | Mix en cours de lecture | `cargo test -p maschine-engine sound_and_group_mix_edits_reach_active_voices_immediately` | Volume et pan Sound/Group sont répercutés sur les voix déjà déclenchées. |
+| Synthétiseur Acid TB-303 | `cargo test -p maschine-engine acid_synth`; `cargo test -p maschine-app gui_synth_navigation_routes_hardware_knob_to_acid_cutoff` | Synthèse PolyBLEP (Saw/Square), filtre résonant 4 pôles tanh, distorsion, delay ping-pong, préservation de l'onglet 4 et routage des 8 encodeurs physiques. |
 | Intégration GUI/HID | `cargo test -p maschine-app` | Routage d'événements, transitions de contexte et sonde de reprise RGB565 2×1. |
 | Régressions générales | `cargo test --workspace` | Tous les tests unitaires et d'intégration du workspace. |
 | Binaire optimisé | `cargo build --workspace --release` | Compilation du binaire et des crates en mode release. |
@@ -28,6 +29,7 @@ L'USB ne fournit pas ici d'accusé de réception des pixels affichés. Après av
 2. Ouvre **EVENTS**, puis **SAMPLER** depuis le hardware; l'écran droit doit quitter EVENTS et montrer la page Sampler.
 3. Tourne un encodeur une seule fois; la valeur affichée et le paramètre actif doivent changer dès le premier cran.
 4. Passe par GUI puis par hardware entre ARRANGE, MIXER et SAMPLER; vérifie que la page droite suit le contexte courant.
-5. Dans Sampler, renseigne le chemin d'un WAV, importe-le, puis écoute le pad. Fais `Ctrl+S` (le chemin exact est indiqué dans l'interface), ferme l'application et rouvre le fichier sauvegardé avec `./target/release/maschine-linux gui --project "$HOME/.local/share/maschine-linux/autosave.json" --no-audio`. Le nom, la waveform et le son doivent être restaurés.
+5. Appuie sur le bouton physique **PLUGIN** ou clique sur **⚡ ACID TB-303** dans la GUI (raccourci `T`) : l'écran gauche doit afficher l'oscillateur et la courbe du filtre résonant, l'écran droit la distorsion et le delay. Les encodeurs 1..8 doivent ajuster les paramètres acid en direct sans clignotement ni retour intempestif.
+6. Dans Sampler, renseigne le chemin d'un WAV, importe-le, puis écoute le pad. Fais `Ctrl+S` (le chemin exact est indiqué dans l'interface), ferme l'application et rouvre le fichier sauvegardé avec `./target/release/maschine-linux gui --project "$HOME/.local/share/maschine-linux/autosave.json" --no-audio`. Le nom, la waveform et le son doivent être restaurés.
 
 La fonctionnalité officielle complète de SAMPLING (RECORD, EDIT, SLICE et édition ZONE) et l'édition des événements ne sont pas couvertes comme implémentées : elles restent hors du périmètre actuel. Voir [workflow.md](workflow.md) pour le détail des écarts et des contrôles disponibles.

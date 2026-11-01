@@ -7,6 +7,7 @@ pub mod ideas;
 pub mod mixer;
 pub mod sampler;
 pub mod sequencer;
+pub mod synth;
 
 /// Vues disponibles dans l'espace de travail central.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,16 +17,18 @@ pub enum StudioView {
     Mixer,
     Sampler,
     Browser,
+    AcidSynth,
 }
 
 impl StudioView {
-    /// Onglet écran gauche associé (0: Arrange/Seq, 1: Mixer, 2: Sampler, 3: Browser).
+    /// Onglet écran gauche associé (0: Arrange/Seq, 1: Mixer, 2: Sampler, 3: Browser, 4: Synth).
     pub fn tab_index(&self) -> u8 {
         match self {
             Self::Ideas | Self::Sequencer => 0,
             Self::Mixer => 1,
             Self::Sampler => 2,
             Self::Browser => 3,
+            Self::AcidSynth => 4,
         }
     }
 }
@@ -43,6 +46,7 @@ pub fn render_view(
         StudioView::Mixer => mixer::render(ui, app, snap),
         StudioView::Sampler => sampler::render(ui, app, snap),
         StudioView::Browser => browser::render(ui, app, snap),
+        StudioView::AcidSynth => synth::render(ui, app, snap),
     }
 }
 

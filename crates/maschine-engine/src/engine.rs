@@ -66,7 +66,7 @@ pub enum EngineEvent {
         /// Pattern idx
         pattern: usize,
     },
-    /// Change Left display tab (0..3)
+    /// Change Left display tab (0..4: Arrange, Mixer, Sampler, Browser, Synth)
     SetLeftTab(u8),
     /// Change Right display tab (0..3)
     SetRightTab(u8),
@@ -208,6 +208,38 @@ pub enum EngineEvent {
     /// Soft key d'écran (1..8 : boutons sous les écrans) — action
     /// contextuelle identique au hardware et à la GUI.
     SoftKey(u8),
+    /// Ajustement relatif du cutoff de l'Acid Synth (delta log / octaves)
+    AcidCutoffDelta(f32),
+    /// Ajustement relatif de la résonance de l'Acid Synth (0..1)
+    AcidResoDelta(f32),
+    /// Ajustement relatif de la modulation d'enveloppe de l'Acid Synth (0..1)
+    AcidEnvModDelta(f32),
+    /// Ajustement relatif du déclin d'enveloppe de l'Acid Synth (ms)
+    AcidDecayDelta(f32),
+    /// Ajustement relatif de l'accent de l'Acid Synth (0..1)
+    AcidAccentDelta(f32),
+    /// Ajustement relatif du temps de slide de l'Acid Synth (ms)
+    AcidSlideDelta(f32),
+    /// Ajustement relatif de la distorsion de l'Acid Synth (0..1)
+    AcidDriveDelta(f32),
+    /// Ajustement relatif de la tonalité de distorsion de l'Acid Synth (Hz)
+    AcidDriveToneDelta(f32),
+    /// Ajustement relatif du mixage de distorsion de l'Acid Synth (0..1)
+    AcidDriveMixDelta(f32),
+    /// Ajustement relatif du temps de delay de l'Acid Synth (ms)
+    AcidDelayTimeDelta(f32),
+    /// Ajustement relatif du feedback de delay de l'Acid Synth (0..0.95)
+    AcidDelayFeedbackDelta(f32),
+    /// Ajustement relatif du mixage de delay de l'Acid Synth (0..1)
+    AcidDelayMixDelta(f32),
+    /// Bascule la forme d'onde (Saw <-> Square)
+    AcidWaveformToggle,
+    /// Décalage d'octave relatif (+1 / -1)
+    AcidOctaveDelta(i8),
+    /// Sélection d'un preset Acid (0..3)
+    AcidSelectPreset(u8),
+    /// Remplacement complet des paramètres Acid
+    AcidSetParams(crate::acid_synth::AcidParams),
 }
 
 /// Noms des 16 presets de batterie DSP 808
@@ -305,6 +337,8 @@ pub struct EngineSnapshot {
     pub waveform: Option<Arc<[(f32, f32)]>>,
     /// Durée du sample du Sound actif (secondes).
     pub sample_duration: f32,
+    /// Paramètres actuels du synthétiseur TB-303 Acid.
+    pub acid_params: crate::acid_synth::AcidParams,
     /// Compteur de révision : change dès qu'un état a bougé (repaint UI/écrans).
     pub revision: u64,
 }
@@ -354,6 +388,8 @@ pub struct Engine {
     /// Transport (public pour accès sample_rate depuis audio thread)
     pub transport: Transport,
     sampler: Sampler,
+    /// Synthétiseur analogique virtuel TB-303 Acid
+    pub acid_synth: crate::acid_synth::AcidSynth,
     /// Presets 808 pré-rendus, réutilisés par le Browser sans synthèse au clic.
     preset_samples: Vec<Option<std::sync::Arc<Vec<f32>>>>,
     sequencer: Sequencer,
@@ -508,6 +544,7 @@ impl Engine {
             project: Arc::new(RwLock::new(Arc::new(project))),
             transport: Transport::new(bpm, sample_rate),
             sampler: Sampler::new(sample_rate),
+            acid_synth: crate::acid_synth::AcidSynth::new(sample_rate),
             preset_samples: vec![None; 16],
             sequencer: Sequencer::new(Grid::Sixteenth, 0.0),
             group_focus: 0,
@@ -618,6 +655,7 @@ impl Engine {
             sample_duration: self
                 .sampler
                 .sample_duration_secs(sampler_sound_id(self.group_focus, self.active_sound)),
+            acid_params: self.acid_synth.params.clone(),
             revision: self.revision,
         }
     }
@@ -982,6 +1020,12 @@ impl Engine {
                         .get(self.group_focus as usize)
                         .map(|g| (10.0f32.powf(g.volume_db / 20.0), g.pan))
                         .unwrap_or((1.0, 0.0));
+                    let is_synth_sound = guard
+                        .groups
+                        .get(self.group_focus as usize)
+                        .and_then(|g| g.sounds.get(pad as usize).and_then(|s| s.as_ref()))
+                        .map(|s| s.synth.is_some())
+                        .unwrap_or(false);
                     let (snd_gain, snd_pan, vparams) = guard
                         .groups
                         .get(self.group_focus as usize)
@@ -1002,7 +1046,9 @@ impl Engine {
                         })
                         .unwrap_or((1.0, 0.0, crate::sampler::VoiceParams::default()));
                     drop(guard);
-                    if let Some(idx) = self.sampler.note_on(sound, note, velocity, note) {
+                    if is_synth_sound || self.left_tab == 4 {
+                        self.acid_synth.note_on(note, velocity);
+                    } else if let Some(idx) = self.sampler.note_on(sound, note, velocity, note) {
                         self.sampler.set_voice_gain(idx, group_gain * snd_gain);
                         self.sampler.set_voice_pan(idx, snd_pan);
                         self.sampler.set_voice_group(idx, self.group_focus);
@@ -1015,6 +1061,7 @@ impl Engine {
                     }
                 } else {
                     let note = 36 + pad;
+                    self.acid_synth.note_off(note);
                     self.sampler
                         .note_off(sampler_sound_id(self.group_focus, pad), note);
                 }
@@ -1109,9 +1156,9 @@ impl Engine {
                 }
             }
             EngineEvent::SetLeftTab(tab) => {
-                self.left_tab = tab.min(3);
+                self.left_tab = tab.min(4);
                 // Une vue principale choisit son écran droit contextuel
-                // (SAMPLER, MIXER, BROWSER, PATTERN/STEP). Un ancien overlay
+                // (SAMPLER, MIXER, BROWSER, ACID SYNTH, PATTERN/STEP). Un ancien overlay
                 // EVENTS/MACRO/SETTINGS ne doit pas masquer cette transition.
                 self.right_tab = 0;
                 if self.left_tab != 0 {
@@ -1645,6 +1692,76 @@ impl Engine {
                 self.transport.loop_end = (bars_clamped as u64) * 4 * 960;
                 self.selected_bar = self.selected_bar.min(bars_clamped as usize - 1);
             }
+            EngineEvent::AcidCutoffDelta(delta) => {
+                let base = self.acid_synth.params.cutoff_hz.max(20.0);
+                let factor = 2.0f32.powf(delta * 0.05);
+                self.acid_synth.params.cutoff_hz = (base * factor).clamp(20.0, 18000.0);
+            }
+            EngineEvent::AcidResoDelta(delta) => {
+                let cur = self.acid_synth.params.resonance;
+                self.acid_synth.params.resonance = (cur + delta * 0.02).clamp(0.0, 0.985);
+            }
+            EngineEvent::AcidEnvModDelta(delta) => {
+                let cur = self.acid_synth.params.env_mod;
+                self.acid_synth.params.env_mod = (cur + delta * 0.02).clamp(0.0, 1.0);
+            }
+            EngineEvent::AcidDecayDelta(delta) => {
+                let cur = self.acid_synth.params.decay_ms;
+                let factor = 2.0f32.powf(delta * 0.05);
+                self.acid_synth.params.decay_ms = (cur * factor).clamp(20.0, 3000.0);
+            }
+            EngineEvent::AcidAccentDelta(delta) => {
+                let cur = self.acid_synth.params.accent;
+                self.acid_synth.params.accent = (cur + delta * 0.02).clamp(0.0, 1.0);
+            }
+            EngineEvent::AcidSlideDelta(delta) => {
+                let cur = self.acid_synth.params.slide_time_ms;
+                self.acid_synth.params.slide_time_ms = (cur + delta * 2.0).clamp(0.0, 250.0);
+            }
+            EngineEvent::AcidDriveDelta(delta) => {
+                let cur = self.acid_synth.params.drive;
+                self.acid_synth.params.drive = (cur + delta * 0.02).clamp(0.0, 1.0);
+            }
+            EngineEvent::AcidDriveToneDelta(delta) => {
+                let cur = self.acid_synth.params.drive_tone.max(200.0);
+                let factor = 2.0f32.powf(delta * 0.05);
+                self.acid_synth.params.drive_tone = (cur * factor).clamp(500.0, 16000.0);
+            }
+            EngineEvent::AcidDriveMixDelta(delta) => {
+                let cur = self.acid_synth.params.drive_mix;
+                self.acid_synth.params.drive_mix = (cur + delta * 0.02).clamp(0.0, 1.0);
+            }
+            EngineEvent::AcidDelayTimeDelta(delta) => {
+                let cur = self.acid_synth.params.delay_time_ms;
+                self.acid_synth.params.delay_time_ms = (cur + delta * 5.0).clamp(20.0, 1000.0);
+            }
+            EngineEvent::AcidDelayFeedbackDelta(delta) => {
+                let cur = self.acid_synth.params.delay_feedback;
+                self.acid_synth.params.delay_feedback = (cur + delta * 0.02).clamp(0.0, 0.95);
+            }
+            EngineEvent::AcidDelayMixDelta(delta) => {
+                let cur = self.acid_synth.params.delay_mix;
+                self.acid_synth.params.delay_mix = (cur + delta * 0.02).clamp(0.0, 1.0);
+            }
+            EngineEvent::AcidWaveformToggle => {
+                self.acid_synth.params.waveform = match self.acid_synth.params.waveform {
+                    crate::acid_synth::AcidWaveform::Saw => crate::acid_synth::AcidWaveform::Square,
+                    crate::acid_synth::AcidWaveform::Square => crate::acid_synth::AcidWaveform::Saw,
+                };
+            }
+            EngineEvent::AcidOctaveDelta(d) => {
+                self.acid_synth.params.octave = (self.acid_synth.params.octave + d).clamp(-2, 2);
+            }
+            EngineEvent::AcidSelectPreset(idx) => match idx {
+                0 => self.acid_synth.params = crate::acid_synth::AcidParams::preset_classic_acid(),
+                1 => self.acid_synth.params = crate::acid_synth::AcidParams::preset_squelch_lead(),
+                2 => self.acid_synth.params = crate::acid_synth::AcidParams::preset_distorted(),
+                3 => self.acid_synth.params = crate::acid_synth::AcidParams::preset_dub_echo(),
+                _ => {}
+            },
+            EngineEvent::AcidSetParams(p) => {
+                self.acid_synth.params = p;
+            }
         }
         Ok(())
     }
@@ -1809,6 +1926,7 @@ impl Engine {
                                 let mut vp = [crate::sampler::VoiceParams::default(); 16];
                                 let mut sg = [1.0f32; 16];
                                 let mut sp = [0.0f32; 16];
+                                let mut is_synth = [false; 16];
                                 for s in 0..16 {
                                     if let Some(snd) = group.sounds[s].as_ref() {
                                         vp[s] = crate::sampler::VoiceParams {
@@ -1821,6 +1939,7 @@ impl Engine {
                                         };
                                         sg[s] = 10.0f32.powf(snd.volume_db / 20.0);
                                         sp[s] = snd.pan;
+                                        is_synth[s] = snd.synth.is_some();
                                     }
                                 }
                                 Self::trigger_pattern_events(
@@ -1828,12 +1947,14 @@ impl Engine {
                                     prev_tick,
                                     new_tick,
                                     &mut self.sampler,
+                                    &mut self.acid_synth,
                                     gi as u8,
                                     gain,
                                     group.pan,
                                     &sg,
                                     &sp,
                                     &vp,
+                                    &is_synth,
                                     self.transport.swing,
                                     &mut self.pad_flash_until,
                                     new_tick,
@@ -1855,18 +1976,20 @@ impl Engine {
         self.pad_activity[index] = self.pad_activity[index].max(level);
     }
 
-    #[allow(clippy::too_many_arguments)] // contexte de trigger (pattern + position + sampler)
+    #[allow(clippy::too_many_arguments)] // contexte de trigger (pattern + position + sampler + synth)
     fn trigger_pattern_events(
         pat: &crate::project::Pattern,
         prev_tick: u64,
         new_tick: u64,
         sampler: &mut Sampler,
+        acid_synth: &mut crate::acid_synth::AcidSynth,
         group: u8,
         group_gain: f32,
         group_pan: f32,
         sound_gains: &[f32],
         sound_pans: &[f32],
         voice_params: &[crate::sampler::VoiceParams],
+        is_synth: &[bool],
         swing: f32,
         flash_until: &mut [u64; 16],
         now_tick: u64,
@@ -1916,7 +2039,10 @@ impl Engine {
                     (pat_len - prev_in_pat + local) as f64
                 };
                 let start_frame = ctx.offset(rel_ticks);
-                if let Some(idx) = sampler.note_on_at(
+                let is_acid = is_synth.get(sound as usize).copied().unwrap_or(false);
+                if is_acid {
+                    acid_synth.note_on_at(note, ev.velocity, start_frame);
+                } else if let Some(idx) = sampler.note_on_at(
                     sampler_sound_id(group, sound),
                     note,
                     ev.velocity,
@@ -1950,7 +2076,11 @@ impl Engine {
             };
             // évite de couper la note à t=0 et seulement si la note a déjà sonné
             if off_triggered && end_tick > tick && tick <= new_tick {
-                sampler.note_off(sampler_sound_id(group, ev.pad), ev.pitch);
+                if is_synth.get(ev.pad as usize).copied().unwrap_or(false) {
+                    acid_synth.note_off(ev.pitch);
+                } else {
+                    sampler.note_off(sampler_sound_id(group, ev.pad), ev.pitch);
+                }
             }
         }
     }
@@ -1992,6 +2122,7 @@ impl Engine {
     /// Render audio stéréo — à appeler depuis callback cpal/jack.
     pub fn render_audio(&mut self, out: &mut [f32]) {
         self.sampler.render(out);
+        self.acid_synth.render(out);
         // VU-mètres : crêtes par groupe du sampler, attaque immédiate / release
         // exponentiel par bloc (≈ -20 dB en 300 ms), peak hold plus lent (~1,7 s).
         let peaks = self.sampler.group_peaks();
@@ -2095,6 +2226,9 @@ impl Engine {
             3 => [
                 "PRES <", "PRES >", "SND <", "SND >", "ECOUTE", "CHARGER", "METRO", "LOOP",
             ],
+            4 => [
+                "SAW/SQR", "OCT -", "OCT +", "SLIDE", "CLASSIC", "SQUELCH", "DISTORT", "DUB",
+            ],
             _ => [
                 "BAR 1", "BAR 2", "BAR 3", "BAR 4", "1 MES", "2 MES", "4 MES", "8 MES",
             ],
@@ -2172,6 +2306,23 @@ impl Engine {
                 }
                 6 => self.handle_event(EngineEvent::ToggleMetronome),
                 _ => self.handle_event(EngineEvent::ToggleLoop),
+            },
+            4 => match idx {
+                0 => self.handle_event(EngineEvent::AcidWaveformToggle),
+                1 => self.handle_event(EngineEvent::AcidOctaveDelta(-1)),
+                2 => self.handle_event(EngineEvent::AcidOctaveDelta(1)),
+                3 => {
+                    let slide = if self.acid_synth.params.slide_time_ms > 1.0 {
+                        -100.0
+                    } else {
+                        60.0
+                    };
+                    self.handle_event(EngineEvent::AcidSlideDelta(slide))
+                }
+                4 => self.handle_event(EngineEvent::AcidSelectPreset(0)),
+                5 => self.handle_event(EngineEvent::AcidSelectPreset(1)),
+                6 => self.handle_event(EngineEvent::AcidSelectPreset(2)),
+                _ => self.handle_event(EngineEvent::AcidSelectPreset(3)),
             },
             _ => match idx {
                 0..=3 => self.handle_event(EngineEvent::SelectBar(idx)),
@@ -2510,6 +2661,16 @@ mod tests {
         eng.handle_event(EngineEvent::SetLeftTab(2)).unwrap();
         let snap = eng.snapshot();
         assert_eq!(snap.left_tab, 2);
+        assert_eq!(snap.right_tab, 0);
+        assert!(!snap.song_mode);
+    }
+
+    #[test]
+    fn selecting_synth_tab_preserves_left_tab_4() {
+        let mut eng = Engine::new_demo(48000);
+        eng.handle_event(EngineEvent::SetLeftTab(4)).unwrap();
+        let snap = eng.snapshot();
+        assert_eq!(snap.left_tab, 4);
         assert_eq!(snap.right_tab, 0);
         assert!(!snap.song_mode);
     }

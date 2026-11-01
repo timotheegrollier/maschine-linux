@@ -620,6 +620,14 @@ pub fn draw_rect_outline(
     fill_rect(frame, x + w - 1, y, 1, h, color);
 }
 
+/// Écrit un pixel unique dans le DisplayFrame avec vérification des bornes.
+#[inline]
+fn set_pixel(frame: &mut DisplayFrame, x: usize, y: usize, color: DisplayPixel) {
+    if x < SCR_W && y < SCR_H {
+        frame.pixels[y * SCR_W + x] = color;
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Design system écrans — style logiciel Maschine officiel
 // Bandeau titre, contenu dense, rangée d'encodeurs réels, soft keys
@@ -3039,6 +3047,362 @@ pub fn render_sampler_right(snap: &EngineSnapshot) -> DisplayFrame {
     frame
 }
 
+// ── SYNTH (TB-303 ACID) ──────────────────────────────────────────────────
+
+/// Écran gauche — vue SYNTH : Oscillateur, Filtre résonant, Enveloppes.
+#[must_use]
+pub fn render_synth_left(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
+    let s_name = sound_name(snap, snap.active_sound as usize);
+    let wave_str = match snap.acid_params.waveform {
+        crate::acid_synth::AcidWaveform::Saw => "SAW",
+        crate::acid_synth::AcidWaveform::Square => "SQR",
+    };
+    header(
+        &mut frame,
+        &p,
+        snap,
+        "TB-303 ACID SYNTH",
+        &format!(
+            "GRP {} | SND {:02} {} | {}",
+            group_letter(snap.group_focus),
+            snap.active_sound + 1,
+            trunc(&s_name, 10),
+            wave_str
+        ),
+    );
+
+    // 1. Panneau Oscillateur (gauche haut, 226 x 92)
+    fill_rect(&mut frame, 8, 26, 226, 92, p.panel);
+    draw_rect_outline(&mut frame, 8, 26, 226, 92, p.border);
+    draw_text(&mut frame, 14, 30, "OSCILLATEUR TB-303", p.dim, p.panel);
+
+    // Dessin de la forme d'onde (Sawtooth ou Square stylisée)
+    let wave_y_mid = 66;
+    for x in 18..220 {
+        let cycle = (x - 18) % 32;
+        let y = match snap.acid_params.waveform {
+            crate::acid_synth::AcidWaveform::Saw => wave_y_mid + 16 - (cycle * 32 / 32),
+            crate::acid_synth::AcidWaveform::Square => {
+                if cycle < 16 {
+                    wave_y_mid - 14
+                } else {
+                    wave_y_mid + 14
+                }
+            }
+        };
+        set_pixel(&mut frame, x, y, p.accent);
+        set_pixel(&mut frame, x, y + 1, p.accent);
+    }
+
+    draw_text(
+        &mut frame,
+        14,
+        86,
+        &format!("ONDE: {} | OCT: {:+}", wave_str, snap.acid_params.octave),
+        p.white,
+        p.panel,
+    );
+    draw_text(
+        &mut frame,
+        14,
+        102,
+        &format!(
+            "SLIDE: {:.0}ms | ACCORD: {:+.1}st",
+            snap.acid_params.slide_time_ms, snap.acid_params.tuning_semitones
+        ),
+        p.muted,
+        p.panel,
+    );
+
+    // 2. Panneau Filtre Passe-Bas Résonant (droite haut, 230 x 92)
+    fill_rect(&mut frame, 242, 26, 230, 92, p.panel);
+    draw_rect_outline(&mut frame, 242, 26, 230, 92, p.border);
+    draw_text(&mut frame, 248, 30, "FILTRE 24dB + DIODE", p.dim, p.panel);
+
+    // Dessin d'une courbe de réponse fréquentielle passe-bas avec bosse de résonance
+    let cut_norm = ((snap.acid_params.cutoff_hz.log10() - 20.0f32.log10())
+        / (18000.0f32.log10() - 20.0f32.log10()))
+    .clamp(0.05, 0.95);
+    let peak_x = 248 + (cut_norm * 210.0) as usize;
+    let reso_height = (snap.acid_params.resonance * 32.0) as i32;
+
+    for x in 248..464 {
+        let dist = x as i32 - peak_x as i32;
+        let y = if dist < -10 {
+            72 // bande passante plate
+        } else if dist <= 0 {
+            // montée vers le pic de résonance
+            72 - (dist + 10) * reso_height / 10
+        } else if dist <= 30 {
+            // chute raide au-delà de la coupure (24dB/oct)
+            72 - reso_height + (dist * (reso_height + 34) / 30)
+        } else {
+            106 // atténuation maximale
+        };
+        let clamped_y = y.clamp(38, 110);
+        if clamped_y >= 0 {
+            set_pixel(&mut frame, x, clamped_y as usize, p.cyan);
+            set_pixel(&mut frame, x, (clamped_y + 1) as usize, p.cyan);
+        }
+    }
+
+    draw_text(
+        &mut frame,
+        248,
+        86,
+        &format!(
+            "CUT: {} | RESO: {:.0}%",
+            fmt_hz(snap.acid_params.cutoff_hz),
+            snap.acid_params.resonance * 100.0
+        ),
+        p.white,
+        p.panel,
+    );
+    draw_text(
+        &mut frame,
+        248,
+        102,
+        &format!(
+            "ENV MOD: {:.0}% | DECLIN: {}",
+            snap.acid_params.env_mod * 100.0,
+            fmt_ms(snap.acid_params.decay_ms)
+        ),
+        p.muted,
+        p.panel,
+    );
+
+    // 3. Panneau inférieur récapitulatif (464 x 62)
+    fill_rect(&mut frame, 8, 124, 464, 62, p.panel);
+    draw_rect_outline(&mut frame, 8, 124, 464, 62, p.border);
+    draw_text(
+        &mut frame,
+        14,
+        128,
+        "SYNTHETISEUR ACID TB-303 (EMULATION ANALOGIQUE VIRTUELLE)",
+        p.white,
+        p.panel,
+    );
+    draw_text(
+        &mut frame,
+        14,
+        146,
+        &format!(
+            "ACCENT: {:.0}% | PORTAMENTO: {:.0}ms | SORTIE: {}",
+            snap.acid_params.accent * 100.0,
+            snap.acid_params.slide_time_ms,
+            fmt_db(snap.acid_params.volume_db)
+        ),
+        p.dim,
+        p.panel,
+    );
+    draw_text(
+        &mut frame,
+        14,
+        164,
+        "PADS 1-16 : JOUENT LES NOTES DU SYNTHE | ENCODEURS 1-4 : CONTROLES FILTRE",
+        p.accent,
+        p.panel,
+    );
+
+    // 4. Encodeurs 1..4
+    let cut = snap.acid_params.cutoff_hz;
+    let reso = snap.acid_params.resonance;
+    let env_m = snap.acid_params.env_mod;
+    let dec = snap.acid_params.decay_ms;
+    let slots = [
+        Some((
+            "1:CUTOFF",
+            fmt_hz(cut),
+            ((cut - 20.0) / 17980.0).clamp(0.0, 1.0),
+            p.cyan,
+        )),
+        Some(("2:RESO", format!("{:.0}%", reso * 100.0), reso, p.cyan)),
+        Some((
+            "3:ENV MOD",
+            format!("{:.0}%", env_m * 100.0),
+            env_m,
+            p.accent,
+        )),
+        Some((
+            "4:DECAY",
+            fmt_ms(dec),
+            ((dec - 20.0) / 2980.0).clamp(0.0, 1.0),
+            p.accent,
+        )),
+    ];
+    encoder_row(&mut frame, &p, &slots);
+
+    // 5. Soft keys 1..4 sous écran gauche
+    let active = [
+        true,
+        false,
+        false,
+        snap.acid_params.slide_time_ms > 1.0,
+        false,
+        false,
+        false,
+        false,
+    ];
+    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+
+    frame
+}
+
+/// Écran droit — vue SYNTH : Distorsion / Overdrive, Delay, Presets rapides.
+#[must_use]
+pub fn render_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
+    header(
+        &mut frame,
+        &p,
+        snap,
+        "EFFETS ACID & PRESETS",
+        &format!(
+            "DRIVE {:.0}% | DELAY {:.0}%",
+            snap.acid_params.drive * 100.0,
+            snap.acid_params.delay_mix * 100.0
+        ),
+    );
+
+    // 1. Panneau Distorsion (gauche haut, 226 x 92)
+    fill_rect(&mut frame, 8, 26, 226, 92, p.panel);
+    draw_rect_outline(&mut frame, 8, 26, 226, 92, p.border);
+    draw_text(&mut frame, 14, 30, "OVERDRIVE / DISTORSION", p.dim, p.panel);
+
+    // Dessin de la courbe de saturation non-linéaire tanh
+    let drive_val = snap.acid_params.drive;
+    let curve_y_mid = 68;
+    for x in 24..110 {
+        let norm_x = (x as f32 - 67.0) / 38.0; // -1..+1
+        let gain = 1.0 + drive_val * 8.0;
+        let sat_y = (norm_x * gain).tanh();
+        let y = curve_y_mid - (sat_y * 22.0) as i32;
+        if y >= 0 {
+            set_pixel(&mut frame, x, y as usize, p.red);
+            set_pixel(&mut frame, x, (y + 1) as usize, p.red);
+        }
+    }
+
+    draw_text(
+        &mut frame,
+        122,
+        48,
+        &format!("DRV: {:.0}%", drive_val * 100.0),
+        p.white,
+        p.panel,
+    );
+    draw_text(
+        &mut frame,
+        122,
+        64,
+        &format!("TONE: {}", fmt_hz(snap.acid_params.drive_tone)),
+        p.dim,
+        p.panel,
+    );
+    draw_text(
+        &mut frame,
+        122,
+        80,
+        &format!("MIX: {:.0}%", snap.acid_params.drive_mix * 100.0),
+        p.muted,
+        p.panel,
+    );
+
+    // 2. Panneau Delay (droite haut, 230 x 92)
+    fill_rect(&mut frame, 242, 26, 230, 92, p.panel);
+    draw_rect_outline(&mut frame, 242, 26, 230, 92, p.border);
+    draw_text(&mut frame, 248, 30, "ECHO DELAY STEREO", p.dim, p.panel);
+
+    // Dessin de barres d'écho décroissantes
+    let fb = snap.acid_params.delay_feedback;
+    for i in 0..5 {
+        let bar_x = 258 + i * 16;
+        let bar_h = (28.0 * (1.0 - i as f32 * 0.18) * (0.4 + fb * 0.6)) as usize;
+        let bar_y = 78 - bar_h;
+        fill_rect(&mut frame, bar_x, bar_y, 8, bar_h, p.green);
+    }
+
+    draw_text(
+        &mut frame,
+        344,
+        48,
+        &format!("TEMPS: {}", fmt_ms(snap.acid_params.delay_time_ms)),
+        p.white,
+        p.panel,
+    );
+    draw_text(
+        &mut frame,
+        344,
+        64,
+        &format!("FEEDBACK: {:.0}%", fb * 100.0),
+        p.dim,
+        p.panel,
+    );
+    draw_text(
+        &mut frame,
+        344,
+        80,
+        &format!("MIX: {:.0}%", snap.acid_params.delay_mix * 100.0),
+        p.muted,
+        p.panel,
+    );
+
+    // 3. Panneau Presets (464 x 62)
+    fill_rect(&mut frame, 8, 124, 464, 62, p.panel);
+    draw_rect_outline(&mut frame, 8, 124, 464, 62, p.border);
+    draw_text(
+        &mut frame,
+        14,
+        128,
+        "PRESETS RAPIDES : [5] CLASSIC  [6] SQUELCH  [7] DISTORT  [8] DUB 303",
+        p.white,
+        p.panel,
+    );
+    draw_text(
+        &mut frame,
+        14,
+        146,
+        "BOUTONS 5-8 SOUS CET ECRAN : CHARGEMENT INSTANTANE DES PRESETS",
+        p.dim,
+        p.panel,
+    );
+    draw_text(
+        &mut frame,
+        14,
+        164,
+        "ENCODEURS 5-8 : ACCENT / DRIVE / DELAY TIME / DELAY MIX",
+        p.accent,
+        p.panel,
+    );
+
+    // 4. Encodeurs 5..8
+    let acc = snap.acid_params.accent;
+    let drv = snap.acid_params.drive;
+    let dl_t = snap.acid_params.delay_time_ms;
+    let dl_m = snap.acid_params.delay_mix;
+    let slots = [
+        Some(("5:ACCENT", format!("{:.0}%", acc * 100.0), acc, p.yellow)),
+        Some(("6:DRIVE", format!("{:.0}%", drv * 100.0), drv, p.red)),
+        Some((
+            "7:DELAY",
+            fmt_ms(dl_t),
+            (dl_t / 1000.0).clamp(0.0, 1.0),
+            p.green,
+        )),
+        Some(("8:DL MIX", format!("{:.0}%", dl_m * 100.0), dl_m, p.green)),
+    ];
+    encoder_row(&mut frame, &p, &slots);
+
+    // 5. Soft keys 5..8 sous écran droit
+    let active = [false, false, false, false, true, false, false, false];
+    footer_softkeys(&mut frame, &p, &snap.soft_labels, 1, &active);
+
+    frame
+}
+
 // ── BROWSER ────────────────────────────────────────────────────────────
 
 /// Écran gauche — vue BROWSER : presets du kit 808.
@@ -3678,6 +4042,7 @@ pub fn render_screens(snap: &EngineSnapshot) -> (DisplayFrame, DisplayFrame) {
             1 => render_mixer_left(snap),
             2 => render_sampler_left(snap),
             3 => render_browser_left(snap),
+            4 => render_synth_left(snap),
             _ => {
                 if snap.controller_mode == 3 {
                     render_step_left(snap)
@@ -3689,6 +4054,8 @@ pub fn render_screens(snap: &EngineSnapshot) -> (DisplayFrame, DisplayFrame) {
     };
     let right = if snap.song_mode {
         render_arranger_right(snap)
+    } else if snap.left_tab == 4 && snap.right_tab == 0 {
+        render_synth_right(snap)
     } else if snap.left_tab == 2 && snap.right_tab == 0 {
         render_sampler_right(snap)
     } else if snap.left_tab == 3 && snap.right_tab == 0 {
@@ -3735,8 +4102,8 @@ mod tests {
             check_pair(&l);
             check_pair(&r);
         }
-        // Toutes les combinaisons d'onglets.
-        for left_tab in 0..4u8 {
+        // Toutes les combinaisons d'onglets (0..4).
+        for left_tab in 0..5u8 {
             for right_tab in 0..4u8 {
                 let mut snap = eng.snapshot();
                 snap.left_tab = left_tab;
@@ -3814,7 +4181,7 @@ mod tests {
         let mut eng = Engine::new_demo(48000);
         eng.advance(4800);
         let mut hashes = std::collections::BTreeSet::new();
-        for left_tab in 0..4u8 {
+        for left_tab in 0..5u8 {
             for right_tab in 0..4u8 {
                 let mut snap = eng.snapshot();
                 snap.left_tab = left_tab;

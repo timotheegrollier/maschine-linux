@@ -2,6 +2,7 @@
 
 #![allow(missing_docs)]
 
+pub mod acid_synth;
 pub mod display_render;
 pub mod drum_synth;
 pub mod engine;
@@ -10,6 +11,7 @@ pub mod sampler;
 pub mod sequencer;
 pub mod transport;
 
+pub use acid_synth::{AcidParams, AcidSynth, AcidWaveform};
 pub use drum_synth::generate_complete_808_kit;
 pub use engine::{Engine, EngineEvent, EngineSnapshot, DRUM_PRESET_NAMES};
 pub use project::{Group, Pattern, PatternEvent, Project, Scene, Section, Sound, Zone};

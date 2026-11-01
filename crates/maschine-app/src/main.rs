@@ -14,7 +14,7 @@ use log::{error, info, warn};
 use parking_lot::Mutex;
 
 use maschine_engine::{Engine, EngineEvent, Project};
-use maschine_hardware::device::find_maschine_devices;
+use maschine_hardware::device::{find_maschine_devices, DeviceInfo};
 use maschine_hardware::events::HardwareEvent;
 use maschine_hardware::hidraw::{spawn_hidraw_thread, HidrawConfig};
 use maschine_hardware::mapper::{HardwareMapper, MapperAction, MapperConfig, SequencerLedInfo};
@@ -196,7 +196,7 @@ enum Commands {
         #[arg(long)]
         device: Option<String>,
     },
-    /// Lance la GUI (nécessite --features gui)
+    /// Lance le DAW GUI (fonctionne sans Maschine ; le contrôle matériel est optionnel)
     Gui {
         /// Projet à charger
         #[arg(long)]
@@ -236,6 +236,22 @@ enum ProjectCmd {
     },
 }
 
+#[cfg(feature = "gui")]
+fn default_command() -> Commands {
+    Commands::Gui {
+        project: None,
+        audio_device: None,
+        no_audio: false,
+        debug_latency: false,
+        stress: false,
+    }
+}
+
+#[cfg(not(feature = "gui"))]
+fn default_command() -> Commands {
+    Commands::Probe
+}
+
 fn init_logger(verbose: u8) {
     let level = match verbose {
         0 => "info",
@@ -265,7 +281,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     init_logger(cli.verbose);
 
-    match cli.command.unwrap_or(Commands::Probe) {
+    match cli.command.unwrap_or_else(default_command) {
         Commands::Probe => cmd_probe()?,
         Commands::HidDump { duration, hidraw } => cmd_hid_dump(duration, hidraw)?,
         Commands::Daemon {
@@ -397,6 +413,26 @@ fn cmd_hid_dump(duration: u64, hidraw: Option<PathBuf>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Sélectionne le contrôleur HID pour le mode demandé.
+///
+/// Le daemon reste lié au matériel, tandis que la GUI peut fonctionner seule
+/// pour composer, tester le moteur et utiliser la sortie audio du PC.
+fn select_hidraw_device(
+    devices: Vec<DeviceInfo>,
+    allow_offline: bool,
+) -> anyhow::Result<Option<DeviceInfo>> {
+    if let Some(device) = devices
+        .into_iter()
+        .find(|device| device.hidraw_path.is_some())
+    {
+        return Ok(Some(device));
+    }
+    if allow_offline {
+        return Ok(None);
+    }
+    anyhow::bail!("pas de MK3 hidraw trouvée — lance probe")
+}
+
 #[allow(clippy::too_many_arguments)] // handler CLI : 1 paramètre par option
 fn cmd_daemon(
     project: Option<PathBuf>,
@@ -428,20 +464,48 @@ fn cmd_daemon(
         proj.bpm
     );
 
-    let devs = find_maschine_devices()?;
-    let info = devs
-        .into_iter()
-        .find(|d| d.hidraw_path.is_some())
-        .ok_or_else(|| anyhow::anyhow!("pas de MK3 hidraw trouvée — lance probe"))?;
-    let hidraw_path = info.hidraw_path.clone().unwrap();
-    println!(
-        "Device: VID:PID {:04x}:{:04x} hidraw={:?} serial={:?}",
-        info.vendor_id, info.product_id, hidraw_path, info.serial
-    );
+    let gui_can_run_offline = with_gui && cfg!(feature = "gui");
+    let hardware_info = match find_maschine_devices() {
+        Ok(devices) => select_hidraw_device(devices, gui_can_run_offline)?,
+        Err(error) if gui_can_run_offline => {
+            warn!(
+                "Détection Maschine indisponible ({error}) — lancement de la GUI en mode autonome"
+            );
+            None
+        }
+        Err(error) => return Err(error.into()),
+    };
 
-    let (tx, rx) = unbounded::<HardwareEvent>();
-    let cfg = HidrawConfig::default();
-    let _hid_handle = spawn_hidraw_thread(info, cfg, tx)?;
+    let (hardware_tx, rx) = unbounded::<HardwareEvent>();
+    let (hidraw_path, _hid_handle) = match hardware_info {
+        Some(info) => {
+            let hidraw_path = info
+                .hidraw_path
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("MK3 détectée sans chemin hidraw"))?;
+            println!(
+                "Device: VID:PID {:04x}:{:04x} hidraw={:?} serial={:?}",
+                info.vendor_id, info.product_id, hidraw_path, info.serial
+            );
+            match spawn_hidraw_thread(info, HidrawConfig::default(), hardware_tx.clone()) {
+                Ok(handle) => (Some(hidraw_path), Some(handle)),
+                Err(error) if gui_can_run_offline => {
+                    warn!(
+                        "Démarrage HID impossible ({error}) — la GUI reste disponible sans contrôleur"
+                    );
+                    (None, None)
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        None => {
+            warn!(
+                "Aucune Maschine MK3 HID détectée — GUI autonome (clavier, souris, MIDI et audio système)"
+            );
+            (None, None)
+        }
+    };
+    let hardware_connected = hidraw_path.is_some();
 
     // Engine partagé (pour audio thread + main loop)
     let engine = Arc::new(Mutex::new(Engine::new(proj, 48000)));
@@ -455,7 +519,10 @@ fn cmd_daemon(
 
     // Audio — cpal
     let settings = settings::AppSettings::load();
+    #[cfg(feature = "audio")]
+    let has_explicit_audio_device = audio_device.is_some();
     let initial_audio_dev = audio_device.or(settings.audio_device);
+    #[cfg(feature = "audio")]
     let hp_dup = headphone_mode == "duplicate";
 
     #[cfg(feature = "audio")]
@@ -476,9 +543,35 @@ fn cmd_daemon(
                 );
                 *audio_shared.lock() = Some(a);
             }
-            Err(e) => {
+            Err(error)
+                if gui_can_run_offline
+                    && !hardware_connected
+                    && !has_explicit_audio_device
+                    && initial_audio_dev.is_some() =>
+            {
+                warn!(
+                    "Sortie audio mémorisée {:?} indisponible sans MK3 ({error}) — repli sur la sortie système",
+                    initial_audio_dev
+                );
+                match audio::AudioOutput::open(engine.clone(), Some("default"), hp_dup) {
+                    Ok(audio) => {
+                        info!(
+                            "✓ Audio démarré sur la sortie système: '{}'",
+                            audio.device_name()
+                        );
+                        *audio_shared.lock() = Some(audio);
+                    }
+                    Err(fallback_error) => {
+                        log::error!(
+                            "Audio démarrage échec: {error}; repli système échec: {fallback_error} — continue sans son"
+                        );
+                        let _ = audio::AudioOutput::list_devices();
+                    }
+                }
+            }
+            Err(error) => {
                 log::error!(
-                    "Audio démarrage échec: {e} — continue sans son (modifiable via paramètres)"
+                    "Audio démarrage échec: {error} — continue sans son (modifiable via paramètres)"
                 );
                 let _ = audio::AudioOutput::list_devices();
             }
@@ -548,12 +641,19 @@ fn cmd_daemon(
             .ok();
     }
 
-    // LED writer
     let (led_tx, led_rx) = unbounded::<maschine_proto::hid_output::LedState>();
+    let hardware_leds_enabled = hardware_connected && !no_led;
     let _led_handle = if no_led {
         log::warn!("--no-led : LEDs désactivées");
         None
+    } else if !hardware_connected {
+        info!("Mode GUI autonome : LEDs et écrans matériels désactivés");
+        None
     } else {
+        let hidraw_path = hidraw_path
+            .as_ref()
+            .expect("un contrôleur connecté a un chemin hidraw")
+            .clone();
         match hw_output::spawn_led_writer(hidraw_path.clone(), led_rx) {
             Ok(h) => {
                 info!("✓ LED writer démarré sur {}", hidraw_path.display());
@@ -585,7 +685,7 @@ fn cmd_daemon(
 
     // Display bulk (optionnel, feature usb)
     #[cfg(feature = "usb")]
-    let mut display_handle =
+    let mut display_handle = if hardware_connected {
         match display_thread::spawn_display_thread(engine.clone(), display_activity.clone()) {
             Ok(h) => {
                 log::info!("✓ Thread affichage écran MK3 démarré");
@@ -595,7 +695,10 @@ fn cmd_daemon(
                 log::warn!("Thread affichage écran échec: {e}");
                 None
             }
-        };
+        }
+    } else {
+        None
+    };
 
     // MIDI ports (ALSA Seq)
     #[cfg(feature = "midi-alsa")]
@@ -1210,6 +1313,46 @@ fn cmd_daemon(
                         log::info!("Autosave → {:?}", autosave);
                     }
                 }
+                MapperAction::AcidCutoffDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::AcidCutoffDelta(delta));
+                }
+                MapperAction::AcidResoDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::AcidResoDelta(delta));
+                }
+                MapperAction::AcidEnvModDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::AcidEnvModDelta(delta));
+                }
+                MapperAction::AcidDecayDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::AcidDecayDelta(delta));
+                }
+                MapperAction::AcidAccentDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::AcidAccentDelta(delta));
+                }
+                MapperAction::AcidDriveDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::AcidDriveDelta(delta));
+                }
+                MapperAction::AcidDelayTimeDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::AcidDelayTimeDelta(delta));
+                }
+                MapperAction::AcidDelayMixDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::AcidDelayMixDelta(delta));
+                }
             }
         }
     }
@@ -1290,7 +1433,7 @@ fn cmd_daemon(
             .name("maschine-hid-loop".to_string())
             .spawn(move || {
                 let mut mapper = HardwareMapper::new(MapperConfig::default());
-                if !no_led {
+                if hardware_leds_enabled {
                     sync_hardware_leds(&engine_bg, &mut mapper, &led_tx_bg);
                 }
                 let mut last_advance = std::time::Instant::now();
@@ -1311,7 +1454,8 @@ fn cmd_daemon(
                     }
 
                     // Rafraîchissement régulier des LEDs physiques (30 FPS)
-                    if !no_led && last_led_sync.elapsed() >= Duration::from_millis(16) {
+                    if hardware_leds_enabled && last_led_sync.elapsed() >= Duration::from_millis(16)
+                    {
                         sync_hardware_leds(&engine_bg, &mut mapper, &led_tx_bg);
                         last_led_sync = std::time::Instant::now();
                     }
@@ -1366,7 +1510,7 @@ fn cmd_daemon(
                             apply_mapper_actions(&engine_bg, &mut mapper, actions);
                             display_activity_bg.store(true, Ordering::Relaxed);
 
-                            if !no_led {
+                            if hardware_leds_enabled {
                                 sync_hardware_leds(&engine_bg, &mut mapper, &led_tx_bg);
                                 last_led_sync = std::time::Instant::now();
                             }
@@ -1388,7 +1532,11 @@ fn cmd_daemon(
             })?;
 
         // Run GUI on main thread (required by egui/winit)
-        info!("Lancement GUI egui avec hardware connecté…");
+        if hardware_connected {
+            info!("Lancement GUI egui avec contrôleur connecté…");
+        } else {
+            info!("Lancement GUI egui autonome…");
+        }
         #[cfg(feature = "audio")]
         let gui_res = gui::run_with_engine(engine, audio_shared, repaint);
         #[cfg(not(feature = "audio"))]
@@ -1402,7 +1550,7 @@ fn cmd_daemon(
 
     // ----- Daemon mode: blocking event loop on main thread -----
     let mut mapper = HardwareMapper::new(MapperConfig::default());
-    if !no_led {
+    if hardware_leds_enabled {
         sync_hardware_leds(&engine, &mut mapper, &led_tx);
     }
 
@@ -1440,7 +1588,7 @@ fn cmd_daemon(
         }
 
         // Rafraîchissement régulier des LEDs physiques (30 FPS)
-        if !no_led && last_led_sync.elapsed() >= Duration::from_millis(33) {
+        if hardware_leds_enabled && last_led_sync.elapsed() >= Duration::from_millis(33) {
             sync_hardware_leds(&engine, &mut mapper, &led_tx);
             last_led_sync = std::time::Instant::now();
         }
@@ -1489,7 +1637,7 @@ fn cmd_daemon(
                 apply_mapper_actions(&engine, &mut mapper, actions);
                 display_activity.store(true, Ordering::Relaxed);
 
-                if !no_led {
+                if hardware_leds_enabled {
                     sync_hardware_leds(&engine, &mut mapper, &led_tx);
                     last_led_sync = std::time::Instant::now();
                 }
@@ -2091,6 +2239,7 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             waveform: None,
             sample_duration: 0.0,
             revision: 0,
+            acid_params: maschine_engine::AcidParams::default(),
         };
         snap.transport.state = maschine_engine::transport::TransportState::Playing;
 
@@ -2173,6 +2322,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gui_mode_allows_an_offline_startup() {
+        assert!(select_hidraw_device(Vec::new(), true).unwrap().is_none());
+    }
+
+    #[test]
+    fn daemon_mode_keeps_requiring_hardware() {
+        assert!(select_hidraw_device(Vec::new(), false).is_err());
+    }
+
+    #[cfg(feature = "gui")]
+    #[test]
+    fn default_command_launches_the_gui() {
+        assert!(matches!(default_command(), Commands::Gui { .. }));
+    }
+
+    #[test]
     fn gui_sampler_navigation_routes_next_hardware_knob_to_sound() {
         let mut engine = Engine::new_demo(48000);
         engine.handle_event(EngineEvent::SetRightTab(1)).unwrap();
@@ -2196,6 +2361,30 @@ mod tests {
         assert!(actions.contains(&MapperAction::SoundVolumeDelta(1.0)));
         assert_eq!(mapper.left_tab, 2);
         assert_eq!(mapper.right_tab, 0);
+    }
+
+    #[test]
+    fn gui_synth_navigation_routes_hardware_knob_to_acid_cutoff() {
+        let mut engine = Engine::new_demo(48000);
+        engine.handle_event(EngineEvent::SetLeftTab(4)).unwrap();
+
+        let mut mapper = HardwareMapper::with_default();
+        mapper.left_tab = 0;
+        let context = engine.hardware_snapshot();
+        sync_mapper_context(&mut mapper, &context);
+
+        assert_eq!(mapper.left_tab, 4);
+
+        let event = |value| {
+            HardwareEvent::Encoder(maschine_proto::hid_input::EncoderEvent {
+                id: 1,
+                value,
+                touched: true,
+            })
+        };
+        let _ = mapper.handle_hardware_event(event(100));
+        let actions = mapper.handle_hardware_event(event(101));
+        assert!(actions.contains(&MapperAction::AcidCutoffDelta(1.0)));
     }
 }
 

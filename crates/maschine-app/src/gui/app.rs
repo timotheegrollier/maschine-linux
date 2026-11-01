@@ -34,6 +34,15 @@ enum KParam {
     Decay,
     Sustain,
     Release,
+    // Paramètres Acid Synth
+    AcidCutoff,
+    AcidReso,
+    AcidEnvMod,
+    AcidDecay,
+    AcidAccent,
+    AcidDrive,
+    AcidDelayTime,
+    AcidDelayMix,
 }
 
 fn knob_params(view: StudioView) -> &'static [KParam] {
@@ -67,6 +76,16 @@ fn knob_params(view: StudioView) -> &'static [KParam] {
             KParam::Decay,
             KParam::Sustain,
             KParam::Release,
+        ],
+        StudioView::AcidSynth => &[
+            KParam::AcidCutoff,
+            KParam::AcidReso,
+            KParam::AcidEnvMod,
+            KParam::AcidDecay,
+            KParam::AcidAccent,
+            KParam::AcidDrive,
+            KParam::AcidDelayTime,
+            KParam::AcidDelayMix,
         ],
         StudioView::Ideas => &[
             KParam::Tempo,
@@ -351,6 +370,7 @@ impl GuiApp {
                 (egui::Key::S, StudioView::Sequencer),
                 (egui::Key::M, StudioView::Mixer),
                 (egui::Key::A, StudioView::Sampler),
+                (egui::Key::T, StudioView::AcidSynth),
                 (egui::Key::B, StudioView::Browser),
             ]
             .map(|(k, v)| (i.key_pressed(k), v));
@@ -480,6 +500,46 @@ impl GuiApp {
                     release_ms: r,
                 });
             }
+            KParam::AcidCutoff => {
+                let mut p = snap.acid_params.clone();
+                p.cutoff_hz = v;
+                self.send(EngineEvent::AcidSetParams(p));
+            }
+            KParam::AcidReso => {
+                let mut p = snap.acid_params.clone();
+                p.resonance = v;
+                self.send(EngineEvent::AcidSetParams(p));
+            }
+            KParam::AcidEnvMod => {
+                let mut p = snap.acid_params.clone();
+                p.env_mod = v;
+                self.send(EngineEvent::AcidSetParams(p));
+            }
+            KParam::AcidDecay => {
+                let mut p = snap.acid_params.clone();
+                p.decay_ms = v;
+                self.send(EngineEvent::AcidSetParams(p));
+            }
+            KParam::AcidAccent => {
+                let mut p = snap.acid_params.clone();
+                p.accent = v;
+                self.send(EngineEvent::AcidSetParams(p));
+            }
+            KParam::AcidDrive => {
+                let mut p = snap.acid_params.clone();
+                p.drive = v;
+                self.send(EngineEvent::AcidSetParams(p));
+            }
+            KParam::AcidDelayTime => {
+                let mut p = snap.acid_params.clone();
+                p.delay_time_ms = v;
+                self.send(EngineEvent::AcidSetParams(p));
+            }
+            KParam::AcidDelayMix => {
+                let mut p = snap.acid_params.clone();
+                p.delay_mix = v;
+                self.send(EngineEvent::AcidSetParams(p));
+            }
         }
     }
 
@@ -546,6 +606,38 @@ impl GuiApp {
                     KParam::Release => (
                         KnobSpec::linear("RELEASE", " ms", 5.0, 3000.0, 150.0),
                         adsr.3,
+                    ),
+                    KParam::AcidCutoff => (
+                        KnobSpec::log("CUTOFF", " Hz", 20.0, 10000.0, 500.0),
+                        snap.acid_params.cutoff_hz,
+                    ),
+                    KParam::AcidReso => (
+                        KnobSpec::linear("RESO", " %", 0.0, 1.0, 0.5),
+                        snap.acid_params.resonance,
+                    ),
+                    KParam::AcidEnvMod => (
+                        KnobSpec::linear("ENV MOD", " %", 0.0, 1.0, 0.7),
+                        snap.acid_params.env_mod,
+                    ),
+                    KParam::AcidDecay => (
+                        KnobSpec::linear("DECAY", " ms", 20.0, 2000.0, 300.0),
+                        snap.acid_params.decay_ms,
+                    ),
+                    KParam::AcidAccent => (
+                        KnobSpec::linear("ACCENT", " %", 0.0, 1.0, 0.5),
+                        snap.acid_params.accent,
+                    ),
+                    KParam::AcidDrive => (
+                        KnobSpec::linear("DRIVE", " %", 0.0, 1.0, 0.0),
+                        snap.acid_params.drive,
+                    ),
+                    KParam::AcidDelayTime => (
+                        KnobSpec::linear("TIME", " ms", 10.0, 1000.0, 250.0),
+                        snap.acid_params.delay_time_ms,
+                    ),
+                    KParam::AcidDelayMix => (
+                        KnobSpec::linear("MIX", " %", 0.0, 1.0, 0.25),
+                        snap.acid_params.delay_mix,
                     ),
                 };
                 if let Some(v) = knob(ui, ("mk3_knob", i), value, &spec) {
@@ -812,6 +904,7 @@ impl eframe::App for GuiApp {
                 1 => StudioView::Mixer,
                 2 => StudioView::Sampler,
                 3 => StudioView::Browser,
+                4 => StudioView::AcidSynth,
                 _ => StudioView::Sequencer,
             };
         }
@@ -831,6 +924,7 @@ impl eframe::App for GuiApp {
                     (StudioView::Sequencer, "🎹 SÉQUENCEUR"),
                     (StudioView::Mixer, "🎚 MIXER"),
                     (StudioView::Sampler, "🎛 SAMPLER"),
+                    (StudioView::AcidSynth, "⚡ ACID TB-303"),
                     (StudioView::Browser, "🗂 BROWSER"),
                 ] {
                     let active = self.view == v;

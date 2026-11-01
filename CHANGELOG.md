@@ -2,6 +2,36 @@
 
 Tous les changements notables.
 
+### Synthétiseur Acid TB-303 (Hardware MK3 & Desktop GUI)
+- **Module DSP Acid 303 complet** (`crates/maschine-engine/src/acid_synth.rs`) :
+  - Oscillateur PolyBLEP anti-repliement (formes d'onde Sawtooth et Square) avec décalage d'octave et portamento/slide analogique.
+  - Filtre passe-bas résonant 4 pôles (24 dB/oct) non-linéaire avec saturation tangente hyperbolique (tanh), auto-oscillation acid au-delà de 80% de résonance, modulation d'enveloppe et accent sensible à la vélocité.
+  - Distorsion / overdrive analogique à waveshaping tanh avec contrôle de tonalité post-clipping et mixage dry/wet.
+  - Delay stéréo ping-pong avec réinjection amortie (damping) et mixage dry/wet.
+  - 4 presets intégrés : Classic Acid, Squelch Lead, Distorted Acid, Dub Echo.
+- **Rendu double écran Maschine MK3 (480×272)** (`crates/maschine-engine/src/display_render.rs`) :
+  - Écran Gauche (Onglet 4) : Affichage en temps réel de la forme d'onde oscillateur, courbe de réponse en fréquence du filtre résonant avec curseur de cutoff, badges d'état et mapping des encodeurs 1..4 (Cutoff, Reso, EnvMod, Decay).
+  - Écran Droit : Visualisation de la courbe de distorsion tanh, barres d'échos du delay ping-pong, sélecteur de presets et mapping des encodeurs 5..8 (Accent, Drive, Time, Mix).
+  - Boutons de fonction / Soft Keys 1..8 : bascule SAW/SQUARE, Octave -/+, Slide, et sélection instantanée des 4 presets.
+- **Support matériel Maschine MK3** (`crates/maschine-hardware/src/mapper.rs`) :
+  - Le bouton physique `PLUGIN` bascule directement sur l'écran Acid Synth (onglet 4), et sa LED s'illumine.
+  - Les 8 encodeurs rotatifs sont routés en temps réel vers les 8 paramètres de synthèse correspondants.
+- **Interface graphique Desktop (GUI)** (`crates/maschine-app/src/gui/views/synth.rs`) :
+  - Vue dédiée "⚡ ACID TB-303" accessible via le rail de navigation gauche et le raccourci clavier `T`.
+  - Visualisations interactives egui pour l'oscillateur, la courbe de coupure/résonance du filtre, la distorsion et les répétitions du delay.
+  - Clavier virtuel 16 touches (C1 à D#2) pour jouer et tester instantanément la ligne acid à la souris.
+  - Synchronisation bidirectionnelle avec les écrans et encodeurs MK3.
+- **Projet de démonstration** : Le Pad 15 (groupe A) est configuré par défaut comme synthétiseur Acid 303 avec un motif de basse acid sur 2 mesures.
+
+### GUI autonome pour le développement
+- La commande `maschine-linux gui` démarre désormais sans Maschine connectée :
+  moteur, interface souris/clavier, MIDI virtuel et audio système restent
+  utilisables.
+- La détection, HID, LEDs et LCD restent optionnels pour la GUI, tandis que le
+  daemon headless conserve son exigence de contrôleur.
+- Une sortie audio mémorisée mais indisponible hors ligne bascule sur la sortie
+  système, sauf choix explicite via `--audio-device`.
+
 ### Sampler, persistance et fluidité
 - Les samples sont identifiés par paire Group/Sound : deux groupes peuvent utiliser le même numéro de pad sans partager ou arrêter la mauvaise voix.
 - L'import WAV est décodé en tâche de fond, vérifie les données avant de remplacer un Sound, corrige la normalisation PCM signé 32 bits et conserve le son en place si le fichier est invalide.

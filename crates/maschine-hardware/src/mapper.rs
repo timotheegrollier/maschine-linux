@@ -306,6 +306,23 @@ pub enum MapperAction {
     /// Soft key d'écran (1..8) — action contextuelle décidée par l'Engine
     /// (les labels affichés sous les écrans correspondent exactement).
     SoftKey(u8),
+    // ─── Acid Synth (tab 4) ───────────────────────────────────
+    /// Knob 1 : Cutoff filtre acid
+    AcidCutoffDelta(f32),
+    /// Knob 2 : Résonance filtre acid
+    AcidResoDelta(f32),
+    /// Knob 3 : Modulation enveloppe acid
+    AcidEnvModDelta(f32),
+    /// Knob 4 : Decay enveloppe acid
+    AcidDecayDelta(f32),
+    /// Knob 5 : Accent acid
+    AcidAccentDelta(f32),
+    /// Knob 6 : Drive distortion acid
+    AcidDriveDelta(f32),
+    /// Knob 7 : Temps delay acid
+    AcidDelayTimeDelta(f32),
+    /// Knob 8 : Mix delay acid
+    AcidDelayMixDelta(f32),
 }
 
 /// Données du séquenceur pour mettre à jour les LEDs du contrôleur physique
@@ -988,7 +1005,7 @@ impl HardwareMapper {
                             actions.push(MapperAction::SetRightTab(2));
                         }
                         ButtonId::Plugin => {
-                            self.select_left_tab(2, &mut actions); // SAMPLER / Sound Editor
+                            self.select_left_tab(4, &mut actions); // ACID SYNTH / TB-303
                         }
                         ButtonId::ChannelMidi => {
                             self.select_left_tab(1, &mut actions); // MIXER
@@ -1128,6 +1145,19 @@ impl HardwareMapper {
                                 5 => actions.push(MapperAction::SoundDecayDelta(delta as f32)),
                                 6 => actions.push(MapperAction::SoundSustainDelta(delta as f32)),
                                 _ => actions.push(MapperAction::SoundReleaseDelta(delta as f32)),
+                            }
+                        } else if self.left_tab == 4 {
+                            // ACID SYNTH : 1 CUTOFF, 2 RESO, 3 ENVMOD, 4 DECAY,
+                            // 5 ACCENT, 6 DRIVE, 7 DELAY TIME, 8 DELAY MIX.
+                            match idx {
+                                0 => actions.push(MapperAction::AcidCutoffDelta(delta as f32)),
+                                1 => actions.push(MapperAction::AcidResoDelta(delta as f32)),
+                                2 => actions.push(MapperAction::AcidEnvModDelta(delta as f32)),
+                                3 => actions.push(MapperAction::AcidDecayDelta(delta as f32)),
+                                4 => actions.push(MapperAction::AcidAccentDelta(delta as f32)),
+                                5 => actions.push(MapperAction::AcidDriveDelta(delta as f32)),
+                                6 => actions.push(MapperAction::AcidDelayTimeDelta(delta as f32)),
+                                _ => actions.push(MapperAction::AcidDelayMixDelta(delta as f32)),
                             }
                         } else if self.left_tab == 3 {
                             // BROWSER :
@@ -1439,6 +1469,8 @@ impl HardwareMapper {
             .set_button_raw(offsets::SAMPLING, if self.left_tab == 2 { 7 } else { 1 });
         self.led_state
             .set_button_raw(offsets::BROWSER, if self.left_tab == 3 { 7 } else { 1 });
+        self.led_state
+            .set_button_raw(offsets::PLUGIN, if self.left_tab == 4 { 7 } else { 1 });
         self.led_state
             .set_button_raw(offsets::SETTINGS, if self.right_tab == 3 { 7 } else { 1 });
 

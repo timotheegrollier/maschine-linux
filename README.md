@@ -12,7 +12,7 @@ Workspace Cargo avec 4 crates principaux :
 |---|---|
 | `maschine-proto` | Codec pur (sans I/O) : HID IN `0x01` (boutons, encodeur 4D 4 directions)/`0x02` (pads), HID OUT `0x80`/`0x81`, Bulk Display RGB565 brut avec fenêtres partielles alignées, palette couleurs |
 | `maschine-hardware` | Découverte USB (`hidraw` + `nusb`/`rusb` fallback), threads temps-réel, mapper hardware complet, modes Pad/Step/Keyboard/Chords |
-| `maschine-engine` | Domaine : Project/Group/Sound/Pattern/Scene/Section, Transport, Sequencer multi-mesures, Drum Synth 808 (16 instruments), Rendu double LCD 480×272 |
+| `maschine-engine` | Domaine : Project/Group/Sound/Pattern/Scene/Section, Transport, Sequencer multi-mesures, Drum Synth 808 (16 instruments), Synthétiseur Acid TB-303, Rendu double LCD 480×272 |
 | `maschine-app` | Binaire `maschine-linux` : Application native avec GUI `egui`, daemon headless, PipeWire low-latency |
 
 Temps-réel : l'instantané moteur est partagé en `Arc` (copy-on-write, lectures O(1)), un compteur de révision ne redessine que ce qui a changé, les VU-mètres sont calculés dans le callback audio et le thread HID réveille la GUI instantanément. Audio : buffer 256 frames (période 64 ≈ 1,3 ms) à 48 kHz, **limiteur doux master** (jamais d'écrêtage dur), notes placées **au sample près** dans le bloc, kit DSP régénéré au taux réel du device. Instrumentation : `--debug-latency` (HID→Engine, buffer réel, misses, erreurs) et `--stress` (charge volontaire).
@@ -47,8 +47,8 @@ cargo build --release
 # Lancer la suite complète de tests
 cargo test --workspace
 
-# Lancer l'application avec GUI et détection hardware automatique
-target/release/maschine-linux
+# Lancer le DAW en GUI (la Maschine est optionnelle : mode autonome sans MK3)
+target/release/maschine-linux gui
 
 # Lancer en mode daemon headless avec logs détaillés
 target/release/maschine-linux daemon --verbose
@@ -98,6 +98,7 @@ GPL-3.0-or-later. Forks doivent publier les sources (AGPL non utilisée volontai
 - [x] ALSA Seq bridge & JACK MIDI
 - [x] Engine: Project JSON, Transport, Step sequencer multi-mesures, swing, mode STEP (curseur de pas éditable : VEL/POS/LEN/PITCH au knob, scroll de la grille complète)
 - [x] Drum Synth 808 temps-réel (16 instruments analogiques modélisés)
+- [x] Synthétiseur Acid TB-303 temps-réel (PolyBLEP saw/square, filtre résonant non-linéaire 4 pôles à saturation tanh, distorsion analogique, delay ping-pong stéréo, double écran LCD onglet 4 et vue GUI complète avec clavier virtuel)
 - [x] GUI egui: Séquenceur 16 pistes, Grille 4×4 pads, Éditeur son/filtres, Mixer 8 groupes
 - [x] Écrans MK3: Double écran LCD couleur 480×272 temps-réel (ARRANGE, PATTERN/STEP, SONG, SCENES, MIXER, SAMPLER, BROWSER, EVENTS, MACRO, SETTINGS) avec soft keys contextuels (labels = actions réelles), valeurs live et rafraîchissement immédiat à chaque action (~30 FPS maxi)
 - [x] Réactivité: snapshots `Arc<Project>` copy-on-write, repaint piloté par révision, VU-mètres réels par groupe + master (peak hold), `--debug-latency`

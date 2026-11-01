@@ -15,7 +15,7 @@ maschine-linux project show demo.json
 maschine-linux project validate demo.json
 maschine-linux daemon
 maschine-linux daemon --project my.json
-maschine-linux gui --project my.json   # --features gui
+maschine-linux gui --project my.json   # GUI, Maschine optionnelle
 ```
 
 ## Daemon
@@ -46,13 +46,15 @@ Logs : `RUST_LOG=debug maschine-linux -vv daemon`
   - **Pression (Push)** : pré-écoute one-shot du son actif (ou chargement du preset sélectionné en mode Browser) — ne déclenche pas intempestivement la lecture en boucle.
   - **Rotation** : ajustement fin selon le focus actif (Tempo, Volume Master, Swing).
 - **Écrans LCD couleur (2 × 480×272)** :
-  - **Display Buttons 1..4 (Écran gauche)** : sélection d'onglets (ARRANGE, MIXER, SAMPLER, BROWSER).
+  - **Display Buttons 1..4 (Écran gauche) & Bouton PLUGIN** : sélection d'onglets (ARRANGE, MIXER, SAMPLER, BROWSER, et ACID SYNTH via le bouton physique **PLUGIN**).
   - **Display Buttons 5..8 (Écran droit)** : sélection directe de la mesure affichée/éditée (BAR 1, BAR 2, BAR 3, BAR 4) ; avec **Shift**, dimensionnement du pattern (1, 2, 4, 8 mesures).
   - **8 Potentiomètres crantés sous écrans** :
     - *MIXER* : volumes des Groupes A..H.
     - *SAMPLER* : boutons 1..4 = Vol, Pan, Cutoff filtre, Résonance ; 5..8 = Attack, Decay, Sustain, Release ADSR.
+    - *ACID SYNTH* : boutons 1..4 = Cutoff, Résonance, Modulation Enveloppe, Decay ; 5..8 = Accent, Drive distorsion, Delay Time, Delay Mix.
     - *BROWSER* : molette sélection de pad et défilement presets 808.
     - *ARRANGE* : tempo, swing, volume et filtre global.
+  - **Soft Keys Acid Synth (onglet 4)** : `[1: SAW/SQR]`, `[2: OCT -]`, `[3: OCT +]`, `[4: SLIDE]`, `[5: CLASSIC]`, `[6: SQUELCH]`, `[7: DISTORT]`, `[8: DUB]`.
 - **Groupes A..H** : sélection instantanée du groupe actif, combinaison avec touches **MUTE** et **SOLO** pour mise en sourdine / solo immédiats.
 - **Transport** : PLAY, REC, STOP, RESTART, TAP (métronome), ERASE (effacement notes par pad).
 - **Touchstrip** : modulation / pitch bend avec feedback visuel ruban LED.
@@ -69,6 +71,14 @@ maschine-linux daemon --project my_project.json
 
 ## GUI intégrée (`egui`)
 
+La GUI démarre aussi sans Maschine connectée : le moteur, les contrôles souris/
+clavier, le MIDI virtuel et la sortie audio système restent disponibles pour le
+développement. Si une MK3 avec `hidraw` est détectée au lancement, les entrées,
+LEDs et écrans matériels s'activent automatiquement. Le daemon headless reste
+volontairement strict et exige le contrôleur. Une sortie audio mémorisée mais
+absente (par exemple la MK3 débranchée) bascule sur la sortie système, sauf si
+`--audio-device` a été fourni explicitement.
+
 La GUI native affiche en temps réel :
 
 - **Barre supérieure de transport** : BPM, Swing, curseur temporel BBT, état Play/Rec/Stop/Loop, monitoring CPU et voix actives, métronome.
@@ -78,6 +88,7 @@ La GUI native affiche en temps réel :
   - 16 lignes d'instruments complètes avec boutons de pré-écoute `▶` et 16 pas par mesure.
 - **Grille de pads 4×4** : disposition identique au hardware MK3 pour frappe directe à la souris ou écran tactile.
 - **Éditeur de son / synthétiseur** : sélecteur de présets 808 (Kick, Snare, Hi-Hats, Clap, Tom, Rimshot, Cowbell, SubBass...), réglage dynamique de gain, panoramique, filtre coupe-bas/passe-haut résonant et enveloppe ADSR.
+- **Synthétiseur Acid TB-303 (touche T)** : vue dédiée avec oscillateur PolyBLEP (Saw/Square, octave, slide), filtre passe-bas résonant 4 pôles avec affichage de la courbe de réponse en fréquence, waveshaper de distorsion tanh avec courbe de transfert dynamique, delay stéréo ping-pong avec aperçu graphique des échos, sélecteur de presets rapides et clavier virtuel 16 touches (C1 à D#2) pour jouer directement à la souris.
 - **Mixer 8 groupes (A..H)** : faders de volume, indicateurs de crête, mute et solo.
 - **Importer un sample** : dans Sampler, renseigner le chemin d'un fichier WAV et lancer l'import. Le décodage se fait en arrière-plan; la GUI reste interactive. Le Sound sélectionné est remplacé et le chemin est enregistré dans le projet.
 

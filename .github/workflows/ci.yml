@@ -16,10 +16,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies (ALSA, udev)
+      - name: Install system dependencies (ALSA, udev, JACK)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libudev-dev desktop-file-utils
+          sudo apt-get install -y libasound2-dev libudev-dev libjack-jackd2-dev desktop-file-utils
 
       - uses: dtolnay/rust-toolchain@stable
         with:

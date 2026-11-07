@@ -20,7 +20,7 @@ mkdir -p "${OUT_DIR}"
 
 if command -v cargo-deb >/dev/null 2>&1; then
     echo "==> Génération DEB via cargo-deb..."
-    (cd crates/maschine-app && cargo deb --target-dir ../../target)
+    cargo deb -p maschine-app --no-build
     find target/debian -name "*.deb" -exec cp {} "${OUT_DIR}/" \;
     echo "✓ DEB créé dans ${OUT_DIR}/"
     ls -la "${OUT_DIR}"/*.deb

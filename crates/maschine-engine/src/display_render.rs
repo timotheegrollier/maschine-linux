@@ -1815,11 +1815,11 @@ pub fn render_daw_right(snap: &EngineSnapshot) -> DisplayFrame {
     }
 
     // Encodeurs réels 5..8 : VOL SND, CUTOFF, RESO, MASTER.
-    let s_db = focus_sound(snap).map(|s| s.volume_db).unwrap_or(0.0);
     let cut = focus_sound(snap)
         .map(|s| s.filter.cutoff_hz)
         .unwrap_or(20000.0);
     let reso = focus_sound(snap).map(|s| s.filter.resonance).unwrap_or(0.0);
+    let s_db = focus_sound(snap).map(|s| s.volume_db).unwrap_or(0.0);
     let slots = [
         Some(("5:VOL SND", fmt_db(s_db), db_norm(s_db), p.cyan)),
         Some((
@@ -2733,22 +2733,22 @@ pub fn render_mixer_left(snap: &EngineSnapshot) -> DisplayFrame {
         );
     }
 
-    let gvols = [
-        ("1:VOL A", 0usize),
-        ("2:VOL B", 1),
-        ("3:VOL C", 2),
-        ("4:VOL D", 3),
+    let gi = snap.group_focus as usize;
+    let s_db = focus_sound(snap).map(|s| s.volume_db).unwrap_or(0.0);
+    let s_pan = focus_sound(snap).map(|s| s.pan).unwrap_or(0.0);
+    let gvol = snap
+        .project
+        .groups
+        .get(gi)
+        .map(|g| g.volume_db)
+        .unwrap_or(0.0);
+    let gpan = snap.project.groups.get(gi).map(|g| g.pan).unwrap_or(0.0);
+    let slots = [
+        Some(("1:VOL SND", fmt_db(s_db), db_norm(s_db), p.cyan)),
+        Some(("2:PAN SND", fmt_pan(s_pan), (s_pan + 1.0) * 0.5, p.cyan)),
+        Some(("3:VOL GRP", fmt_db(gvol), db_norm(gvol), p.green)),
+        Some(("4:PAN GRP", fmt_pan(gpan), (gpan + 1.0) * 0.5, p.green)),
     ];
-    let mut slots: [EncSlot<'_>; 4] = [None, None, None, None];
-    for (i, (label, gi)) in gvols.iter().enumerate() {
-        let v = snap
-            .project
-            .groups
-            .get(*gi)
-            .map(|g| g.volume_db)
-            .unwrap_or(0.0);
-        slots[i] = Some((label, fmt_db(v), db_norm(v), p.green));
-    }
     encoder_row(&mut frame, &p, &slots);
 
     let mut active = [false; 8];
@@ -2961,22 +2961,36 @@ pub fn render_mixer_right(snap: &EngineSnapshot) -> DisplayFrame {
     );
     draw_adsr(&mut frame, &p, 252, 142, 218, 44, &adsr);
 
-    let mut slots: [EncSlot<'_>; 4] = [None, None, None, None];
-    for (i, gi) in (4..8usize).enumerate() {
-        let v = snap
-            .project
-            .groups
-            .get(gi)
-            .map(|g| g.volume_db)
-            .unwrap_or(0.0);
-        let label = match gi {
-            4 => "5:VOL E",
-            5 => "6:VOL F",
-            6 => "7:VOL G",
-            _ => "8:VOL H",
-        };
-        slots[i] = Some((label, fmt_db(v), db_norm(v), p.green));
-    }
+    let cut = focus_sound(snap)
+        .map(|s| s.filter.cutoff_hz)
+        .unwrap_or(20000.0);
+    let reso = focus_sound(snap).map(|s| s.filter.resonance).unwrap_or(0.0);
+    let slots = [
+        Some((
+            "5:CUTOFF",
+            format!("{:.0}Hz", cut),
+            (cut / 20000.0).clamp(0.0, 1.0),
+            p.accent,
+        )),
+        Some((
+            "6:RESO",
+            format!("{:.0}%", reso * 100.0),
+            reso.clamp(0.0, 1.0),
+            p.accent,
+        )),
+        Some((
+            "7:MASTER",
+            format!("{:.0}%", snap.master_volume * 100.0),
+            snap.master_volume,
+            p.accent,
+        )),
+        Some((
+            "8:CASQUE",
+            format!("{:.0}%", snap.headphone_volume * 100.0),
+            snap.headphone_volume,
+            p.cyan,
+        )),
+    ];
     encoder_row(&mut frame, &p, &slots);
 
     let mut active = [false; 8];
@@ -3706,6 +3720,228 @@ pub fn render_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
     frame
 }
 
+// ── PROJECT BROWSER / FILE ─────────────────────────────────────────────
+
+/// Écran gauche — navigateur de projets (FILE).
+#[must_use]
+pub fn render_project_browser_left(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
+    let entries = &snap.project_entries;
+    let total = entries.len();
+    let selected = if total == 0 {
+        0
+    } else {
+        snap.project_selected.min(total - 1)
+    };
+    header(
+        &mut frame,
+        &p,
+        snap,
+        "FILE | PROJETS",
+        &format!(
+            "{}/{} | {}",
+            if total == 0 { 0 } else { selected + 1 },
+            total,
+            if snap.current_project_path.is_some() {
+                "SAUVE"
+            } else {
+                "NOUVEAU"
+            }
+        ),
+    );
+
+    if total == 0 {
+        draw_text(&mut frame, 10, 44, "Aucun projet trouve.", p.white, p.bg);
+        draw_text(
+            &mut frame,
+            10,
+            64,
+            "FILE SAVE: ouvrir | SHIFT+FILE SAVE: rapide",
+            p.dim,
+            p.bg,
+        );
+        draw_text(
+            &mut frame,
+            10,
+            82,
+            "Dossier: ~/.local/share/maschine-linux/projects",
+            p.muted,
+            p.bg,
+        );
+    } else {
+        // Fenêtre de 8 lignes centrée sur la sélection.
+        let win = 8usize;
+        let start = selected
+            .saturating_sub(win / 2)
+            .min(total.saturating_sub(win));
+        let mut y = 30usize;
+        for (i, entry) in entries.iter().enumerate().skip(start).take(win) {
+            let sel = i == selected;
+            let bg = if sel { p.panel2 } else { p.panel };
+            fill_rect(&mut frame, 6, y, 468, 19, bg);
+            draw_rect_outline(
+                &mut frame,
+                6,
+                y,
+                468,
+                19,
+                if sel { p.accent } else { p.border },
+            );
+            if sel {
+                fill_rect(&mut frame, 6, y, 3, 19, p.accent);
+            }
+            draw_text(
+                &mut frame,
+                14,
+                y + 5,
+                &format!("{:02}", i + 1),
+                if sel { p.accent } else { p.muted },
+                bg,
+            );
+            draw_text(
+                &mut frame,
+                42,
+                y + 5,
+                &trunc(&entry.name, 28),
+                if sel { p.white } else { p.dim },
+                bg,
+            );
+            draw_text(&mut frame, 280, y + 5, &trunc(&entry.meta, 10), p.muted, bg);
+            let is_current = snap
+                .current_project_path
+                .as_ref()
+                .map(|p| p == &entry.path)
+                .unwrap_or(false);
+            if is_current {
+                pill(&mut frame, &p, 360, y + 2, 54, "COURANT", p.green, true);
+            }
+            y += 21;
+        }
+    }
+
+    draw_text(
+        &mut frame,
+        8,
+        206,
+        "4D/POTAR: naviguer | ENCODER: charger | SHIFT+FILE: rapide",
+        p.muted,
+        p.bg,
+    );
+
+    let slots = [
+        Some(("1:NAV", "PROJET".to_string(), 0.0, p.cyan)),
+        Some(("2:--", String::new(), 0.0, p.border)),
+        Some(("3:--", String::new(), 0.0, p.border)),
+        Some((
+            "4:COURANT",
+            snap.current_project_path
+                .as_ref()
+                .and_then(|p| std::path::Path::new(p).file_stem())
+                .and_then(|s| s.to_str())
+                .map(|s| trunc(s, 12))
+                .unwrap_or_else(|| "NOUVEAU".to_string()),
+            0.0,
+            p.accent,
+        )),
+    ];
+    encoder_row(&mut frame, &p, &slots);
+    let active = [false; 8];
+    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    frame
+}
+
+/// Écran droit — détails et actions du projet sélectionné (FILE).
+#[must_use]
+pub fn render_project_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
+    let entry = snap.project_entries.get(snap.project_selected);
+    header(&mut frame, &p, snap, "FILE | PROJET", "CHARGER / SAUVER");
+
+    if let Some(entry) = entry {
+        draw_text_scaled(
+            &mut frame,
+            10,
+            36,
+            &trunc(&entry.name, 24),
+            2,
+            p.white,
+            p.bg,
+        );
+        draw_text(&mut frame, 10, 78, "CHEMIN", p.muted, p.bg);
+        draw_text(&mut frame, 10, 94, &trunc(&entry.path, 56), p.dim, p.bg);
+        draw_text(
+            &mut frame,
+            10,
+            114,
+            &format!("TAILLE: {}", entry.meta),
+            p.cyan,
+            p.bg,
+        );
+        let is_current = snap
+            .current_project_path
+            .as_ref()
+            .map(|p| p == &entry.path)
+            .unwrap_or(false);
+        if is_current {
+            pill(
+                &mut frame,
+                &p,
+                10,
+                138,
+                120,
+                "PROJET COURANT",
+                p.green,
+                true,
+            );
+        } else {
+            pill(&mut frame, &p, 10, 138, 120, "CHARGER", p.accent, true);
+        }
+    } else {
+        draw_text(
+            &mut frame,
+            10,
+            44,
+            "Aucun projet selectionne.",
+            p.white,
+            p.bg,
+        );
+        draw_text(
+            &mut frame,
+            10,
+            66,
+            "SAVE cree un projet dans le dossier FILE.",
+            p.dim,
+            p.bg,
+        );
+    }
+
+    draw_text(
+        &mut frame,
+        10,
+        170,
+        "SOFT: CHARGER | SAVE | QUICK | RAFRAICHIR",
+        p.dim,
+        p.bg,
+    );
+    let slots = [
+        Some(("5:ACTION", "CHARGER".to_string(), 0.0, p.green)),
+        Some(("6:SAVE", "PRETTY".to_string(), 1.0, p.accent)),
+        Some(("7:QUICK", "COMPACT".to_string(), 1.0, p.cyan)),
+        Some((
+            "8:MASTER",
+            format!("{:.0}%", snap.master_volume * 100.0),
+            snap.master_volume,
+            p.accent,
+        )),
+    ];
+    encoder_row(&mut frame, &p, &slots);
+    let active = [false; 8];
+    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    frame
+}
+
 // ── EVENTS / MACRO / SETTINGS ──────────────────────────────────────────
 
 /// Écran droit — vue EVENTS : événements du pattern (mesure sélectionnée).
@@ -3927,6 +4163,7 @@ pub fn render_macro_right(snap: &EngineSnapshot) -> DisplayFrame {
         .map(|s| s.filter.cutoff_hz)
         .unwrap_or(20000.0);
     let reso = focus_sound(snap).map(|s| s.filter.resonance).unwrap_or(0.0);
+    let s_db = focus_sound(snap).map(|s| s.volume_db).unwrap_or(0.0);
     let slots = [
         Some(("5:VOL SND", fmt_db(s_db), db_norm(s_db), p.cyan)),
         Some((
@@ -4181,6 +4418,401 @@ pub fn render_settings_right(snap: &EngineSnapshot) -> DisplayFrame {
 
 // ── Dispatch ───────────────────────────────────────────────────────────
 
+// ── KEYBOARD / CHORDS ──────────────────────────────────────────────────
+
+fn midi_note_name(note: u8) -> String {
+    let names = crate::keyboard::NOTE_NAMES;
+    let octave = (note as i32 / 12) - 1;
+    format!("{}{}", names[note as usize % 12], octave)
+}
+
+#[must_use]
+pub fn render_keyboard_left(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
+    let kb = snap.keyboard;
+    let scale = kb.scale_def();
+    header(
+        &mut frame,
+        &p,
+        snap,
+        "KEYBOARD",
+        &format!(
+            "{} {} | {} | OCT {}",
+            kb.root_name(),
+            scale.name,
+            group_letter(snap.group_focus),
+            kb.octave
+        ),
+    );
+
+    let base_y = 34usize;
+    for row in 0..2usize {
+        for col in 0..8usize {
+            let pad = row * 8 + col;
+            let note = kb.keyboard_note(pad as u8);
+            let x = 8 + col * 59;
+            let y = base_y + row * 76;
+            let active = snap.triggered_pads[pad] || snap.pad_activity[pad] > 0.15;
+            let bg = if active {
+                p.accent
+            } else if row == 0 {
+                p.panel2
+            } else {
+                p.panel
+            };
+            fill_rect(&mut frame, x, y, 55, 70, bg);
+            draw_rect_outline(
+                &mut frame,
+                x,
+                y,
+                55,
+                70,
+                if active { p.white } else { p.border },
+            );
+            let nn = midi_note_name(note);
+            draw_text_scaled(
+                &mut frame,
+                x + 6,
+                y + 8,
+                &nn,
+                2,
+                if active { p.bg } else { p.white },
+                bg,
+            );
+            draw_text(
+                &mut frame,
+                x + 6,
+                y + 38,
+                &format!("P{:02}", pad + 1),
+                p.muted,
+                bg,
+            );
+            draw_text(
+                &mut frame,
+                x + 6,
+                y + 54,
+                &format!("N{:03}", note),
+                p.dim,
+                bg,
+            );
+        }
+    }
+
+    let slots = [
+        Some((
+            "1:ROOT",
+            kb.root_name().to_string(),
+            kb.root as f32 / 11.0,
+            p.cyan,
+        )),
+        Some((
+            "2:SCALE",
+            trunc(scale.name, 10),
+            kb.scale as f32 / 7.0,
+            p.accent,
+        )),
+        Some((
+            "3:OCT",
+            format!("{}", kb.octave),
+            kb.octave as f32 / 8.0,
+            p.cyan,
+        )),
+        Some((
+            "4:SND",
+            format!("{:02}", snap.active_sound + 1),
+            snap.active_sound as f32 / 15.0,
+            p.green,
+        )),
+    ];
+    encoder_row(&mut frame, &p, &slots);
+    let active = [false; 8];
+    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    frame
+}
+
+#[must_use]
+pub fn render_keyboard_right(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
+    let kb = snap.keyboard;
+    let scale = kb.scale_def();
+    let s_name = sound_name(snap, snap.active_sound as usize);
+    header(
+        &mut frame,
+        &p,
+        snap,
+        "KEYBOARD | INFO",
+        &format!(
+            "GRP {} SND {:02}",
+            group_letter(snap.group_focus),
+            snap.active_sound + 1
+        ),
+    );
+    draw_text_scaled(
+        &mut frame,
+        10,
+        36,
+        &format!("{} {}", kb.root_name(), scale.name),
+        2,
+        p.accent,
+        p.bg,
+    );
+    draw_text(
+        &mut frame,
+        10,
+        78,
+        &format!("OCTAVE: {}  |  SON: {}", kb.octave, trunc(&s_name, 20)),
+        p.white,
+        p.bg,
+    );
+    draw_text(
+        &mut frame,
+        10,
+        98,
+        "DISPLAY BTN / SOFT KEYS: gammes et fondamentales",
+        p.dim,
+        p.bg,
+    );
+    draw_text(
+        &mut frame,
+        10,
+        118,
+        "Pads: jouent le son actif dans la gamme sélectionnée.",
+        p.dim,
+        p.bg,
+    );
+    draw_text(
+        &mut frame,
+        10,
+        138,
+        "SHIFT+FILE SAVE: sauvegarde rapide du projet.",
+        p.muted,
+        p.bg,
+    );
+
+    // scale degrees
+    let mut x = 10usize;
+    let y = 162usize;
+    for (i, &st) in scale.intervals.iter().take(12).enumerate() {
+        let name = crate::keyboard::NOTE_NAMES[(kb.root as usize + st as usize) % 12];
+        let bg = if i == 0 { p.accent } else { p.panel2 };
+        fill_rect(&mut frame, x, y, 34, 22, bg);
+        draw_rect_outline(&mut frame, x, y, 34, 22, p.border);
+        draw_text(
+            &mut frame,
+            x + 4,
+            y + 6,
+            name,
+            if i == 0 { p.bg } else { p.white },
+            bg,
+        );
+        x += 37;
+        if x > 430 {
+            break;
+        }
+    }
+
+    let slots = [
+        Some(("5:MODE", "KEYS".to_string(), 1.0, p.green)),
+        Some((
+            "6:GRP",
+            group_letter(snap.group_focus).to_string(),
+            snap.group_focus as f32 / 7.0,
+            p.cyan,
+        )),
+        Some(("7:--", String::new(), 0.0, p.border)),
+        Some((
+            "8:MASTER",
+            format!("{:.0}%", snap.master_volume * 100.0),
+            snap.master_volume,
+            p.accent,
+        )),
+    ];
+    encoder_row(&mut frame, &p, &slots);
+    let active = [false; 8];
+    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    frame
+}
+
+#[must_use]
+pub fn render_chords_left(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
+    let kb = snap.keyboard;
+    let scale = kb.scale_def();
+    let chord = kb.chord_def();
+    header(
+        &mut frame,
+        &p,
+        snap,
+        "CHORDS",
+        &format!(
+            "{} {} | {} INV{}",
+            kb.root_name(),
+            scale.name,
+            chord.name,
+            kb.inversion
+        ),
+    );
+    let base_y = 34usize;
+    for row in 0..2usize {
+        for col in 0..8usize {
+            let pad = row * 8 + col;
+            let notes = kb.chord_notes(pad as u8);
+            let x = 8 + col * 59;
+            let y = base_y + row * 76;
+            let active = snap.triggered_pads[pad] || snap.pad_activity[pad] > 0.15;
+            let bg = if active { p.accent } else { p.panel };
+            fill_rect(&mut frame, x, y, 55, 70, bg);
+            draw_rect_outline(
+                &mut frame,
+                x,
+                y,
+                55,
+                70,
+                if active { p.white } else { p.border },
+            );
+            let label = if let Some(n) = notes.first() {
+                midi_note_name(*n)
+            } else {
+                "-".into()
+            };
+            draw_text(
+                &mut frame,
+                x + 4,
+                y + 6,
+                &trunc(&label, 6),
+                if active { p.bg } else { p.white },
+                bg,
+            );
+            draw_text(
+                &mut frame,
+                x + 4,
+                y + 24,
+                &format!("{}n", notes.len()),
+                p.cyan,
+                bg,
+            );
+            draw_text(
+                &mut frame,
+                x + 4,
+                y + 42,
+                &format!("P{:02}", pad + 1),
+                p.muted,
+                bg,
+            );
+            let deg = (pad % scale.intervals.len()) + 1;
+            draw_text(&mut frame, x + 4, y + 56, &format!("deg{}", deg), p.dim, bg);
+        }
+    }
+    let slots = [
+        Some((
+            "1:ROOT",
+            kb.root_name().to_string(),
+            kb.root as f32 / 11.0,
+            p.cyan,
+        )),
+        Some((
+            "2:SCALE",
+            trunc(scale.name, 8),
+            kb.scale as f32 / 7.0,
+            p.accent,
+        )),
+        Some((
+            "3:CHORD",
+            trunc(chord.name, 8),
+            kb.chord as f32 / 7.0,
+            p.cyan,
+        )),
+        Some((
+            "4:INV",
+            format!("{}", kb.inversion),
+            kb.inversion as f32 / 3.0,
+            p.green,
+        )),
+    ];
+    encoder_row(&mut frame, &p, &slots);
+    let active = [false; 8];
+    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    frame
+}
+
+#[must_use]
+pub fn render_chords_right(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
+    let kb = snap.keyboard;
+    let scale = kb.scale_def();
+    let chord = kb.chord_def();
+    let s_name = sound_name(snap, snap.active_sound as usize);
+    header(
+        &mut frame,
+        &p,
+        snap,
+        "CHORDS | INFO",
+        &format!("{} {} {}", kb.root_name(), scale.name, chord.name),
+    );
+    draw_text_scaled(
+        &mut frame,
+        10,
+        36,
+        &format!("{} {}", kb.root_name(), chord.name),
+        2,
+        p.accent,
+        p.bg,
+    );
+    draw_text(
+        &mut frame,
+        10,
+        78,
+        &format!(
+            "Gamme: {}  Inversion: {}  Son: {}",
+            scale.name,
+            kb.inversion,
+            trunc(&s_name, 14)
+        ),
+        p.white,
+        p.bg,
+    );
+    draw_text(
+        &mut frame,
+        10,
+        98,
+        "Pads: accords diatoniques sur la gamme sélectionnée.",
+        p.dim,
+        p.bg,
+    );
+    draw_text(
+        &mut frame,
+        10,
+        118,
+        "Top buttons: ROOT/SCALE/CHORD/INV.",
+        p.dim,
+        p.bg,
+    );
+    let slots = [
+        Some((
+            "5:OCT",
+            format!("{}", kb.octave),
+            kb.octave as f32 / 8.0,
+            p.cyan,
+        )),
+        Some(("6:--", String::new(), 0.0, p.border)),
+        Some(("7:--", String::new(), 0.0, p.border)),
+        Some((
+            "8:MASTER",
+            format!("{:.0}%", snap.master_volume * 100.0),
+            snap.master_volume,
+            p.accent,
+        )),
+    ];
+    encoder_row(&mut frame, &p, &slots);
+    let active = [false; 8];
+    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    frame
+}
+
 /// Rend la paire d'écrans (gauche, droite) selon la vue/onglets courants.
 /// Partagée par le thread d'affichage USB et le miroir GUI (mêmes écrans).
 #[must_use]
@@ -4195,12 +4827,17 @@ pub fn render_screens(snap: &EngineSnapshot) -> (DisplayFrame, DisplayFrame) {
         match snap.left_tab {
             1 => render_mixer_left(snap),
             2 => render_sampler_left(snap),
+            3 if snap.browser_kind == 1 => render_project_browser_left(snap),
             3 => render_browser_left(snap),
             4 if snap.plugin_page == 0 => render_sampler_left(snap),
             4 => render_synth_left(snap),
             _ => {
                 if snap.controller_mode == 3 {
                     render_step_left(snap)
+                } else if snap.controller_mode == 1 {
+                    render_keyboard_left(snap)
+                } else if snap.controller_mode == 2 {
+                    render_chords_left(snap)
                 } else {
                     render_daw_left(snap)
                 }
@@ -4216,11 +4853,19 @@ pub fn render_screens(snap: &EngineSnapshot) -> (DisplayFrame, DisplayFrame) {
     } else if snap.left_tab == 2 && snap.right_tab == 0 {
         render_sampler_right(snap)
     } else if snap.left_tab == 3 && snap.right_tab == 0 {
-        render_browser_right(snap)
+        if snap.browser_kind == 1 {
+            render_project_browser_right(snap)
+        } else {
+            render_browser_right(snap)
+        }
     } else if snap.left_tab == 1 && snap.right_tab == 0 {
         render_mixer_right(snap)
     } else if snap.left_tab == 0 && snap.right_tab == 0 && snap.controller_mode == 3 {
         render_step_right(snap)
+    } else if snap.left_tab == 0 && snap.right_tab == 0 && snap.controller_mode == 1 {
+        render_keyboard_right(snap)
+    } else if snap.left_tab == 0 && snap.right_tab == 0 && snap.controller_mode == 2 {
+        render_chords_right(snap)
     } else {
         match snap.right_tab {
             1 => render_events_right(snap),

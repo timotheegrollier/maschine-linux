@@ -49,6 +49,10 @@ pub enum EngineEvent {
     },
     /// Save
     Save(std::path::PathBuf),
+    /// Sauvegarde le projet courant (rapide=JSON compact, sinon pretty).
+    SaveCurrent { quick: bool },
+    /// Définit le chemin du projet courant.
+    SetProjectPath(Option<String>),
     /// Load
     Load(std::path::PathBuf),
     /// Master volume 0.0..1.0
@@ -192,6 +196,27 @@ pub enum EngineEvent {
     SetEraseMode(bool),
     /// Miroir mode de jeu 0..3
     SetControllerMode(u8),
+    /// Déclenche le son actif à une note MIDI (modes Keyboard/Chords).
+    KeyboardTrigger {
+        /// Note MIDI 0..127
+        note: u8,
+        /// Vélocité 0..127
+        velocity: u8,
+        /// Appui / relâchement
+        pressed: bool,
+    },
+    /// Change la fondamentale Keyboard/Chords.
+    KeyboardRootDelta(i32),
+    /// Change la gamme Keyboard/Chords.
+    KeyboardScaleDelta(i32),
+    /// Change l'octave de base Keyboard/Chords.
+    KeyboardOctaveDelta(i32),
+    /// Change le type d'accord (mode Chords).
+    KeyboardChordDelta(i32),
+    /// Change l'inversion d'accord (mode Chords).
+    KeyboardInversionDelta(i32),
+    /// Remplace l'état musical Keyboard/Chords.
+    SetKeyboardState(crate::keyboard::KeyboardState),
     /// Bascule la boucle transport
     ToggleLoop,
     /// Bascule le métronome
@@ -256,6 +281,14 @@ pub enum EngineEvent {
     },
     /// Défilement preset dans le Browser (+/- step)
     BrowsePresetStep(i32),
+    /// Type de navigateur sur l'onglet BROWSER (0: presets 808, 1: projets FILE).
+    SetBrowserKind(u8),
+    /// Entrées du navigateur de projets (fournies par l'application).
+    SetProjectEntries(Vec<ProjectFileEntry>),
+    /// Défilement du navigateur courant.
+    BrowseBrowserStep(i32),
+    /// Charge l'élément sélectionné du navigateur courant.
+    LoadSelectedBrowserItem { group: u8, sound: u8 },
     /// Sélection de la mesure à afficher / éditer
     SelectBar(usize),
     /// Mesure suivante
@@ -337,6 +370,17 @@ pub const DRUM_PRESET_NAMES: [&str; 16] = [
     "Sub Bass 808",
 ];
 
+/// Entrée du navigateur de projets (FILE), affichable sur la MK3 et la GUI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectFileEntry {
+    /// Nom affiché (souvent le nom du fichier sans extension).
+    pub name: String,
+    /// Chemin absolu du fichier projet.
+    pub path: String,
+    /// Métadonnée courte (taille/date) pour les écrans.
+    pub meta: String,
+}
+
 /// Clé stable de runtime pour un Sound : le même pad d'un autre Group est un
 /// instrument distinct, comme dans le modèle Maschine.
 const fn sampler_sound_id(group: u8, sound: u8) -> crate::sampler::SoundId {
@@ -398,8 +442,18 @@ pub struct EngineSnapshot {
     pub erase_mode: bool,
     /// Mode de jeu : 0 Pad, 1 Keyboard, 2 Chords, 3 Step
     pub controller_mode: u8,
+    /// État musical Keyboard/Chords (gamme, fondamentale, octave, accords).
+    pub keyboard: crate::keyboard::KeyboardState,
     /// Index preset sélectionné dans le browser (0..15)
     pub browser_preset_idx: u8,
+    /// Type de navigateur (0: presets 808, 1: projets FILE).
+    pub browser_kind: u8,
+    /// Entrées du navigateur de projets.
+    pub project_entries: Vec<ProjectFileEntry>,
+    /// Entrée projet sélectionnée.
+    pub project_selected: usize,
+    /// Chemin du projet courant.
+    pub current_project_path: Option<String>,
     /// Mesure sélectionnée pour l'affichage / édition pas-à-pas (0-indexed : 0, 1, 2, 3...)
     pub selected_bar: usize,
     /// Pas sélectionné dans le step sequencer (index absolu 0..pattern_bars*16-1)
@@ -441,6 +495,8 @@ pub struct HardwareSnapshot {
     pub right_tab: u8,
     /// Page PLUGIN (0: Sound, 1: TB-303) — routage des knobs hardware.
     pub plugin_page: u8,
+    pub controller_mode: u8,
+    pub keyboard: crate::keyboard::KeyboardState,
     pub is_playing: bool,
     pub is_recording: bool,
     pub is_stopped: bool,
@@ -510,6 +566,14 @@ pub struct Engine {
     pub step_cursor: usize,
     /// Index preset sélectionné dans le Browser
     pub browser_preset_idx: u8,
+    /// Type de navigateur sur l'onglet BROWSER/FILE (0: presets 808, 1: projets).
+    pub browser_kind: u8,
+    /// Entrées du navigateur de projets.
+    pub project_entries: Vec<ProjectFileEntry>,
+    /// Entrée projet sélectionnée.
+    pub project_selected: usize,
+    /// Chemin du projet courant (sauvegarde rapide / FILE SAVE).
+    pub current_project_path: Option<String>,
     /// Mode Song (arranger) vs Ideas (scènes)
     pub song_mode: bool,
     /// Section active dans le Song
@@ -525,6 +589,8 @@ pub struct Engine {
     pub erase_mode: bool,
     /// Mode de jeu 0..3 (Pad/Keyboard/Chords/Step)
     pub controller_mode: u8,
+    /// État musical Keyboard/Chords.
+    pub keyboard: crate::keyboard::KeyboardState,
     /// Clic métronome accentué (début de mesure)
     click_accent: std::sync::Arc<Vec<f32>>,
     /// Clic métronome normal (temps)
@@ -740,6 +806,10 @@ impl Engine {
             selected_bar: 0,
             step_cursor: 0,
             browser_preset_idx: 0,
+            browser_kind: 0,
+            project_entries: Vec::new(),
+            project_selected: 0,
+            current_project_path: None,
             song_mode: false,
             active_section: None,
             pad_flash_until: [0; 16],
@@ -749,6 +819,7 @@ impl Engine {
             select_mode: false,
             erase_mode: false,
             controller_mode: 0,
+            keyboard: crate::keyboard::KeyboardState::default(),
             click_accent: Self::metronome_click(sample_rate, 1760.0),
             click_normal: Self::metronome_click(sample_rate, 880.0),
             group_meter: [0.0; 8],
@@ -823,7 +894,12 @@ impl Engine {
             select_mode: self.select_mode,
             erase_mode: self.erase_mode,
             controller_mode: self.controller_mode,
+            keyboard: self.keyboard,
             browser_preset_idx: self.browser_preset_idx,
+            browser_kind: self.browser_kind,
+            project_entries: self.project_entries.clone(),
+            project_selected: self.project_selected,
+            current_project_path: self.current_project_path.clone(),
             selected_bar,
             step_cursor,
             pattern_bars,
@@ -911,6 +987,8 @@ impl Engine {
             left_tab: self.left_tab,
             right_tab: self.right_tab,
             plugin_page: self.plugin_page,
+            controller_mode: self.controller_mode,
+            keyboard: self.keyboard,
             is_playing: playing,
             is_recording: recording,
             is_stopped: !playing && !recording,
@@ -1325,7 +1403,18 @@ impl Engine {
                 }
             }
             EngineEvent::Save(path) => {
-                self.project.read().save_json(&path)?;
+                self.project.read().save_json_with(&path, true)?;
+                self.current_project_path = Some(path.to_string_lossy().to_string());
+            }
+            EngineEvent::SaveCurrent { quick } => {
+                if let Some(path) = self.current_project_path.clone() {
+                    self.project
+                        .read()
+                        .save_json_with(std::path::Path::new(&path), !quick)?;
+                }
+            }
+            EngineEvent::SetProjectPath(path) => {
+                self.current_project_path = path;
             }
             EngineEvent::Load(path) => {
                 let p = Project::load_json(&path)?;
@@ -1340,6 +1429,11 @@ impl Engine {
                 self.sampler = sampler;
                 self.transport.bpm = p.bpm;
                 *self.project.write() = Arc::new(p);
+                self.current_project_path = Some(path.to_string_lossy().to_string());
+                self.sync_acid_from_active_sound();
+                if self.left_tab == 4 {
+                    self.sync_plugin_for_active_sound();
+                }
             }
             EngineEvent::MasterVolume(v) => {
                 self.master_volume = v.clamp(0.0, 1.0);
@@ -1999,6 +2093,76 @@ impl Engine {
             EngineEvent::SetControllerMode(v) => {
                 self.controller_mode = v.min(3);
             }
+            EngineEvent::KeyboardTrigger {
+                note,
+                velocity,
+                pressed,
+            } => {
+                if self.muted_groups & (1 << self.group_focus) != 0 {
+                    return Ok(());
+                }
+                let note = note.min(127);
+                let sound = sampler_sound_id(self.group_focus, self.active_sound);
+                if pressed {
+                    self.note_pad_activity(self.active_sound, velocity);
+                    let guard = self.project.read();
+                    let (group_gain, group_pan) = guard
+                        .groups
+                        .get(self.group_focus as usize)
+                        .map(|g| (10.0f32.powf(g.volume_db / 20.0), g.pan))
+                        .unwrap_or((1.0, 0.0));
+                    let snd_ref = guard
+                        .groups
+                        .get(self.group_focus as usize)
+                        .and_then(|g| g.sounds.get(self.active_sound as usize))
+                        .and_then(|s| s.as_ref());
+                    let synth_params = snd_ref.and_then(|s| s.synth.clone());
+                    let (snd_gain, snd_pan, vparams) = snd_ref
+                        .map(|s| {
+                            let filter_off = s.filter.kind == crate::project::FilterKind::Off;
+                            (
+                                10.0f32.powf(s.volume_db / 20.0),
+                                s.pan,
+                                crate::sampler::VoiceParams {
+                                    attack_ms: s.adsr.attack_ms,
+                                    decay_ms: s.adsr.decay_ms,
+                                    sustain: s.adsr.sustain,
+                                    release_ms: s.adsr.release_ms,
+                                    cutoff_hz: if filter_off {
+                                        20000.0
+                                    } else {
+                                        s.filter.cutoff_hz
+                                    },
+                                    resonance: if filter_off { 0.0 } else { s.filter.resonance },
+                                },
+                            )
+                        })
+                        .unwrap_or((1.0, 0.0, crate::sampler::VoiceParams::default()));
+                    drop(guard);
+                    if let Some(p) = synth_params {
+                        self.acid_synth.params = p;
+                        self.acid_synth.note_on(note, velocity);
+                    } else if let Some(idx) = self.sampler.note_on(sound, note, velocity, note) {
+                        self.sampler.set_voice_gain(idx, group_gain * snd_gain);
+                        self.sampler.set_voice_pan(idx, snd_pan);
+                        self.sampler.set_voice_group(idx, self.group_focus);
+                        self.sampler.set_voice_group_pan(idx, group_pan);
+                        self.sampler.set_voice_params(idx, &vparams);
+                    }
+                    if self.transport.state == TransportState::Recording {
+                        self.record_pad_event(self.active_sound, velocity);
+                    }
+                } else {
+                    self.acid_synth.note_off(note);
+                    self.sampler.note_off(sound, note);
+                }
+            }
+            EngineEvent::KeyboardRootDelta(d) => self.keyboard.cycle_root(d),
+            EngineEvent::KeyboardScaleDelta(d) => self.keyboard.cycle_scale(d),
+            EngineEvent::KeyboardOctaveDelta(d) => self.keyboard.cycle_octave(d),
+            EngineEvent::KeyboardChordDelta(d) => self.keyboard.cycle_chord(d),
+            EngineEvent::KeyboardInversionDelta(d) => self.keyboard.cycle_inversion(d),
+            EngineEvent::SetKeyboardState(state) => self.keyboard = state,
             EngineEvent::ToggleLoop => {
                 self.transport.loop_enabled = !self.transport.loop_enabled;
             }
@@ -2068,9 +2232,53 @@ impl Engine {
                 self.install_sample_zone(group, sound, zone)?;
             }
             EngineEvent::BrowsePresetStep(step) => {
-                let next = (self.browser_preset_idx as i32 + step).rem_euclid(16) as u8;
-                self.browser_preset_idx = next;
-                self.preview_preset(next);
+                if self.browser_kind == 1 {
+                    let len = self.project_entries.len().max(1);
+                    self.project_selected =
+                        (self.project_selected as i32 + step).rem_euclid(len as i32) as usize;
+                } else {
+                    let next = (self.browser_preset_idx as i32 + step).rem_euclid(16) as u8;
+                    self.browser_preset_idx = next;
+                    self.preview_preset(next);
+                }
+            }
+            EngineEvent::SetBrowserKind(kind) => {
+                self.browser_kind = kind.min(1);
+                if self.browser_kind == 1 {
+                    self.left_tab = 3;
+                }
+            }
+            EngineEvent::SetProjectEntries(entries) => {
+                self.project_entries = entries;
+                if self.project_selected >= self.project_entries.len() {
+                    self.project_selected = self.project_entries.len().saturating_sub(1);
+                }
+            }
+            EngineEvent::BrowseBrowserStep(step) => {
+                if self.browser_kind == 1 {
+                    let len = self.project_entries.len();
+                    if len > 0 {
+                        self.project_selected =
+                            (self.project_selected as i32 + step).rem_euclid(len as i32) as usize;
+                    }
+                } else {
+                    let next = (self.browser_preset_idx as i32 + step).rem_euclid(16) as u8;
+                    self.browser_preset_idx = next;
+                    self.preview_preset(next);
+                }
+            }
+            EngineEvent::LoadSelectedBrowserItem { group, sound } => {
+                if self.browser_kind == 1 {
+                    if let Some(entry) = self.project_entries.get(self.project_selected).cloned() {
+                        self.handle_event(EngineEvent::Load(std::path::PathBuf::from(entry.path)))?;
+                    }
+                } else {
+                    self.handle_event(EngineEvent::LoadDrumPreset {
+                        group,
+                        sound,
+                        preset_idx: self.browser_preset_idx,
+                    })?;
+                }
             }
             EngineEvent::SelectBar(bar) => {
                 let max_bars = {
@@ -2767,12 +2975,27 @@ impl Engine {
                 "PAS <", "PAS >", "BAR <", "BAR >", "1 MES", "2 MES", "4 MES", "8 MES",
             ];
         }
+        if self.controller_mode == 1 {
+            // KEYBOARD : les boutons haut changent gamme/fondamentale/octave.
+            return [
+                "ROOT -", "ROOT +", "SCALE-", "SCALE+", "OCT -", "OCT +", "CHROMA", "MINOR",
+            ];
+        }
+        if self.controller_mode == 2 {
+            // CHORDS : gammes/accords/inversions.
+            return [
+                "ROOT -", "ROOT +", "SCALE-", "SCALE+", "CHORD-", "CHORD+", "INV -", "INV +",
+            ];
+        }
         match self.left_tab {
             1 => [
                 "GRP A", "GRP B", "GRP C", "GRP D", "GRP E", "GRP F", "GRP G", "GRP H",
             ],
             2 => [
                 "SND 1", "SND 2", "SND 3", "SND 4", "SND 5", "SND 6", "SND 7", "SND 8",
+            ],
+            3 if self.browser_kind == 1 => [
+                "PROJ <", "PROJ >", "CHARGER", "SAUVER", "RAPIDE", "PRESETS", "METRO", "LOOP",
             ],
             3 => [
                 "PRES <", "PRES >", "SND <", "SND >", "ECOUTE", "CHARGER", "METRO", "LOOP",
@@ -2863,9 +3086,56 @@ impl Engine {
                 _ => self.handle_event(EngineEvent::SetPatternBars(8)),
             };
         }
+        if self.controller_mode == 1 {
+            return match idx {
+                0 => self.handle_event(EngineEvent::KeyboardRootDelta(-1)),
+                1 => self.handle_event(EngineEvent::KeyboardRootDelta(1)),
+                2 => self.handle_event(EngineEvent::KeyboardScaleDelta(-1)),
+                3 => self.handle_event(EngineEvent::KeyboardScaleDelta(1)),
+                4 => self.handle_event(EngineEvent::KeyboardOctaveDelta(-1)),
+                5 => self.handle_event(EngineEvent::KeyboardOctaveDelta(1)),
+                6 => self.handle_event(EngineEvent::SetKeyboardState(
+                    crate::keyboard::KeyboardState {
+                        scale: 0,
+                        ..self.keyboard
+                    },
+                )),
+                _ => self.handle_event(EngineEvent::SetKeyboardState(
+                    crate::keyboard::KeyboardState {
+                        scale: 2,
+                        ..self.keyboard
+                    },
+                )),
+            };
+        }
+        if self.controller_mode == 2 {
+            return match idx {
+                0 => self.handle_event(EngineEvent::KeyboardRootDelta(-1)),
+                1 => self.handle_event(EngineEvent::KeyboardRootDelta(1)),
+                2 => self.handle_event(EngineEvent::KeyboardScaleDelta(-1)),
+                3 => self.handle_event(EngineEvent::KeyboardScaleDelta(1)),
+                4 => self.handle_event(EngineEvent::KeyboardChordDelta(-1)),
+                5 => self.handle_event(EngineEvent::KeyboardChordDelta(1)),
+                6 => self.handle_event(EngineEvent::KeyboardInversionDelta(-1)),
+                _ => self.handle_event(EngineEvent::KeyboardInversionDelta(1)),
+            };
+        }
         match self.left_tab {
             1 => self.handle_event(EngineEvent::GroupFocus(idx as u8)),
             2 => self.handle_event(EngineEvent::SelectSound(idx as u8)),
+            3 if self.browser_kind == 1 => match idx {
+                0 => self.handle_event(EngineEvent::BrowseBrowserStep(-1)),
+                1 => self.handle_event(EngineEvent::BrowseBrowserStep(1)),
+                2 => self.handle_event(EngineEvent::LoadSelectedBrowserItem {
+                    group: self.group_focus,
+                    sound: self.active_sound,
+                }),
+                3 => self.handle_event(EngineEvent::SaveCurrent { quick: false }),
+                4 => self.handle_event(EngineEvent::SaveCurrent { quick: true }),
+                5 => self.handle_event(EngineEvent::SetBrowserKind(0)),
+                6 => self.handle_event(EngineEvent::ToggleMetronome),
+                _ => self.handle_event(EngineEvent::ToggleLoop),
+            },
             3 => match idx {
                 0 => self.handle_event(EngineEvent::BrowsePresetStep(-1)),
                 1 => self.handle_event(EngineEvent::BrowsePresetStep(1)),

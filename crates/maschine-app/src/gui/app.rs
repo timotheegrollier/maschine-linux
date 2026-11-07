@@ -435,7 +435,7 @@ impl GuiApp {
         if ctx.wants_keyboard_input() {
             return;
         }
-        let (space, digits, view_keys, save, toggle_nav, toggle_workspace, toggle_mk3) =
+        let (space, digits, view_keys, save, quick_save, toggle_nav, toggle_workspace, toggle_mk3) =
             ctx.input(|i| {
                 let mut digits = [false; 8];
                 for (d, pressed) in digits.iter_mut().enumerate() {
@@ -462,11 +462,13 @@ impl GuiApp {
                     (egui::Key::B, StudioView::Browser),
                 ]
                 .map(|(k, v)| (i.key_pressed(k), v));
+                let save_key = i.modifiers.command && i.key_pressed(egui::Key::S);
                 (
                     i.key_pressed(egui::Key::Space),
                     digits,
                     view_keys,
-                    i.modifiers.command && i.key_pressed(egui::Key::S),
+                    save_key && !i.modifiers.shift,
+                    save_key && i.modifiers.shift,
                     i.key_pressed(egui::Key::F1),
                     i.key_pressed(egui::Key::F3),
                     i.key_pressed(egui::Key::F2),
@@ -492,7 +494,9 @@ impl GuiApp {
                 self.send(EngineEvent::GroupFocus(d as u8));
             }
         }
-        if save {
+        if quick_save {
+            self.quick_save_project();
+        } else if save {
             self.save_project();
         }
         if space {
@@ -505,33 +509,81 @@ impl GuiApp {
         }
     }
 
-    /// Autosave projet (bouton FILESAVE hardware / Ctrl+S).
+    /// Sauvegarde le projet courant (format JSON lisible, écriture atomique).
+    /// Utilisé par Ctrl+S, autosave GUI et le bouton SAVE.
     pub fn save_project(&mut self) {
-        let base = std::env::var("XDG_DATA_HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| {
-                std::env::var("HOME")
-                    .map(|h| std::path::PathBuf::from(h).join(".local/share"))
-                    .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"))
-            });
-        let dir = base.join("maschine-linux");
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("autosave.json");
-        let eng = self.engine.lock();
-        let snap = eng.snapshot();
-        match serde_json::to_string_pretty(&*snap.project) {
-            Ok(json) => {
-                let res = std::fs::write(&path, json);
-                self.status_message = Some((
-                    if res.is_ok() {
-                        format!("✓ Projet sauvegardé → {}", path.display())
-                    } else {
-                        format!("Erreur d'écriture → {}", path.display())
-                    },
-                    res.is_err(),
-                ));
+        self.save_project_inner(false);
+    }
+
+    /// Sauvegarde rapide compacte du projet courant (Shift+FILE SAVE / Ctrl+Shift+S).
+    pub fn quick_save_project(&mut self) {
+        self.save_project_inner(true);
+    }
+
+    fn save_project_inner(&mut self, quick: bool) {
+        let mut settings = crate::settings::AppSettings::load();
+        let (project, current_path, project_name) = {
+            let eng = self.engine.lock();
+            let snap = eng.snapshot();
+            (
+                (*snap.project).clone(),
+                snap.current_project_path.clone(),
+                snap.project.name.clone(),
+            )
+        };
+        let path = crate::projects::resolve_current_save_path(
+            &settings,
+            current_path.as_deref(),
+            &project_name,
+        );
+        match crate::projects::save_project(&project, &path, quick) {
+            Ok(()) => {
+                crate::projects::remember_project(&mut settings, &path);
+                self.send(EngineEvent::SetProjectPath(Some(
+                    path.to_string_lossy().to_string(),
+                )));
+                let label = if quick {
+                    "Sauvegarde rapide"
+                } else {
+                    "Projet sauvegardé"
+                };
+                self.status_message = Some((format!("✓ {label} → {}", path.display()), false));
             }
-            Err(e) => self.status_message = Some((format!("Erreur sérialisation: {e}"), true)),
+            Err(e) => {
+                self.status_message =
+                    Some((format!("Erreur sauvegarde {}: {e}", path.display()), true));
+            }
+        }
+    }
+
+    /// Ouvre le navigateur de projets (FILE) et rafraîchit la liste.
+    pub fn open_project_browser(&mut self) {
+        let settings = crate::settings::AppSettings::load();
+        let entries = crate::projects::scan_projects(&settings);
+        self.send(EngineEvent::SetProjectEntries(entries));
+        self.send(EngineEvent::SetBrowserKind(1));
+        self.send(EngineEvent::SetLeftTab(3));
+        self.switch_view(crate::gui::views::StudioView::Browser);
+    }
+
+    /// Charge un fichier projet par chemin (GUI/MK3).
+    pub fn load_project_file(&mut self, path: &std::path::Path) {
+        let result = self
+            .engine
+            .lock()
+            .handle_event(EngineEvent::Load(path.to_path_buf()));
+        match result {
+            Ok(()) => {
+                let mut settings = crate::settings::AppSettings::load();
+                crate::projects::remember_project(&mut settings, path);
+                self.send(EngineEvent::SetBrowserKind(1));
+                self.status_message =
+                    Some((format!("✓ Projet chargé → {}", path.display()), false));
+            }
+            Err(e) => {
+                self.status_message =
+                    Some((format!("Erreur chargement {}: {e}", path.display()), true));
+            }
         }
     }
 

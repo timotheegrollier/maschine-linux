@@ -27,6 +27,7 @@ mod display_thread;
 mod gui;
 pub mod hotplug;
 mod hw_output;
+mod projects;
 mod settings;
 pub mod updater;
 
@@ -287,6 +288,11 @@ fn sync_mapper_context(
     mapper.left_tab = snap.left_tab;
     mapper.right_tab = snap.right_tab;
     mapper.plugin_page = snap.plugin_page;
+    mapper.kbd_root = snap.keyboard.root;
+    mapper.kbd_octave = snap.keyboard.octave;
+    mapper.kbd_scale = snap.keyboard.scale;
+    mapper.kbd_chord = snap.keyboard.chord;
+    mapper.kbd_inversion = snap.keyboard.inversion;
 }
 
 fn main() -> anyhow::Result<()> {
@@ -828,6 +834,17 @@ fn cmd_daemon(
                         });
                     }
                 }
+                MapperAction::KeyboardTrigger {
+                    note,
+                    velocity,
+                    pressed,
+                } => {
+                    let _ = engine.lock().handle_event(EngineEvent::KeyboardTrigger {
+                        note,
+                        velocity,
+                        pressed,
+                    });
+                }
                 MapperAction::ToggleStep { sound, bar, step } => {
                     log::debug!("STEP toggle sound={sound} bar={bar} step={step}");
                     let tick = (bar as u32 * 4 * 960) + (step as u32 * 240);
@@ -914,6 +931,12 @@ fn cmd_daemon(
                     let current = eng.snapshot().master_volume;
                     let new_vol = (current + delta * knob_rate::MASTER).clamp(0.0, 1.0);
                     let _ = eng.handle_event(EngineEvent::MasterVolume(new_vol));
+                }
+                MapperAction::HeadphoneVolumeDelta(delta) => {
+                    let mut eng = engine.lock();
+                    let current = eng.snapshot().headphone_volume;
+                    let new_vol = (current + delta * knob_rate::MASTER).clamp(0.0, 1.0);
+                    let _ = eng.handle_event(EngineEvent::HeadphoneVolume(new_vol));
                 }
                 MapperAction::GroupVolumeDelta(delta) => {
                     let gf = engine.lock().group_focus();
@@ -1157,23 +1180,42 @@ fn cmd_daemon(
                 MapperAction::BrowsePresetStep(step) => {
                     let _ = engine
                         .lock()
-                        .handle_event(EngineEvent::BrowsePresetStep(step));
+                        .handle_event(EngineEvent::BrowseBrowserStep(step));
                 }
                 MapperAction::LoadSelectedPreset => {
-                    let mut eng = engine.lock();
-                    let gf = eng.group_focus();
-                    let snd = mapper.active_sound;
-                    let preset = eng.browser_preset_idx();
-                    let _ = eng.handle_event(EngineEvent::LoadDrumPreset {
-                        group: gf,
-                        sound: snd,
-                        preset_idx: preset,
-                    });
-                    let _ = eng.handle_event(EngineEvent::Pad {
-                        pad: snd,
-                        velocity: 115,
-                        pressed: true,
-                    });
+                    let (browser_kind, gf, snd, preset) = {
+                        let eng = engine.lock();
+                        let snap = eng.snapshot();
+                        (
+                            snap.browser_kind,
+                            snap.group_focus,
+                            mapper.active_sound,
+                            snap.browser_preset_idx,
+                        )
+                    };
+                    if browser_kind == 1 {
+                        let mut eng = engine.lock();
+                        let _ = eng.handle_event(EngineEvent::LoadSelectedBrowserItem {
+                            group: gf,
+                            sound: snd,
+                        });
+                        if let Some(path) = eng.snapshot().current_project_path.clone() {
+                            let mut settings = settings::AppSettings::load();
+                            projects::remember_project(&mut settings, std::path::Path::new(&path));
+                        }
+                    } else {
+                        let mut eng = engine.lock();
+                        let _ = eng.handle_event(EngineEvent::LoadDrumPreset {
+                            group: gf,
+                            sound: snd,
+                            preset_idx: preset,
+                        });
+                        let _ = eng.handle_event(EngineEvent::Pad {
+                            pad: snd,
+                            velocity: 115,
+                            pressed: true,
+                        });
+                    }
                 }
                 MapperAction::BrowseGroupStep(step) => {
                     let cur = mapper.group_focus as i32;
@@ -1363,22 +1405,69 @@ fn cmd_daemon(
                     let _ = engine.lock().handle_event(EngineEvent::SoftKey(n));
                 }
                 MapperAction::SaveProject => {
-                    let base = std::env::var("XDG_DATA_HOME")
-                        .map(std::path::PathBuf::from)
-                        .unwrap_or_else(|_| {
-                            std::env::var("HOME")
-                                .map(|h| std::path::PathBuf::from(h).join(".local/share"))
-                                .unwrap_or_else(|_| std::path::PathBuf::from("/tmp"))
-                        });
-                    let autosave_dir = base.join("maschine-linux");
-                    let _ = std::fs::create_dir_all(&autosave_dir);
-                    let autosave = autosave_dir.join("autosave.json");
-                    let eng = engine.lock();
-                    let snap = eng.snapshot();
-                    if let Ok(json) = serde_json::to_string_pretty(&*snap.project) {
-                        let _ = std::fs::write(&autosave, json);
-                        log::info!("Autosave → {:?}", autosave);
+                    let mut settings = settings::AppSettings::load();
+                    let (project, current_path, project_name) = {
+                        let eng = engine.lock();
+                        let snap = eng.snapshot();
+                        (
+                            (*snap.project).clone(),
+                            snap.current_project_path.clone(),
+                            snap.project.name.clone(),
+                        )
+                    };
+                    let path = projects::resolve_current_save_path(
+                        &settings,
+                        current_path.as_deref(),
+                        &project_name,
+                    );
+                    if let Err(e) = projects::save_project(&project, &path, false) {
+                        log::error!("SaveProject failed {}: {e}", path.display());
+                    } else {
+                        projects::remember_project(&mut settings, &path);
+                        let _ = engine.lock().handle_event(EngineEvent::SetProjectPath(Some(
+                            path.to_string_lossy().to_string(),
+                        )));
+                        log::info!("Projet sauvegardé → {}", path.display());
                     }
+                }
+                MapperAction::QuickSaveProject => {
+                    let mut settings = settings::AppSettings::load();
+                    let (project, current_path, project_name) = {
+                        let eng = engine.lock();
+                        let snap = eng.snapshot();
+                        (
+                            (*snap.project).clone(),
+                            snap.current_project_path.clone(),
+                            snap.project.name.clone(),
+                        )
+                    };
+                    let path = projects::resolve_current_save_path(
+                        &settings,
+                        current_path.as_deref(),
+                        &project_name,
+                    );
+                    if let Err(e) = projects::save_project(&project, &path, true) {
+                        log::error!("QuickSave failed {}: {e}", path.display());
+                    } else {
+                        projects::remember_project(&mut settings, &path);
+                        let _ = engine.lock().handle_event(EngineEvent::SetProjectPath(Some(
+                            path.to_string_lossy().to_string(),
+                        )));
+                        log::info!("Sauvegarde rapide → {}", path.display());
+                    }
+                }
+                MapperAction::OpenFileBrowser => {
+                    let settings = settings::AppSettings::load();
+                    let entries = projects::scan_projects(&settings);
+                    let mut eng = engine.lock();
+                    let _ = eng.handle_event(EngineEvent::SetProjectEntries(entries));
+                    let _ = eng.handle_event(EngineEvent::SetBrowserKind(1));
+                    let _ = eng.handle_event(EngineEvent::SetLeftTab(3));
+                }
+                MapperAction::SetBrowserKind(kind) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::SetBrowserKind(kind));
                 }
                 MapperAction::AcidCutoffDelta(delta) => {
                     let _ = engine
@@ -2395,7 +2484,12 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             select_mode: false,
             erase_mode: false,
             controller_mode: 0,
+            keyboard: maschine_engine::KeyboardState::default(),
             browser_preset_idx: 0,
+            browser_kind: 0,
+            project_entries: Vec::new(),
+            project_selected: 0,
+            current_project_path: None,
             selected_bar: 0,
             step_cursor: 0,
             pattern_bars: 2,

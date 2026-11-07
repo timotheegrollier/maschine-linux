@@ -203,6 +203,12 @@ pub enum MapperAction {
         velocity: u8,
         pressed: bool,
     },
+    /// Déclenchement mélodique du son actif (Keyboard/Chords).
+    KeyboardTrigger {
+        note: u8,
+        velocity: u8,
+        pressed: bool,
+    },
     /// Déclenche une scène (mode SCENE, pads 1..16 -> scènes 0..15)
     SceneTrigger(usize),
     /// Sélectionne un pattern du groupe focus pour la scène active (mode PATTERN)
@@ -233,6 +239,8 @@ pub enum MapperAction {
     SwingDelta(f32),
     /// Ajustement Volume Master relatif
     MasterVolumeDelta(f32),
+    /// Ajustement volume casque relatif
+    HeadphoneVolumeDelta(f32),
     /// Ajustement Volume Groupe relatif
     GroupVolumeDelta(f32),
     /// Ajustement Pan Groupe relatif
@@ -314,6 +322,12 @@ pub enum MapperAction {
     Quantize,
     /// Sauvegarder le projet
     SaveProject,
+    /// Sauvegarde rapide du projet courant (Shift+FILE SAVE).
+    QuickSaveProject,
+    /// Ouvre le navigateur FILE/projets sur la MK3.
+    OpenFileBrowser,
+    /// Type de navigateur BROWSER (0: presets, 1: projets FILE).
+    SetBrowserKind(u8),
     /// Miroir écran : mode SCENE
     SetSceneMode(bool),
     /// Miroir écran : mode PATTERN
@@ -437,6 +451,14 @@ pub struct HardwareMapper {
     pub active_sound: u8,
     /// Preset sélectionné dans le Browser (0..15)
     pub browser_preset_idx: u8,
+    /// État musical Keyboard/Chords (miroir moteur).
+    pub kbd_root: u8,
+    pub kbd_octave: i8,
+    pub kbd_scale: u8,
+    pub kbd_chord: u8,
+    pub kbd_inversion: u8,
+    /// Notes réellement jouées par pad en Keyboard/Chords (pour note-off).
+    pad_played: HashMap<u8, Vec<u8>>,
     /// Mesure sélectionnée (0-indexed)
     pub selected_bar: usize,
     /// Nombre de mesures du pattern
@@ -519,6 +541,12 @@ impl HardwareMapper {
             plugin_page: 0,
             active_sound: 0,
             browser_preset_idx: 0,
+            kbd_root: 0,
+            kbd_octave: 3,
+            kbd_scale: 2,
+            kbd_chord: 0,
+            kbd_inversion: 0,
+            pad_played: HashMap::new(),
             selected_bar: 0,
             pattern_bars: 2,
             prev_main_encoder: None,
@@ -626,6 +654,65 @@ impl HardwareMapper {
         whole as i32
     }
 
+    fn kbd_base_note(&self) -> i16 {
+        (self.kbd_octave.max(0) as i16) * 12 + (self.kbd_root.min(11) as i16)
+    }
+
+    fn kbd_scale_intervals(&self) -> &'static [u8] {
+        const S: [&[u8]; 8] = [
+            &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+            &[0, 2, 4, 5, 7, 9, 11],
+            &[0, 2, 3, 5, 7, 8, 10],
+            &[0, 2, 3, 5, 7, 8, 11],
+            &[0, 2, 3, 5, 7, 9, 10],
+            &[0, 2, 4, 5, 7, 9, 10],
+            &[0, 3, 5, 7, 10],
+            &[0, 2, 4, 7, 9],
+        ];
+        S[self.kbd_scale as usize % S.len()]
+    }
+
+    fn kbd_chord_intervals(&self) -> &'static [u8] {
+        const C: [&[u8]; 8] = [
+            &[0, 4, 7],
+            &[0, 3, 7],
+            &[0, 2, 7],
+            &[0, 5, 7],
+            &[0, 4, 7, 10],
+            &[0, 3, 7, 10],
+            &[0, 4, 7, 11],
+            &[0, 12],
+        ];
+        C[self.kbd_chord as usize % C.len()]
+    }
+
+    fn keyboard_note_for_pad(&self, pad: u8) -> u8 {
+        let scale = self.kbd_scale_intervals();
+        let degree = pad as i16;
+        let len = scale.len() as i16;
+        let octave_shift = degree.div_euclid(len);
+        let idx = degree.rem_euclid(len) as usize;
+        let note = self.kbd_base_note() + octave_shift * 12 + scale[idx] as i16;
+        note.clamp(0, 127) as u8
+    }
+
+    fn chord_notes_for_pad(&self, pad: u8) -> Vec<u8> {
+        let scale = self.kbd_scale_intervals();
+        let len = scale.len() as i16;
+        let degree = (pad as i16).rem_euclid(len) as usize;
+        let root = self.kbd_base_note() + scale[degree] as i16;
+        let chord = self.kbd_chord_intervals();
+        let mut notes: Vec<i16> = chord.iter().map(|&i| root + i as i16).collect();
+        let inv = (self.kbd_inversion as usize).min(notes.len().saturating_sub(1));
+        for i in 0..inv {
+            if let Some(n) = notes.get_mut(i) {
+                *n += 12;
+            }
+        }
+        notes.sort_unstable();
+        notes.into_iter().map(|n| n.clamp(0, 127) as u8).collect()
+    }
+
     pub fn handle_hardware_event(&mut self, ev: HardwareEvent) -> Vec<MapperAction> {
         let mut actions = Vec::new();
         match ev {
@@ -702,39 +789,24 @@ impl HardwareMapper {
                             });
                         }
                         ControllerMode::Keyboard => {
-                            // Gamme mineure naturelle C3 (48)..D5 (74)
-                            const SCALE_MINOR: [u8; 16] = [
-                                48, 50, 51, 53, 55, 56, 58, 60, 62, 63, 65, 67, 68, 70, 72, 74,
-                            ];
-                            let mel_note = SCALE_MINOR[(p.pad as usize).min(15)];
-                            self.pad_note.insert(p.pad, note);
-                            actions.push(MapperAction::Midi(MidiEvent::NoteOn {
-                                channel: ch,
+                            let mel_note = self.keyboard_note_for_pad(p.pad);
+                            self.pad_played.insert(p.pad, vec![mel_note]);
+                            actions.push(MapperAction::KeyboardTrigger {
                                 note: mel_note,
-                                velocity: vel,
-                            }));
-                            actions.push(MapperAction::PadTrigger {
-                                pad: self.active_sound,
                                 velocity: vel,
                                 pressed: true,
                             });
                         }
                         ControllerMode::Chords => {
-                            // Accords diatoniques en C mineur
-                            let root = 48 + (p.pad % 7) * 2;
-                            self.pad_note.insert(p.pad, note);
-                            for &offset in &[0, 3, 7] {
-                                actions.push(MapperAction::Midi(MidiEvent::NoteOn {
-                                    channel: ch,
-                                    note: root + offset,
+                            let notes = self.chord_notes_for_pad(p.pad);
+                            for &n in &notes {
+                                actions.push(MapperAction::KeyboardTrigger {
+                                    note: n,
                                     velocity: vel,
-                                }));
+                                    pressed: true,
+                                });
                             }
-                            actions.push(MapperAction::PadTrigger {
-                                pad: self.active_sound,
-                                velocity: vel,
-                                pressed: true,
-                            });
+                            self.pad_played.insert(p.pad, notes);
                         }
                         ControllerMode::Pad => {
                             self.pad_note.insert(p.pad, note);
@@ -760,6 +832,16 @@ impl HardwareMapper {
                     // NoteOff uniquement si un NoteOn a réellement été émis pour
                     // cet appui (modes de jeu). Les modes Step/workflow restent
                     // totalement silencieux, façon Maschine.
+                    if let Some(notes) = self.pad_played.remove(&p.pad) {
+                        for note in notes {
+                            actions.push(MapperAction::KeyboardTrigger {
+                                note,
+                                velocity: 0,
+                                pressed: false,
+                            });
+                        }
+                        return actions;
+                    }
                     let Some(note) = self.pad_note.remove(&p.pad) else {
                         return actions;
                     };
@@ -974,7 +1056,11 @@ impl HardwareMapper {
                             actions.push(MapperAction::Quantize);
                         }
                         ButtonId::FileSave => {
-                            actions.push(MapperAction::SaveProject);
+                            if self.shift_held {
+                                actions.push(MapperAction::QuickSaveProject);
+                            } else {
+                                actions.push(MapperAction::OpenFileBrowser);
+                            }
                         }
 
                         // Onglets d'écrans dédiés
@@ -993,6 +1079,7 @@ impl HardwareMapper {
                                 self.select_left_tab(2, &mut actions); // Retour SAMPLER
                             } else {
                                 self.select_left_tab(3, &mut actions);
+                                actions.push(MapperAction::SetBrowserKind(0));
                             }
                         }
                         ButtonId::Settings => {
@@ -1264,12 +1351,30 @@ impl HardwareMapper {
                                 _ => {}
                             }
                         } else if self.left_tab == 1 {
-                            // MIXER : knobs 1..8 = volumes des groupes A..H (dB).
-                            if idx < 8 {
+                            // MIXER : édition du pad/son sélectionné dans le groupe focus.
+                            // 1 VOL SND, 2 PAN SND, 3 VOL GRP, 4 PAN GRP, 5 CUTOFF, 6 RESO, 7 MASTER, 8 CASQUE.
+                            // SHIFT+1..8 = volumes des groupes A..H (banque complète).
+                            if self.shift_held && idx < 8 {
                                 actions.push(MapperAction::GroupVolumeDeltaFor {
                                     group: idx as u8,
                                     delta: delta as f32,
                                 });
+                            } else {
+                                match idx {
+                                    0 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
+                                    1 => actions.push(MapperAction::SoundPanDelta(delta as f32)),
+                                    2 => actions.push(MapperAction::GroupVolumeDelta(delta as f32)),
+                                    3 => actions.push(MapperAction::GroupPanDelta(delta as f32)),
+                                    4 => actions
+                                        .push(MapperAction::SoundFilterCutoffDelta(delta as f32)),
+                                    5 => actions
+                                        .push(MapperAction::SoundFilterResoDelta(delta as f32)),
+                                    6 => {
+                                        actions.push(MapperAction::MasterVolumeDelta(delta as f32))
+                                    }
+                                    _ => actions
+                                        .push(MapperAction::HeadphoneVolumeDelta(delta as f32)),
+                                }
                             }
                         } else if self.left_tab == 2 {
                             // SAMPLER : son actif. 1-4 = VOL/PAN/CUTOFF/RESO,
@@ -2467,12 +2572,16 @@ mod tests {
     }
 
     #[test]
-    fn step_mode_knobs_are_inert_off_step_page() {
+    fn mixer_knobs_edit_selected_sound_and_shift_edits_groups() {
         let mut m = HardwareMapper::with_default();
-        m.mode = ControllerMode::Step;
-        m.left_tab = 1; // Page MIXER : les knobs restent les volumes de groupe.
+        m.left_tab = 1; // MIXER
         let _ = m.handle_hardware_event(knob_ev(1, 0, 0));
         let a = m.handle_hardware_event(knob_ev(1, 4, 1));
+        assert_eq!(a, vec![MapperAction::SoundVolumeDelta(4.0)]);
+
+        m.shift_held = true;
+        let _ = m.handle_hardware_event(knob_ev(1, 4, 2));
+        let a = m.handle_hardware_event(knob_ev(1, 8, 3));
         assert_eq!(
             a,
             vec![MapperAction::GroupVolumeDeltaFor {

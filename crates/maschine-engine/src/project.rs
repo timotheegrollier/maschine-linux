@@ -254,14 +254,35 @@ impl Project {
         Ok(())
     }
 
-    /// Sauve en JSON pretty.
-    pub fn save_json(&self, path: &std::path::Path) -> crate::Result<()> {
+    /// Sauve en JSON. `pretty=true` produit un fichier lisible (GUI/MK3/docs),
+    /// `pretty=false` un JSON compact pour les sauvegardes rapides (Shift+Save).
+    /// L'écriture est atomique (fichier temporaire puis renommage).
+    pub fn save_json_with(&self, path: &std::path::Path, pretty: bool) -> crate::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, json)?;
+        let json = if pretty {
+            serde_json::to_string_pretty(self)?
+        } else {
+            serde_json::to_string(self)?
+        };
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, json)?;
+        if path.exists() {
+            let _ = std::fs::remove_file(path);
+        }
+        std::fs::rename(&tmp, path).map_err(|e| {
+            // Fallback si rename cross-device/Windows-like impossible.
+            let _ = std::fs::write(path, std::fs::read(&tmp).unwrap_or_default());
+            let _ = std::fs::remove_file(&tmp);
+            crate::EngineError::Io(e)
+        })?;
         Ok(())
+    }
+
+    /// Sauve en JSON pretty (compatible API existante).
+    pub fn save_json(&self, path: &std::path::Path) -> crate::Result<()> {
+        self.save_json_with(path, true)
     }
 
     /// Charge depuis JSON.

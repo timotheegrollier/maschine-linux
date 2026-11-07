@@ -1,47 +1,32 @@
-//! Vue CLAVIER / PERFORMANCE — miroir du mode Keyboard/Chords du hardware.
+//! Vue CLAVIER / PERFORMANCE — Keyboard/Chords Maschine-like.
 //!
-//! Elle sert de guide de jeu et de contrôle du Sound actif : les 16 pads
-//! matériels jouent la gamme mineure, tandis que cette vue affiche les notes,
-//! l'état des menus latchés et permet de déclencher/auditionner le Sound.
+//! Utilise l'état musical du moteur (gamme, fondamentale, octave, accords),
+//! joue les notes du son actif via `EngineEvent::KeyboardTrigger`, et expose
+//! les contrôles de gamme/accords (équivalents aux boutons haut MK3).
 
-use super::*;
 use crate::gui::app::GuiApp;
 use crate::gui::theme::{card_frame, MachColors};
 use crate::gui::widgets::chip;
 use eframe::egui;
 
+use maschine_engine::keyboard::{CHORDS, NOTE_NAMES, SCALES};
 use maschine_engine::EngineEvent;
 
-/// Gamme mineure naturelle utilisée par le mapper Keyboard (C3..D5).
-const SCALE_MINOR: [(&str, u8); 16] = [
-    ("C3", 48),
-    ("D3", 50),
-    ("D#3", 51),
-    ("F3", 53),
-    ("G3", 55),
-    ("G#3", 56),
-    ("A#3", 58),
-    ("C4", 60),
-    ("D4", 62),
-    ("D#4", 63),
-    ("F4", 65),
-    ("G4", 67),
-    ("G#4", 68),
-    ("A#4", 70),
-    ("C5", 72),
-    ("D5", 74),
-];
+fn note_name(note: u8) -> String {
+    let octave = (note as i32 / 12) - 1;
+    format!("{}{}", NOTE_NAMES[note as usize % 12], octave)
+}
 
 pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::EngineSnapshot) {
     let c = MachColors::dark();
     let gf = snap.group_focus as usize;
-    let sound = snap
+    let kb = snap.keyboard;
+    let sound_name = snap
         .project
         .groups
         .get(gf)
         .and_then(|g| g.sounds.get(snap.active_sound as usize))
-        .and_then(|s| s.as_ref());
-    let sound_name = sound
+        .and_then(|s| s.as_ref())
         .map(|s| s.name.clone())
         .unwrap_or_else(|| "(vide)".to_string());
     let mode_label = match snap.controller_mode {
@@ -58,20 +43,18 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                 crate::gui::theme::view_header(
                     ui,
                     "CLAVIER / PERFORMANCE",
-                    "Joue le Sound actif, visualise la gamme et les menus actifs.",
+                    "Joue le son actif dans la gamme/accord sélectionné. Boutons haut = gammes/comportement.",
                 );
-                ui.add_space(8.0);
                 ui.colored_label(
                     c.accent_cyan,
-                    egui::RichText::new(format!("MODE {mode_label}"))
-                        .strong()
-                        .size(11.0),
+                    egui::RichText::new(format!("MODE {mode_label}")).strong().size(11.0),
                 );
-                if snap.pattern_mode {
-                    ui.colored_label(c.accent, egui::RichText::new("● PATTERN").small());
-                }
-                if snap.scene_mode {
-                    ui.colored_label(c.success, egui::RichText::new("● SCENE").small());
+                if snap.controller_mode != 1 && snap.controller_mode != 2 {
+                    ui.label(
+                        egui::RichText::new("Activez KEYBOARD/CHORDS sur la MK3 ou via le contrôleur.")
+                            .small()
+                            .color(c.text_muted),
+                    );
                 }
             });
 
@@ -81,160 +64,121 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
                         egui::RichText::new(format!(
-                            "GROUPE {} • SOUND {:02} — {}",
-                            group_char(gf),
+                            "{} {}  •  Oct {}  •  {}  •  SND {:02} {}",
+                            kb.root_name(),
+                            kb.scale_def().name,
+                            kb.octave,
+                            if snap.controller_mode == 2 { kb.chord_def().name } else { "Notes" },
                             snap.active_sound + 1,
-                            sound_name.to_uppercase()
+                            sound_name
                         ))
                         .strong()
                         .color(c.accent),
                     );
-                    ui.add_space(8.0);
-                    if chip(ui, "▶ AUDITIONNER", false, c.success) {
-                        let _ = app.engine.lock().handle_event(EngineEvent::Pad {
-                            pad: snap.active_sound,
-                            velocity: 112,
-                            pressed: true,
-                        });
-                    }
-                    if chip(ui, "◀ SOUND PRÉCÉDENT", false, c.text_dim) {
-                        let idx = (snap.active_sound + 15) % 16;
-                        let _ = app
-                            .engine
-                            .lock()
-                            .handle_event(EngineEvent::SelectSound(idx));
-                    }
-                    if chip(ui, "SOUND SUIVANT ▶", false, c.text_dim) {
-                        let idx = (snap.active_sound + 1) % 16;
-                        let _ = app
-                            .engine
-                            .lock()
-                            .handle_event(EngineEvent::SelectSound(idx));
-                    }
-                });
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(
-                        "Astuce : maintiens KEYBOARD sur le hardware pour jouer la gamme, \
-                         puis appuie à nouveau dessus pour revenir au mode PAD.",
-                    )
-                    .small()
-                    .color(c.text_dim),
-                );
-            });
-
-            ui.add_space(8.0);
-
-            // ── Clavier visuel 16 touches ──────────────────────────
-            card_frame().show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        egui::RichText::new("GAMME MINEURE — 16 PADS")
-                            .strong()
-                            .small()
-                            .color(c.accent_cyan),
-                    );
-                    ui.label(
-                        egui::RichText::new("(les touches blanches sont les fondamentales)")
-                            .small()
-                            .color(c.text_muted),
-                    );
                 });
                 ui.add_space(6.0);
                 ui.horizontal_wrapped(|ui| {
-                    for (index, (name, midi)) in SCALE_MINOR.iter().enumerate() {
-                        let sharp = name.contains('#');
-                        let fill = if sharp {
-                            egui::Color32::from_rgb(30, 32, 40)
-                        } else {
-                            egui::Color32::from_rgb(218, 220, 228)
-                        };
-                        let text = if sharp {
-                            egui::Color32::WHITE
-                        } else {
-                            egui::Color32::BLACK
-                        };
-                        let btn = egui::Button::new(
-                            egui::RichText::new(*name).strong().size(11.0).color(text),
-                        )
-                        .min_size(egui::vec2(48.0, 48.0))
-                        .fill(fill)
-                        .stroke(egui::Stroke::new(
-                            1.0_f32,
-                            if index == snap.active_sound as usize {
-                                c.accent
-                            } else {
-                                c.border
-                            },
-                        ));
-                        if ui
-                            .add(btn)
-                            .on_hover_text(format!(
-                                "Pad {} • note MIDI {} — déclenche le Sound actif",
-                                index + 1,
-                                midi
-                            ))
-                            .clicked()
-                        {
-                            let _ = app.engine.lock().handle_event(EngineEvent::Pad {
-                                pad: snap.active_sound,
-                                velocity: 108,
-                                pressed: true,
-                            });
+                    if chip(ui, "◀ ROOT", false, c.accent_cyan) {
+                        app.send(EngineEvent::KeyboardRootDelta(-1));
+                    }
+                    ui.label(egui::RichText::new(kb.root_name()).strong().color(c.text));
+                    if chip(ui, "ROOT ▶", false, c.accent_cyan) {
+                        app.send(EngineEvent::KeyboardRootDelta(1));
+                    }
+                    ui.separator();
+                    if chip(ui, "◀ SCALE", false, c.accent_cyan) {
+                        app.send(EngineEvent::KeyboardScaleDelta(-1));
+                    }
+                    ui.label(egui::RichText::new(kb.scale_def().name).strong().color(c.text));
+                    if chip(ui, "SCALE ▶", false, c.accent_cyan) {
+                        app.send(EngineEvent::KeyboardScaleDelta(1));
+                    }
+                    ui.separator();
+                    if chip(ui, "OCT -", false, c.text_dim) {
+                        app.send(EngineEvent::KeyboardOctaveDelta(-1));
+                    }
+                    ui.label(egui::RichText::new(format!("OCT {}", kb.octave)).strong().color(c.text));
+                    if chip(ui, "OCT +", false, c.text_dim) {
+                        app.send(EngineEvent::KeyboardOctaveDelta(1));
+                    }
+                });
+                if snap.controller_mode == 2 {
+                    ui.add_space(4.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if chip(ui, "◀ CHORD", false, c.success) {
+                            app.send(EngineEvent::KeyboardChordDelta(-1));
+                        }
+                        ui.label(egui::RichText::new(kb.chord_def().name).strong().color(c.text));
+                        if chip(ui, "CHORD ▶", false, c.success) {
+                            app.send(EngineEvent::KeyboardChordDelta(1));
+                        }
+                        ui.separator();
+                        if chip(ui, "INV -", false, c.text_dim) {
+                            app.send(EngineEvent::KeyboardInversionDelta(-1));
+                        }
+                        ui.label(egui::RichText::new(format!("INV {}", kb.inversion)).color(c.text));
+                        if chip(ui, "INV +", false, c.text_dim) {
+                            app.send(EngineEvent::KeyboardInversionDelta(1));
+                        }
+                    });
+                }
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("Gammes :").small().color(c.text_muted));
+                    for (i, scale) in SCALES.iter().enumerate() {
+                        if chip(ui, scale.name, i == kb.scale as usize, c.accent) {
+                            app.send(EngineEvent::KeyboardScaleDelta(i as i32 - kb.scale as i32));
                         }
                     }
                 });
+                if snap.controller_mode == 2 {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new("Accords :").small().color(c.text_muted));
+                        for (i, chord) in CHORDS.iter().enumerate() {
+                            if chip(ui, chord.name, i == kb.chord as usize, c.success) {
+                                app.send(EngineEvent::KeyboardChordDelta(i as i32 - kb.chord as i32));
+                            }
+                        }
+                    });
+                }
             });
 
             ui.add_space(8.0);
 
-            // ── Pads de performance du groupe ───────────────────────
             card_frame().show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new("PADS DU GROUPE — clic pour jouer / sélectionner")
-                        .strong()
-                        .small()
-                        .color(c.accent),
-                );
-                ui.add_space(4.0);
-                ui.horizontal_wrapped(|ui| {
-                    for i in 0..16usize {
-                        let name = snap
-                            .project
-                            .groups
-                            .get(gf)
-                            .and_then(|g| g.sounds.get(i))
-                            .and_then(|s| s.as_ref())
-                            .map(|s| s.name.clone())
-                            .unwrap_or_else(|| "—".to_string());
-                        let selected = i == snap.active_sound as usize;
-                        let btn = egui::Button::new(
-                            egui::RichText::new(format!("{:02}\n{}", i + 1, name))
-                                .size(10.0)
-                                .color(if selected {
-                                    egui::Color32::BLACK
-                                } else {
-                                    c.text
-                                }),
-                        )
-                        .min_size(egui::vec2(68.0, 46.0))
-                        .fill(if selected {
-                            crate::gui::views::pad_color(i)
-                        } else {
-                            c.widget_bg
-                        })
-                        .stroke(egui::Stroke::new(1.0_f32, c.border));
-                        if ui.add(btn).clicked() {
-                            let _ = app
-                                .engine
-                                .lock()
-                                .handle_event(EngineEvent::SelectSound(i as u8));
-                            let _ = app.engine.lock().handle_event(EngineEvent::Pad {
-                                pad: i as u8,
-                                velocity: 110,
-                                pressed: true,
-                            });
+                let title = if snap.controller_mode == 2 { "PADS — ACCORDS" } else { "PADS — GAMME / CLAVIER" };
+                ui.label(egui::RichText::new(title).strong().small().color(c.accent_cyan));
+                ui.add_space(6.0);
+                egui::Grid::new("kbd_pads").spacing(egui::vec2(6.0, 6.0)).show(ui, |ui| {
+                    for row in 0..4 {
+                        for col in 0..4 {
+                            let pad = (3 - row) * 4 + col; // bas->haut comme Maschine
+                            let (label, notes) = if snap.controller_mode == 2 {
+                                let notes = kb.chord_notes(pad as u8);
+                                let first = notes.first().copied().unwrap_or(60);
+                                (note_name(first), notes)
+                            } else {
+                                let n = kb.keyboard_note(pad as u8);
+                                (note_name(n), vec![n])
+                            };
+                            let resp = ui.add(
+                                egui::Button::new(
+                                    egui::RichText::new(format!("P{:02}\n{}", pad + 1, label))
+                                        .size(11.0)
+                                        .strong()
+                                        .color(c.text),
+                                )
+                                .min_size(egui::vec2(74.0, 52.0))
+                                .fill(if snap.pad_activity[pad] > 0.1 { c.widget_bg } else { c.panel }),
+                            );
+                            if resp.clicked() {
+                                for &n in &notes {
+                                    app.send(EngineEvent::KeyboardTrigger { note: n, velocity: 108, pressed: true });
+                                    app.send(EngineEvent::KeyboardTrigger { note: n, velocity: 0, pressed: false });
+                                }
+                            }
                         }
+                        ui.end_row();
                     }
                 });
             });

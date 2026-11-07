@@ -6,6 +6,7 @@ pub mod acid_synth;
 pub mod display_render;
 pub mod drum_synth;
 pub mod engine;
+pub mod keyboard;
 pub mod project;
 pub mod sampler;
 pub mod sequencer;
@@ -13,7 +14,8 @@ pub mod transport;
 
 pub use acid_synth::{AcidParams, AcidSynth, AcidWaveform};
 pub use drum_synth::generate_complete_808_kit;
-pub use engine::{Engine, EngineEvent, EngineSnapshot, DRUM_PRESET_NAMES};
+pub use engine::{Engine, EngineEvent, EngineSnapshot, ProjectFileEntry, DRUM_PRESET_NAMES};
+pub use keyboard::KeyboardState;
 pub use project::{Group, Pattern, PatternEvent, Project, Scene, Section, Sound, Zone};
 pub use sampler::{sound_id, Sampler, SamplerVoice, SoundId, VoiceParams, ZoneMapping};
 pub use sequencer::{Grid, Sequencer};

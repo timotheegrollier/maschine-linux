@@ -1,6 +1,6 @@
 # Installation — Fedora 44 (PipeWire)
 
-## Prérequis système
+## System prerequisites
 
 ```bash
 sudo dnf install @development-tools \
@@ -9,18 +9,18 @@ sudo dnf install @development-tools \
   libusb1-devel hidapi-devel systemd-devel \
   clang pkgconf-pkg-config
 
-# Rust (si pas déjà)
+# Rust (if not already installed)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
 ```
 
-## Install rapide
+## Quick install
 
 ```bash
-git clone https://github.com/timo/maschine-linux
+git clone https://github.com/timotheegrollier/maschine-linux
 cd maschine-linux
 ./scripts/install.sh
-# ou manuellement :
+# or manually:
 cargo build --release
 sudo cp config/udev/99-maschine-mk3.rules /etc/udev/rules.d/
 sudo udevadm control --reload && sudo udevadm trigger
@@ -30,64 +30,78 @@ cp config/wireplumber/51-maschine-mk3.conf ~/.config/wireplumber/wireplumber.con
 systemctl --user restart pipewire wireplumber
 ```
 
-## Vérification
+## Verification
 
 ```bash
 maschine-linux probe
-# doit afficher: VID:PID 17cc:1600 hidraw open: OK
+# should display: VID:PID 17cc:1600 hidraw open: OK
 
 maschine-linux hid-dump --duration 5
-# appuie sur pads → doit afficher 0x01 / 0x02
+# press pads → should display 0x01 / 0x02
 
 wpctl status | grep -A2 Maschine
-# doit afficher "Pro Audio" pas "Surround 4.0"
+# should display "Pro Audio" not "Surround 4.0"
 pw-top
 # quantum 128, ERR 0
 ```
 
 ## Permissions
 
-Le fichier `config/udev/99-maschine-mk3.rules` utilise `TAG+="uaccess"` (systemd-logind) : pas besoin d'ajouter ton user à `plugdev` si tu es en session graphique. Sinon :
+The `config/udev/99-maschine-mk3.rules` file uses `TAG+="uaccess"` (systemd-logind): no need to add your user to `plugdev` if you are in a graphical session. Otherwise:
 
 ```bash
 sudo usermod -aG plugdev,audio $USER
-# relogin
+# log out and back in
 ```
 
-Vérifie : `getfacl /dev/hidraw3` doit contenir `user:timo:rw-`.
+Check: `getfacl /dev/hidraw3` must contain `user:timo:rw-`.
 
 ## Build options
 
 ```bash
 cargo build --release                          # daemon + CLI
-cargo build --release --features gui,usb       # + GUI egui + bulk display
+cargo build --release --features gui,usb       # + egui GUI + bulk display
 cargo test --workspace
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 ```
 
-## PipeWire tuning manuel
-
-Si `pw-top` montre des xruns (ERR >0) :
+## Standalone GUI check
 
 ```bash
-# augmente quantum à 256
-# édite ~/.config/pipewire/pipewire.conf.d/99-maschine-lowlatency.conf
+# Run without a connected MK3, or ignore a connected controller
+./target/release/maschine-linux gui --no-hardware
+
+# With hardware (optional)
+./target/release/maschine-linux gui
+```
+
+The GUI starts with the engine, mouse/keyboard controls, virtual MIDI and
+system audio. In `--no-hardware` mode, the MK3 is ignored and hot-plug
+reconnection is disabled.
+
+## Manual PipeWire tuning
+
+If `pw-top` shows xruns (ERR >0):
+
+```bash
+# increase quantum to 256
+# edit ~/.config/pipewire/pipewire.conf.d/99-maschine-lowlatency.conf
 # default.clock.quantum = 256
 systemctl --user restart pipewire
 ```
 
-Vérifie aussi :
+Also check:
 
 ```bash
-cat /proc/asound/cards  # MK3 en card 2 ?
+cat /proc/asound/cards  # MK3 on card 2?
 aplay -l
 amidi -l
 aconnect -l
 pw-dump | grep -i maschine
 ```
 
-## Désinstallation
+## Uninstallation
 
 ```bash
 sudo rm /etc/udev/rules.d/99-maschine-mk3.rules

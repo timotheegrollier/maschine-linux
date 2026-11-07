@@ -1,23 +1,25 @@
-# Workflow Maschine — modèle reproduit dans maschine-engine
+# Maschine workflow — model reproduced in maschine-engine
 
-Réplique fidèle de Maschine 2/3 (NI) adapté à Rust, sans les lourdeurs.
+Clean-room workflow replica of Maschine 2/3 (NI) adapted to Rust, without the
+bloat. It reproduces the documented workflow and hardware behavior; it does not
+include Native Instruments code or proprietary assets.
 
-## Hiérarchie
+## Hierarchy
 
 ```
 Project
  ├─ master : Channel (vol, pan, inserts FX)
- ├─ groups: Vec<Group>  // A-H × N banks, extensible, 8 visibles à la fois sur hardware
+ ├─ groups: Vec<Group>  // A-H × N banks, extensible, 8 visible at a time on hardware
  ├─ scenes: Vec<Scene>
- ├─ song  : Vec<Section>  // timeline arranger
+ ├─ song  : Vec<Section>  // arranger timeline
  └─ tempo: f32, swing: f32, time_signature
 ```
 
 ```
-Group (16 pads fixes, comme hardware)
- ├─ sounds: [Sound; 16]  // Some(Sound) ou None (gap autorisé)
- ├─ channel: Channel     // inserts Group
- ├─ patterns: Vec<Pattern>  // pool propre au Group
+Group (16 fixed pads, like hardware)
+ ├─ sounds: [Sound; 16]  // Some(Sound) or None (gap allowed)
+ ├─ channel: Channel     // Group inserts
+ ├─ patterns: Vec<Pattern>  // pool specific to the Group
  └─ color: u8, name: String, muted/solo
 ```
 
@@ -27,11 +29,12 @@ Sound
  ├─ channel: Channel
  ├─ zones: Vec<Zone>        // multi-sample mapping
  ├─ choke_group: Option<u8> // off_by (hi-hat)
+ ├─ polyphony: u8           // per-Sound voice limit (1..32)
  └─ midi: MidiInputMode (Off/Focus/Omni)
 ```
 
 ```
-Pattern (appartient à UN Group)
+Pattern (belongs to ONE Group)
  ├─ events: Vec<Event>  // note, vel (alpha), start ticks, length ticks
  ├─ length: BarsBeatsTicks
  ├─ swing: f32, grid: Grid (1/4, 1/8T, 1/16, etc.)
@@ -39,128 +42,145 @@ Pattern (appartient à UN Group)
 ```
 
 ```
-Scene : Vec<Option<PatternId>> // un pattern par Group max, None = silence
-Section : { scene_id, length, name } // length peut être < scene length (trim)
+Scene : Vec<Option<PatternId>> // one pattern per Group max, None = silence
+Section : { scene_id, length, name } // length can be < scene length (trim)
 ```
 
-Réplique exacte : Pattern = objet référencé (éditer propage partout) vs Clip (Song-only, future). Scenes déclenchables via pads en Ideas view ou MIDI Note/ProgramChange.
+Exact replica: Pattern = referenced object (editing propagates everywhere) vs Clip (Song-only, future). Scenes can be triggered via pads in Ideas view or MIDI Note/ProgramChange.
 
-## Vues de l'application
+## Application views
 
-La GUI reprend la séparation du workflow Maschine : une barre de transport commune, les groupes et scènes à gauche, puis un espace de travail dédié. Les boutons de vue restent synchronisés avec les onglets matériels MK3.
+The GUI follows Maschine's workflow separation: a common transport bar, groups and scenes on the left, then a dedicated workspace. View buttons stay synchronized with the MK3 hardware tabs.
 
-- **Ideas** : scènes horizontales et matrice Group × Pattern. Cliquer un pattern l'assigne à la scène et met son groupe au focus. La scène peut être dupliquée/supprimée (avec ré-indexation automatique des sections du Song). Une scène peut être ajoutée depuis cette vue.
-- **Song** : timeline horizontale des sections, sélection directe, navigation précédente/suivante, duplication, suppression et longueur de section (1/2/4/8 mesures).
-- **Sequencer** : pas 16 × 16, navigation et longueur de pattern de 1/2/4/8 mesures, pads de pré-écoute et actions de groove. Les cellules sont préparées en une passe sur les événements pour garder l'édition fluide.
-- **Mixer** : volume, panoramique, mute et solo des groupes A–H, plus le master.
-- **Sampler / Sound** : sélection des 16 Sounds, import WAV asynchrone, waveform, audition, volume, panoramique, filtre et enveloppe ADSR. Les chemins WAV sont enregistrés dans les zones du projet et rechargés à l'ouverture.
-- **Browser** : presets de drum synth 808 intégrés, chargés sur le Sound sélectionné. Le Browser ne parcourt pas encore la bibliothèque NI ni le système de fichiers.
+- **Ideas**: horizontal scenes and a Group × Pattern matrix. Clicking a pattern assigns it to the scene and focuses its group. The scene can be duplicated/deleted (with automatic re-indexing of Song sections). A scene can be added from this view.
+- **Song**: horizontal timeline of sections, direct selection, previous/next navigation, duplication, deletion and section length (1/2/4/8 bars).
+- **Sequencer**: 16 × 16 steps, navigation and pattern length from 1/2/4/8 bars, preview pads and groove actions. Cells are prepared in a single pass over events to keep editing smooth.
+- **Keyboard / Performance**: 16-key performance keyboard, Sound auditioning, previous/next Sound selection, and direct pad access. Hardware KEYBOARD and CHORDS modes open this view.
+- **Mixer**: volume, pan, mute and solo for groups A–H, plus the master.
+- **Sampler / Sound**: selection of the 16 Sounds, asynchronous WAV import, waveform, audition, volume, pan, filter, ADSR envelope, per-Sound polyphony and choke group. WAV paths are saved in the project zones and reloaded on open.
+- **PLUGIN**: unified Sound editor. The SOUND page exposes the sampler-style controls; the TB-303 page provides simplified macros (cutoff, resonance, envelope modulation, decay, accent, drive, delay time, delay mix) with advanced oscillator, filter, distortion, and delay controls collapsed by default.
+- **Browser**: built-in 808 drum synth presets, loaded onto the selected Sound. The Browser does not yet browse the NI library or the filesystem.
 
-Le transport propose Play/Stop, Record, boucle, tempo et position BBT. Les pads GUI envoient le relâchement de note; les presets 808 sont mis en cache au chargement du kit.
+The GUI uses a collapsible, resizable navigation rail and MK3 mirror. `F1`
+toggles the rail, `F2` toggles the mirror, and the application bar shows the
+active latched workflow. The transport offers Play/Stop, Record, loop, tempo
+and BBT position. GUI pads send note release; 808 presets are cached when the
+kit loads.
 
-## Écrans MK3 (480×272) & soft keys
+`maschine-linux gui --no-hardware` forces standalone mode: the GUI, engine,
+virtual MIDI, and audio remain available, while any connected MK3 and its
+hot-plug reconnection are ignored.
 
-Les deux écrans sont rendus par la même fonction (`display_render::render_screens`) : le panneau MK3 de la GUI est le miroir du contenu calculé pour le hardware. La boucle USB compare les rendus à 30 Hz, envoie seulement les rectangles modifiés (jusqu'à six), limite le débit moyen à 1,6 Mo/s et renvoie une paire plein écran toutes les 2 secondes pour resynchroniser le contrôleur.
+## MK3 screens (480×272) & soft keys
 
-- **Écran gauche** : ARRANGE (8 groupes, pattern de la scène, VU réels), SCENES/IDEAS (mode SCENE), SONG (sections), MIXER A–D, SAMPLER (waveform + ADSR + infos), BROWSER (presets 808), STEP (grille du pattern complet + paramètres du pas sélectionné).
-- **Écran droit** : PATTERN (grille 16 sons × 16 pas + playhead), STEP (vélocités du Sound actif + curseur d'édition), SONG TIMELINE, MIXER master + groupe/sound focus, SAMPLER enveloppe plein écran, BROWSER chargement, EVENTS, MACRO, SETTINGS.
-- **Soft keys (8 boutons sous les écrans)** : action *contextuelle* décidée par le moteur (`EngineEvent::SoftKey`) et affichée en bas des écrans. Le bouton fait toujours ce que le label annonce, identiquement au hardware et dans la GUI.
-  - ARRANGE : `BAR 1..4` + longueur de pattern `1/2/4/8 MES`.
-  - STEP : `PAS <</>>` (curseur d'un pas), `BAR <</>>` (d'une mesure), `1/2/4/8 MES`.
-  - MIXER : `GRP A..H` (focus groupe). SAMPLER : `SND 1..8` (Sound actif).
-  - BROWSER : `PRES <</>>`, `SND <</>>`, `ECOUTE`, `CHARGER`, `METRO`, `LOOP`.
-  - SCENE : `SCN 1..8`. SONG : `SEC <</>>`, `+SEC`, `IDEE`, scènes et `+SCN`.
-- **Encodeurs** : chaque écran affiche les 4 paramètres réellement pilotés par ses knobs (1–4 à gauche, 5–8 à droite) avec les valeurs live.
-- **Navigation entre vues** : choisir ARRANGE, MIXER, SAMPLER ou BROWSER remet l'écran droit sur la page liée à cette vue. EVENTS, MACRO et SETTINGS sont des vues de droite que l'on peut ensuite choisir explicitement. Recliquer la vue principale active dans la GUI revient à sa page droite contextuelle.
-- **GUI et commandes hardware synchronisées** : avant de mapper chaque nouvel événement HID, l'application reprend le groupe, le son et les onglets du moteur. Le premier cran de knob après un changement de page fait donc déjà l'action de la nouvelle page.
-- **Édition en direct** : les changements de volume, pan, filtre et ADSR atteignent aussi les voix déjà en cours; les gains et panoramiques Group/Sound se combinent sans écraser le niveau voisin.
-- **Alignement LCD** : chaque rectangle USB doit avoir une largeur paire, car le compteur Bulk représente des paires de pixels RGB565. Les rectangles du différentiel sont élargis au pixel voisin; les fenêtres impaires sont refusées avant l'envoi. Voir [le protocole matériel](HARDWARE_DISPLAY_PROTOCOL.md).
-- **Validation réelle** : les tests vérifient l'encodage, le rendu et le routage des contrôles. Un transfert USB accepté ne prouve pas que les pixels sont visibles; contrôler les deux LCD sur la MK3 après le lancement.
+Both screens are rendered by the same function (`display_render::render_screens`): the MK3 panel in the GUI is the mirror of the content computed for the hardware. The USB loop compares renders at 30 Hz, sends only modified rectangles (up to six), limits average throughput to 1.6 MB/s and sends a full-screen pair every 2 seconds to resynchronize the controller.
 
-### Référence officielle et périmètre actuel
+- **Left screen**: ARRANGE (8 groups, scene pattern, real VU), SCENES/IDEAS (SCENE mode), SONG (sections), MIXER A–D, SAMPLER (waveform + ADSR + info), BROWSER (808 presets), STEP (full pattern grid + selected step parameters), and PLUGIN (SOUND page or TB-303 page).
+- **Right screen**: PATTERN (16 sounds × 16 steps grid + playhead), STEP (active Sound velocities + edit cursor), SONG TIMELINE, MIXER master + group/sound focus, SAMPLER full-screen envelope, BROWSER loading, EVENTS, MACRO, SETTINGS, PLUGIN SOUND envelope.
+- **Soft keys (8 buttons under the screens)**: *contextual* action decided by the engine (`EngineEvent::SoftKey`) and displayed at the bottom of the screens. The button always does what the label announces, identically on hardware and in the GUI.
+  - ARRANGE: `BAR 1..4` + pattern length `1/2/4/8 BARS`.
+  - STEP: `STEP <</>>` (cursor by one step), `BAR <</>>` (by one bar), `1/2/4/8 BARS`.
+  - MIXER: `GRP A..H` (group focus). SAMPLER: `SND 1..8` (active Sound).
+  - BROWSER: `PRES <</>>`, `SND <</>>`, `LISTEN`, `LOAD`, `METRO`, `LOOP`.
+  - PLUGIN SOUND: `SND <`, `SND >`, `PAGE TB`, `LISTEN`, `APPLY`, `RESET`, `VOL -`, `VOL +`.
+  - PLUGIN TB-303: `SAW/SQR`, `OCT -`, `OCT +`, `SLIDE`, `CLASSIC`, `SQUELCH`, `PAGE SND`, `DUB`.
+  - SCENE: `SCN 1..8`. SONG: `SEC <</>>`, `+SEC`, `IDEAS`, scenes and `+SCN`.
+- **Encoders**: each screen displays the 4 parameters actually controlled by its knobs (1–4 on the left, 5–8 on the right) with live values. PLUGIN routes knobs by page: SOUND uses Vol/Pan/Cutoff/Reso + ADSR, TB-303 uses Cutoff/Reso/EnvMod/Decay + Accent/Drive/Time/Mix.
+- **Navigation between views**: choosing ARRANGE, MIXER, SAMPLER, BROWSER or PLUGIN returns the right screen to the page linked to that view. EVENTS, MACRO and SETTINGS are right-hand views that can then be explicitly selected. Clicking the active main view again in the GUI returns to its contextual right page.
+- **Latched workflow menus**: PATTERN, STEP, KEYBOARD, SCENE, EVENTS, MACRO, SETTINGS and PLUGIN latch on the first press. A second press on the same button returns to the default Pad workflow and the Sequencer view. Only one workflow menu is active at a time.
+- **GUI and hardware controls synchronized**: before mapping each new HID event, the application re-reads the group, sound and tabs from the engine. The first knob detent after a page change therefore already performs the new page's action.
+- **Live editing**: volume, pan, filter and ADSR changes also reach voices already playing; Group/Sound gains and pans combine without overwriting the neighboring level.
+- **LCD alignment**: each USB rectangle must have an even width, because the Bulk counter represents pairs of RGB565 pixels. Differential rectangles are expanded to the neighboring pixel; odd windows are rejected before sending. See [the hardware protocol](HARDWARE_DISPLAY_PROTOCOL.md).
+- **Real validation**: tests check encoding, rendering and control routing. An accepted USB transfer does not prove that the pixels are visible; check both LCDs on the MK3 after launching.
 
-Le manuel MK3 décrit SAMPLING comme un Sample Editor lié au Sound focalisé : les boutons 1–4 choisissent RECORD, EDIT, SLICE et ZONE; EDIT règle notamment le play range, tandis que ZONE gère mapping, accordage et plages de touches/vélocité. Les huit boutons et knobs du contrôleur sont contextuels et leur fonction est affichée à l'écran ([manuel officiel, Sampling et sample mapping](https://docs.native-instruments.com/ni-tech-manuals/maschine-mk3-manual/en/sampling-and-sample-mapping), [référence rapide MK3](https://docs.native-instruments.com/ni-tech-manuals/maschine-mk3-manual/en/quick-reference)).
+### Official reference and current scope
 
-Dans cette application, le bouton SAMPLING ouvre actuellement **Sampler / Sound** : import WAV depuis la GUI, waveform, audition, ADSR, filtre, volume et pan. L'import est décodé sur un thread de travail. Les pages d'enregistrement, d'édition destructive et de slicing, les play/selection ranges manipulables et l'édition des zones ne sont pas encore implémentés sur le contrôleur. L'écran EVENTS actuel est lui aussi une vue d'information; il ne propose pas encore l'édition événementielle position/hauteur/vélocité/longueur du mode officiel ([description officielle du mode EVENTS](https://docs.native-instruments.com/ni-tech-manuals/maschine-mk3-manual/en/quick-reference)).
+The MK3 manual describes SAMPLING as a Sample Editor tied to the focused Sound: buttons 1–4 select RECORD, EDIT, SLICE and ZONE; EDIT notably sets the play range, while ZONE handles mapping, tuning and key/velocity ranges. The controller's eight buttons and knobs are contextual and their function is displayed on screen ([official manual, Sampling and sample mapping](https://docs.native-instruments.com/ni-tech-manuals/maschine-mk3-manual/en/sampling-and-sample-mapping), [MK3 quick reference](https://docs.native-instruments.com/ni-tech-manuals/maschine-mk3-manual/en/quick-reference)).
 
-## Mode STEP (façon logiciel officiel)
+In this application, the SAMPLING button currently opens **Sampler / Sound**: WAV import from the GUI, waveform, audition, ADSR, filter, volume and pan. Import is decoded on a worker thread. The recording, destructive editing and slicing pages, manipulable play/selection ranges and zone editing are not yet implemented on the controller. The current EVENTS screen is also an information view; it does not yet offer the event editing of position/pitch/velocity/length found in the official mode ([official description of EVENTS mode](https://docs.native-instruments.com/ni-tech-manuals/maschine-mk3-manual/en/quick-reference)).
 
-Le mode STEP s'active avec le bouton **STEP** du hardware (ou la GUI). L'onglet gauche reste sur ARRANGE : la page STEP remplace alors ARRANGE sur les écrans.
+## STEP mode (following the official software)
 
-- **Pads 1..16** : basculent le pas correspondant du Sound actif dans la mesure affichée (silencieux, doublon supprimé via `same_step_cell`). Le pad touché devient le **pas sélectionné** : la grille des écrans et le curseur LED le suivent.
-- **Curseur (`Engine::step_cursor`)** : pas sélectionné (index absolu 0..`pattern_bars*16-1`). Il détermine la mesure affichée (`selected_bar = curseur / 16`) et la fenêtre des 4 knobs d'édition.
-- **Knobs 1–4 = édition du pas sélectionné** : `VEL` (vélocité), `POS` (nudge en ticks), `LEN` (longueur en pas de 1/16), `PITCH` (demi-tons). Un accumulateur côté mapper transforme la rotation continue en incréments entiers (~1 cran ≈ 32 ticks bruts).
-- **Knob 5 = SCROLL** : défile la grille du pattern complet (32 pas pour 2 mesures, jusqu'à 128 pas) ; les knobs 6–8 restent `VOL SND`, `CUTOFF`, `RESO` du Sound actif.
-- **Encodeur 4-D `<` / `>` et flèches** : défilent la grille d'un pas (le mode STEP prend la main sur la navigation par mesure).
-- **Écran gauche** : grille du pattern complet (une ligne par mesure, 16 cases), case du curseur encadrée en orange, tête de lecture blanche, détail du pas (`VEL`, `POS`, `LEN`, `PITCH` avec nom de note) et slots 1–4.
-- **Écran droit** : grille détaillée de la mesure (hauteur = vélocité), contour orange sur le pas édité, `PAS n/n` dans le bandeau, slot 5 = `SCROLL`, 6–8 = `VOL SND`, `CUTOFF`, `RESO`.
+STEP mode is activated with the **STEP** button on the hardware (or the GUI). The left tab stays on ARRANGE: the STEP page then replaces ARRANGE on the screens.
 
-## Instrumentation latence
+- **Pads 1..16**: toggle the corresponding step of the active Sound in the displayed bar (silent, duplicate removed via `same_step_cell`). The touched pad becomes the **selected step**: the screen grids and the LED cursor follow it.
+- **Cursor (`Engine::step_cursor`)**: selected step (absolute index 0..`pattern_bars*16-1`). It determines the displayed bar (`selected_bar = cursor / 16`) and the window of the 4 editing knobs.
+- **Knobs 1–4 = editing the selected step**: `VEL` (velocity), `POS` (nudge in ticks), `LEN` (length in 1/16 steps), `PITCH` (semitones). A mapper-side accumulator turns continuous rotation into integer increments (~1 detent ≈ 32 raw ticks).
+- **Knob 5 = SCROLL**: scrolls the full pattern grid (32 steps for 2 bars, up to 128 steps); knobs 6–8 remain the active Sound's `VOL SND`, `CUTOFF`, `RESO`.
+- **4-D encoder `<` / `>` and arrows**: scroll the grid by one step (STEP mode takes over bar navigation).
+- **Left screen**: full pattern grid (one row per bar, 16 cells), cursor cell outlined in orange, white playhead, step detail (`VEL`, `POS`, `LEN`, `PITCH` with note name) and slots 1–4.
+- **Right screen**: detailed bar grid (height = velocity), orange outline on the edited step, `STEP n/n` in the header, slot 5 = `SCROLL`, 6–8 = `VOL SND`, `CUTOFF`, `RESO`.
 
-`maschine-linux daemon --debug-latency` (ou `gui --debug-latency`) journalise toutes les 2 s :
+## Latency instrumentation
 
-- latence **HID→Engine** : nombre d'événements, dernier et max en µs par fenêtre ;
-- statistiques audio : callbacks, **taille de buffer réelle** en frames (et ms), `lock_misses` (callback n'ayant pas pu prendre le lock → silence), `err` (erreurs/underruns backend) et temps max de callback en µs.
+`maschine-linux daemon --debug-latency` (or `gui --debug-latency`) logs every 2 s:
 
-`maschine-linux daemon --debug-latency --stress` ajoute une charge volontaire (lecture du pattern + verrou moteur et snapshots pris en continu) : c'est le révélateur des craquements. Référence mesurée (PipeWire `default`, 48 kHz) : **1500 callbacks/2 s (buffer 64 frames ≈ 1,3 ms), 0 miss, 0 err** avec 61 voix et la contention.
+- **HID→Engine** latency: number of events, latest and max in µs per window;
+- audio statistics: callbacks, **actual buffer size** in frames (and ms), `lock_misses` (callback that could not acquire the lock → silence), `err` (backend errors/underruns) and max callback time in µs.
 
-Le thread HID réveille immédiatement la GUI (`RepaintSignal`), et le snapshot moteur partage le projet en `Arc` (copy-on-write) : les lectures UI sont O(1) et seules les actions utilisateur clonent.
+`maschine-linux daemon --debug-latency --stress` adds a deliberate load (pattern playback + engine lock and snapshots taken continuously): this is what exposes crackles. Measured reference (PipeWire `default`, 48 kHz): **1500 callbacks/2 s (64-frame buffer ≈ 1.3 ms), 0 miss, 0 err** with 61 voices and the contention.
 
-## Qualité audio & anti-craquements
+The HID thread immediately wakes the GUI (`RepaintSignal`), and the engine snapshot shares the project as an `Arc` (copy-on-write): UI reads are O(1) and only user actions clone.
 
-Chaîne de sortie (dans l'ordre) : voix → groupes (gains/pans/filtres) → **limiteur doux master** (linéaire sous -3 dB puis `tanh`, jamais d'écrêtage dur) → callback (clamp de sécurité ±1.0).
+## Audio quality & anti-crackling
 
-- **Latence** : le stream est négocié au plus court — 48 kHz si accepté, buffer 256 frames (période 64), replis 512 → 1024 → 2048 → défaut. `set_audio_sample_rate()` régénère le kit DSP au taux réel du device à chaque ouverture (sinon le kit joue faux).
-- **Timing** : le callback avance le transport du bloc complet puis rend ; chaque note est placée au **sample près** dans le bloc (`start_frame`), donc le groove ne dépend pas de la taille de buffer.
-- **Anti-clic** : fondu de fin de sample (3 ms) + fondu de fin dans le drum synth, vol de voix et choke en fondu 5 ms, clics métronome fondus.
-- **Diagnostic hors-ligne** : `cargo run --release -p maschine-engine --example render_groove -- /tmp/g.wav 12 48000 0.85` (crête, RMS, écrêtés, plus grand saut) et `--example render_kit` (les 16 instruments en WAV). Référence du groove démo : crête ≈0,92, RMS ≈-18 dB, 0 écrêtage, aucun saut anormal aux bords de boucle.
+Output chain (in order): voices → groups (gains/pans/filters) → **master soft limiter** (linear below -3 dB then `tanh`, never hard clipping) → callback (safety clamp ±1.0).
+
+- **Latency**: the stream is negotiated as short as possible — 48 kHz if accepted, 256-frame buffer (period 64), fallbacks 512 → 1024 → 2048 → default. `set_audio_sample_rate()` regenerates the DSP kit at the device's actual rate on each open (otherwise the kit plays out of tune).
+- **Timing**: the callback advances the transport for the whole block then renders; each note is placed **sample-accurately** within the block (`start_frame`), so the groove does not depend on buffer size.
+- **Anti-click**: sample end fade (3 ms) + end fade in the drum synth, voice stealing and choke with 5 ms fade, metronome clicks faded.
+- **Offline diagnostics**: `cargo run --release -p maschine-engine --example render_groove -- /tmp/g.wav 12 48000 0.85` (peak, RMS, clipped samples, largest jump) and `--example render_kit` (the 16 instruments as WAV). Demo groove reference: peak ≈0.92, RMS ≈-18 dB, 0 clipping, no abnormal jump at loop boundaries.
 
 ## Sampler
 
-- Moteur : `sampler.rs` — voix polyphonique, `Voice { sample: Arc<[f32]>, pos: f64, gain, pan, adsr: Adsr, filter: Svf }`.
-- Zones : `Zone { sample_path, root_key, lokey/hikey, lovel/hivel, seq_len/seq_pos, group, polyphony, tune, pan }`.
-- Choke : `HashMap<choke_group, Vec<VoiceId>>`, `off_mode` = kill / fade 5ms.
-- Slice : `slice::detect_transients(&[f32]) -> Vec<usize>` puis export `Apply to Group` (chaque slice → nouveau Sound) + auto pattern 16-step reproduisant loop originale.
-- Formats : WAV/FLAC/OGG via `hound` + `symphonia` (future), SFZ import/export, Hydrogen drumkit import.
+- Engine: `sampler.rs` — polyphonic voice, `Voice { sample: Arc<[f32]>, pos: f64, gain, pan, adsr: Adsr, filter: Svf }`.
+- Zones: `Zone { sample_path, root_key, lokey/hikey, lovel/hivel, seq_len/seq_pos, group, polyphony, tune, pan }`.
+- Per-Sound polyphony: `sound_polyphony` limits active voices for each Sound (1..32). When the limit is reached, the oldest voice of the same Sound is stolen with a short fade; other Sounds are unaffected.
+- Choke: `HashMap<choke_group, Vec<VoiceId>>`, `off_mode` = kill / fade 5ms. Choke groups can be changed per Sound at runtime from the PLUGIN SOUND page.
+- Slice: `slice::detect_transients(&[f32]) -> Vec<usize>` then export `Apply to Group` (each slice → new Sound) + auto 16-step pattern reproducing the original loop.
+- Formats: WAV/FLAC/OGG via `hound` + `symphonia` (future), SFZ import/export, Hydrogen drumkit import.
 
 ## Sequencer & Transport
 
 - `Transport { bpm, sample_rate, tick, playing, recording, loop_enabled, loop_start, loop_end, swing }`.
 - `Sequencer::tick_to_samples(tick)`, `quantize(event, grid)`, `nudge(event, ticks)`, `humanize(vel, timing)`.
-- Swing : delay every other 16th par `swing * 0.5 * step_duration`.
-- Résolution : 960 ticks / quarter (PPQ 960).
-- Multi-mesures : patterns configurables de 1 à 8 mesures (`1:0:0`, `2:0:0`, `4:0:0`, `8:0:0`).
-- Séquenceur pas-à-pas silencieux : en mode STEP, la pose d'un pas n'émet aucun son parasite et supprime proprement les doublons via comparaison par cellule de 16e (`same_step_cell`).
+- Swing: delay every other 16th by `swing * 0.5 * step_duration`.
+- Resolution: 960 ticks / quarter (PPQ 960).
+- Multi-bar: patterns configurable from 1 to 8 bars (`1:0:0`, `2:0:0`, `4:0:0`, `8:0:0`).
+- Silent step sequencer: in STEP mode, placing a step emits no stray sound and cleanly removes duplicates via 16th-cell comparison (`same_step_cell`).
 
-## State & persistance
+## State & persistence
 
-- `Project::save(path)` → JSON pretty + binaire bincode cache.
-- `schema_version: u32` pour migrations.
-- Instantané UI lock-free : `Arc<RwLock<Arc<Project>>>` (copy-on-write au moment des écritures) + compteur de révision `AtomicU64`. `Engine::snapshot()` est O(1) (clone d'un `Arc`), les VU-mètres et l'enveloppe du Sound actif voyagent dans l'instantané.
+- `Project::save(path)` → pretty JSON + bincode binary cache.
+- `schema_version: u32` for migrations.
+- Lock-free UI snapshot: `Arc<RwLock<Arc<Project>>>` (copy-on-write at write time) + `AtomicU64` revision counter. `Engine::snapshot()` is O(1) (clone of an `Arc`); VU meters and the active Sound envelope travel in the snapshot.
 
-## Mapping hardware MK3 complet
+## Complete MK3 hardware mapping
 
-- **Pads 1..16** :
-  - *Mode PAD* : déclenchement du son correspondant du groupe focus avec vélocité et pression dynamiques. Rendu one-shot sans bouclage accidentel.
-  - *Mode STEP* : bascule silencieuse du pas correspondant (0..15) dans la mesure sélectionnée (`selected_bar`) ; le pad devient le pas sélectionné (curseur orange sur les écrans, blanc sur les pads à l'arrêt). Les knobs 1–5 éditent le pas (VEL/POS/LEN/PITCH) et défilent la grille (SCROLL) — voir « Mode STEP ».
-  - *Modes SCENE / PATTERN / ERASE / SELECT* : gestion directe du workflow Maschine.
-- **Encodeur 4-D** :
-  - *Haut / Bas* : changement rapide du son sélectionné (`active_sound`) avec pré-écoute instantanée ; navigation des presets dans le Browser.
-  - *Gauche / Droite* (ou `<` / `>`) : navigation entre les mesures (`selected_bar`) — **en mode STEP**, défilent la grille d'un pas.
-  - *Shift + Droite* : extension de la longueur du pattern à 4 ou 8 mesures.
-  - *Push* : pré-écoute one-shot du son ou validation preset.
-  - *Focus TEMPO / VOLUME / SWING* (boutons dédiés) : 0.5 BPM, 0.01 de master, 0.01 de swing par cran (divisés par 2 avec Shift).
-- **Écrans & Boutons d'écran 1..8** :
-  - *Soft keys contextuels* : les 8 boutons sous les écrans exécutent l'action affichée en bas de l'écran (voir « Écrans MK3 & soft keys »). Même moteur d'action côté hardware et côté GUI.
-  - *8 Potentiomètres rotatifs* : édition contextuelle des paramètres du son ou du mixeur ; les slots d'encodeurs des écrans affichent ces mêmes paramètres avec leurs valeurs live.
-- **Vitesse des knobs** (mise à l'échelle *une seule fois* dans `main.rs`, pas par tick brut ni par cran ≈ 32 ticks) :
-  - ARRANGE : TEMPO 0.05 BPM (≈1.5 BPM/cran, Shift ÷10), SWING 0.001, VOL GRP/SND 0.03 dB, PAN 0.001, MASTER 0.001.
-  - CUTOFF : échelle exponentielle `2^(ticks/384)` — ≈2.7 octaves par tour, ≈1 demi-ton par cran (naturel de 20 Hz à 20 kHz).
-  - RESO 0.001. SAMPLER : ATTACK 0.5 ms, DECAY/RELEASE 1 ms, SUSTAIN 0.001 par tick.
-  - MIXER : 0.03 dB par tick sur les 8 groupes. BROWSER : son/preset par cran (accumulateur), MASTER 0.001.
-  - Un tour rapide (delta brut > 128 ticks) est **limité**, jamais jeté : le knob ne « perd » plus de mouvements.
+- **Pads 1..16**:
+  - *PAD mode*: triggers the corresponding sound of the focused group with dynamic velocity and pressure. One-shot rendering without accidental looping.
+  - *STEP mode*: silent toggle of the corresponding step (0..15) in the selected bar (`selected_bar`); the pad becomes the selected step (orange cursor on the screens, white on the pads when stopped). Knobs 1–5 edit the step (`VEL`/`POS`/`LEN`/`PITCH`) and scroll the grid (`SCROLL`) — see "STEP mode".
+  - *KEYBOARD / CHORDS modes*: melodic performance and enriched diatonic chords; both open the Keyboard / Performance GUI view.
+  - *SCENE / PATTERN / ERASE / SELECT modes*: direct management of the Maschine workflow.
+- **Latched menus**: PATTERN, STEP, KEYBOARD, SCENE, EVENTS, MACRO, SETTINGS and PLUGIN stay active after the first press. The same button pressed again clears the menu and returns to the Pad workflow. Selecting another workflow menu clears the previous one.
+- **PLUGIN button**: opens the unified PLUGIN view on the SOUND page; a second press closes it and returns to the Sequencer. Soft keys switch between SOUND and TB-303.
+- **4-D encoder**:
+  - *Up / Down*: quick change of the selected sound (`active_sound`) with instant preview; preset navigation in the Browser.
+  - *Left / Right* (or `<` / `>`): navigation between bars (`selected_bar`) — **in STEP mode**, scroll the grid by one step.
+  - *Shift + Right*: extension of pattern length to 4 or 8 bars.
+  - *Push*: one-shot preview of the sound or preset confirmation.
+  - *TEMPO / VOLUME / SWING focus* (dedicated buttons): 0.5 BPM, 0.01 master, 0.01 swing per detent (halved with Shift).
+- **Screens & screen buttons 1..8**:
+  - *Contextual soft keys*: the 8 buttons under the screens execute the action displayed at the bottom of the screen (see "MK3 screens & soft keys"). Same action engine on the hardware and GUI sides.
+  - *8 rotary potentiometers*: contextual editing of sound or mixer parameters; the screen encoder slots display these same parameters with their live values.
+- **Knob speed** (scaled *only once* in `main.rs`, not per raw tick or per detent ≈ 32 ticks):
+  - ARRANGE: TEMPO 0.05 BPM (≈1.5 BPM/detent, Shift ÷10), SWING 0.001, VOL GRP/SND 0.03 dB, PAN 0.001, MASTER 0.001.
+  - CUTOFF: exponential scale `2^(ticks/384)` — ≈2.7 octaves per turn, ≈1 semitone per detent (natural from 20 Hz to 20 kHz).
+  - RESO 0.001. SAMPLER: ATTACK 0.5 ms, DECAY/RELEASE 1 ms, SUSTAIN 0.001 per tick.
+  - MIXER: 0.03 dB per tick on the 8 groups. BROWSER: sound/preset per detent (accumulator), MASTER 0.001.
+  - A fast turn (raw delta > 128 ticks) is **clamped**, never discarded: the knob no longer "loses" movements.
 
-## Exemple JSON minimal
+## Minimal JSON example
 
 ```json
 {
@@ -178,4 +198,4 @@ Chaîne de sortie (dans l'ordre) : voix → groupes (gains/pans/filtres) → **l
 }
 ```
 
-Voir `crates/maschine-engine/src/project.rs` pour le schéma complet.
+See `crates/maschine-engine/src/project.rs` for the complete schema.

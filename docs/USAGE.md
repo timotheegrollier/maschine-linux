@@ -8,97 +8,99 @@ maschine-linux probe
 maschine-linux -v probe
 maschine-linux hid-dump --duration 5
 maschine-linux hid-dump --hidraw /dev/hidraw3 --duration 5
-maschine-linux led-test --pad 0 --color 6   # rouge
-maschine-linux led-test --pad 15 --color 42 # bleu
+maschine-linux led-test --pad 0 --color 6   # red
+maschine-linux led-test --pad 15 --color 42 # blue
 maschine-linux project new --out demo.json
 maschine-linux project show demo.json
 maschine-linux project validate demo.json
 maschine-linux daemon
 maschine-linux daemon --project my.json
-maschine-linux gui --project my.json   # GUI, Maschine optionnelle
+maschine-linux gui --project my.json   # GUI, Maschine optional
+maschine-linux gui --no-hardware       # force standalone mode, ignore any MK3
 ```
 
 ## Daemon
 
-Le daemon :
+The daemon:
 
-1. Ouvre `/dev/hidraw3` (`hid-generic` via `usbhid`, pas de `libusb` detach)
-2. Poll 1ms (`SCHED_OTHER` pour l'instant, `SCHED_FIFO` avec `rtkit` en option)
-3. Décode `0x01` (boutons) et `0x02` (pads, hystérésis 0x4010/0x4005)
-4. Mappe via `HardwareMapper` → `MidiEvent` + `LedState`
-5. Envoie à `Engine` (Project/Transport/Sampler)
-6. Avance le transport (PPQ 960) et déclenche les patterns de la scène active
-7. Rend les voix du moteur; `--no-audio` avance aussi le transport avec un rendu muet pour tester l'interface.
+1. Opens `/dev/hidraw3` (`hid-generic` via `usbhid`, no `libusb` detach)
+2. Polls every 1ms (`SCHED_OTHER` for now, `SCHED_FIFO` with `rtkit` as an option)
+3. Decodes `0x01` (buttons) and `0x02` (pads, hysteresis 0x4010/0x4005)
+4. Maps via `HardwareMapper` → `MidiEvent` + `LedState`
+5. Sends to `Engine` (Project/Transport/Sampler)
+6. Advances the transport (PPQ 960) and triggers the patterns of the active scene
+7. Renders the engine voices; `--no-audio` also advances the transport with silent rendering to test the interface.
 
-Logs : `RUST_LOG=debug maschine-linux -vv daemon`
+Logs: `RUST_LOG=debug maschine-linux -vv daemon`
 
-### Contrôles hardware Maschine MK3 supportés
+### Supported Maschine MK3 hardware controls
 
-- **Pads 1..16** :
-  - **Mode PAD** : déclenchement one-shot pleine dynamique (vélocité + pression) du son actif ou kit complet, flash blanc de frappe puis couleur assignée au son.
-  - **Mode STEP** : séquenceur pas-à-pas silencieux (aucune lecture parasite lors de la pose/retrait de pas), LEDs de pas actives + curseur playhead blanc en direct.
-  - **Mode KEYBOARD** : jeu mélodique en gamme mineure C3..D5.
-  - **Mode CHORDS** : accords diatoniques enrichis.
-- **Encodeur 4-D** :
-  - **Haut / Bas** : sélection du son actif (avec pré-écoute one-shot) ; en mode Browser, défilement des presets synthétiseur.
-  - **Gauche / Droite** ou touches `<` / `>` : navigation pas-à-pas entre les mesures du pattern (Bar 1, Bar 2, Bar 3, Bar 4...).
-  - **Shift + Droite** : extension dynamique du pattern à 4 ou 8 mesures.
-  - **Pression (Push)** : pré-écoute one-shot du son actif (ou chargement du preset sélectionné en mode Browser) — ne déclenche pas intempestivement la lecture en boucle.
-  - **Rotation** : ajustement fin selon le focus actif (Tempo, Volume Master, Swing).
-- **Écrans LCD couleur (2 × 480×272)** :
-  - **Display Buttons 1..4 (Écran gauche) & Bouton PLUGIN** : sélection d'onglets (ARRANGE, MIXER, SAMPLER, BROWSER, et ACID SYNTH via le bouton physique **PLUGIN**).
-  - **Display Buttons 5..8 (Écran droit)** : sélection directe de la mesure affichée/éditée (BAR 1, BAR 2, BAR 3, BAR 4) ; avec **Shift**, dimensionnement du pattern (1, 2, 4, 8 mesures).
-  - **8 Potentiomètres crantés sous écrans** :
-    - *MIXER* : volumes des Groupes A..H.
-    - *SAMPLER* : boutons 1..4 = Vol, Pan, Cutoff filtre, Résonance ; 5..8 = Attack, Decay, Sustain, Release ADSR.
-    - *ACID SYNTH* : boutons 1..4 = Cutoff, Résonance, Modulation Enveloppe, Decay ; 5..8 = Accent, Drive distorsion, Delay Time, Delay Mix.
-    - *BROWSER* : molette sélection de pad et défilement presets 808.
-    - *ARRANGE* : tempo, swing, volume et filtre global.
-  - **Soft Keys Acid Synth (onglet 4)** : `[1: SAW/SQR]`, `[2: OCT -]`, `[3: OCT +]`, `[4: SLIDE]`, `[5: CLASSIC]`, `[6: SQUELCH]`, `[7: DISTORT]`, `[8: DUB]`.
-- **Groupes A..H** : sélection instantanée du groupe actif, combinaison avec touches **MUTE** et **SOLO** pour mise en sourdine / solo immédiats.
-- **Transport** : PLAY, REC, STOP, RESTART, TAP (métronome), ERASE (effacement notes par pad).
-- **Touchstrip** : modulation / pitch bend avec feedback visuel ruban LED.
+- **Pads 1..16**:
+  - **PAD mode**: full-dynamics one-shot triggering (velocity + pressure) of the active sound or full kit, white hit flash then the color assigned to the sound.
+  - **STEP mode**: silent step sequencer (no stray playback when placing/removing steps), active step LEDs + live white playhead cursor.
+  - **KEYBOARD mode**: melodic playing in a minor scale C3..D5.
+  - **CHORDS mode**: enriched diatonic chords.
+- **4-D encoder**:
+  - **Up / Down**: selection of the active sound (with one-shot preview); in Browser mode, scrolling through synthesizer presets.
+  - **Left / Right** or `<` / `>` keys: step-by-step navigation between pattern bars (Bar 1, Bar 2, Bar 3, Bar 4...).
+  - **Shift + Right**: dynamic extension of the pattern to 4 or 8 bars.
+  - **Pressure (Push)**: one-shot preview of the active sound (or loading the selected preset in Browser mode) — does not accidentally start loop playback.
+  - **Rotation**: fine adjustment according to the active focus (Tempo, Master Volume, Swing).
+- **Color LCD screens (2 × 480×272)**:
+  - **Display Buttons 1..4 (Left screen) & PLUGIN button**: tab selection (ARRANGE, MIXER, SAMPLER, BROWSER, and the unified **PLUGIN** page). The physical PLUGIN button opens the SOUND page and a second press closes it.
+  - **Display Buttons 5..8 (Right screen)**: direct selection of the displayed/edited bar (BAR 1, BAR 2, BAR 3, BAR 4); with **Shift**, pattern sizing (1, 2, 4, 8 bars).
+  - **8 detented potentiometers under the screens**:
+    - *MIXER*: volumes of Groups A..H.
+    - *SAMPLER*: buttons 1..4 = Vol, Pan, filter Cutoff, Resonance; 5..8 = Attack, Decay, Sustain, Release ADSR.
+    - *PLUGIN / SOUND*: buttons 1..4 = Vol, Pan, Cutoff, Resonance; 5..8 = Attack, Decay, Sustain, Release ADSR.
+    - *PLUGIN / TB-303*: buttons 1..4 = Cutoff, Resonance, Envelope Modulation, Decay; 5..8 = Accent, distortion Drive, Delay Time, Delay Mix.
+    - *BROWSER*: knob selects pads and scrolls 808 presets.
+    - *ARRANGE*: tempo, swing, volume and global filter.
+  - **PLUGIN soft keys**: SOUND page `[1: SND <]`, `[2: SND >]`, `[3: PAGE TB]`, `[4: LISTEN]`, `[5: APPLY]`, `[6: RESET]`, `[7: VOL -]`, `[8: VOL +]`; TB-303 page `[1: SAW/SQR]`, `[2: OCT -]`, `[3: OCT +]`, `[4: SLIDE]`, `[5: CLASSIC]`, `[6: SQUELCH]`, `[7: PAGE SND]`, `[8: DUB]`.
+  - **Latched workflow menus**: PATTERN, STEP, KEYBOARD, SCENE, EVENTS, MACRO, SETTINGS, and PLUGIN remain active after the first press. Pressing the same button again returns to the default Pad workflow. Only one workflow menu is active at a time.
+- **Groups A..H**: instant selection of the active group, combined with **MUTE** and **SOLO** keys for immediate mute / solo.
+- **Transport**: PLAY, REC, STOP, RESTART, TAP (metronome), ERASE (erase notes by pad).
+- **Touchstrip**: modulation / pitch bend with LED ribbon visual feedback.
 
-### Workflow projet
+### Project workflow
 
 ```bash
-# Lancement direct avec GUI et moteur audio PipeWire
+# Direct launch with GUI and PipeWire audio engine
 maschine-linux
 
-# Lancement en mode daemon console optimisé
+# Launch in optimized console daemon mode
 maschine-linux daemon --project my_project.json
 ```
 
-## GUI intégrée (`egui`)
+## Integrated GUI (`egui`)
 
-La GUI démarre aussi sans Maschine connectée : le moteur, les contrôles souris/
-clavier, le MIDI virtuel et la sortie audio système restent disponibles pour le
-développement. Si une MK3 avec `hidraw` est détectée au lancement, les entrées,
-LEDs et écrans matériels s'activent automatiquement. Le daemon headless reste
-volontairement strict et exige le contrôleur. Une sortie audio mémorisée mais
-absente (par exemple la MK3 débranchée) bascule sur la sortie système, sauf si
-`--audio-device` a été fourni explicitement.
+The GUI also starts without a Maschine connected: the engine, mouse/keyboard controls, virtual MIDI and system audio output remain available for development. If an MK3 with `hidraw` is detected at launch, hardware inputs, LEDs and screens activate automatically. Use `--no-hardware` to ignore a connected controller and force standalone mode; hot-plug reconnection is disabled in that mode. The headless daemon deliberately remains strict and requires the controller. A remembered but unavailable audio output (for example the MK3 unplugged) falls back to the system output, unless `--audio-device` was explicitly provided.
 
-La GUI native affiche en temps réel :
+The native GUI displays in real time:
 
-- **Barre supérieure de transport** : BPM, Swing, curseur temporel BBT, état Play/Rec/Stop/Loop, monitoring CPU et voix actives, métronome.
-- **Séquenceur pas-à-pas multi-mesures (16 pistes)** :
-  - Sélecteur de mesure active (1, 2, 3, 4...) et flèches de navigation `◀` / `▶`.
-  - Boutons de dimensionnement de pattern (1M, 2M, 4M, 8M).
-  - 16 lignes d'instruments complètes avec boutons de pré-écoute `▶` et 16 pas par mesure.
-- **Grille de pads 4×4** : disposition identique au hardware MK3 pour frappe directe à la souris ou écran tactile.
-- **Éditeur de son / synthétiseur** : sélecteur de présets 808 (Kick, Snare, Hi-Hats, Clap, Tom, Rimshot, Cowbell, SubBass...), réglage dynamique de gain, panoramique, filtre coupe-bas/passe-haut résonant et enveloppe ADSR.
-- **Synthétiseur Acid TB-303 (touche T)** : vue dédiée avec oscillateur PolyBLEP (Saw/Square, octave, slide), filtre passe-bas résonant 4 pôles avec affichage de la courbe de réponse en fréquence, waveshaper de distorsion tanh avec courbe de transfert dynamique, delay stéréo ping-pong avec aperçu graphique des échos, sélecteur de presets rapides et clavier virtuel 16 touches (C1 à D#2) pour jouer directement à la souris.
-- **Mixer 8 groupes (A..H)** : faders de volume, indicateurs de crête, mute et solo.
-- **Importer un sample** : dans Sampler, renseigner le chemin d'un fichier WAV et lancer l'import. Le décodage se fait en arrière-plan; la GUI reste interactive. Le Sound sélectionné est remplacé et le chemin est enregistré dans le projet.
+- **Application bar**: view picker, latched workflow indicators, and panel toggles (`F1` navigation, `F2` MK3 mirror).
+- **Top transport bar**: BPM, Swing, BBT time cursor, Play/Rec/Stop/Loop status, CPU and active voice monitoring, metronome.
+- **Collapsible and resizable panels**: the navigation rail and the MK3 mirror adapt to the window size and can be hidden for a compact workspace.
+- **Multi-bar step sequencer (16 tracks)**:
+  - Active bar selector (1, 2, 3, 4...) and `◀` / `▶` navigation arrows.
+  - Pattern sizing buttons (1M, 2M, 4M, 8M).
+  - 16 full instrument rows with `▶` preview buttons and 16 steps per bar.
+- **4×4 pad grid**: layout identical to the MK3 hardware for direct playing with mouse or touchscreen. The pads respect the active PATTERN, SCENE, SELECT, ERASE, STEP, and KEYBOARD workflows.
+- **Keyboard / Performance view (`K`)**: 16-key performance keyboard, Sound auditioning, previous/next Sound selection, and direct pad access.
+- **Unified PLUGIN view (`T` or `P`)**: SOUND page with 808 preset selector, gain, pan, resonant filter, ADSR, per-Sound polyphony and choke, plus a simplified TB-303 page with collapsible advanced controls.
+- **Acid TB-303 page**: PolyBLEP oscillator (Saw/Square, octave, slide), 4-pole resonant low-pass filter with frequency response curve display, tanh distortion waveshaper with dynamic transfer curve, stereo ping-pong delay with graphical echo preview, quick preset selector and 16-key virtual keyboard (C1 to D#2) to play directly with the mouse.
+- **8-group mixer (A..H)**: volume faders, peak indicators, mute and solo.
+- **Import a sample**: in Sampler, enter the path of a WAV file and start the import. Decoding happens in the background; the GUI remains interactive. The selected Sound is replaced and the path is saved in the project.
 
-Le Sample Editor officiel (enregistrement, plages de lecture, slicing et édition des zones depuis la MK3) n'est pas encore implémenté. L'écran EVENTS affiche actuellement des informations sans éditer les événements.
+Useful shortcuts: `I` Ideas, `S` Sequencer, `K` Keyboard, `M` Mixer, `A` Sampler, `T`/`P` Plugin/TB-303, `B` Browser, `Space` Play/Stop, `F1` toggle navigation, `F2` toggle MK3 panel, `Ctrl+S` save.
 
-## Écrans matériels LCD (Bulk USB)
+The official Sample Editor (recording, playback ranges, slicing and zone editing from the MK3) is not yet implemented. The EVENTS screen currently displays information without editing events.
 
-Les deux LCD 480×272 sont pilotés en USB Bulk (Interface 5). Le rendu est comparé à 30 Hz maximum; les seules régions modifiées sont envoyées, avec un budget moyen de 1,6 Mo/s et une réécriture complète périodique pour resynchroniser les écrans. Les fenêtres doivent avoir une largeur paire (paires de pixels RGB565).
+## Hardware LCD screens (USB Bulk)
 
-Pour tester le workflow physique après compilation :
+The two 480×272 LCDs are driven over USB Bulk (Interface 5). Rendering is compared at 30 Hz maximum; only modified regions are sent, with an average budget of 1.6 MB/s and a periodic full rewrite to resynchronize the screens. Windows must have an even width (RGB565 pixel pairs).
+
+To test the physical workflow after compilation:
 
 ```bash
 cargo fmt --all -- --check
@@ -109,35 +111,31 @@ cargo build --workspace --release
 ./target/release/maschine-linux gui --no-audio
 ```
 
-Sur la MK3, sélectionne **EVENTS**, puis **SAMPLER** : l'écran droit doit
-revenir à l'enveloppe du Sound. Tourne ensuite le knob 1; le volume affiché du
-Sound doit réagir dès le premier cran. La fenêtre GUI seule et un log de succès
-USB ne valident pas le contenu visible sur les deux LCD.
+On the MK3, select **EVENTS**, then **SAMPLER**: the right screen must return to the Sound envelope. Then turn knob 1; the displayed Sound volume must respond from the first detent. Press **PATTERN**, **STEP**, **KEYBOARD**, and **SCENE** once each: the matching GUI view must open and the button must stay latched. Press the same button again to return to the Pad workflow. Press **PLUGIN** once: the GUI must show the SOUND page; use soft key 3 to switch to TB-303, then soft key 7 to return to SOUND. Press **PLUGIN** again to close it. The GUI window alone and a successful USB log do not validate the content visible on the two LCDs.
 
-Pour valider le chargement d'un sample, importe un WAV depuis Sampler, appuie
-sur `Ctrl+S`, puis ferme et rouvre le projet sauvegardé via l'option `--project`.
-Vérifie que le nom, la waveform et l'audition du Sound sont toujours présents. Les cas automatisés et leur
-correspondance avec les commandes CI sont décrits dans [TESTING.md](TESTING.md).
+For a hardware-free smoke test, run `./target/release/maschine-linux gui --no-audio --no-hardware` and verify that the GUI starts, the MK3 is ignored, and no hot-plug reconnection appears in the logs.
 
-## Latence
+To validate sample loading, import a WAV from Sampler, press `Ctrl+S`, then close and reopen the saved project via the `--project` option. Check that the Sound name, waveform and audition are still present. The automated cases and their correspondence with CI commands are described in [TESTING.md](TESTING.md).
 
-Cible : <6ms round-trip @48k/128.
+## Latency
 
-Mesure :
+Target: <6ms round-trip @48k/128.
+
+Measurement:
 
 ```bash
 pw-top          # quantum 128, ERR 0
 pw-metadata -n settings 0 clock.force-quantum 128
-jack_iodelay    # si jack2 installé
-rtcqs           # script linuxmusicians
+jack_iodelay    # if jack2 installed
+rtcqs           # linuxmusicians script
 ```
 
-Si xruns : passe à 256 dans `99-maschine-lowlatency.conf`.
+If xruns occur: switch to 256 in `99-maschine-lowlatency.conf`.
 
 ## Debug
 
 ```bash
-# hid brut
+# raw hid
 sudo cat /sys/kernel/debug/hid/0003:17CC:1600.*/rdesc | hidrd-convert --spec --output spec
 hexdump -C /sys/class/hidraw/hidraw3/device/report_descriptor | head
 

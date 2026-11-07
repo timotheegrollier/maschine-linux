@@ -1,112 +1,163 @@
-# Maschine Linux — MK3 sur Fedora
+# Maschine Linux — MK3 on Fedora
 
-> **Objectif** : workstation musicale Linux inspirée du workflow Maschine, avec prise en charge de la **Maschine MK3** (`17cc:1600`) sous **Fedora / PipeWire**. L'application couvre les projets, groupes, sons, patterns, scènes, sections, séquenceur pas-à-pas, presets 808, import WAV simple, contrôles et écrans matériels. Le slicing, l'enregistrement et l'édition avancée des zones restent à construire.
+> **Goal**: a Linux music workstation built around the Maschine workflow, with
+> native support for the **Maschine MK3** (`17cc:1600`) on **Fedora / PipeWire**.
+> The application covers projects, groups, sounds, patterns, scenes, sections,
+> a step sequencer, 808 presets, simple WAV import, hardware controls, and both
+> MK3 color displays. Advanced sampling, recording, and zone editing are still
+> in progress.
 
-Langage principal : **Rust** (temps-réel, sécurité, pas de GC). Audio : PipeWire-JACK (`quantum 128`).
+Primary language: **Rust** (real-time safety, no GC). Audio: PipeWire-JACK
+(`quantum 128`).
 
-## État actuel (0.6.0)
+Maschine Linux is an independent project. It does not include Native
+Instruments code or proprietary assets; it reproduces the documented workflow
+and hardware behavior through a clean-room implementation.
 
-Workspace Cargo avec 4 crates principaux :
+## Current state (0.7.0)
 
-| Crate | Rôle |
+Cargo workspace with four main crates:
+
+| Crate | Responsibility |
 |---|---|
-| `maschine-proto` | Codec pur (sans I/O) : HID IN `0x01` (boutons, encodeur 4D 4 directions)/`0x02` (pads), HID OUT `0x80`/`0x81`, Bulk Display RGB565 brut avec fenêtres partielles alignées, palette couleurs |
-| `maschine-hardware` | Découverte USB (`hidraw` + `nusb`/`rusb` fallback), threads temps-réel, mapper hardware complet, modes Pad/Step/Keyboard/Chords |
-| `maschine-engine` | Domaine : Project/Group/Sound/Pattern/Scene/Section, Transport, Sequencer multi-mesures, Drum Synth 808 (16 instruments), Synthétiseur Acid TB-303, Rendu double LCD 480×272 |
-| `maschine-app` | Binaire `maschine-linux` : Application native avec GUI `egui`, daemon headless, PipeWire low-latency |
+| `maschine-proto` | Pure codec (no I/O): HID IN `0x01` (buttons, 4D encoder) / `0x02` (pads), HID OUT `0x80`/`0x81`, raw RGB565 Bulk Display with aligned partial windows, color palette |
+| `maschine-hardware` | USB discovery (`hidraw` first, `nusb`/`rusb` fallback), real-time threads, complete hardware mapper, Pad/Step/Keyboard/Chords modes, latched navigation |
+| `maschine-engine` | Domain: Project/Group/Sound/Pattern/Scene/Section, transport, multi-bar sequencer, 808 Drum Synth (16 instruments), Acid TB-303 synthesizer, 480×272 dual-LCD rendering |
+| `maschine-app` | `maschine-linux` binary: native `egui` GUI, headless daemon, low-latency PipeWire audio, updater |
 
-Temps-réel : l'instantané moteur est partagé en `Arc` (copy-on-write, lectures O(1)), un compteur de révision ne redessine que ce qui a changé, les VU-mètres sont calculés dans le callback audio et le thread HID réveille la GUI instantanément. Audio : buffer 256 frames (période 64 ≈ 1,3 ms) à 48 kHz, **limiteur doux master** (jamais d'écrêtage dur), notes placées **au sample près** dans le bloc, kit DSP régénéré au taux réel du device. Instrumentation : `--debug-latency` (HID→Engine, buffer réel, misses, erreurs) et `--stress` (charge volontaire).
+Real-time design: the engine snapshot is shared through `Arc` (copy-on-write,
+O(1) reads), a revision counter only repaints changed state, VU meters are
+computed in the audio callback, and the HID thread wakes the GUI immediately.
+Audio uses a 256-frame buffer (64-frame period, about 1.3 ms) at 48 kHz, a
+**soft master limiter** (no hard clipping), **sample-accurate note placement**
+inside each block, and a drum kit regenerated at the device sample rate.
+Instrumentation: `--debug-latency` (HID→Engine, real buffer size, misses,
+errors) and `--stress` (deliberate engine-lock contention).
 
-## Prérequis Fedora 44
+### Workflow and GUI parity in 0.7.0
+
+- **Latched MK3 menus**: PATTERN, STEP, KEYBOARD, SCENE, EVENTS, MACRO,
+  SETTINGS, and PLUGIN stay active after the first press and return to the
+  default Pad workflow on a second press. Only one workflow menu is active at
+  a time.
+- **Hardware-driven navigation**: PATTERN, STEP, KEYBOARD, and SCENE open the
+  corresponding GUI view through the engine `NavigateView` event and
+  `nav_serial` counter.
+- **Unified PLUGIN view**: the physical PLUGIN button opens the SOUND page;
+  soft keys switch to the simplified TB-303 page, where advanced parameters
+  are collapsed by default.
+- **Responsive desktop GUI**: collapsible and resizable navigation/MK3 panels,
+  compact layouts for small windows, a dedicated Keyboard/Performance view,
+  and context banners for every hardware workflow.
+- **Per-Sound sampler control**: polyphony and choke groups are applied per
+  Sound, including voice stealing with a short fade.
+- **Standalone mode**: `maschine-linux gui --no-hardware` ignores any connected
+  MK3 and runs the complete GUI, engine, MIDI, and audio stack without hardware.
+
+## Fedora 44 prerequisites
 
 ```bash
 sudo dnf install alsa-lib-devel jack-audio-connection-kit-devel \
                  pipewire-jack-audio-connection-kit-devel \
                  libusb1-devel hidapi-devel systemd-devel \
                  clang pkgconf-pkg-config
-# droits temps-réel + hidraw
-sudo usermod -aG jackuser,realtime,audio $USER  # + relogin
-# udev (copié depuis config/udev/)
+# real-time + hidraw permissions
+sudo usermod -aG jackuser,realtime,audio $USER  # then log out/in
+# udev (copied from config/udev/)
 sudo cp config/udev/99-maschine-mk3.rules /etc/udev/rules.d/
 sudo udevadm control --reload && sudo udevadm trigger
 
-# PipeWire low-latency (quantum 128 = 2.7ms @48k)
+# PipeWire low latency (quantum 128 = 2.7 ms @48k)
 mkdir -p ~/.config/pipewire/pipewire.conf.d ~/.config/wireplumber/wireplumber.conf.d
 cp config/pipewire/99-maschine-lowlatency.conf ~/.config/pipewire/pipewire.conf.d/
 cp config/wireplumber/51-maschine-mk3.conf ~/.config/wireplumber/wireplumber.conf.d/
 systemctl --user restart pipewire pipewire-pulse wireplumber
-pw-top  # ERR doit rester à 0
+pw-top  # ERR must stay at 0
 ```
 
-## Build & Run
+## Build and run
 
 ```bash
-# Compilation release optimisée
+# Optimized release build
 cargo build --release
 
-# Lancer la suite complète de tests
+# Full test suite
 cargo test --workspace
 
-# Lancer le DAW en GUI (la Maschine est optionnelle : mode autonome sans MK3)
+# GUI with a connected MK3 (hardware is optional)
 target/release/maschine-linux gui
 
-# Lancer en mode daemon headless avec logs détaillés
+# Force standalone mode: ignore any connected MK3
+target/release/maschine-linux gui --no-hardware
+
+# Headless daemon with detailed logs
 target/release/maschine-linux daemon --verbose
 
-# Instrumentation temps-réel (latence HID→Engine + stats audio, toutes les 2 s)
+# Real-time instrumentation (HID→Engine latency + audio stats every 2 s)
 target/release/maschine-linux daemon --debug-latency
-target/release/maschine-linux daemon --debug-latency --stress  # + charge volontaire (diagnostic craquements)
+target/release/maschine-linux daemon --debug-latency --stress
 ```
+
+Useful GUI shortcuts: `I` Ideas, `S` Sequencer, `K` Keyboard, `M` Mixer,
+`A` Sampler, `T`/`P` Plugin/TB-303, `B` Browser, `Space` Play/Stop,
+`F1` toggle navigation rail, `F2` toggle MK3 panel, `Ctrl+S` save.
 
 ## Architecture
 
-Voir `docs/architecture.md` + `docs/protocol.md` + `docs/workflow.md` + `docs/USAGE.md`.
+See `docs/architecture.md`, `docs/protocol.md`, `docs/workflow.md`, and
+`docs/USAGE.md`.
 
 ```
-MK3 USB IF4 HID (0x01 boutons/encodeurs, 0x02 pads)
+MK3 USB IF4 HID (0x01 buttons/encoders, 0x02 pads)
   └─► hid-poll ─► HardwareMapper ─► Engine (Transport + Synth + Sampler)
-                                       ├─► GUI (snapshot d'état)
-                                       └─► rendu LCD RGB565 ─► display_thread ─► MK3 IF5 Bulk
-                                             (diff 30 Hz)       (fenêtres paires)
+                                       ├─► GUI (state snapshot)
+                                       └─► RGB565 LCD rendering ─► display_thread ─► MK3 IF5 Bulk
+                                             (30 Hz diff)          (even-width windows)
 
 Engine ─► ALSA Seq (virtual) / JACK MIDI
-PipeWire-JACK 48k/128 ─► callback audio Engine
+PipeWire-JACK 48k/128 ─► Engine audio callback
 ```
 
-## Workflow Maschine reproduit
+## Reproduced Maschine workflow
 
 ```
 Project (*.maschine-linux.json)
  ├─ Groups A-H × N banks (16 Sounds / Group, 1 Sound = 1 pad)
- │    ├─ Sound 1..16 : Drum Synth 808 ou sample WAV, ADSR, Filter, volume/pan
- │    │                mappings persistés: chemin, key/velocity range, accordage
- │    └─ Patterns[] : events (note, vel, length) + automation (1..8 mesures)
- ├─ Scenes[] : { GroupA: PatternId, GroupB: PatternId, ... }
- └─ Song : Sections[] -> SceneId + length (arranger Ideas/Song)
+ │    ├─ Sound 1..16: Drum Synth 808 or WAV sample, ADSR, filter, volume/pan
+ │    │                persisted mappings: path, key/velocity range, tuning
+ │    └─ Patterns[]: events (note, velocity, length) + automation (1..8 bars)
+ ├─ Scenes[]: { GroupA: PatternId, GroupB: PatternId, ... }
+ └─ Song: Sections[] -> SceneId + length (Ideas/Song arranger)
 ```
 
-Voir [le workflow et son périmètre actuel](docs/workflow.md), [les tests](docs/TESTING.md) et [l'usage](docs/USAGE.md).
+See [the workflow and current scope](docs/workflow.md),
+[the test matrix](docs/TESTING.md), and [usage](docs/USAGE.md).
 
-## Licence
+## License
 
-GPL-3.0-or-later. Forks doivent publier les sources (AGPL non utilisée volontairement).
+GPL-3.0-or-later. Forks must publish their source code (AGPL is intentionally
+not used).
 
 ## Roadmap
 
-- [x] Proto codec + tests
+- [x] Protocol codec + tests
 - [x] Hardware hidraw + nusb bulk, retry/power-cycle guard
 - [x] ALSA Seq bridge & JACK MIDI
-- [x] Engine: Project JSON, Transport, Step sequencer multi-mesures, swing, mode STEP (curseur de pas éditable : VEL/POS/LEN/PITCH au knob, scroll de la grille complète)
-- [x] Drum Synth 808 temps-réel (16 instruments analogiques modélisés)
-- [x] Synthétiseur Acid TB-303 temps-réel (PolyBLEP saw/square, filtre résonant non-linéaire 4 pôles à saturation tanh, distorsion analogique, delay ping-pong stéréo, double écran LCD onglet 4 et vue GUI complète avec clavier virtuel)
-- [x] GUI egui: Séquenceur 16 pistes, Grille 4×4 pads, Éditeur son/filtres, Mixer 8 groupes
-- [x] Écrans MK3: Double écran LCD couleur 480×272 temps-réel (ARRANGE, PATTERN/STEP, SONG, SCENES, MIXER, SAMPLER, BROWSER, EVENTS, MACRO, SETTINGS) avec soft keys contextuels (labels = actions réelles), valeurs live et rafraîchissement immédiat à chaque action (~30 FPS maxi)
-- [x] Réactivité: snapshots `Arc<Project>` copy-on-write, repaint piloté par révision, VU-mètres réels par groupe + master (peak hold), `--debug-latency`
-- [x] Encodeur 4-D 4 directions & sélection de mesure / sound preview
-- [x] Import WAV mono/stéréo vers un Sound, waveform mise en cache, persistance et rechargement des chemins, ADSR et filtre biquad résonant
-- [ ] Sample Editor MK3 : enregistrement, édition de plage, slicing et édition des zones sur le contrôleur
-- [x] Workflow Song/Scènes : dupliquer/supprimer section, longueur de section 1/2/4/8, dupliquer/supprimer scène (ré-indexation des sections)
-- [ ] Browser étendu: import kits SFZ/Hydrogen, tag search
-- [ ] Tests latence automatisés <6ms round-trip @128
+- [x] Engine: JSON project, transport, multi-bar step sequencer, swing, STEP mode (editable step cursor: VEL/POS/LEN/PITCH with knobs, full-grid scroll)
+- [x] Real-time 808 Drum Synth (16 modeled analog instruments)
+- [x] Real-time Acid TB-303 synthesizer (PolyBLEP saw/square, nonlinear 4-pole resonant filter with tanh saturation, analog distortion, stereo ping-pong delay, dual LCD tab 4, full GUI view with virtual keyboard)
+- [x] egui GUI: 16-track sequencer, 4×4 pad grid, sound/filter editor, 8-group mixer, Keyboard/Performance view, responsive panels
+- [x] MK3 displays: dual 480×272 real-time color LCD (ARRANGE, PATTERN/STEP, SONG, SCENES, MIXER, SAMPLER, BROWSER, EVENTS, MACRO, SETTINGS, PLUGIN) with contextual soft keys, live values, and immediate refresh (~30 FPS max)
+- [x] Responsiveness: `Arc<Project>` copy-on-write snapshots, revision-driven repaint, real group/master VU meters with peak hold, `--debug-latency`
+- [x] 4-D encoder, bar selection, and sound preview
+- [x] WAV import (mono/stereo) into a Sound, cached waveform, path persistence and reload, ADSR and resonant biquad filter
+- [x] Latched PATTERN/STEP/KEYBOARD/SCENE/EVENTS/MACRO/SETTINGS/PLUGIN navigation on MK3 and in the GUI
+- [x] Unified PLUGIN SOUND/TB-303 page, simple macros and collapsible advanced controls
+- [x] Per-Sound polyphony and choke groups with click-free voice stealing
+- [x] Standalone GUI mode without hardware (`--no-hardware`)
+- [ ] MK3 Sample Editor: recording, play-range editing, slicing, and zone editing on the controller
+- [x] Song/Scenes: duplicate/delete sections, section lengths 1/2/4/8, duplicate/delete scenes (with section re-indexing)
+- [ ] Extended Browser: SFZ/Hydrogen kit import, tag search
+- [ ] Automated latency tests <6 ms round-trip @128
 
-Contrib : `cargo fmt --all && cargo clippy --workspace -- -D warnings`
+Contributing: `cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings`

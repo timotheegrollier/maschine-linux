@@ -34,6 +34,11 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
+      - name: Validate release notes
+        run: |
+          version="$(grep -m1 '^version =' Cargo.toml | cut -d '"' -f2)"
+          ./scripts/extract-release-notes.sh "${version}" > /dev/null
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 

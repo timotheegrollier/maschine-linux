@@ -41,6 +41,14 @@ jobs:
           cargo install cargo-generate-rpm --locked || true
           cargo install cargo-deb --locked || true
 
+      - name: Verify tag matches workspace version
+        run: |
+          version="$(grep -m1 '^version =' Cargo.toml | cut -d '"' -f2)"
+          test "v${version}" = "${GITHUB_REF_NAME}" || {
+            echo "error: tag ${GITHUB_REF_NAME} does not match workspace version ${version}" >&2
+            exit 1
+          }
+
       - name: Build release binaries
         run: |
           cargo build --release --locked -p maschine-app
@@ -69,6 +77,12 @@ jobs:
           ls -lh dist/
           cat dist/SHA256SUMS
 
+      - name: Extract English release notes
+        run: |
+          mkdir -p dist
+          ./scripts/extract-release-notes.sh "${GITHUB_REF_NAME#v}" > dist/RELEASE_NOTES.md
+          cat dist/RELEASE_NOTES.md
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -78,6 +92,7 @@ jobs:
             dist/*.deb
             dist/*.tar.gz
             dist/SHA256SUMS
-          generate_release_notes: true
+          body_path: dist/RELEASE_NOTES.md
+          generate_release_notes: false
           draft: false
           prerelease: false

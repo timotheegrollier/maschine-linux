@@ -1,6 +1,6 @@
-# Protocole Maschine MK3 — référence implémentée dans maschine-proto
+# Maschine MK3 protocol — reference implemented in maschine-proto
 
-Source de vérité : captures `usbmon` + docs `Drachenkaetzchen/cabl` + gist `vascokk` + `autotel/maschine-mk3-linux`.
+Source of truth: `usbmon` captures + `Drachenkaetzchen/cabl` docs + `vascokk` gist + `autotel/maschine-mk3-linux`.
 
 ## USB descriptor (17cc:1600, bcdDevice 1.46)
 
@@ -9,17 +9,17 @@ IF0 Audio Control, IF1 Audio Streaming OUT 4ch S32LE 24-bit 44.1/48/88.2/96k, IF
 IF3 MIDI Streaming (DIN), IF4 HID (EP 0x83 IN / 0x03 OUT), IF5 Vendor Bulk (EP 0x04 OUT, displays), IF6 DFU
 ```
 
-`bmChannelConfig=0` → ALSA devine Surround 4.0. Fix WirePlumber `pro-audio` (voir `config/wireplumber/51-maschine-mk3.conf`).
+`bmChannelConfig=0` → ALSA guesses Surround 4.0. Fix WirePlumber `pro-audio` (see `config/wireplumber/51-maschine-mk3.conf`).
 
-Report descriptor HID : 816 bytes, voir `hexdump -C /sys/class/hidraw/hidraw3/device/report_descriptor`.
+HID report descriptor: 816 bytes, see `hexdump -C /sys/class/hidraw/hidraw3/device/report_descriptor`.
 
 ## HID IN (Device → Host) — IF4 EP 0x83
 
-### Report 0x01 — boutons / encodeurs / touchstrip / pots (42 bytes)
+### Report 0x01 — buttons / encoders / touchstrip / pots (42 bytes)
 
 ```
 byte 0 : 0x01
-bytes 1-10 : bitmasks boutons (1=pressed), LSB first
+bytes 1-10 : button bitmasks (1=pressed), LSB first
   1: [enc push, pedal, 4-way dirs, Shift, Disp Btn8]
   2: Groups A-H
   3: Notes, Volume, Swing, Tempo, Note Repeat, Lock
@@ -36,43 +36,43 @@ bytes 28-35 : touchstrip 2 fingers × 4 bytes (pos + pressure)
 bytes 36-41 : Mic Gain / Headphone / Master absolute 10-bit
 ```
 
-Voir `crates/maschine-proto/src/hid_input.rs` pour le mapping exact `ButtonId`.
+See `crates/maschine-proto/src/hid_input.rs` for the exact `ButtonId` mapping.
 
-### Report 0x02 — pads pression (64 bytes)
+### Report 0x02 — pad pressure (64 bytes)
 
 ```
 byte 0 : 0x02
-ensuite 16 slots × 3 bytes : [pad_index, dataA, dataB]
-  pad_index : 0..15 (ordre hardware top-right → bottom-left, remappé en 0..15 logique pad 1..16)
-  valeur raw = (dataA<<8 | dataB)  // 0x4000..0x4FFD = pression, sinon slot inutilisé (high nibble != 0x4)
+then 16 slots × 3 bytes : [pad_index, dataA, dataB]
+  pad_index : 0..15 (hardware order top-right → bottom-left, remapped to logical 0..15 pad 1..16)
+  raw value = (dataA<<8 | dataB)  // 0x4000..0x4FFD = pressure, otherwise unused slot (high nibble != 0x4)
 ```
 
-Hystérésis recommandée : `pad_on = 0x4010`, `pad_off = 0x4005`, debounce 4ms, delta ≥3 LSB, velocity = peak sur 3-5 frames.
+Recommended hysteresis: `pad_on = 0x4010`, `pad_off = 0x4005`, 4ms debounce, delta ≥3 LSB, velocity = peak over 3-5 frames.
 
 ## HID OUT (Host → Device) — IF4 EP 0x03
 
-Deux reports, ID inclus comme premier byte (Linux `libusb` strip, `hidapi` le garde — gérer les deux) :
+Two reports, with the ID included as the first byte (Linux `libusb` strips it, `hidapi` keeps it — handle both):
 
-### Report 0x80 — LEDs boutons (61+1 bytes)
+### Report 0x80 — button LEDs (61+1 bytes)
 
 ```
 byte 0 : 0x80
-bytes 1..61 : une entrée par LED
-  unicouleur : 0=Off, 4=Dim, 5=VeryDim, 6=On, 7=Bright (4 niveaux effectifs)
-  RGB (Groups, Browser, Nav) : palette indexée (voir `color.rs`)
+bytes 1..61 : one entry per LED
+  single color: 0=Off, 4=Dim, 5=VeryDim, 6=On, 7=Bright (4 effective levels)
+  RGB (Groups, Browser, Nav): indexed palette (see `color.rs`)
 ```
 
-Offsets : voir `crates/maschine-proto/src/hid_output.rs::BUTTON_LED_OFFSETS`.
+Offsets: see `crates/maschine-proto/src/hid_output.rs::BUTTON_LED_OFFSETS`.
 
-### Report 0x81 — LEDs touchstrip + pads (42+1 bytes)
+### Report 0x81 — touchstrip + pad LEDs (42+1 bytes)
 
 ```
 byte 0 : 0x81
-bytes 1..26 : touchstrip 25 LEDs RGB (left→right) + 1 spare
-bytes 27..42 : pads 16 RGB (ordre hardware 13-16,9-12,5-8,1-4)
+bytes 1..26 : touchstrip 25 RGB LEDs (left→right) + 1 spare
+bytes 27..42 : pads 16 RGB (hardware order 13-16,9-12,5-8,1-4)
 ```
 
-## Palette couleurs indexée (pads, Groups, strip)
+## Indexed color palette (pads, Groups, strip)
 
 ```
 0 Off/Black, 5 DimRed, 6 Red, 7 Rose, 9 DimOrange, 10 Orange, 11 Skin,
@@ -82,57 +82,42 @@ bytes 27..42 : pads 16 RGB (ordre hardware 13-16,9-12,5-8,1-4)
 57 DimMagenta,58 Magenta,61 DimPink,62 Pink,76 DarkGrey,77 Grey,78 White
 ```
 
-`Color::from_index` / `to_index` dans `color.rs`. Brightness 0..3 pour unicouleur.
+`Color::from_index` / `to_index` in `color.rs`. Brightness 0..3 for single color.
 
 ## Bulk Display — IF5 EP 0x04
 
-- 2 écrans 480×272, RGB565 big-endian, sans alpha.
-- Chaque fenêtre part dans un transfert Bulk OUT sur IF5/EP `0x04`.
-- Un transfert contient le header de 16 octets, `transmit` (4 octets), les
-  pixels RGB565 bruts, puis `blit` et `end` (4 octets chacun).
+- 2 screens 480×272, RGB565 big-endian, no alpha.
+- Each window is sent in a Bulk OUT transfer on IF5/EP `0x04`.
+- A transfer contains the 16-byte header, `transmit` (4 bytes), the raw RGB565 pixels, then `blit` and `end` (4 bytes each).
 
 ```
-Header fenêtre (16B):
+Window header (16B):
  0: 0x84, 1: 0x00, 2: display (0x00 left / 0x01 right), 3: 0x60
  4-7: 0x00×4, 8-9: X BE, 10-11: Y BE, 12-13: W BE, 14-15: H BE
 
-Transmit (4B): 0x00 + pixel_pairs encodé sur 24 bits big-endian
+Transmit (4B): 0x00 + pixel_pairs encoded as 24-bit big-endian
   pixel_pairs = (W × H) / 2
-Pixels: W × H valeurs RGB565 BE, sans compression
+Pixels: W × H RGB565 BE values, no compression
 Blit (4B): 0x03 0x00 0x00 0x00
 End  (4B): 0x40 0x00 0x00 0x00
 ```
 
-Une frame complète a `W=480`, `H=272`, `pixel_pairs=65 280` et fait
-261 148 octets. La sonde de reprise 2×1 pixels fait 32 octets.
+A complete frame has `W=480`, `H=272`, `pixel_pairs=65 280` and is 261 148 bytes. The 2×1 pixel recovery probe is 32 bytes.
 
-**Contrainte : `W` doit être pair.** Le MCU compte les pixels RGB565 par
-paires. Une fenêtre de largeur impaire laisse le dernier pixel hors du compte;
-les octets `blit`/`end` sont alors lus au mauvais offset et peuvent bloquer les
-rafraîchissements suivants. Le différentiel élargit les rectangles au pixel
-voisin pour conserver une largeur paire. L'encodeur refuse les fenêtres
-invalides avant l'envoi.
+**Constraint: `W` must be even.** The MCU counts RGB565 pixels in pairs. An odd-width window leaves the last pixel out of the count; the `blit`/`end` bytes are then read at the wrong offset and can block subsequent refreshes. The differential expands rectangles to the neighboring pixel to keep an even width. The encoder rejects invalid windows before sending.
 
-`display_thread.rs` compare les rendus à 30 Hz, transmet les régions modifiées
-(jusqu'à 6 rectangles fusionnés si besoin) et renvoie les deux écrans en plein
-toutes les 2 secondes pour resynchroniser les framebuffers. Le débit USB moyen
-est limité à 1,6 Mo/s. Un succès de `write_bulk` confirme l'acceptation des
-octets par USB, pas leur affichage visuel : vérifier les deux LCD directement.
+`display_thread.rs` compares renders at 30 Hz, transmits modified regions (up to 6 merged rectangles if needed) and sends both screens full-screen every 2 seconds to resynchronize the framebuffers. Average USB throughput is limited to 1.6 MB/s. A successful `write_bulk` confirms that USB accepted the bytes, not that they are visually displayed: check both LCDs directly.
 
-## Notes Linux
+## Linux notes
 
-- HID IF4 bind `usbhid` → `/dev/hidraw3` (`hid-generic`). Pas besoin de detach si on utilise `hidraw`. Pour `nusb` exclusif : `USBDEVFS_DISCONNECT` + `udev` `TAG+="uaccess"`.
-- Bulk IF5 n'a pas de driver → `nusb`/`rusb` claim direct, pas de conflit.
-- Audio IF0-3 → `snd-usb-audio` automatique, pas de quirk.
+- HID IF4 binds `usbhid` → `/dev/hidraw3` (`hid-generic`). No detach needed when using `hidraw`. For exclusive `nusb`: `USBDEVFS_DISCONNECT` + `udev` `TAG+="uaccess"`.
+- Bulk IF5 has no driver → direct `nusb`/`rusb` claim, no conflict.
+- Audio IF0-3 → automatic `snd-usb-audio`, no quirk.
 
 ## Tests
 
-Vecteurs dans `crates/maschine-proto/tests/vectors.rs` issus de captures réelles (pads press/release, button Shift+Play).
+Vectors in `crates/maschine-proto/tests/vectors.rs` from real captures (pad press/release, Shift+Play button).
 
-Voir aussi `crates/maschine-proto/tests/fuzz.rs` (proptest).
+See also `crates/maschine-proto/tests/fuzz.rs` (proptest).
 
-Régressions écran : `cargo test -p maschine-proto` contrôle les fenêtres paires,
-le diff d'un pixel au bord droit, le compteur de paires et la reconstruction du
-framebuffer. `cargo test -p maschine-app` contrôle la sonde 2×1 et le routage des
-knobs après une navigation GUI. Ces tests ne remplacent pas le contrôle visuel
-sur le contrôleur.
+Display regressions: `cargo test -p maschine-proto` checks even windows, the single-pixel diff at the right edge, the pair counter and framebuffer reconstruction. `cargo test -p maschine-app` checks the 2×1 probe and knob routing after GUI navigation. These tests do not replace visual verification on the controller.

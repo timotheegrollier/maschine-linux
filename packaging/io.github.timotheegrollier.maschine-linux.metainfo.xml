@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.7.0" date="2026-11-07">
+      <description>
+        <p>Release 0.7.0 with latched MK3 navigation, a unified PLUGIN page, simplified TB-303 controls, per-Sound polyphony and choke, a responsive desktop GUI, and a standalone --no-hardware mode.</p>
+      </description>
+    </release>
     <release version="0.6.0" date="2026-11-01">
       <description>
         <p>Release 0.6.0 with GUI studio interface, 808 analog synthesis, dual-screen mirror, PipeWire low latency and hotplug support.</p>

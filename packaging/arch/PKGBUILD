@@ -1,11 +1,11 @@
 # Maintainer: Timothée Grollier <timo@example.com>
 pkgname=maschine-linux
-pkgver=0.6.0
+pkgver=0.7.0
 pkgrel=1
 pkgdesc="Native Instruments Maschine MK3 DAW & Controller for Linux"
 arch=('x86_64')
 url="https://github.com/timotheegrollier/maschine-linux"
-license=('MIT')
+license=('GPL-3.0-or-later')
 depends=('alsa-lib' 'systemd-libs')
 makedepends=('cargo' 'rust')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/timotheegrollier/maschine-linux/archive/refs/tags/v$pkgver.tar.gz")

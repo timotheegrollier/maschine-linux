@@ -1,11 +1,11 @@
 # Contributing
 
-## Principes
+## Principles
 
-- Code propre, commenté en français ou anglais, `cargo fmt` + `cargo clippy -- -D warnings` verts.
-- Pas d'alloc/lock dans le callback audio.
-- Tests pour `maschine-proto` (vectors `usbmon`) et `maschine-engine` (golden JSON).
-- Commits conventionnels (`feat:`, `fix:`, `docs:`, `perf:`).
+- Keep the code clean and comment in English (or French in legacy areas); `cargo fmt` and `cargo clippy -- -D warnings` must pass.
+- No allocation or locking in the audio callback.
+- Add tests for `maschine-proto` (`usbmon` vectors) and `maschine-engine` (golden JSON).
+- Use conventional commits (`feat:`, `fix:`, `docs:`, `perf:`).
 
 ## Setup
 
@@ -13,19 +13,20 @@
 sudo dnf install alsa-lib-devel jack-audio-connection-kit-devel libusb1-devel hidapi-devel
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo test --workspace
-cargo clippy --workspace -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 ## Branches
 
-- `master` : stable
-- `feat/*` : features
-- PRs contre `master` avec CI verte.
+- `master`: stable
+- `feat/*`: features
+- Open pull requests against `master` with green CI.
 
-## Protocole USB
+## USB protocol
 
-Voir `docs/protocol.md` et `crates/maschine-proto`. Toute nouvelle capture `usbmon` doit être ajoutée à `crates/maschine-proto/tests/vectors.rs`.
+See `docs/protocol.md` and `crates/maschine-proto`. Any new `usbmon` capture
+must be added to `crates/maschine-proto/tests/vectors.rs`.
 
 ## License
 
-GPL-3.0-or-later. Toute contribution accepte cette licence.
+GPL-3.0-or-later. Every contribution accepts this license.

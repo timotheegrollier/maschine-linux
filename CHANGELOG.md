@@ -1,189 +1,212 @@
 # Changelog
 
-Tous les changements notables.
+All notable changes.
 
-### Synthétiseur Acid TB-303 (Hardware MK3 & Desktop GUI)
-- **Module DSP Acid 303 complet** (`crates/maschine-engine/src/acid_synth.rs`) :
-  - Oscillateur PolyBLEP anti-repliement (formes d'onde Sawtooth et Square) avec décalage d'octave et portamento/slide analogique.
-  - Filtre passe-bas résonant 4 pôles (24 dB/oct) non-linéaire avec saturation tangente hyperbolique (tanh), auto-oscillation acid au-delà de 80% de résonance, modulation d'enveloppe et accent sensible à la vélocité.
-  - Distorsion / overdrive analogique à waveshaping tanh avec contrôle de tonalité post-clipping et mixage dry/wet.
-  - Delay stéréo ping-pong avec réinjection amortie (damping) et mixage dry/wet.
-  - 4 presets intégrés : Classic Acid, Squelch Lead, Distorted Acid, Dub Echo.
-- **Rendu double écran Maschine MK3 (480×272)** (`crates/maschine-engine/src/display_render.rs`) :
-  - Écran Gauche (Onglet 4) : Affichage en temps réel de la forme d'onde oscillateur, courbe de réponse en fréquence du filtre résonant avec curseur de cutoff, badges d'état et mapping des encodeurs 1..4 (Cutoff, Reso, EnvMod, Decay).
-  - Écran Droit : Visualisation de la courbe de distorsion tanh, barres d'échos du delay ping-pong, sélecteur de presets et mapping des encodeurs 5..8 (Accent, Drive, Time, Mix).
-  - Boutons de fonction / Soft Keys 1..8 : bascule SAW/SQUARE, Octave -/+, Slide, et sélection instantanée des 4 presets.
-- **Support matériel Maschine MK3** (`crates/maschine-hardware/src/mapper.rs`) :
-  - Le bouton physique `PLUGIN` bascule directement sur l'écran Acid Synth (onglet 4), et sa LED s'illumine.
-  - Les 8 encodeurs rotatifs sont routés en temps réel vers les 8 paramètres de synthèse correspondants.
-- **Interface graphique Desktop (GUI)** (`crates/maschine-app/src/gui/views/synth.rs`) :
-  - Vue dédiée "⚡ ACID TB-303" accessible via le rail de navigation gauche et le raccourci clavier `T`.
-  - Visualisations interactives egui pour l'oscillateur, la courbe de coupure/résonance du filtre, la distorsion et les répétitions du delay.
-  - Clavier virtuel 16 touches (C1 à D#2) pour jouer et tester instantanément la ligne acid à la souris.
-  - Synchronisation bidirectionnelle avec les écrans et encodeurs MK3.
-- **Projet de démonstration** : Le Pad 15 (groupe A) est configuré par défaut comme synthétiseur Acid 303 avec un motif de basse acid sur 2 mesures.
+## [0.7.0] - 2026-11-07
 
-### GUI autonome pour le développement
-- La commande `maschine-linux gui` démarre désormais sans Maschine connectée :
-  moteur, interface souris/clavier, MIDI virtuel et audio système restent
-  utilisables.
-- La détection, HID, LEDs et LCD restent optionnels pour la GUI, tandis que le
-  daemon headless conserve son exigence de contrôleur.
-- Une sortie audio mémorisée mais indisponible hors ligne bascule sur la sortie
-  système, sauf choix explicite via `--audio-device`.
+### Highlights
 
-### Sampler, persistance et fluidité
-- Les samples sont identifiés par paire Group/Sound : deux groupes peuvent utiliser le même numéro de pad sans partager ou arrêter la mauvaise voix.
-- L'import WAV est décodé en tâche de fond, vérifie les données avant de remplacer un Sound, corrige la normalisation PCM signé 32 bits et conserve le son en place si le fichier est invalide.
-- Les chemins et mappings de sample sont conservés avec le projet et les WAV relatifs sont rechargés à l'ouverture. Le volume et le pan de groupe/son sont appliqués aussi aux voix en cours.
-- La waveform est précalculée à l'import et partagée en lecture seule : la GUI et les LCD ne rescannent plus tout le fichier à chaque frame.
-- La fin des voix est maintenant traitée par suppression en place dans le rendu audio, sans buffer temporaire ni tri à chaque bloc.
-- Les tests couvrent l'isolation des groupes, le mapping/persistance WAV, le rechargement, le mix live, les wav PCM 32 bits et l'échec d'import sans perte de l'ancien son.
-- `docs/TESTING.md`, le README et le guide d'usage décrivent les validations CI et le contrôle manuel sur le matériel. Le périmètre Sampler/Events est distingué des fonctions complètes du logiciel officiel.
+- **Latched Maschine MK3 navigation**: PATTERN, STEP, KEYBOARD, SCENE, EVENTS, MACRO, SETTINGS, and PLUGIN stay active after the first press and return to the default Pad workflow on a second press. Only one workflow menu can be active at a time.
+- **Hardware-driven GUI navigation**: PATTERN, STEP, KEYBOARD, and SCENE open their corresponding GUI view through the engine `NavigateView` event and `nav_serial` counter, instead of relying only on the left display tab.
+- **Unified PLUGIN view**: the physical PLUGIN button opens the SOUND page for the active Sound. Soft keys switch to the TB-303 page, which exposes a simplified macro layout and keeps advanced oscillator, filter, distortion, and delay controls collapsed by default.
+- **Keyboard / Performance view**: a dedicated GUI view with a 16-key performance keyboard, Sound auditioning, and direct pad access.
+- **Standalone GUI mode**: `maschine-linux gui --no-hardware` ignores a connected MK3 and runs the full GUI, engine, virtual MIDI, and audio stack without hardware. Hot-plug reconnection is disabled in this mode.
+- **Per-Sound sampler control**: polyphony limits and choke groups are applied per Sound, including click-free stealing of the oldest voice from the same Sound.
+- **Responsive desktop layout**: collapsible and resizable navigation and MK3 panels (`F1`/`F2`), an application bar with view picker and latched-mode indicators, compact layouts for small windows, and context banners for hardware workflows.
+- **English documentation and release automation**: repository documentation is now in English, and `scripts/extract-release-notes.sh` supplies the GitHub release body from this changelog.
 
-### Correctifs issus de la validation LCD et du workflow (0.6.0)
-- **Désalignement du flux d'écran** : certains rectangles partiels avaient une largeur impaire alors que `transmit` compte des paires de pixels RGB565. La sonde de reprise était également en 1×1. Le différentiel élargit maintenant les rectangles à une largeur paire, le codec refuse les fenêtres impaires et la sonde envoie 2×1 pixels. Tests ajoutés pour le pixel unique au bord droit, le compteur de paires, l'encodage de la sonde et les rectangles aléatoires.
-- **Écran droit resté sur EVENTS** : sélectionner une vue principale réinitialise maintenant l'overlay droit et quitte SONG quand une vue hors ARRANGE est choisie. La page Sampler reprend donc son écran ADSR à droite après EVENTS/MACRO/SETTINGS; un clic sur Sampler déjà actif dans la GUI restaure également cette page.
-- **Premier knob après navigation GUI** : le mapper HID reprend désormais le contexte moteur avant chaque événement. Il applique le premier cran au Sound/Sampler courant au lieu d'utiliser le précédent onglet matériel.
-- Documentation mise à jour dans `docs/protocol.md`, `docs/HARDWARE_DISPLAY_PROTOCOL.md`, `docs/workflow.md`, `docs/USAGE.md`, `docs/architecture.md` et le README. Les documents distinguent maintenant l'acceptation USB d'une validation visuelle réelle des LCD.
+### Validation
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- `cargo test --workspace`
+- Hardware checks on a connected Maschine MK3 (`serial=1B64AB9B`): device probe, LED test, logical pad test, dual-display solid-color test, first display frame, and GUI hardware startup.
+- Standalone GUI launch with `--no-hardware`: no hardware session, no hot-plug reconnect, virtual MIDI available, and the updater reports `v0.7.0` up to date.
+
+### Acid TB-303 Synthesizer (Hardware MK3 & Desktop GUI)
+- **Complete Acid 303 DSP module** (`crates/maschine-engine/src/acid_synth.rs`):
+  - Anti-aliasing PolyBLEP oscillator (Sawtooth and Square waveforms) with octave shift and analog portamento/slide.
+  - 4-pole resonant low-pass filter (24 dB/oct) with nonlinear hyperbolic tangent (tanh) saturation, acid self-oscillation above 80% resonance, envelope modulation and velocity-sensitive accent.
+  - Analog distortion / overdrive with tanh waveshaping, post-clipping tone control and dry/wet mixing.
+  - Stereo ping-pong delay with damped feedback and dry/wet mixing.
+  - 4 built-in presets: Classic Acid, Squelch Lead, Distorted Acid, Dub Echo.
+- **Maschine MK3 dual-screen rendering (480×272)** (`crates/maschine-engine/src/display_render.rs`):
+  - Left Screen (Tab 4): Real-time display of the oscillator waveform, resonant filter frequency response curve with cutoff cursor, status badges and encoder 1..4 mapping (Cutoff, Reso, EnvMod, Decay).
+  - Right Screen: Visualization of the tanh distortion curve, ping-pong delay echo bars, preset selector and encoder 5..8 mapping (Accent, Drive, Time, Mix).
+  - Function buttons / Soft Keys 1..8: SAW/SQUARE toggle, Octave -/+, Slide, and instant selection of the 4 presets.
+- **Maschine MK3 hardware support** (`crates/maschine-hardware/src/mapper.rs`):
+  - The physical `PLUGIN` button opens the unified PLUGIN page (tab 4) on the SOUND page, and its LED lights up. Soft keys switch to the TB-303 page.
+  - The 8 rotary encoders are routed in real time to the active PLUGIN page.
+- **Desktop GUI** (`crates/maschine-app/src/gui/views/synth.rs`):
+  - Unified "PLUGIN / TB-303" view accessible via the left navigation rail and the `T` or `P` keyboard shortcut.
+  - Interactive egui visualizations for the oscillator, filter cutoff/resonance curve, distortion and delay repeats.
+  - 16-key virtual keyboard (C1 to D#2) to play and test the acid line instantly with the mouse.
+  - Bidirectional synchronization with the MK3 screens and encoders.
+- **Demo project**: Pad 15 (group A) is configured by default as an Acid 303 synthesizer with a 2-bar acid bass pattern.
+
+### Standalone GUI for development
+- The `maschine-linux gui` command now starts without a Maschine connected:
+  engine, mouse/keyboard interface, virtual MIDI and system audio remain
+  usable.
+- Detection, HID, LEDs and LCD remain optional for the GUI, while the
+  headless daemon keeps its controller requirement.
+- `--no-hardware` explicitly ignores a connected MK3 and disables hot-plug
+  reconnection for reproducible standalone sessions.
+- If a remembered audio output is unavailable (offline), it falls back to the
+  system output, unless explicitly selected via `--audio-device`.
+
+### Sampler, persistence and smoothness
+- Samples are identified by Group/Sound pair: two groups can use the same pad number without sharing or stopping the wrong voice.
+- WAV import is decoded in a background task, validates the data before replacing a Sound, fixes signed 32-bit PCM normalization and keeps the sound in place if the file is invalid.
+- Sample paths and mappings are kept with the project and relative WAVs are reloaded on open. Group/sound volume and pan are also applied to voices already playing.
+- The waveform is precomputed on import and shared read-only: the GUI and LCDs no longer rescan the whole file on every frame.
+- Voice endings are now handled by in-place removal in the audio render, without a temporary buffer or sorting on each block.
+- Tests cover group isolation, WAV mapping/persistence, reloading, live mixing, 32-bit PCM WAVs and import failure without losing the old sound.
+- `docs/TESTING.md`, the README and the usage guide describe CI validations and manual hardware checks. Sampler/Events scope is distinguished from the full features of the official software.
+
+### Fixes from LCD validation and workflow (0.6.0)
+- **Display stream misalignment**: some partial rectangles had an odd width while `transmit` counts pairs of RGB565 pixels. The recovery probe was also 1×1. The differential now expands rectangles to an even width, the codec rejects odd windows and the probe sends 2×1 pixels. Tests added for the single pixel at the right edge, the pair counter, probe encoding and random rectangles.
+- **Right screen stuck on EVENTS**: selecting a main view now resets the right overlay and leaves SONG when a view outside ARRANGE is chosen. The Sampler page therefore resumes its ADSR screen on the right after EVENTS/MACRO/SETTINGS; clicking Sampler when already active in the GUI also restores that page.
+- **First knob after GUI navigation**: the HID mapper now re-reads the engine context before each event. It applies the first detent to the current Sound/Sampler instead of using the previous hardware tab.
+- Documentation updated in `docs/protocol.md`, `docs/HARDWARE_DISPLAY_PROTOCOL.md`, `docs/workflow.md`, `docs/USAGE.md`, `docs/architecture.md` and the README. The documents now distinguish USB acceptance from real visual validation of the LCDs.
 
 ## [0.6.0] - 2026-10-18
 
-### Corrigé
-- **Écrans MK3 figés (2e vague)** :
-  - **Abandon définitif à l'ouverture** : si une autre instance (gui/daemon resté ouvert) ou une ré-énumération USB tenait IF5, `claim IF5: Resource busy` tuait le thread écran sans réessai → écrans jamais rafraîchis. Le thread a désormais un **cycle de vie** : ouverture avec réessais (3 s), libération, réouverture à chaud quand l'interface redevient libre (+ log clair « nouvel essai dans 3 s »).
-  - **Paquets interrompus non complétés** : le protocole est un flux de commandes MCU (header fenêtre + `transmit` + pixels + `blit` + `end`). Une écriture partielle laisse le parseur en attente du *reste exact* des pixels → tout envoi suivant décalé (écran figé pour toujours). `send_frame` complète désormais tout paquet interrompu avec **ses propres octets restants** puis `blit`+`end` (renvoie `Ok` si le paquet aboutit) ; à défaut (timeout, position inconnue) une **purge de noirs** (`blit`+`end`) remet le parseur en attente. 2 tests unitaires (`packet_tail`, cas réel 10588/7680).
-  - **Escalade douce** : sonde 2×1 px (32 o, paire RGB565 valide) avant de repousser de vraies frames après une erreur ; ré-acquisition douce (release + claim, **jamais de reset USB en cours de route** — il tuerait le flux audio partagé) après 8 erreurs consécutives, avec cooldown croissant (6→24 s) et invalidations ; réouverture complète uniquement si le device est parti. Backoff allongé (250 ms → 4 s).
-  - **Plafond calibré** : débit moyen ramené 2,5 → **1,6 Mo/s** (rafale 560 Ko) — au-dessus de ~2 Mo/s soutenus, la file RX du MCU déborde et l'endpoint cesse d'accepter. Mesuré matériel : 70+ s consécutives sans erreur à 1,55 Mo/s / 17-20 FPS ; les wedges transitoires restants (états internes du MCU) se réparent seuls en ~10-20 s au lieu de figer l'écran définitivement.
-- **Tempête de logs à l'arrêt** : 18 M lignes POLLERR en une seconde (ALSA pendant le drop du stream cpal) → gestionnaire d'événements d'erreur limité en débit (1ʳᵉ erreur puis 1/1000).
-- **Écrans MK3 figés (1re vague)** : chaque rafraîchissement envoyait un frame complet non compressé (2 × 261 148 B ≈ 522 Ko) ; à 30 FPS ≈ 15,7 Mo/s → saturation du port USB, `short write`/`Operation timed out`, endpoint bloqué (écran figé). Remplacé par :
-  - **Diff incrémental par régions** (`FrameDiffer`, proto) : runs verticaux de rangées modifiées, bbox X par run, fusion au-delà de 6 rectangles, frame pleine si la surface sale dépasse 55 % ; header fenêtre `x/y/w/h` ; saut des frames identiques.
-  - **Budget d'octets** 2,5 Mo/s (rafale 700 Ko) avec coalescing (diffs non commités si budget insuffisant) ; récupération USB (`clear_stall` + backoff + `reacquire` après 4 erreurs) ; invalidation → frame pleine après erreur.
-  - `send_frame → Result<usize>` (timeout 1 s si >100 Ko, sinon 250 ms), `clear_stall()`, `reacquire()` (stubs mis à jour) ; `display_thread.rs` réécrit (diff, budget, backoff, réacquisition, stats 10 s, commits conditionnels).
-  - Bug corrigé dans `col_range` (`x1 = x + 1` écrasait le max → `if x + 1 > x1`) ; 8 tests ajoutés dont la propriété `differ_always_reconstructs_exactly` et la régression `debug_synthetic_rows`.
-- **Dispatch MIXER** : `render_mixer_right` était du code mort (l'écran droit MIXER affichait PATTERN) → branché pour `left_tab == 1 && right_tab == 0`.
+### Fixed
+- **Frozen MK3 screens (second wave)**:
+  - **Permanent startup failure**: if another instance (gui/daemon left open) or a USB re-enumeration held IF5, `claim IF5: Resource busy` killed the display thread without retry → screens never refreshed. The thread now has a **lifecycle**: opening with retries (3 s), release, hot reopen when the interface becomes free again (+ clear log "new attempt in 3 s").
+  - **Interrupted packets not completed**: the protocol is an MCU command stream (window header + `transmit` + pixels + `blit` + `end`). A partial write leaves the parser waiting for the *exact remainder* of the pixels → every subsequent send is shifted (screen frozen forever). `send_frame` now completes any interrupted packet with **its own remaining bytes** then `blit`+`end` (returns `Ok` if the packet succeeds); otherwise (timeout, unknown position) a **black purge** (`blit`+`end`) puts the parser back in a waiting state. 2 unit tests (`packet_tail`, real case 10588/7680).
+  - **Gentle escalation**: 2×1 px probe (32 B, valid RGB565 pair) before pushing real frames again after an error; gentle re-acquisition (release + claim, **never a USB reset mid-flight** — it would kill the shared audio stream) after 8 consecutive errors, with increasing cooldown (6→24 s) and invalidations; full reopen only if the device is gone. Extended backoff (250 ms → 4 s).
+  - **Calibrated ceiling**: average throughput reduced 2.5 → **1.6 MB/s** (560 KB burst) — above ~2 MB/s sustained, the MCU RX queue overflows and the endpoint stops accepting. Hardware measurement: 70+ s consecutive without error at 1.55 MB/s / 17-20 FPS; the remaining transient wedges (MCU internal states) repair themselves in ~10-20 s instead of freezing the screen permanently.
+- **Log storm on stop**: 18 million POLLERR lines in one second (ALSA during the cpal stream drop) → error event handler rate-limited (1st error then 1/1000).
+- **Frozen MK3 screens (first wave)**: each refresh sent a full uncompressed frame (2 × 261 148 B ≈ 522 KB); at 30 FPS ≈ 15.7 MB/s → USB port saturation, `short write`/`Operation timed out`, blocked endpoint (frozen screen). Replaced by:
+  - **Incremental region diff** (`FrameDiffer`, proto): vertical runs of modified rows, X bbox per run, merge beyond 6 rectangles, full frame if dirty area exceeds 55%; window header `x/y/w/h`; skip identical frames.
+  - **Byte budget** 2.5 MB/s (700 KB burst) with coalescing (uncommitted diffs if budget insufficient); USB recovery (`clear_stall` + backoff + `reacquire` after 4 errors); invalidation → full frame after error.
+  - `send_frame → Result<usize>` (1 s timeout if >100 KB, otherwise 250 ms), `clear_stall()`, `reacquire()` (stubs updated); `display_thread.rs` rewritten (diff, budget, backoff, reacquisition, 10 s stats, conditional commits).
+  - Bug fixed in `col_range` (`x1 = x + 1` overwrote the max → `if x + 1 > x1`); 8 tests added including the `differ_always_reconstructs_exactly` property and the `debug_synthetic_rows` regression.
+- **MIXER dispatch**: `render_mixer_right` was dead code (the right MIXER screen displayed PATTERN) → wired for `left_tab == 1 && right_tab == 0`.
 
-### Modifié
-- **Audio** : déjà livré en 0.5.0 (buffer 64 frames ≈ 1,3 ms, limiteur master + `KIT_HEADROOM`, kit au taux device, anti-clics) — inchangé.
-- **Design des 2 écrans** : chrome commun (header 26 px avec ruban d'activité 16 pads + mini VU master, panneaux bordés, encodeurs avec encoche accent, soft keys remplies), labels denses « tracker » via `draw_text_clipped` (glyphes rognés 9 px), palette cohérente.
-- `pad_activity: [f32; 16]` (décroissance ~170 ms, `PAD_ACTIVITY_DECAY = 6.0`) pour animer les écrans (jeu + séquenceur), bump de `revision` pendant la décroissance ; alimenté par les pads et `trigger_pattern_events`.
-- **ARRANGE gauche** : bandeau transport à pastilles, chip « A S01 », lignes groupes avec pilules M/S et VU 142 px.
-- **PATTERN droit** : vélocités par hauteur, lignes de temps, labels tracker, LED activité, playhead.
-- **STEP droit** : bandeau M/PAS/VEL/LEN/NOTE, barres vélocité numérotées, curseur/playhead.
-- **MIXER** : 4 tranches de console (VU vertical + échelle dB + LED clip, M/S, pan), section master (grand VU + dB + LOOP/METRO + barre), section foyer (groupe + sound + ADSR).
-- **SAMPLER** : waveform dégradé par amplitude + repères, ADSR rempli + points de rupture.
-- **EVENTS** : tableau à colonnes (SON/PAS/VEL/LEN/NOTE), barres de vélocité, noms de note, mise en évidence de l'événement joué.
-- **SETTINGS** : 4 cartes (PROJET / TRANSPORT / AUDIO-JEU / FOCUS) à clés/valeurs alignées.
-- **STEP** : titres différenciés « STEP / GRILLE » (gauche) et « STEP / PAS » (droite).
+### Changed
+- **Audio**: already delivered in 0.5.0 (64-frame buffer ≈ 1.3 ms, master limiter + `KIT_HEADROOM`, kit at device rate, anti-click) — unchanged.
+- **Design of the 2 screens**: common chrome (26 px header with 16-pad activity ribbon + mini master VU, bordered panels, encoders with accent notch, filled soft keys), dense "tracker" labels via `draw_text_clipped` (9 px clipped glyphs), consistent palette.
+- `pad_activity: [f32; 16]` (~170 ms decay, `PAD_ACTIVITY_DECAY = 6.0`) to animate the screens (playing + sequencer), `revision` bump during decay; fed by pads and `trigger_pattern_events`.
+- **Left ARRANGE**: transport strip with dots, "A S01" chip, group rows with M/S pills and 142 px VU.
+- **Right PATTERN**: velocities by height, time lines, tracker labels, activity LEDs, playhead.
+- **Right STEP**: M/STEP/VEL/LEN/NOTE header, numbered velocity bars, cursor/playhead.
+- **MIXER**: 4 console strips (vertical VU + dB scale + clip LED, M/S, pan), master section (large VU + dB + LOOP/METRO + bar), focus section (group + sound + ADSR).
+- **SAMPLER**: amplitude-gradient waveform + markers, filled ADSR + breakpoints.
+- **EVENTS**: column table (SND/STEP/VEL/LEN/NOTE), velocity bars, note names, played event highlight.
+- **SETTINGS**: 4 cards (PROJECT / TRANSPORT / AUDIO-PLAY / FOCUS) with aligned keys/values.
+- **STEP**: differentiated titles "STEP / GRID" (left) and "STEP / DETAIL" (right).
 
-### Ajouté
-- Tests : `render_is_deterministic`, `views_are_not_all_identical`, `pad_activity_decays_and_bumps_revision` (display_render) ; tests proto diff déjà présents (27 verts) ; workspace : 94 tests verts.
-- `note_pad_activity` rendu public.
+### Added
+- Tests: `render_is_deterministic`, `views_are_not_all_identical`, `pad_activity_decays_and_bumps_revision` (display_render); proto diff tests already present (27 green); workspace: 94 tests green.
+- `note_pad_activity` made public.
 
 ## [0.5.0] - 2026-10-18
 
-### Corrigé
-- **Craquements + latence audio** : le stream était ouvert en `BufferSize::Default` (≈2048 frames ≈ **46 ms** sur PipeWire) et un `try_lock` raté sur le moteur rendait un **buffer de silence entier**. Négociation désormais **48 kHz / buffer 256 frames (période 64 frames ≈ 1,3 ms)** avec replis progressifs (512 → 1024 → 2048 → défaut) et **attente du verrou moteur jusqu'à 2 ms** avant tout silence. Mesuré sous charge extrême (lecture + verrou moteur toutes les 1 ms + snapshots + écrans 30 FPS + 61 voix) : **0 miss, 0 err, 0 écrêtage**.
-- **Groove quantifié au buffer** : les notes du séquenceur démarraient au **début du buffer audio** (jusqu'à 46 ms de décalage, swing/humanize détruits). Chaque voix démarre maintenant à sa **position exacte en échantillons** dans le bloc (`SamplerVoice::start_frame`), métronome inclus.
-- **Écrêtage dur en sortie** (`clamp(-1,1)`) : kick + snare + clap montent à ≈1,55 et étaient **écrêtés en plateau** (la vraie source du « craque »). Remplacé par un **limiteur doux** (linéaire sous -3 dB, saturation tanh au-dessus) + **marge de kit ≈ -2,5 dB** : les frappes solo restent linéaires, seules les coïncidences sont lissées (≈0,6 dB).
-- **Kit désaccordé de 1,5 demi-ton** : les presets DSP étaient générés à 48 kHz et joués à 44,1 kHz (+8,8 %). `Engine::set_audio_sample_rate()` (appelé à l'ouverture du stream) **régénère le kit au taux réel** et repointe les zones du sampler ; réalignement d'horloge sans allocation dans le callback.
-- **Clacs de fin de sample** : toutes les queues (kick, crash, open hat…) étaient coupées net à amplitude non nulle (jusqu'à -22 dB). Fondus raised-cosine de fin + fade-in 0,4 ms dans le drum synth, fondu anti-clic 3 ms en fin de sample dans le sampler, clic métronome fondu.
-- **Vol de voix abrupt** : la plus vieille voix était **retirée d'un coup** (clic) ; elle part maintenant en **fondu 5 ms**.
-- Buffers > 1024 frames : des échantillons restaient **non écrits** (garbage). Rendu par tranches bornées, quel que soit le format (F32/I16/U16, 2 ou 4 canaux).
+### Fixed
+- **Crackles + audio latency**: the stream was opened with `BufferSize::Default` (≈2048 frames ≈ **46 ms** on PipeWire) and a failed `try_lock` on the engine returned an entire **silence buffer**. Negotiation is now **48 kHz / 256-frame buffer (64-frame period ≈ 1.3 ms)** with progressive fallbacks (512 → 1024 → 2048 → default) and **waiting for the engine lock up to 2 ms** before any silence. Measured under extreme load (playback + engine lock every 1 ms + snapshots + 30 FPS screens + 61 voices): **0 miss, 0 err, 0 clipping**.
+- **Groove quantized to the buffer**: sequencer notes started at the **beginning of the audio buffer** (up to 46 ms offset, swing/humanize destroyed). Each voice now starts at its **exact sample position** within the block (`SamplerVoice::start_frame`), metronome included.
+- **Hard output clipping** (`clamp(-1,1)`): kick + snare + clap reached ≈1.55 and were **clipped flat** (the real source of the "crackle"). Replaced by a **soft limiter** (linear below -3 dB, tanh saturation above) + **kit headroom ≈ -2.5 dB**: solo hits remain linear, only coincidences are smoothed (≈0.6 dB).
+- **Kit detuned by 1.5 semitones**: DSP presets were generated at 48 kHz and played at 44.1 kHz (+8.8%). `Engine::set_audio_sample_rate()` (called when the stream opens) **regenerates the kit at the actual rate** and repoints the sampler zones; clock realignment without allocation in the callback.
+- **Sample-end clicks**: all tails (kick, crash, open hat...) were cut off abruptly at non-zero amplitude (up to -22 dB). Raised-cosine end fades + 0.4 ms fade-in in the drum synth, 3 ms anti-click fade at sample end in the sampler, faded metronome click.
+- **Abrupt voice stealing**: the oldest voice was **removed instantly** (click); it now fades out over **5 ms**.
+- Buffers > 1024 frames: some samples remained **unwritten** (garbage). Rendering in bounded chunks, regardless of format (F32/I16/U16, 2 or 4 channels).
 
-### Modifié
-- **Drum synth 808 réécrit** : biquads RBJ (LP/HP/BP 12 dB/oct) au lieu des filtres 6 dB/oct, **oscillateurs bande-limités** (somme d'harmoniques : zéro repliement) pour hi-hats/crash, saturation `tanh`, **normalisation par instrument** (kit homogène), enveloppes retravaillées (kick sub + glissando + click filtré, caisse double partiel + bruit 1,4–7,5 kHz, clap 3 rafales + queue, toms avec attaque de baguette, cowbell, crash métallique 1,6 s).
-- **Sampler** : plus aucune allocation dans `note_on` (sélection de zone sans `Vec`), rendu par tranches, `replace_zone_sample` pour le changement de taux.
-- Négociation audio unifiée (4 canaux sur MK3 puis repli 2) ; `--debug-latency` journalise la taille de buffer **réelle** et les erreurs backend.
-- Nouveau mode diagnostic `daemon --stress` (lecture + contention du verrou moteur simulée).
+### Changed
+- **808 drum synth rewritten**: RBJ biquads (LP/HP/BP 12 dB/oct) instead of 6 dB/oct filters, **band-limited oscillators** (harmonic sum: zero aliasing) for hi-hats/crash, `tanh` saturation, **per-instrument normalization** (homogeneous kit), reworked envelopes (kick sub + glissando + filtered click, snare dual partial + 1.4–7.5 kHz noise, clap 3 bursts + tail, toms with stick attack, cowbell, 1.6 s metallic crash).
+- **Sampler**: no more allocation in `note_on` (zone selection without `Vec`), chunked rendering, `replace_zone_sample` for rate changes.
+- Unified audio negotiation (4 channels on MK3 then 2-channel fallback); `--debug-latency` logs the **actual** buffer size and backend errors.
+- New diagnostic mode `daemon --stress` (playback + simulated engine lock contention).
 
-### Ajouté
-- Tests : fin de sample silencieuse (anti-clic), absence de DC du kit, placement des notes **dans** le bloc (`notes_start_at_their_position_inside_the_block`), métronome piloté en blocs comme le callback réel.
-- Exemples de contrôle qualité : `render_groove` (WAV + crête/RMS/écrêtés) et `render_kit` (16 instruments en WAV).
+### Added
+- Tests: silent sample end (anti-click), kit DC absence, note placement **inside** the block (`notes_start_at_their_position_inside_the_block`), metronome driven in blocks like the real callback.
+- Quality-control examples: `render_groove` (WAV + peak/RMS/clipped) and `render_kit` (16 instruments as WAV).
 
 ## [0.4.0] - 2026-10-18
 
-### Ajouté
-- **Mode STEP fidèle au logiciel officiel** : curseur de pas (`step_cursor`, index absolu dans le pattern), le pad touché devient le pas sélectionné, édition du pas par les knobs 1–4 (`VEL`, `POS` nudge en ticks, `LEN`, `PITCH` + nom de note), **SCROLL de la grille du pattern complet au knob 5** et à l'encodeur 4-D `<`/`>`, knobs 6–8 = `VOL SND`/`CUTOFF`/`RESO`.
-- Nouveaux événements moteur `Swing`, `StepCursor`, `StepScroll`, `StepVelocityDelta`, `StepNudgeTicks`, `StepLengthDelta`, `StepPitchDelta` (+ actions mapper et tests).
-- **Écran gauche STEP** : grille du pattern complet (une ligne par mesure), case du curseur encadrée, tête de lecture, détail live du pas sélectionné et slots 1–4. **Écran droit STEP** : contour orange du pas édité, `PAS n/n` dans le bandeau, slot 5 = `SCROLL`.
-- Soft keys STEP : `PAS <</>>`, `BAR <</>>`, longueurs `1/2/4/8 MES`.
-- Curseur d'édition visible sur les pads à l'arrêt (blanc) dans la couleur du son pour les pas programmés.
-- Test `engine` de bout en bout : pose + édition + scroll du curseur ; tests mapper (knobs STEP, accumulateur, clamp des tours rapides, 4-D en STEP).
+### Added
+- **STEP mode faithful to the official software**: step cursor (`step_cursor`, absolute index in the pattern), the touched pad becomes the selected step, step editing with knobs 1–4 (`VEL`, `POS` nudge in ticks, `LEN`, `PITCH` + note name), **SCROLL of the full pattern grid on knob 5** and the 4-D encoder `<`/`>`, knobs 6–8 = `VOL SND`/`CUTOFF`/`RESO`.
+- New engine events `Swing`, `StepCursor`, `StepScroll`, `StepVelocityDelta`, `StepNudgeTicks`, `StepLengthDelta`, `StepPitchDelta` (+ mapper actions and tests).
+- **Left STEP screen**: full pattern grid (one row per bar), cursor cell outlined, playhead, live detail of the selected step and slots 1–4. **Right STEP screen**: orange outline of the edited step, `STEP n/n` in the header, slot 5 = `SCROLL`.
+- STEP soft keys: `STEP <</>>`, `BAR <</>>`, lengths `1/2/4/8 BARS`.
+- Edit cursor visible on pads when stopped (white) in the sound color for programmed steps.
+- End-to-end `engine` test: place + edit + scroll cursor; mapper tests (STEP knobs, accumulator, fast-turn clamp, 4-D in STEP).
 
-### Modifié
-- **Vitesse des knobs recalibrée** (« les knobs tournent trop vite ») : mise à l'échelle faite **une seule fois** dans l'app (le mapper émet des ticks bruts), grains type logiciel officiel : ≈1.5 BPM/cran (TEMPO), 0.03 dB (volumes), 0.001 (pan/reso/master/sustain), **CUTOFF exponentiel** `2^(ticks/384)` (≈2.7 octaves/tour, ≈1 demi-ton/cran), ADSR 0.5–1 ms/cran, presets/sons du BROWSER par cran.
-- Les tours rapides de knob (delta > 128 ticks) sont **limités au lieu d'être jetés** : plus de mouvements perdus.
-- Éncodeur 4-D `<`/`>` en mode STEP : défile la grille d'un pas au lieu de changer de mesure.
-- Le thread d'écrans réveille sa boucle toutes les 3 ms (drapeau d'activité sans verrou posé par la boucle HID) et envoie dès qu'un changement est prêt : réactivité de quelques millisecondes, verrou moteur pris au plus toutes les 33 ms (plafond USB ~30 FPS, garde-fou de 2 s) — **0 miss audio** conservé.
+### Changed
+- **Knob speed recalibrated** ("the knobs turn too fast"): scaling done **only once** in the app (the mapper emits raw ticks), official-software-like increments: ≈1.5 BPM/detent (TEMPO), 0.03 dB (volumes), 0.001 (pan/reso/master/sustain), **exponential CUTOFF** `2^(ticks/384)` (≈2.7 octaves/turn, ≈1 semitone/detent), ADSR 0.5–1 ms/detent, BROWSER presets/sounds per detent.
+- Fast knob turns (delta > 128 ticks) are **clamped instead of discarded**: no more lost movements.
+- 4-D encoder `<`/`>` in STEP mode: scrolls the grid by one step instead of changing bar.
+- The display thread wakes its loop every 3 ms (lock-free activity flag set by the HID loop) and sends as soon as a change is ready: reactivity within a few milliseconds, engine lock taken at most every 33 ms (USB ceiling ~30 FPS, 2 s guard) — **0 audio misses** preserved.
 
-### Corrigé
-- **Écrans qui « ne répondaient pas »** : `Swing` écrivait le projet en direct sans synchroniser le séquenceur ni invalider l'affichage ; `toggle_step`, `clear_bar`, humanize/quantize, reset du groove et DUPLICATE BAR modifiaient le projet sans bump de révision (les écrans restaient figés jusqu'à la garde de 5 s). Tout passe désormais par l'Engine (`EngineEvent::Swing`, `invalidate_display`) et rafraîchit l'affichage.
-- `RESTART` passe par `EngineEvent::Restart` (remise à zéro + invalidation immédiate du BBT affiché).
-- Le knob SWING agit maintenant réellement sur la lecture (le séquenceur utilisait l'ancienne valeur).
+### Fixed
+- **Screens that "did not respond"**: `Swing` wrote the project directly without synchronizing the sequencer or invalidating the display; `toggle_step`, `clear_bar`, humanize/quantize, groove reset and DUPLICATE BAR modified the project without bumping the revision (screens stayed frozen until the 5 s guard). Everything now goes through the Engine (`EngineEvent::Swing`, `invalidate_display`) and refreshes the display.
+- `RESTART` goes through `EngineEvent::Restart` (reset + immediate invalidation of the displayed BBT).
+- The SWING knob now actually affects playback (the sequencer used the old value).
 
 ## [0.3.0] - 2026-10-18
 
-### Ajouté
-- **Refonte complète des 2 écrans MK3 (480×272)** dans le style du logiciel officiel : design system unifié (bandeau titre, rangées d'encodeurs, barre de soft keys), 16 vues contextuelles (ARRANGE, PATTERN, STEP, SONG, SCENES/IDEAS, MIXER ×2, SAMPLER ×2, BROWSER ×2, EVENTS, MACRO, SETTINGS), valeurs live par Sound/Groupe et VU-mètres réels.
-- **Soft keys contextuels unifiés** : `EngineEvent::SoftKey(u8)` + labels exposés dans l'instantané — le hardware, les écrans et la GUI exécutent et affichent exactement la même action (fini les boutons d'écran câblés en dur).
-- **Waveform + enveloppe ADSR dessinées** sur l'écran SAMPLER à partir du sample du Sound actif (enveloppe min/max par colonne).
-- **VU-mètres temps-réel** par Groupe (8) et Master avec peak hold et décroissance, calculés dans le callback audio et diffusés par l'instantané.
-- **Instrumentation `--debug-latency`** : latence HID→Engine (dernier/max par fenêtre de 2 s) et statistiques audio (`callbacks`, `lock_misses`, temps max de callback).
-- **Réveil immédiat de la GUI** (`RepaintSignal`) depuis le thread HID + repaint piloté par un compteur de révision (16 ms en lecture, 50 ms au repos) ; le thread d'écrans ne renvoie plus une frame que si l'état a bougé.
-- **Workflow Song/Scènes étendu** : `DuplicateScene`, `DeleteScene` (ré-indexation des sections), `DuplicateSection`, `DeleteSection`, `ResizeSection` (longueur 1/2/4/8/…), exposés dans la vue IDEAS de la GUI.
-- Test de fumée rendant toutes les vues d'écrans (garde-fou anti-panic) + tests des workflows section/scène.
+### Added
+- **Complete redesign of the 2 MK3 screens (480×272)** in the style of the official software: unified design system (title bar, encoder rows, soft key bar), 16 contextual views (ARRANGE, PATTERN, STEP, SONG, SCENES/IDEAS, MIXER ×2, SAMPLER ×2, BROWSER ×2, EVENTS, MACRO, SETTINGS), live values per Sound/Group and real VU meters.
+- **Unified contextual soft keys**: `EngineEvent::SoftKey(u8)` + labels exposed in the snapshot — hardware, screens and GUI execute and display exactly the same action (no more hard-wired screen buttons).
+- **Waveform + ADSR envelope drawn** on the SAMPLER screen from the active Sound sample (min/max envelope per column).
+- **Real-time VU meters** per Group (8) and Master with peak hold and decay, computed in the audio callback and broadcast in the snapshot.
+- **`--debug-latency` instrumentation**: HID→Engine latency (latest/max per 2 s window) and audio statistics (`callbacks`, `lock_misses`, max callback time).
+- **Immediate GUI wake-up** (`RepaintSignal`) from the HID thread + revision-counter-driven repaint (16 ms during playback, 50 ms at rest); the display thread only resends a frame if the state changed.
+- **Extended Song/Scene workflow**: `DuplicateScene`, `DeleteScene` (section re-indexing), `DuplicateSection`, `DeleteSection`, `ResizeSection` (length 1/2/4/8/…), exposed in the GUI IDEAS view.
+- Smoke test rendering all screen views (anti-panic guard) + section/scene workflow tests.
 
-### Modifié
-- **Moteur temps-réel** : l'instantané partage le projet en `Arc` (copy-on-write via `Arc::make_mut`) — plus de clone du projet à chaque frame, lectures O(1) ; `ProjectHandle`/`ProjectWriteGuard` pour des écritures sûres.
-- **GUI egui entièrement réécrite** : thème unifié, widgets dédiés (knobs glisser/réinitialiser, faders dB, VU-mètres, pads sensibles à la vélocité, cellules de pas), vue IDEAS (scènes × patterns + Song), vue MIXER 8 strips + master, SAMPLER (waveform, ADSR, filtre), BROWSER (presets 808, pré-écoute, chargement), rail matériel MK3 avec miroir des écrans et soft keys.
-- `render_screens` partagé entre le thread d'affichage USB et le miroir GUI : les écrans physiques et la fenêtre affichent strictement la même paire de vues.
+### Changed
+- **Real-time engine**: the snapshot shares the project as an `Arc` (copy-on-write via `Arc::make_mut`) — no more project clone on every frame, O(1) reads; `ProjectHandle`/`ProjectWriteGuard` for safe writes.
+- **egui GUI fully rewritten**: unified theme, dedicated widgets (drag/reset knobs, dB faders, VU meters, velocity-sensitive pads, step cells), IDEAS view (scenes × patterns + Song), MIXER view 8 strips + master, SAMPLER (waveform, ADSR, filter), BROWSER (808 presets, preview, loading), MK3 hardware rail with screen mirror and soft keys.
+- `render_screens` shared between the USB display thread and the GUI mirror: the physical screens and the window display strictly the same pair of views.
 
-### Corrigé
-- Transport : Play/Stop/REC (le stop n'est plus un no-op), redémarrage à zéro (`EngineEvent::Restart`).
-- Encodeurs d'écran : les slots affichent désormais les paramètres réellement pilotés par les 8 knobs (TEMPO/SWING/VOL PAN par groupe, VOL/PAN/CUT/RESO/ADSR par Sound, volumes A–H en MIXER, navigation BROWSER…).
-- Grille du séquenceur (mesures/pas), mapping des faders en dB, champs de la fenêtre de réglages audio (`ComboBox` non déprécié).
+### Fixed
+- Transport: Play/Stop/REC (stop is no longer a no-op), restart from zero (`EngineEvent::Restart`).
+- Screen encoders: slots now display the parameters actually controlled by the 8 knobs (TEMPO/SWING/VOL PAN per group, VOL/PAN/CUT/RESO/ADSR per Sound, volumes A–H in MIXER, BROWSER navigation...).
+- Sequencer grid (bars/steps), dB fader mapping, audio settings window fields (non-deprecated `ComboBox`).
 
 ## [0.2.1] - 2026-10-14
 
-### Corrigé
-- **Encodeur 4-D** : correction du bitmask HID report `0x01` byte 1 dans `maschine-proto` pour les 4 directions cardinales (Up = bit 2, Right = bit 3, Down = bit 4, Left = bit 5).
-- **One-shot vs Boucle** : remplacement de l'action `PlayPauseToggle` accidentelle sur `EncoderPush` par une pré-écoute one-shot du son actif, évitant le déclenchement intempestif de la boucle transport.
-- **Séquenceur pas-à-pas multi-mesures** : prise en charge complète des patterns de 1, 2, 4 et 8 mesures avec navigation fluide au contrôleur (touches `<` / `>`, flèches 4D gauche/droite, boutons d'écran 5..8) et dans la GUI.
-- **Curseur playhead step sequencer** : calcul du curseur temporel rapporté à la longueur réelle du pattern (`modulo pattern_bars`) plutôt que restreint aux 2 premières mesures.
-- **Pose de pas silencieuse** : en mode Step, l'appui sur un pad bascule la case sans émettre de son parasite ni perturber la pré-écoute.
-- **Qualité du code & Clippy** : remplacement des constantes approximatives par `std::f32::consts::FRAC_1_SQRT_2`, élimination des casts redondants, correction des avertissements de documentation et des boucles d'indexation.
+### Fixed
+- **4-D encoder**: fixed the HID report `0x01` byte 1 bitmask in `maschine-proto` for the 4 cardinal directions (Up = bit 2, Right = bit 3, Down = bit 4, Left = bit 5).
+- **One-shot vs Loop**: replaced the accidental `PlayPauseToggle` action on `EncoderPush` with a one-shot preview of the active sound, avoiding unintended triggering of the transport loop.
+- **Multi-bar step sequencer**: full support for 1, 2, 4 and 8-bar patterns with smooth navigation on the controller (`<` / `>` keys, 4D left/right arrows, screen buttons 5..8) and in the GUI.
+- **Step sequencer playhead cursor**: time cursor computed relative to the actual pattern length (`modulo pattern_bars`) rather than restricted to the first 2 bars.
+- **Silent step placement**: in Step mode, pressing a pad toggles the cell without emitting stray sound or disturbing the preview.
+- **Code quality & Clippy**: replaced approximate constants with `std::f32::consts::FRAC_1_SQRT_2`, removed redundant casts, fixed documentation warnings and indexing loops.
 
-### Ajouté
-- Tests unitaires automatisés pour les 4 directions de l'encodeur 4D (`decode_01_four_way_directions`).
-- Tests unitaires pour la sélection et navigation de mesure (`bar_navigation_and_pattern_length`, `step_sequencer_multi_bar_toggle`, `four_way_encoder_and_bar_selection`).
-- Documentation enrichie pour le workflow hardware/software et l'utilisation de l'application.
+### Added
+- Automated unit tests for the 4 directions of the 4D encoder (`decode_01_four_way_directions`).
+- Unit tests for bar selection and navigation (`bar_navigation_and_pattern_length`, `step_sequencer_multi_bar_toggle`, `four_way_encoder_and_bar_selection`).
+- Expanded documentation for the hardware/software workflow and application usage.
 
 ## [0.2.0] - 2026-10-14
 
-### Ajouté
-- **Générateur drum synth 808** : 16 instruments percussifs synthétisés en temps réel (Kick, Snare, Hi-Hats, Clap, Toms, Rimshot, Shaker, Cowbell, Crash, Perc, Synth Stab, Sub Bass).
-- **Rendu double écran LCD MK3 (480×272)** : vues en direct pour Arranger, DAW / Step Grid, Sampler & Enveloppes ADSR, Mixer 8 groupes et Browser.
-- **Modes de jeu contrôleur** : Pad Mode, Step Sequencer, Keyboard (gammes), Chords (accords diatoniques).
-- **Gestion des scènes et patterns** : modes SCENE, PATTERN, SELECT, ERASE directement sur le matériel avec retour LED couleur.
-- **GUI native egui** : panneau de transport, séquenceur complet 16 pistes, grille 4×4 pads, éditeur de son et paramètres de filtre.
+### Added
+- **808 drum synth generator**: 16 percussion instruments synthesized in real time (Kick, Snare, Hi-Hats, Clap, Toms, Rimshot, Shaker, Cowbell, Crash, Perc, Synth Stab, Sub Bass).
+- **MK3 dual LCD rendering (480×272)**: live views for Arranger, DAW / Step Grid, Sampler & ADSR Envelopes, 8-group Mixer and Browser.
+- **Controller play modes**: Pad Mode, Step Sequencer, Keyboard (scales), Chords (diatonic chords).
+- **Scene and pattern management**: SCENE, PATTERN, SELECT, ERASE modes directly on the hardware with color LED feedback.
+- **Native egui GUI**: transport panel, full 16-track sequencer, 4×4 pad grid, sound editor and filter parameters.
 
-### Ajouté
+### Added
 
-- Workspace Rust (`maschine-proto`, `maschine-hardware`, `maschine-engine`, `maschine-app`)
-- `maschine-proto` : codec HID `0x01`/`0x02` + `0x80`/`0x81` + display bulk RGB565 RLE + palette indexée, tests complets
-- `maschine-hardware` : découverte `hidraw` + thread poll 1ms + hystérésis pads + `HardwareMapper` (pads → MIDI NoteOn/Off, Groups, Transport, knobs CC, touchstrip), `BulkHandle` (feature `usb`)
-- `maschine-engine` : modèle `Project` (Groups 16 Sounds, Patterns, Scenes, Sections), `Transport` (PPQ 960, BPM, swing, loop), `Sequencer` (quantize, nudge, humanize, slice), `Sampler` (zones, choke, ADSR, render stéréo), `Engine` (snapshot lock-free)
-- `maschine-app` : CLI (`probe`, `hid-dump`, `daemon`, `project new/show/validate`, `led-test`, `gui` stub), daemon headless + heartbeat + autosave
-- Configs : `99-maschine-mk3.rules` (udev `TAG+="uaccess"`), PipeWire `99-maschine-lowlatency.conf` (quantum 128), WirePlumber `51-maschine-mk3.conf/.lua` (pro-audio)
-- Docs : `README.md`, `docs/architecture.md`, `docs/protocol.md`, `docs/workflow.md`, `docs/INSTALL.md`, `docs/USAGE.md`
-- CI GitHub Actions (fmt, clippy, test, build), `rustfmt.toml`, `scripts/install.sh`
-- Exemple `examples/demo.machine-linux.json`
+- Rust workspace (`maschine-proto`, `maschine-hardware`, `maschine-engine`, `maschine-app`)
+- `maschine-proto`: HID codec `0x01`/`0x02` + `0x80`/`0x81` + display bulk RGB565 RLE + indexed palette, full tests
+- `maschine-hardware`: `hidraw` discovery + 1ms poll thread + pad hysteresis + `HardwareMapper` (pads → MIDI NoteOn/Off, Groups, Transport, knobs CC, touchstrip), `BulkHandle` (`usb` feature)
+- `maschine-engine`: `Project` model (Groups 16 Sounds, Patterns, Scenes, Sections), `Transport` (PPQ 960, BPM, swing, loop), `Sequencer` (quantize, nudge, humanize, slice), `Sampler` (zones, choke, ADSR, stereo render), `Engine` (lock-free snapshot)
+- `maschine-app`: CLI (`probe`, `hid-dump`, `daemon`, `project new/show/validate`, `led-test`, `gui` stub), headless daemon + heartbeat + autosave
+- Configs: `99-maschine-mk3.rules` (udev `TAG+="uaccess"`), PipeWire `99-maschine-lowlatency.conf` (quantum 128), WirePlumber `51-maschine-mk3.conf/.lua` (pro-audio)
+- Docs: `README.md`, `docs/architecture.md`, `docs/protocol.md`, `docs/workflow.md`, `docs/INSTALL.md`, `docs/USAGE.md`
+- GitHub Actions CI (fmt, clippy, test, build), `rustfmt.toml`, `scripts/install.sh`
+- Example `examples/demo.machine-linux.json`
 
-### Testé
+### Tested
 
-- MK3 `17cc:1600` sur Fedora 44, kernel 7.1.10, PipeWire 1.6.8
-- `probe` détecte `hidraw3` + ALSA `card 2 MK3`
-- `hid-dump` + `led-test` OK (write hidraw 0x80/0x81)
-- `daemon` connecte, mappe pads/boutons, avance transport, render sampler
+- MK3 `17cc:1600` on Fedora 44, kernel 7.1.10, PipeWire 1.6.8
+- `probe` detects `hidraw3` + ALSA `card 2 MK3`
+- `hid-dump` + `led-test` OK (hidraw write 0x80/0x81)
+- `daemon` connects, maps pads/buttons, advances transport, renders sampler
 - `cargo test --workspace` 31 tests pass

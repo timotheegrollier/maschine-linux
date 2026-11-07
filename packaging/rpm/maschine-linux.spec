@@ -1,5 +1,5 @@
 Name:           maschine-linux
-Version:        0.7.0
+Version:        0.8.0
 Release:        1%{?dist}
 Summary:        Native Instruments Maschine MK3 DAW & Controller integration for Linux
 License:        GPL-3.0-or-later
@@ -98,6 +98,9 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/maschine-linux.deskto
 %{_prefix}/lib/systemd/user/maschine-linux.service
 
 %changelog
+* Sat Nov 07 2026 timotheegrollier <timo@example.com> - 0.8.0-1
+- Release 0.8.0 with complete Pattern workflow (create, duplicate, clear, delete, rename, slot navigation), hideable GUI panels, and graceful MK3 shutdown that restores the default logo and clears pad LEDs
+
 * Sat Nov 07 2026 timotheegrollier <timo@example.com> - 0.7.0-1
 - Release 0.7.0 with latched MK3 navigation, unified PLUGIN view, TB-303 simple mode, per-Sound polyphony/choke, responsive GUI, and standalone --no-hardware mode
 

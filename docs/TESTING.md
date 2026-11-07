@@ -37,14 +37,15 @@ With the MK3 connected, the following commands exercise the output paths without
 
 Expected results: `probe` reports `17cc:1600`, the `hidraw` device and an openable HID handle; `led-test` writes report `0x80`/`0x81`; `pad-test` lights pads 1..16 in logical order; `display-test` sends a solid RGB565 frame. A successful USB write confirms transport acceptance, not visible pixels, so also inspect both LCDs.
 
-Validation performed for 0.7.0 on a connected MK3 (`serial=1B64AB9B`, `/dev/hidraw2`):
+Validation performed for 0.8.0 on a connected MK3 (`serial=1B64AB9B`, `/dev/hidraw2`):
 
+- `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` (133 tests) pass.
 - `probe`: device detected, `hidraw open: OK`, ALSA card `MK3` present.
-- `led-test`: report `0x81` accepted and `0x80` attempted, LEDs cleared after 800 ms.
-- `pad-test`: logical pads 0..15 announced and lit in order.
-- `display-test`: solid RGB(0,160,80) frame accepted.
-- GUI hardware startup: LED writer, display thread, first frame OK, serial logged, updater reported `v0.7.0` up to date.
-- GUI standalone startup with `--no-hardware`: no hardware session, no hot-plug reconnect, virtual MIDI opened, updater reported `v0.7.0` up to date.
+- GUI hardware startup: LED writer, display thread, first frame OK, serial logged, updater reported up to date.
+- GUI hardware close: the HID loop and display/LED writers are joined, the final splash is sent, the display interface is released without a USB reset, and the log reports `Écrans libérés — logo MK3 par défaut`.
+- `probe` after GUI exit: the MK3 is still detected and `hidraw open: OK`, confirming the shutdown did not reset or lose the device.
+- GUI standalone startup and close with `--no-hardware`: no hardware session, no hot-plug reconnect, virtual MIDI opened, window closes cleanly.
+- Automated mapper tests cover PATTERN-mode `DUPLICATE`, `SHIFT + ERASE`, and 4D stepping; engine/display tests cover pattern CRUD, slot creation, Scene re-indexing, soft keys, pattern-mode screens, and the shutdown splash.
 
 ## Manual check on the Maschine MK3
 
@@ -57,5 +58,8 @@ USB does not provide acknowledgement of displayed pixels here. After launching `
 5. Press **PATTERN**, **STEP**, **KEYBOARD**, and **SCENE** once each; the matching GUI view must open and the button must stay latched. Press the same button again to return to the Pad workflow. Verify that only one workflow menu is active at a time.
 6. Press the physical **PLUGIN** button or click **PLUGIN / TB-303** in the GUI (shortcut `T` or `P`): the GUI and left screen must show the SOUND page. Use soft key 3 (`PAGE TB`) to switch to TB-303; the left screen must show the oscillator and resonant filter curve, the right screen the distortion and delay. Soft key 7 (`PAGE SND`) returns to SOUND. Encoders 1..8 must follow the active page live without flicker or unwanted feedback. Press PLUGIN again to close the editor.
 7. In Sampler, enter a WAV path, import it, then listen to the pad. Press `Ctrl+S` (the exact path is shown in the interface), close the application and reopen the saved file with `./target/release/maschine-linux gui --project "$HOME/.local/share/maschine-linux/autosave.json" --no-audio`. The name, waveform and sound must be restored.
+8. Press **PATTERN**, then tap empty pads: the corresponding slots must be created and shown on the left screen. Press `DUPLICATE`, `SHIFT + ERASE`, the 4D left/right encoder, and soft keys 3/5/7/8; the pattern list, active selection, event count, and length must follow immediately. The last pattern of a Group must not be deletable.
+9. In the GUI, use the pattern strip to create, duplicate, clear, delete, and rename a pattern. In Ideas, click an empty matrix slot: it must create that pattern and assign it to the active Scene. Check that existing Scene references remain valid after deletions.
+10. Hide the centre workspace with `F3`/`CENTRE` and the MK3 panel with `F2`; `TOUT` must show or hide all panels. Close the window and confirm that both MK3 screens return to the default Maschine logo and the pad LEDs turn off.
 
 The complete official SAMPLING feature (RECORD, EDIT, SLICE and ZONE editing) and event editing are not covered as implemented: they remain outside the current scope. See [workflow.md](workflow.md) for details on the gaps and available controls.

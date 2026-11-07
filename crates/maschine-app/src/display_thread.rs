@@ -72,7 +72,7 @@ const ERRORS_BEFORE_REACQUIRE: u32 = 8;
 #[cfg(feature = "usb")]
 #[allow(dead_code)]
 pub struct DisplayThreadHandle {
-    join: std::thread::JoinHandle<()>,
+    join: Option<std::thread::JoinHandle<()>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -84,11 +84,25 @@ impl DisplayThreadHandle {
         self.stop.store(true, Ordering::Relaxed);
     }
 
-    /// Attend la fin du thread (envoie d'abord l'image par défaut)
+    /// Attend la fin du thread (envoie d'abord le splash puis libère IF5)
     #[allow(dead_code)]
-    pub fn join(self) {
+    pub fn join(mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        let _ = self.join.join();
+        if let Some(j) = self.join.take() {
+            let _ = j.join();
+        }
+    }
+}
+
+#[cfg(feature = "usb")]
+impl Drop for DisplayThreadHandle {
+    fn drop(&mut self) {
+        // Filet de sécurité : si le handle est oublié sur un chemin d'erreur,
+        // on demande l'arrêt et on attend la libération propre de l'interface.
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(j) = self.join.take() {
+            let _ = j.join();
+        }
     }
 }
 
@@ -455,10 +469,21 @@ pub fn spawn_display_thread(
                 }
 
                 if stop_clone.load(Ordering::Relaxed) {
-                    // Ne pas envoyer de frame noire : on libère l'interface pour que le
-                    // firmware de la MK3 réaffiche son écran par défaut (logo Maschine).
-                    std::thread::sleep(Duration::from_millis(200));
-                    log::info!("✓ Interface écrans libérée (logo MK3 par défaut)");
+                    // Splash de fermeture : garantit que les écrans ne restent
+                    // jamais figés sur la dernière UI si le firmware ne repeint
+                    // pas immédiatement son logo. Puis on rend IF5 sans reset USB.
+                    let (left_frame, right_frame) =
+                        maschine_engine::display_render::render_shutdown_screens();
+                    if let Err(e) = bulk.send_frame(&left_frame) {
+                        log::warn!("Écran gauche: splash de fermeture non envoyé ({e})");
+                    }
+                    if let Err(e) = bulk.send_frame(&right_frame) {
+                        log::warn!("Écran droit: splash de fermeture non envoyé ({e})");
+                    }
+                    std::thread::sleep(Duration::from_millis(180));
+                    bulk.release_for_shutdown();
+                    std::thread::sleep(Duration::from_millis(120));
+                    log::info!("✓ Écrans libérés — logo MK3 par défaut");
                     return;
                 }
                 // Interface perdue (device débranché, ré-énumération, ImportError) :
@@ -471,7 +496,10 @@ pub fn spawn_display_thread(
         })
         .map_err(|e| anyhow::anyhow!("spawn display thread: {e}"))?;
 
-    Ok(DisplayThreadHandle { join, stop })
+    Ok(DisplayThreadHandle {
+        join: Some(join),
+        stop,
+    })
 }
 
 #[cfg(all(test, feature = "usb"))]

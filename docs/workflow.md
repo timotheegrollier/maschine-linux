@@ -52,20 +52,21 @@ Exact replica: Pattern = referenced object (editing propagates everywhere) vs Cl
 
 The GUI follows Maschine's workflow separation: a common transport bar, groups and scenes on the left, then a dedicated workspace. View buttons stay synchronized with the MK3 hardware tabs.
 
-- **Ideas**: horizontal scenes and a Group × Pattern matrix. Clicking a pattern assigns it to the scene and focuses its group. The scene can be duplicated/deleted (with automatic re-indexing of Song sections). A scene can be added from this view.
+- **Ideas**: horizontal scenes and a Group × Pattern matrix with 8–16 slots per Group. Clicking an existing pattern assigns it to the scene and focuses its group; clicking an empty slot creates that pattern and assigns it. The scene can be duplicated/deleted (with automatic re-indexing of Song sections). A scene can be added from this view.
 - **Song**: horizontal timeline of sections, direct selection, previous/next navigation, duplication, deletion and section length (1/2/4/8 bars).
-- **Sequencer**: 16 × 16 steps, navigation and pattern length from 1/2/4/8 bars, preview pads and groove actions. Cells are prepared in a single pass over events to keep editing smooth.
+- **Sequencer**: 16 × 16 steps, navigation and pattern length from 1/2/4/8 bars, preview pads and groove actions. The pattern manager above the grid creates, selects, duplicates, clears, deletes, renames, and resizes patterns. Cells are prepared in a single pass over events to keep editing smooth.
 - **Keyboard / Performance**: 16-key performance keyboard, Sound auditioning, previous/next Sound selection, and direct pad access. Hardware KEYBOARD and CHORDS modes open this view.
 - **Mixer**: volume, pan, mute and solo for groups A–H, plus the master.
 - **Sampler / Sound**: selection of the 16 Sounds, asynchronous WAV import, waveform, audition, volume, pan, filter, ADSR envelope, per-Sound polyphony and choke group. WAV paths are saved in the project zones and reloaded on open.
 - **PLUGIN**: unified Sound editor. The SOUND page exposes the sampler-style controls; the TB-303 page provides simplified macros (cutoff, resonance, envelope modulation, decay, accent, drive, delay time, delay mix) with advanced oscillator, filter, distortion, and delay controls collapsed by default.
 - **Browser**: built-in 808 drum synth presets, loaded onto the selected Sound. The Browser does not yet browse the NI library or the filesystem.
 
-The GUI uses a collapsible, resizable navigation rail and MK3 mirror. `F1`
-toggles the rail, `F2` toggles the mirror, and the application bar shows the
-active latched workflow. The transport offers Play/Stop, Record, loop, tempo
-and BBT position. GUI pads send note release; 808 presets are cached when the
-kit loads.
+The GUI uses a collapsible, resizable navigation rail, centre workspace, and
+MK3 mirror. `F1` toggles the rail, `F2` toggles the mirror, `F3` toggles the
+centre workspace, and the `TOUT` button shows or hides all three panels at
+once. The application bar shows the active latched workflow. The transport
+offers Play/Stop, Record, loop, tempo and BBT position. GUI pads send note
+release; 808 presets are cached when the kit loads.
 
 `maschine-linux gui --no-hardware` forces standalone mode: the GUI, engine,
 virtual MIDI, and audio remain available, while any connected MK3 and its
@@ -75,10 +76,11 @@ hot-plug reconnection are ignored.
 
 Both screens are rendered by the same function (`display_render::render_screens`): the MK3 panel in the GUI is the mirror of the content computed for the hardware. The USB loop compares renders at 30 Hz, sends only modified rectangles (up to six), limits average throughput to 1.6 MB/s and sends a full-screen pair every 2 seconds to resynchronize the controller.
 
-- **Left screen**: ARRANGE (8 groups, scene pattern, real VU), SCENES/IDEAS (SCENE mode), SONG (sections), MIXER A–D, SAMPLER (waveform + ADSR + info), BROWSER (808 presets), STEP (full pattern grid + selected step parameters), and PLUGIN (SOUND page or TB-303 page).
+- **Left screen**: ARRANGE (8 groups, scene pattern, real VU), SCENES/IDEAS (SCENE mode), PATTERN slots (PATTERN mode: 16 slots with name, length, event count, active/assigned markers), SONG (sections), MIXER A–D, SAMPLER (waveform + ADSR + info), BROWSER (808 presets), STEP (full pattern grid + selected step parameters), and PLUGIN (SOUND page or TB-303 page).
 - **Right screen**: PATTERN (16 sounds × 16 steps grid + playhead), STEP (active Sound velocities + edit cursor), SONG TIMELINE, MIXER master + group/sound focus, SAMPLER full-screen envelope, BROWSER loading, EVENTS, MACRO, SETTINGS, PLUGIN SOUND envelope.
 - **Soft keys (8 buttons under the screens)**: *contextual* action decided by the engine (`EngineEvent::SoftKey`) and displayed at the bottom of the screens. The button always does what the label announces, identically on hardware and in the GUI.
   - ARRANGE: `BAR 1..4` + pattern length `1/2/4/8 BARS`.
+  - PATTERN: `PAT <`, `PAT >`, `+ PAT`, `DUPL`, `VIDER`, `SUPPR`, `1 MES`, `2 MES`.
   - STEP: `STEP <</>>` (cursor by one step), `BAR <</>>` (by one bar), `1/2/4/8 BARS`.
   - MIXER: `GRP A..H` (group focus). SAMPLER: `SND 1..8` (active Sound).
   - BROWSER: `PRES <</>>`, `SND <</>>`, `LISTEN`, `LOAD`, `METRO`, `LOOP`.
@@ -88,6 +90,8 @@ Both screens are rendered by the same function (`display_render::render_screens`
 - **Encoders**: each screen displays the 4 parameters actually controlled by its knobs (1–4 on the left, 5–8 on the right) with live values. PLUGIN routes knobs by page: SOUND uses Vol/Pan/Cutoff/Reso + ADSR, TB-303 uses Cutoff/Reso/EnvMod/Decay + Accent/Drive/Time/Mix.
 - **Navigation between views**: choosing ARRANGE, MIXER, SAMPLER, BROWSER or PLUGIN returns the right screen to the page linked to that view. EVENTS, MACRO and SETTINGS are right-hand views that can then be explicitly selected. Clicking the active main view again in the GUI returns to its contextual right page.
 - **Latched workflow menus**: PATTERN, STEP, KEYBOARD, SCENE, EVENTS, MACRO, SETTINGS and PLUGIN latch on the first press. A second press on the same button returns to the default Pad workflow and the Sequencer view. Only one workflow menu is active at a time.
+- **PATTERN mode**: the left screen lists the 16 pattern slots of the focus Group with length and event count; the right screen shows the selected pattern grid. Empty pads create the corresponding slot, `DUPLICATE` copies the active pattern, `SHIFT + ERASE` clears its events, and the 4D encoder moves to the previous/next pattern. The last pattern of a Group cannot be deleted.
+- **Clean shutdown**: closing the GUI or stopping the daemon sends a final splash, releases the display interface without a USB reset, and sends an all-off LED report. The MK3 firmware can repaint its default logo and the pads return to their idle state.
 - **GUI and hardware controls synchronized**: before mapping each new HID event, the application re-reads the group, sound and tabs from the engine. The first knob detent after a page change therefore already performs the new page's action.
 - **Live editing**: volume, pan, filter and ADSR changes also reach voices already playing; Group/Sound gains and pans combine without overwriting the neighboring level.
 - **LCD alignment**: each USB rectangle must have an even width, because the Bulk counter represents pairs of RGB565 pixels. Differential rectangles are expanded to the neighboring pixel; odd windows are rejected before sending. See [the hardware protocol](HARDWARE_DISPLAY_PROTOCOL.md).

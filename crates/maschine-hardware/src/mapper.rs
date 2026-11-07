@@ -207,6 +207,12 @@ pub enum MapperAction {
     SceneTrigger(usize),
     /// Sélectionne un pattern du groupe focus pour la scène active (mode PATTERN)
     PatternTrigger { group: u8, pattern: usize },
+    /// Duplique le pattern actif du groupe focus (bouton DUPLICATE en mode PATTERN)
+    DuplicatePattern { group: u8 },
+    /// Efface les notes du pattern actif (SHIFT + ERASE en mode PATTERN)
+    ClearPattern { group: u8 },
+    /// Pattern précédent/suivant (4D en mode PATTERN)
+    PatternStep { group: u8, delta: i32 },
     /// Efface toutes les notes d'un son dans le pattern actif (mode ERASE + pad)
     EraseSound { group: u8, sound: u8 },
     /// Basculement d'un pas du séquenceur (son 0..15, mesure 0..1, pas 0..15)
@@ -826,7 +832,13 @@ impl HardwareMapper {
                         self.erase_held = pressed;
                         if pressed {
                             if self.shift_held {
-                                actions.push(MapperAction::ClearBar(self.selected_bar));
+                                if self.pattern_select_mode {
+                                    actions.push(MapperAction::ClearPattern {
+                                        group: self.group_focus,
+                                    });
+                                } else {
+                                    actions.push(MapperAction::ClearBar(self.selected_bar));
+                                }
                             } else {
                                 self.erase_used = false;
                                 self.erase_mode = true;
@@ -1005,7 +1017,12 @@ impl HardwareMapper {
 
                         // Navigation 4D & Flèches < >
                         ButtonId::FourWayLeft | ButtonId::Left => {
-                            if self.mode == ControllerMode::Step && self.left_tab == 0 {
+                            if self.pattern_select_mode {
+                                actions.push(MapperAction::PatternStep {
+                                    group: self.group_focus,
+                                    delta: -1,
+                                });
+                            } else if self.mode == ControllerMode::Step && self.left_tab == 0 {
                                 // Mode STEP : défile la grille d'un pas.
                                 actions.push(MapperAction::StepScroll(-1));
                             } else {
@@ -1014,7 +1031,12 @@ impl HardwareMapper {
                             }
                         }
                         ButtonId::FourWayRight | ButtonId::Right => {
-                            if self.shift_held {
+                            if self.pattern_select_mode {
+                                actions.push(MapperAction::PatternStep {
+                                    group: self.group_focus,
+                                    delta: 1,
+                                });
+                            } else if self.shift_held {
                                 let new_len = if self.pattern_bars < 4 { 4 } else { 8 };
                                 self.pattern_bars = new_len;
                                 actions.push(MapperAction::SetPatternBars(new_len));
@@ -1068,7 +1090,13 @@ impl HardwareMapper {
 
                         // Actions d'édition
                         ButtonId::Duplicate => {
-                            actions.push(MapperAction::DuplicateBar);
+                            if self.pattern_select_mode {
+                                actions.push(MapperAction::DuplicatePattern {
+                                    group: self.group_focus,
+                                });
+                            } else {
+                                actions.push(MapperAction::DuplicateBar);
+                            }
                         }
                         // Workflow officiel : SCENE / PATTERN / SELECT / EVENTS / MACRO / PLUGIN
                         // Chaque menu reste actif (latch) et un second appui sur
@@ -2511,6 +2539,33 @@ mod tests {
         let off = press_button(&mut m, maschine_proto::ButtonId::Keyboard);
         assert_eq!(m.mode, ControllerMode::Pad);
         assert!(off.contains(&MapperAction::SetControllerMode(0)));
+    }
+
+    #[test]
+    fn pattern_mode_duplicate_clear_and_step_actions() {
+        let mut m = HardwareMapper::with_default();
+        let _ = press_button(&mut m, maschine_proto::ButtonId::Pattern);
+
+        let dup = press_button(&mut m, maschine_proto::ButtonId::Duplicate);
+        assert!(dup.contains(&MapperAction::DuplicatePattern { group: 0 }));
+        assert!(!dup.contains(&MapperAction::DuplicateBar));
+
+        let next = press_button(&mut m, maschine_proto::ButtonId::FourWayRight);
+        assert!(next.contains(&MapperAction::PatternStep { group: 0, delta: 1 }));
+        let prev = press_button(&mut m, maschine_proto::ButtonId::FourWayLeft);
+        assert!(prev.contains(&MapperAction::PatternStep {
+            group: 0,
+            delta: -1
+        }));
+
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Shift,
+            pressed: true,
+            ts_ns: 2,
+        });
+        let clear = press_button(&mut m, maschine_proto::ButtonId::Erase);
+        assert!(clear.contains(&MapperAction::ClearPattern { group: 0 }));
+        assert!(!clear.contains(&MapperAction::ClearBar(0)));
     }
 
     #[test]

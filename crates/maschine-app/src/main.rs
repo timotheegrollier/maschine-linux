@@ -463,6 +463,8 @@ fn cmd_daemon(
     debug_latency: bool,
     stress: bool,
 ) -> anyhow::Result<()> {
+    #[cfg(not(feature = "audio"))]
+    let _ = &headphone_mode;
     println!("# maschine-linux daemon — Ctrl+C pour quitter");
     let project_path = project.clone();
     let proj = if let Some(p) = project {
@@ -669,7 +671,7 @@ fn cmd_daemon(
 
     let (led_tx, led_rx) = unbounded::<maschine_proto::hid_output::LedState>();
     let hardware_leds_enabled = hardware_connected && !no_led;
-    let _led_handle = if no_led {
+    let mut led_handle = if no_led {
         log::warn!("--no-led : LEDs désactivées");
         None
     } else if !hardware_connected {
@@ -1211,8 +1213,9 @@ fn cmd_daemon(
                     }
                 }
                 MapperAction::PatternTrigger { group, pattern } => {
-                    // Ne sélectionne que les patterns existants du groupe.
-                    let ok = engine
+                    // Pad existant = sélection ; pad vide = création du slot
+                    // (comme sur Maschine, les 16 pads représentent les slots).
+                    let exists = engine
                         .lock()
                         .snapshot()
                         .project
@@ -1220,11 +1223,43 @@ fn cmd_daemon(
                         .get(group as usize)
                         .map(|g| pattern < g.patterns.len())
                         .unwrap_or(false);
-                    if ok {
+                    let event = if exists {
+                        EngineEvent::PatternSelect { group, pattern }
+                    } else {
+                        EngineEvent::CreatePatternAt { group, pattern }
+                    };
+                    let _ = engine.lock().handle_event(event);
+                }
+                MapperAction::DuplicatePattern { group } => {
+                    let active = {
+                        let eng = engine.lock();
+                        let snap = eng.snapshot();
+                        snap.project
+                            .active_pattern_index(group as usize, snap.active_scene)
+                    };
+                    if let Some(pattern) = active {
                         let _ = engine
                             .lock()
-                            .handle_event(EngineEvent::PatternSelect { group, pattern });
+                            .handle_event(EngineEvent::DuplicatePattern { group, pattern });
                     }
+                }
+                MapperAction::ClearPattern { group } => {
+                    let active = {
+                        let eng = engine.lock();
+                        let snap = eng.snapshot();
+                        snap.project
+                            .active_pattern_index(group as usize, snap.active_scene)
+                    };
+                    if let Some(pattern) = active {
+                        let _ = engine
+                            .lock()
+                            .handle_event(EngineEvent::ClearPattern { group, pattern });
+                    }
+                }
+                MapperAction::PatternStep { group, delta } => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::StepPattern { group, delta });
                 }
                 MapperAction::EraseSound { group, sound } => {
                     let _ = engine
@@ -1463,8 +1498,10 @@ fn cmd_daemon(
         let repaint_bg = repaint.clone();
         let hw_tx_hotplug = hardware_tx.clone();
         let led_rx_hotplug = led_rx.clone();
+        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shutdown_bg = shutdown.clone();
 
-        std::thread::Builder::new()
+        let hid_thread = std::thread::Builder::new()
             .name("maschine-hid-loop".to_string())
             .spawn(move || {
                 let mut mapper = HardwareMapper::new(MapperConfig::default());
@@ -1480,6 +1517,9 @@ fn cmd_daemon(
                 let use_manual_advance = no_audio || cfg!(not(feature = "audio"));
 
                 loop {
+                    if shutdown_bg.load(Ordering::Relaxed) {
+                        break;
+                    }
                     if use_manual_advance {
                         let elapsed = last_advance.elapsed();
                         if elapsed >= Duration::from_millis(10) {
@@ -1609,6 +1649,12 @@ fn cmd_daemon(
                         }
                     }
                 }
+                // Arrêt propre de la session Plug & Play : les LEDs passent
+                // « tout éteint » et les écrans libèrent IF5.
+                if let Some(mut sess) = hardware_session.take() {
+                    sess.stop();
+                }
+                let _ = led_tx_bg.send(maschine_proto::hid_output::LedState::new());
             })?;
 
         // Run GUI on main thread (required by egui/winit)
@@ -1621,10 +1667,21 @@ fn cmd_daemon(
         let gui_res = gui::run_with_engine(engine, audio_shared, repaint);
         #[cfg(not(feature = "audio"))]
         let gui_res = gui::run_with_engine(engine, repaint);
+
+        // 1) Stoppe la boucle HID (et sa session Plug & Play éventuelle).
+        shutdown.store(true, Ordering::Relaxed);
+        let _ = hid_thread.join();
+        // 2) Stoppe le thread écrans initial : splash puis release IF5.
         #[cfg(feature = "usb")]
         if let Some(h) = display_handle.take() {
             h.join();
         }
+        // 3) Envoie le rapport LEDs « tout éteint » et attend le writer.
+        if let Some(h) = led_handle.take() {
+            h.stop();
+        }
+        // Laisse au firmware le temps de repeindre son logo par défaut.
+        std::thread::sleep(Duration::from_millis(250));
         return gui_res;
     }
 
@@ -1777,29 +1834,20 @@ fn cmd_daemon(
         }
     }
 
-    // Arrête le thread d'affichage (qui envoie l'image par défaut)
+    // Arrêt ordonné : session Plug & Play, écrans (splash + release IF5),
+    // puis LEDs (rapport tout éteint). On ne rouvre jamais IF5 après coup :
+    // cela masquerait le logo par défaut du firmware.
+    if let Some(mut sess) = hardware_session.take() {
+        sess.stop();
+    }
     #[cfg(feature = "usb")]
     if let Some(h) = display_handle.take() {
         h.join();
     }
-
-    // Réinitialise les écrans à leur image par défaut à la fermeture
-    #[cfg(feature = "usb")]
-    {
-        use maschine_hardware::usb::BulkHandle;
-        if let Ok(mut bulk) = BulkHandle::open() {
-            let left = maschine_proto::display::DisplayFrame::solid(
-                maschine_proto::display::DisplayId::Left,
-                maschine_proto::display::DisplayPixel::from_rgb(14, 15, 20),
-            );
-            let right = maschine_proto::display::DisplayFrame::solid(
-                maschine_proto::display::DisplayId::Right,
-                maschine_proto::display::DisplayPixel::from_rgb(14, 15, 20),
-            );
-            let _ = bulk.send_frame(&left);
-            let _ = bulk.send_frame(&right);
-        }
+    if let Some(h) = led_handle.take() {
+        h.stop();
     }
+    std::thread::sleep(Duration::from_millis(250));
 
     // save autosave
     let autosave = dirs_or_tmp().join("maschine-linux/autosave.json");

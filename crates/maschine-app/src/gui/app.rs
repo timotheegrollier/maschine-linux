@@ -143,10 +143,16 @@ pub struct GuiApp {
     last_nav_serial: u64,
     /// Rail de navigation visible.
     pub show_nav: bool,
+    /// Espace de travail central visible.
+    pub show_workspace: bool,
     /// Panneau MK3 visible.
     pub show_mk3: bool,
     /// Disposition initiale adaptée à la taille de la fenêtre.
     layout_initialized: bool,
+    /// Buffer de renommage du pattern actif.
+    pub pattern_name_buf: String,
+    /// Cible du buffer de renommage (groupe, pattern).
+    pub pattern_name_target: Option<(u8, usize)>,
     /// Mode avancé de la TB-303 (les macros restent le mode par défaut).
     pub plugin_advanced: bool,
     /// Recherche browser.
@@ -215,8 +221,11 @@ impl GuiApp {
             last_left_tab: 0,
             last_nav_serial: 0,
             show_nav: true,
+            show_workspace: true,
             show_mk3: true,
             layout_initialized: false,
+            pattern_name_buf: String::new(),
+            pattern_name_target: None,
             plugin_advanced: false,
             browser_search: String::new(),
             browser_category: 0,
@@ -254,15 +263,17 @@ impl GuiApp {
             show_settings: false,
             show_updater: false,
             updater_state,
-            selected_device: "disabled".to_string(),
             status_message: None,
             pad_down: None,
             view: StudioView::Sequencer,
             last_left_tab: 0,
             last_nav_serial: 0,
             show_nav: true,
+            show_workspace: true,
             show_mk3: true,
             layout_initialized: false,
+            pattern_name_buf: String::new(),
+            pattern_name_target: None,
             plugin_advanced: false,
             browser_search: String::new(),
             browser_category: 0,
@@ -424,44 +435,49 @@ impl GuiApp {
         if ctx.wants_keyboard_input() {
             return;
         }
-        let (space, digits, view_keys, save, toggle_nav, toggle_mk3) = ctx.input(|i| {
-            let mut digits = [false; 8];
-            for (d, pressed) in digits.iter_mut().enumerate() {
-                let key = match d {
-                    0 => egui::Key::Num1,
-                    1 => egui::Key::Num2,
-                    2 => egui::Key::Num3,
-                    3 => egui::Key::Num4,
-                    4 => egui::Key::Num5,
-                    5 => egui::Key::Num6,
-                    6 => egui::Key::Num7,
-                    _ => egui::Key::Num8,
-                };
-                *pressed = i.key_pressed(key);
-            }
-            let view_keys = [
-                (egui::Key::I, StudioView::Ideas),
-                (egui::Key::S, StudioView::Sequencer),
-                (egui::Key::K, StudioView::Keyboard),
-                (egui::Key::M, StudioView::Mixer),
-                (egui::Key::A, StudioView::Sampler),
-                (egui::Key::T, StudioView::AcidSynth),
-                (egui::Key::P, StudioView::AcidSynth),
-                (egui::Key::B, StudioView::Browser),
-            ]
-            .map(|(k, v)| (i.key_pressed(k), v));
-            (
-                i.key_pressed(egui::Key::Space),
-                digits,
-                view_keys,
-                i.modifiers.command && i.key_pressed(egui::Key::S),
-                i.key_pressed(egui::Key::F1),
-                i.key_pressed(egui::Key::F2),
-            )
-        });
+        let (space, digits, view_keys, save, toggle_nav, toggle_workspace, toggle_mk3) =
+            ctx.input(|i| {
+                let mut digits = [false; 8];
+                for (d, pressed) in digits.iter_mut().enumerate() {
+                    let key = match d {
+                        0 => egui::Key::Num1,
+                        1 => egui::Key::Num2,
+                        2 => egui::Key::Num3,
+                        3 => egui::Key::Num4,
+                        4 => egui::Key::Num5,
+                        5 => egui::Key::Num6,
+                        6 => egui::Key::Num7,
+                        _ => egui::Key::Num8,
+                    };
+                    *pressed = i.key_pressed(key);
+                }
+                let view_keys = [
+                    (egui::Key::I, StudioView::Ideas),
+                    (egui::Key::S, StudioView::Sequencer),
+                    (egui::Key::K, StudioView::Keyboard),
+                    (egui::Key::M, StudioView::Mixer),
+                    (egui::Key::A, StudioView::Sampler),
+                    (egui::Key::T, StudioView::AcidSynth),
+                    (egui::Key::P, StudioView::AcidSynth),
+                    (egui::Key::B, StudioView::Browser),
+                ]
+                .map(|(k, v)| (i.key_pressed(k), v));
+                (
+                    i.key_pressed(egui::Key::Space),
+                    digits,
+                    view_keys,
+                    i.modifiers.command && i.key_pressed(egui::Key::S),
+                    i.key_pressed(egui::Key::F1),
+                    i.key_pressed(egui::Key::F3),
+                    i.key_pressed(egui::Key::F2),
+                )
+            });
 
         if toggle_nav {
             self.show_nav = !self.show_nav;
+        }
+        if toggle_workspace {
+            self.show_workspace = !self.show_workspace;
         }
         if toggle_mk3 {
             self.show_mk3 = !self.show_mk3;
@@ -1153,12 +1169,33 @@ impl eframe::App for GuiApp {
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let mk3_label = if self.show_mk3 { "MK3 ✓" } else { "MK3" };
+                        let mk3_label = if self.show_mk3 { "MK3 ON" } else { "MK3 OFF" };
                         if crate::gui::widgets::chip(ui, mk3_label, self.show_mk3, c.accent) {
                             self.show_mk3 = !self.show_mk3;
                         }
+                        let center_label = if self.show_workspace {
+                            "CENTRE ON"
+                        } else {
+                            "CENTRE OFF"
+                        };
+                        if crate::gui::widgets::chip(
+                            ui,
+                            center_label,
+                            self.show_workspace,
+                            c.accent_cyan,
+                        ) {
+                            self.show_workspace = !self.show_workspace;
+                        }
+                        let all_visible = self.show_nav && self.show_workspace && self.show_mk3;
+                        let all_label = if all_visible { "TOUT ON" } else { "TOUT OFF" };
+                        if crate::gui::widgets::chip(ui, all_label, all_visible, c.success) {
+                            let show = !all_visible;
+                            self.show_nav = show;
+                            self.show_workspace = show;
+                            self.show_mk3 = show;
+                        }
                         ui.label(
-                            egui::RichText::new("F1 vues • F2 MK3")
+                            egui::RichText::new("F1 vues • F2 MK3 • F3 centre")
                                 .small()
                                 .color(c.text_muted),
                         );
@@ -1303,10 +1340,12 @@ impl eframe::App for GuiApp {
                     });
             });
 
-        // Espace de travail central.
-        egui::CentralPanel::default().show(ctx, |ui| {
-            crate::gui::views::render_view(ui, self, &snap, is_playing);
-        });
+        // Espace de travail central (masquable pour un mode scène compact).
+        if self.show_workspace {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                crate::gui::views::render_view(ui, self, &snap, is_playing);
+            });
+        }
 
         // Barre de statut basse.
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {

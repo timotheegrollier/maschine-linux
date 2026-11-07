@@ -14,7 +14,7 @@ Maschine Linux is an independent project. It does not include Native
 Instruments code or proprietary assets; it reproduces the documented workflow
 and hardware behavior through a clean-room implementation.
 
-## Current state (0.7.0)
+## Current state (0.8.0)
 
 Cargo workspace with four main crates:
 
@@ -34,8 +34,16 @@ inside each block, and a drum kit regenerated at the device sample rate.
 Instrumentation: `--debug-latency` (HID→Engine, real buffer size, misses,
 errors) and `--stress` (deliberate engine-lock contention).
 
-### Workflow and GUI parity in 0.7.0
+### Workflow and GUI parity in 0.8.0
 
+- **Complete PATTERN mode**: empty pads create pattern slots, `DUPLICATE`
+  copies the active pattern, `SHIFT + ERASE` clears its events, and the 4D
+  encoder steps through patterns. The soft keys manage creation, duplication,
+  clearing, deletion, and length.
+- **Pattern manager and Ideas matrix**: the Sequencer view exposes a full
+  pattern strip with inline rename, and the Ideas matrix shows 8–16 slots per
+  Group. Empty slots can be clicked to create a pattern and assign it to the
+  active Scene.
 - **Latched MK3 menus**: PATTERN, STEP, KEYBOARD, SCENE, EVENTS, MACRO,
   SETTINGS, and PLUGIN stay active after the first press and return to the
   default Pad workflow on a second press. Only one workflow menu is active at
@@ -46,9 +54,13 @@ errors) and `--stress` (deliberate engine-lock contention).
 - **Unified PLUGIN view**: the physical PLUGIN button opens the SOUND page;
   soft keys switch to the simplified TB-303 page, where advanced parameters
   are collapsed by default.
-- **Responsive desktop GUI**: collapsible and resizable navigation/MK3 panels,
-  compact layouts for small windows, a dedicated Keyboard/Performance view,
-  and context banners for every hardware workflow.
+- **Responsive, hideable GUI**: the navigation rail (`F1`), centre workspace
+  (`F3`), and MK3 mirror (`F2`) can be hidden independently; the `TOUT` button
+  toggles all three panels at once for a compact performance layout.
+- **Graceful MK3 shutdown**: closing the app joins the HID/display/LED threads,
+  sends a shutdown splash, releases the display interface without resetting the
+  device, and turns the pad LEDs off so the MK3 returns to its default logo and
+  idle state.
 - **Per-Sound sampler control**: polyphony and choke groups are applied per
   Sound, including voice stealing with a short fade.
 - **Standalone mode**: `maschine-linux gui --no-hardware` ignores any connected
@@ -100,7 +112,8 @@ target/release/maschine-linux daemon --debug-latency --stress
 
 Useful GUI shortcuts: `I` Ideas, `S` Sequencer, `K` Keyboard, `M` Mixer,
 `A` Sampler, `T`/`P` Plugin/TB-303, `B` Browser, `Space` Play/Stop,
-`F1` toggle navigation rail, `F2` toggle MK3 panel, `Ctrl+S` save.
+`F1` toggle navigation rail, `F2` toggle MK3 panel, `F3` toggle centre
+workspace, `Ctrl+S` save.
 
 ## Architecture
 

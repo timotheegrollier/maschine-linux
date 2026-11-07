@@ -37,15 +37,17 @@ Logs: `RUST_LOG=debug maschine-linux -vv daemon`
 
 - **Pads 1..16**:
   - **PAD mode**: full-dynamics one-shot triggering (velocity + pressure) of the active sound or full kit, white hit flash then the color assigned to the sound.
+  - **PATTERN mode**: select an existing pattern of the focus Group, or create the corresponding slot when the pad is empty. The active Scene is assigned to the selected pattern.
   - **STEP mode**: silent step sequencer (no stray playback when placing/removing steps), active step LEDs + live white playhead cursor.
   - **KEYBOARD mode**: melodic playing in a minor scale C3..D5.
   - **CHORDS mode**: enriched diatonic chords.
 - **4-D encoder**:
   - **Up / Down**: selection of the active sound (with one-shot preview); in Browser mode, scrolling through synthesizer presets.
-  - **Left / Right** or `<` / `>` keys: step-by-step navigation between pattern bars (Bar 1, Bar 2, Bar 3, Bar 4...).
+  - **Left / Right** or `<` / `>` keys: step-by-step navigation between pattern bars (Bar 1, Bar 2, Bar 3, Bar 4...); in PATTERN mode, previous/next pattern.
   - **Shift + Right**: dynamic extension of the pattern to 4 or 8 bars.
   - **Pressure (Push)**: one-shot preview of the active sound (or loading the selected preset in Browser mode) — does not accidentally start loop playback.
   - **Rotation**: fine adjustment according to the active focus (Tempo, Master Volume, Swing).
+- **Pattern editing buttons**: `DUPLICATE` copies the active pattern and inserts the copy after it. `SHIFT + ERASE` clears the active pattern events without deleting the pattern or changing its length.
 - **Color LCD screens (2 × 480×272)**:
   - **Display Buttons 1..4 (Left screen) & PLUGIN button**: tab selection (ARRANGE, MIXER, SAMPLER, BROWSER, and the unified **PLUGIN** page). The physical PLUGIN button opens the SOUND page and a second press closes it.
   - **Display Buttons 5..8 (Right screen)**: direct selection of the displayed/edited bar (BAR 1, BAR 2, BAR 3, BAR 4); with **Shift**, pattern sizing (1, 2, 4, 8 bars).
@@ -57,6 +59,7 @@ Logs: `RUST_LOG=debug maschine-linux -vv daemon`
     - *BROWSER*: knob selects pads and scrolls 808 presets.
     - *ARRANGE*: tempo, swing, volume and global filter.
   - **PLUGIN soft keys**: SOUND page `[1: SND <]`, `[2: SND >]`, `[3: PAGE TB]`, `[4: LISTEN]`, `[5: APPLY]`, `[6: RESET]`, `[7: VOL -]`, `[8: VOL +]`; TB-303 page `[1: SAW/SQR]`, `[2: OCT -]`, `[3: OCT +]`, `[4: SLIDE]`, `[5: CLASSIC]`, `[6: SQUELCH]`, `[7: PAGE SND]`, `[8: DUB]`.
+  - **PATTERN soft keys**: `[1: PAT <]`, `[2: PAT >]`, `[3: + PAT]`, `[4: DUPL]`, `[5: VIDER]`, `[6: SUPPR]`, `[7: 1 MES]`, `[8: 2 MES]`. `SUPPR` is ignored when only one pattern remains in the Group.
   - **Latched workflow menus**: PATTERN, STEP, KEYBOARD, SCENE, EVENTS, MACRO, SETTINGS, and PLUGIN remain active after the first press. Pressing the same button again returns to the default Pad workflow. Only one workflow menu is active at a time.
 - **Groups A..H**: instant selection of the active group, combined with **MUTE** and **SOLO** keys for immediate mute / solo.
 - **Transport**: PLAY, REC, STOP, RESTART, TAP (metronome), ERASE (erase notes by pad).
@@ -75,6 +78,8 @@ maschine-linux daemon --project my_project.json
 ## Integrated GUI (`egui`)
 
 The GUI also starts without a Maschine connected: the engine, mouse/keyboard controls, virtual MIDI and system audio output remain available for development. If an MK3 with `hidraw` is detected at launch, hardware inputs, LEDs and screens activate automatically. Use `--no-hardware` to ignore a connected controller and force standalone mode; hot-plug reconnection is disabled in that mode. The headless daemon deliberately remains strict and requires the controller. A remembered but unavailable audio output (for example the MK3 unplugged) falls back to the system output, unless `--audio-device` was explicitly provided.
+
+The application bar can hide the navigation rail (`F1`), the MK3 mirror (`F2`), and the centre workspace (`F3`). `TOUT` toggles all three panels at once. Closing the window performs an ordered shutdown: the HID loop is joined, the screens receive a final splash and release IF5 without a USB reset, and the LED writer sends an all-off report so the MK3 returns to its default logo and idle pad state.
 
 The native GUI displays in real time:
 

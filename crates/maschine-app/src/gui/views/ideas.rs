@@ -119,100 +119,174 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                     );
                     ui.add_space(6.0);
 
+                    // Affiche au moins 8 slots pour permettre la création d'un
+                    // pattern dans une case vide, jusqu'à 16 (défilement horizontal).
                     let max_cols = snap
                         .project
                         .groups
                         .iter()
-                        .map(|g| g.patterns.len().min(8))
+                        .map(|g| g.patterns.len())
                         .max()
                         .unwrap_or(1)
-                        .max(1);
+                        .clamp(8, 16);
                     let matrix_w = ui.available_width();
-                    let cell_w = ((matrix_w - 92.0) / max_cols as f32 - 4.0).clamp(38.0, 52.0);
+                    let cell_w =
+                        ((matrix_w - 92.0) / max_cols.min(8) as f32 - 4.0).clamp(38.0, 52.0);
 
-                    egui::Grid::new("ideas_matrix")
-                        .spacing(egui::vec2(4.0, 4.0))
+                    egui::ScrollArea::horizontal()
+                        .id_salt("ideas_matrix_scroll")
                         .show(ui, |ui| {
-                            // En-tête des colonnes.
-                            ui.label("");
-                            for col in 0..max_cols {
-                                ui.label(
-                                    egui::RichText::new(format!("P{}", col + 1))
-                                        .monospace()
-                                        .small()
-                                        .color(c.text_dim),
-                                );
-                            }
-                            ui.end_row();
-
-                            for (g, group) in snap.project.groups.iter().enumerate() {
-                                let gname: String = group.name.chars().take(7).collect();
-                                ui.label(
-                                    egui::RichText::new(format!("{} {}", group_char(g), gname))
-                                        .small()
-                                        .color(if g == snap.group_focus as usize {
-                                            c.accent
-                                        } else {
-                                            c.text
-                                        }),
-                                );
-                                for col in 0..max_cols {
-                                    let exists = col < group.patterns.len();
-                                    let assigned = active_scene
-                                        .and_then(|s| snap.project.scenes.get(s))
-                                        .and_then(|sc| sc.patterns.get(g))
-                                        .copied()
-                                        .flatten()
-                                        == Some(col);
-                                    let name = if exists {
-                                        group.patterns[col].name.clone()
-                                    } else {
-                                        "—".to_string()
-                                    };
-                                    let short: String = name.chars().take(6).collect();
-
-                                    let mut btn = egui::Button::new(
-                                        egui::RichText::new(short).monospace().size(10.5).color(
-                                            if assigned {
-                                                egui::Color32::BLACK
-                                            } else {
-                                                c.text_dim
-                                            },
-                                        ),
-                                    )
-                                    .min_size(egui::vec2(cell_w, 26.0))
-                                    .fill(if assigned {
-                                        c.accent_cyan
-                                    } else if exists {
-                                        c.widget_bg
-                                    } else {
-                                        c.surface.gamma_multiply(0.6)
-                                    })
-                                    .stroke(egui::Stroke::new(1.0_f32, c.border));
-                                    if !exists {
-                                        btn = btn.stroke(egui::Stroke::new(
-                                            1.0_f32,
-                                            c.border.gamma_multiply(0.4),
-                                        ));
-                                    }
-                                    let resp = ui.add_enabled(exists, btn);
-                                    if resp.clicked() {
-                                        let _ = app.engine.lock().handle_event(
-                                            EngineEvent::PatternSelect {
-                                                group: g as u8,
-                                                pattern: col,
-                                            },
+                            egui::Grid::new("ideas_matrix")
+                                .spacing(egui::vec2(4.0, 4.0))
+                                .show(ui, |ui| {
+                                    // En-tête des colonnes.
+                                    ui.label("");
+                                    for col in 0..max_cols {
+                                        ui.label(
+                                            egui::RichText::new(format!("P{}", col + 1))
+                                                .monospace()
+                                                .small()
+                                                .color(c.text_dim),
                                         );
                                     }
-                                    if resp.hovered() && exists {
-                                        resp.on_hover_text(format!(
-                                            "{name} — assigner à la scène active"
-                                        ));
+                                    ui.end_row();
+
+                                    for (g, group) in snap.project.groups.iter().enumerate() {
+                                        let gname: String = group.name.chars().take(7).collect();
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{} {}",
+                                                group_char(g),
+                                                gname
+                                            ))
+                                            .small()
+                                            .color(
+                                                if g == snap.group_focus as usize {
+                                                    c.accent
+                                                } else {
+                                                    c.text
+                                                },
+                                            ),
+                                        );
+                                        for col in 0..max_cols {
+                                            let exists = col < group.patterns.len();
+                                            let assigned = active_scene
+                                                .and_then(|s| snap.project.scenes.get(s))
+                                                .and_then(|sc| sc.patterns.get(g))
+                                                .copied()
+                                                .flatten()
+                                                == Some(col);
+                                            let name = if exists {
+                                                group.patterns[col].name.clone()
+                                            } else {
+                                                "—".to_string()
+                                            };
+                                            let short: String = name.chars().take(6).collect();
+
+                                            let mut btn = egui::Button::new(
+                                                egui::RichText::new(short)
+                                                    .monospace()
+                                                    .size(10.5)
+                                                    .color(if assigned {
+                                                        egui::Color32::BLACK
+                                                    } else {
+                                                        c.text_dim
+                                                    }),
+                                            )
+                                            .min_size(egui::vec2(cell_w, 26.0))
+                                            .fill(if assigned {
+                                                c.accent_cyan
+                                            } else if exists {
+                                                c.widget_bg
+                                            } else {
+                                                c.surface.gamma_multiply(0.6)
+                                            })
+                                            .stroke(egui::Stroke::new(1.0_f32, c.border));
+                                            if !exists {
+                                                btn = btn.stroke(egui::Stroke::new(
+                                                    1.0_f32,
+                                                    c.border.gamma_multiply(0.4),
+                                                ));
+                                            }
+                                            let resp = ui.add(btn);
+                                            if resp.clicked() {
+                                                let event = if exists {
+                                                    EngineEvent::PatternSelect {
+                                                        group: g as u8,
+                                                        pattern: col,
+                                                    }
+                                                } else {
+                                                    EngineEvent::CreatePatternAt {
+                                                        group: g as u8,
+                                                        pattern: col,
+                                                    }
+                                                };
+                                                let _ = app.engine.lock().handle_event(event);
+                                            }
+                                            if resp.hovered() {
+                                                let hint = if exists {
+                                                    format!("{name} — assigner à la scène active")
+                                                } else {
+                                                    format!(
+                                                        "Créer le pattern P{} du groupe {}",
+                                                        col + 1,
+                                                        group_char(g)
+                                                    )
+                                                };
+                                                resp.on_hover_text(hint);
+                                            }
+                                        }
+                                        ui.end_row();
                                     }
-                                }
-                                ui.end_row();
-                            }
+                                });
                         });
+
+                    ui.add_space(6.0);
+                    let gf = snap.group_focus as usize;
+                    let active_pattern = snap
+                        .project
+                        .active_pattern_index(gf, active_scene)
+                        .unwrap_or(0);
+                    let count = snap
+                        .project
+                        .groups
+                        .get(gf)
+                        .map(|g| g.patterns.len())
+                        .unwrap_or(0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            egui::RichText::new("PATTERN DU GROUPE FOCUS")
+                                .small()
+                                .strong()
+                                .color(c.text_muted),
+                        );
+                        if chip(ui, "+ PATTERN", false, c.success) {
+                            let _ = app.engine.lock().handle_event(EngineEvent::AddPattern {
+                                group: snap.group_focus,
+                            });
+                        }
+                        if chip(ui, "DUPLIQUER", false, c.accent_cyan) && count > 0 {
+                            let _ = app
+                                .engine
+                                .lock()
+                                .handle_event(EngineEvent::DuplicatePattern {
+                                    group: snap.group_focus,
+                                    pattern: active_pattern,
+                                });
+                        }
+                        if chip(ui, "VIDER", false, c.warning) && count > 0 {
+                            let _ = app.engine.lock().handle_event(EngineEvent::ClearPattern {
+                                group: snap.group_focus,
+                                pattern: active_pattern,
+                            });
+                        }
+                        if chip(ui, "SUPPRIMER", false, c.error) && count > 1 {
+                            let _ = app.engine.lock().handle_event(EngineEvent::DeletePattern {
+                                group: snap.group_focus,
+                                pattern: active_pattern,
+                            });
+                        }
+                    });
                 });
             });
 

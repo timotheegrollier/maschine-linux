@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use crate::project::{BarsBeatsTicks, PatternEvent, Project, Scene, Section, Zone};
+use crate::project::{BarsBeatsTicks, Pattern, PatternEvent, Project, Scene, Section, Zone};
 use crate::sampler::Sampler;
 use crate::sequencer::{Grid, Sequencer};
 use crate::transport::{Transport, TransportState};
@@ -65,6 +65,57 @@ pub enum EngineEvent {
         group: u8,
         /// Pattern idx
         pattern: usize,
+    },
+    /// Crée un pattern vide à la suite du groupe et l'assigne à la scène active.
+    AddPattern {
+        /// Group idx
+        group: u8,
+    },
+    /// Crée (si nécessaire) le pattern d'index donné, puis le sélectionne.
+    /// Utilisé par les pads vides du mode PATTERN : chaque pad correspond à
+    /// un slot de pattern, comme sur Maschine.
+    CreatePatternAt {
+        /// Group idx
+        group: u8,
+        /// Slot de pattern (0..)
+        pattern: usize,
+    },
+    /// Duplique un pattern et insère la copie juste après.
+    DuplicatePattern {
+        /// Group idx
+        group: u8,
+        /// Pattern source
+        pattern: usize,
+    },
+    /// Supprime un pattern (le dernier pattern du groupe est conservé).
+    DeletePattern {
+        /// Group idx
+        group: u8,
+        /// Pattern à supprimer
+        pattern: usize,
+    },
+    /// Efface les événements d'un pattern sans changer sa longueur.
+    ClearPattern {
+        /// Group idx
+        group: u8,
+        /// Pattern à vider
+        pattern: usize,
+    },
+    /// Renomme un pattern.
+    RenamePattern {
+        /// Group idx
+        group: u8,
+        /// Pattern idx
+        pattern: usize,
+        /// Nouveau nom
+        name: String,
+    },
+    /// Sélectionne le pattern précédent/suivant dans le groupe focus.
+    StepPattern {
+        /// Group idx
+        group: u8,
+        /// -1 = précédent, +1 = suivant
+        delta: i32,
     },
     /// Change Left display tab (0..4: Arrange, Mixer, Sampler, Browser, Synth)
     SetLeftTab(u8),
@@ -496,6 +547,92 @@ fn project_mut<'g>(
     guard: &'g mut parking_lot::RwLockWriteGuard<'_, Arc<Project>>,
 ) -> &'g mut Project {
     Arc::make_mut(&mut **guard)
+}
+
+/// Garantit qu'une scène active existe et que son tableau de patterns couvre
+/// tous les groupes. Retourne l'index de la scène active.
+fn ensure_active_scene(project: &mut Project, active_scene: &mut Option<usize>) -> usize {
+    if project.scenes.is_empty() {
+        project
+            .scenes
+            .push(Scene::new("Scene 1", project.groups.len()));
+    }
+    let scene_idx = active_scene
+        .unwrap_or(0)
+        .min(project.scenes.len().saturating_sub(1));
+    *active_scene = Some(scene_idx);
+    let num_groups = project.groups.len();
+    if let Some(scene) = project.scenes.get_mut(scene_idx) {
+        if scene.patterns.len() < num_groups {
+            scene.patterns.resize(num_groups, None);
+        }
+    }
+    scene_idx
+}
+
+/// Assigne un pattern du groupe à la scène active (créée au besoin).
+fn assign_pattern_to_active_scene(
+    project: &mut Project,
+    active_scene: &mut Option<usize>,
+    group: usize,
+    pattern: usize,
+) {
+    let scene_idx = ensure_active_scene(project, active_scene);
+    if let Some(scene) = project.scenes.get_mut(scene_idx) {
+        if let Some(slot) = scene.patterns.get_mut(group) {
+            *slot = Some(pattern);
+        }
+    }
+}
+
+/// Longueur par défaut d'un nouveau pattern : celle du pattern actif, sinon
+/// 2 mesures (valeur historique de la démo).
+fn new_pattern_length(
+    project: &Project,
+    group: usize,
+    active_scene: Option<usize>,
+) -> BarsBeatsTicks {
+    project
+        .active_pattern_index(group, active_scene)
+        .and_then(|pi| project.groups.get(group)?.patterns.get(pi))
+        .map(|p| p.length)
+        .unwrap_or_else(|| BarsBeatsTicks::new(2, 0, 0))
+}
+
+/// Réindexe les références de scènes après insertion d'un pattern.
+fn shift_scene_refs_after_insert(project: &mut Project, group: usize, inserted: usize) {
+    for scene in &mut project.scenes {
+        if let Some(slot) = scene.patterns.get_mut(group) {
+            if let Some(pi) = *slot {
+                if pi >= inserted {
+                    *slot = Some(pi + 1);
+                }
+            }
+        }
+    }
+}
+
+/// Réindexe les références de scènes après suppression d'un pattern. Les
+/// scènes qui utilisaient le pattern supprimé basculent sur le pattern voisin
+/// (jamais hors limites), afin de rester jouables.
+fn shift_scene_refs_after_remove(
+    project: &mut Project,
+    group: usize,
+    removed: usize,
+    new_len: usize,
+) {
+    let fallback = removed.min(new_len.saturating_sub(1));
+    for scene in &mut project.scenes {
+        if let Some(slot) = scene.patterns.get_mut(group) {
+            if let Some(pi) = *slot {
+                if pi == removed {
+                    *slot = Some(fallback);
+                } else if pi > removed {
+                    *slot = Some(pi - 1);
+                }
+            }
+        }
+    }
 }
 
 /// Handle partagé du projet pour l'UI : `read()` O(1) (renvoie un `Arc<Project>`),
@@ -1213,16 +1350,139 @@ impl Engine {
                 }
             }
             EngineEvent::PatternSelect { group, pattern } => {
-                // Select a pattern in the focused group for the active scene
-                if let Some(scene_idx) = self.active_scene {
-                    let mut guard = self.project.write();
-                    let proj = project_mut(&mut guard);
-                    if let Some(scene) = proj.scenes.get_mut(scene_idx) {
-                        if (group as usize) < scene.patterns.len() {
-                            scene.patterns[group as usize] = Some(pattern);
-                        }
-                    }
+                let group_idx = group as usize;
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
+                let valid = proj
+                    .groups
+                    .get(group_idx)
+                    .map(|g| pattern < g.patterns.len())
+                    .unwrap_or(false);
+                if valid {
+                    assign_pattern_to_active_scene(
+                        proj,
+                        &mut self.active_scene,
+                        group_idx,
+                        pattern,
+                    );
                 }
+            }
+            EngineEvent::AddPattern { group } => {
+                let group_idx = group as usize;
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
+                let length = new_pattern_length(proj, group_idx, self.active_scene);
+                if let Some(g) = proj.groups.get_mut(group_idx) {
+                    let idx = g.patterns.len();
+                    g.patterns
+                        .push(Pattern::new(&format!("Pattern {}", idx + 1), length));
+                    assign_pattern_to_active_scene(proj, &mut self.active_scene, group_idx, idx);
+                }
+            }
+            EngineEvent::CreatePatternAt { group, pattern } => {
+                let group_idx = group as usize;
+                let target = pattern.min(63);
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
+                let length = new_pattern_length(proj, group_idx, self.active_scene);
+                if let Some(g) = proj.groups.get_mut(group_idx) {
+                    while g.patterns.len() <= target {
+                        let idx = g.patterns.len();
+                        g.patterns
+                            .push(Pattern::new(&format!("Pattern {}", idx + 1), length));
+                    }
+                    assign_pattern_to_active_scene(proj, &mut self.active_scene, group_idx, target);
+                }
+            }
+            EngineEvent::DuplicatePattern { group, pattern } => {
+                let group_idx = group as usize;
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
+                let Some(g) = proj.groups.get_mut(group_idx) else {
+                    return Ok(());
+                };
+                if g.patterns.is_empty() {
+                    return Ok(());
+                }
+                let src = pattern.min(g.patterns.len() - 1);
+                let insert = src + 1;
+                let mut copy = g.patterns[src].clone();
+                copy.name = format!("{} copy", copy.name);
+                g.patterns.insert(insert, copy);
+                shift_scene_refs_after_insert(proj, group_idx, insert);
+                assign_pattern_to_active_scene(proj, &mut self.active_scene, group_idx, insert);
+                self.selected_bar = 0;
+                self.step_cursor = 0;
+            }
+            EngineEvent::DeletePattern { group, pattern } => {
+                let group_idx = group as usize;
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
+                let Some(g) = proj.groups.get_mut(group_idx) else {
+                    return Ok(());
+                };
+                if g.patterns.len() <= 1 {
+                    return Ok(());
+                }
+                let idx = pattern.min(g.patterns.len() - 1);
+                g.patterns.remove(idx);
+                let new_len = g.patterns.len();
+                shift_scene_refs_after_remove(proj, group_idx, idx, new_len);
+                self.selected_bar = 0;
+                self.step_cursor = 0;
+            }
+            EngineEvent::ClearPattern { group, pattern } => {
+                let group_idx = group as usize;
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
+                if let Some(pat) = proj
+                    .groups
+                    .get_mut(group_idx)
+                    .and_then(|g| g.patterns.get_mut(pattern))
+                {
+                    pat.events.clear();
+                }
+                self.selected_bar = 0;
+                self.step_cursor = 0;
+            }
+            EngineEvent::RenamePattern {
+                group,
+                pattern,
+                name,
+            } => {
+                let group_idx = group as usize;
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
+                if let Some(pat) = proj
+                    .groups
+                    .get_mut(group_idx)
+                    .and_then(|g| g.patterns.get_mut(pattern))
+                {
+                    let trimmed = name.trim();
+                    pat.name = if trimmed.is_empty() {
+                        format!("Pattern {}", pattern + 1)
+                    } else {
+                        trimmed.chars().take(32).collect()
+                    };
+                }
+            }
+            EngineEvent::StepPattern { group, delta } => {
+                let group_idx = group as usize;
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
+                let len = proj
+                    .groups
+                    .get(group_idx)
+                    .map(|g| g.patterns.len())
+                    .unwrap_or(0);
+                if len == 0 {
+                    return Ok(());
+                }
+                let current = proj
+                    .active_pattern_index(group_idx, self.active_scene)
+                    .unwrap_or(0);
+                let next = (current as i32 + delta).rem_euclid(len as i32) as usize;
+                assign_pattern_to_active_scene(proj, &mut self.active_scene, group_idx, next);
             }
             EngineEvent::SetLeftTab(tab) => {
                 self.left_tab = tab.min(4);
@@ -2444,6 +2704,12 @@ impl Engine {
                 "SCN 1", "SCN 2", "SCN 3", "SCN 4", "SCN 5", "SCN 6", "SCN 7", "SCN 8",
             ];
         }
+        if self.pattern_mode {
+            // Mode PATTERN : gestion complète des patterns du groupe focus.
+            return [
+                "PAT <", "PAT >", "+ PAT", "DUPL", "VIDER", "SUPPR", "1 MES", "2 MES",
+            ];
+        }
         if self.controller_mode == 3 && self.left_tab == 0 {
             // Mode STEP : navigation dans la grille + longueur du pattern.
             return [
@@ -2500,6 +2766,38 @@ impl Engine {
             let n_scenes = self.project.read().scenes.len();
             let scene = idx.min(n_scenes.saturating_sub(1));
             return self.handle_event(EngineEvent::Scene(scene));
+        }
+        if self.pattern_mode {
+            let group = self.group_focus;
+            let active = {
+                let proj = self.project.read();
+                proj.active_pattern_index(group as usize, self.active_scene)
+            };
+            return match idx {
+                0 => self.handle_event(EngineEvent::StepPattern { group, delta: -1 }),
+                1 => self.handle_event(EngineEvent::StepPattern { group, delta: 1 }),
+                2 => self.handle_event(EngineEvent::AddPattern { group }),
+                3 => match active {
+                    Some(pattern) => {
+                        self.handle_event(EngineEvent::DuplicatePattern { group, pattern })
+                    }
+                    None => Ok(()),
+                },
+                4 => match active {
+                    Some(pattern) => {
+                        self.handle_event(EngineEvent::ClearPattern { group, pattern })
+                    }
+                    None => Ok(()),
+                },
+                5 => match active {
+                    Some(pattern) => {
+                        self.handle_event(EngineEvent::DeletePattern { group, pattern })
+                    }
+                    None => Ok(()),
+                },
+                6 => self.handle_event(EngineEvent::SetPatternBars(1)),
+                _ => self.handle_event(EngineEvent::SetPatternBars(2)),
+            };
         }
         if self.controller_mode == 3 && self.left_tab == 0 {
             // Mode STEP : PAS <, PAS >, BAR <, BAR > puis longueurs 1/2/4/8.
@@ -3358,6 +3656,220 @@ mod tests {
         // Maintenant NextBar peut aller jusqu'à mesure 3 (0-indexed)
         eng.handle_event(EngineEvent::SelectBar(3)).unwrap();
         assert_eq!(eng.snapshot().selected_bar, 3);
+    }
+
+    #[test]
+    fn pattern_crud_create_duplicate_clear_delete() {
+        let mut eng = Engine::new_demo(48000);
+        let snap = eng.snapshot();
+        let group = snap.group_focus as usize;
+        let initial_len = snap.project.groups[group].patterns.len();
+        assert!(initial_len >= 1);
+
+        // Création : le nouveau pattern est ajouté à la suite et assigné à la
+        // scène active.
+        eng.handle_event(EngineEvent::AddPattern { group: group as u8 })
+            .unwrap();
+        let snap = eng.snapshot();
+        assert_eq!(snap.project.groups[group].patterns.len(), initial_len + 1);
+        let active = snap
+            .project
+            .active_pattern_index(group, snap.active_scene)
+            .unwrap();
+        assert_eq!(active, initial_len);
+        assert_eq!(
+            snap.project.scenes[snap.active_scene.unwrap()].patterns[group],
+            Some(active)
+        );
+
+        // Renommage.
+        eng.handle_event(EngineEvent::RenamePattern {
+            group: group as u8,
+            pattern: active,
+            name: "  Mon pattern  ".to_string(),
+        })
+        .unwrap();
+        let snap = eng.snapshot();
+        assert_eq!(
+            snap.project.groups[group].patterns[active].name,
+            "Mon pattern"
+        );
+
+        // Duplication : copie insérée juste après, sélectionnée.
+        eng.handle_event(EngineEvent::DuplicatePattern {
+            group: group as u8,
+            pattern: active,
+        })
+        .unwrap();
+        let snap = eng.snapshot();
+        let copy = active + 1;
+        assert_eq!(snap.project.groups[group].patterns.len(), initial_len + 2);
+        assert!(snap.project.groups[group].patterns[copy]
+            .name
+            .contains("copy"));
+        assert_eq!(
+            snap.project
+                .active_pattern_index(group, snap.active_scene)
+                .unwrap(),
+            copy
+        );
+
+        // Effacement des événements sans changer la longueur.
+        eng.handle_event(EngineEvent::ClearPattern {
+            group: group as u8,
+            pattern: copy,
+        })
+        .unwrap();
+        let snap = eng.snapshot();
+        assert!(snap.project.groups[group].patterns[copy].events.is_empty());
+
+        // Suppression : les références de scène restent valides.
+        eng.handle_event(EngineEvent::DeletePattern {
+            group: group as u8,
+            pattern: copy,
+        })
+        .unwrap();
+        let snap = eng.snapshot();
+        assert_eq!(snap.project.groups[group].patterns.len(), initial_len + 1);
+        for scene in &snap.project.scenes {
+            if let Some(pi) = scene.patterns[group] {
+                assert!(pi < snap.project.groups[group].patterns.len());
+            }
+        }
+
+        // Le dernier pattern du groupe ne peut pas être supprimé.
+        while eng.snapshot().project.groups[group].patterns.len() > 1 {
+            let active = eng
+                .snapshot()
+                .project
+                .active_pattern_index(group, eng.snapshot().active_scene)
+                .unwrap();
+            eng.handle_event(EngineEvent::DeletePattern {
+                group: group as u8,
+                pattern: active,
+            })
+            .unwrap();
+        }
+        eng.handle_event(EngineEvent::DeletePattern {
+            group: group as u8,
+            pattern: 0,
+        })
+        .unwrap();
+        assert_eq!(eng.snapshot().project.groups[group].patterns.len(), 1);
+    }
+
+    #[test]
+    fn pattern_insert_delete_only_reindexes_the_target_group() {
+        let mut eng = Engine::new_demo(48000);
+        {
+            let mut guard = eng.project.write();
+            let proj = project_mut(&mut guard);
+            // Deuxième groupe avec 3 patterns.
+            let mut group_b = proj.groups[0].clone();
+            group_b.name = "Groupe B".to_string();
+            group_b
+                .patterns
+                .push(Pattern::new("B2", BarsBeatsTicks::new(2, 0, 0)));
+            group_b
+                .patterns
+                .push(Pattern::new("B3", BarsBeatsTicks::new(2, 0, 0)));
+            proj.groups.push(group_b);
+
+            // Scène 0 : A=P1, B=P3. Scène 1 : A=P2, B=P3.
+            proj.scenes[0].patterns = vec![Some(0), Some(2)];
+            let mut scene2 = Scene::new("Scene 2", 2);
+            scene2.patterns = vec![Some(1), Some(2)];
+            proj.scenes.push(scene2);
+        }
+        eng.active_scene = Some(0);
+
+        // Insère une copie de P1 dans le groupe A : seule la référence A de la
+        // scène 1 doit être décalée, la référence du groupe B ne bouge pas.
+        eng.handle_event(EngineEvent::DuplicatePattern {
+            group: 0,
+            pattern: 0,
+        })
+        .unwrap();
+        {
+            let snap = eng.snapshot();
+            // La scène active sélectionne la copie (index 1), l'autre scène
+            // décale sa référence A de 1 vers 2 ; B reste à 2.
+            assert_eq!(snap.project.scenes[0].patterns, vec![Some(1), Some(2)]);
+            assert_eq!(snap.project.scenes[1].patterns, vec![Some(2), Some(2)]);
+            assert_eq!(snap.project.groups[0].patterns.len(), 2);
+        }
+
+        // Supprime la copie : la référence A de la scène 1 revient à P2.
+        eng.handle_event(EngineEvent::DeletePattern {
+            group: 0,
+            pattern: 1,
+        })
+        .unwrap();
+        {
+            let snap = eng.snapshot();
+            assert_eq!(snap.project.scenes[0].patterns, vec![Some(0), Some(2)]);
+            assert_eq!(snap.project.scenes[1].patterns, vec![Some(1), Some(2)]);
+            assert_eq!(snap.project.groups[0].patterns.len(), 1);
+        }
+    }
+
+    #[test]
+    fn pattern_create_at_slot_fills_intermediate_slots_and_selects() {
+        let mut eng = Engine::new_demo(48000);
+        let group = eng.snapshot().group_focus as usize;
+        eng.handle_event(EngineEvent::CreatePatternAt {
+            group: group as u8,
+            pattern: 4,
+        })
+        .unwrap();
+        let snap = eng.snapshot();
+        assert!(snap.project.groups[group].patterns.len() >= 5);
+        assert_eq!(
+            snap.project
+                .active_pattern_index(group, snap.active_scene)
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            snap.project.scenes[snap.active_scene.unwrap()].patterns[group],
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn pattern_step_wraps_and_pattern_soft_keys_are_exposed() {
+        let mut eng = Engine::new_demo(48000);
+        let group = eng.snapshot().group_focus;
+        eng.handle_event(EngineEvent::SetPatternMode(true)).unwrap();
+        assert_eq!(
+            eng.soft_key_labels(),
+            ["PAT <", "PAT >", "+ PAT", "DUPL", "VIDER", "SUPPR", "1 MES", "2 MES"]
+        );
+
+        // Ajoute un pattern : le pattern actif est le dernier. +1 boucle sur 0.
+        eng.handle_event(EngineEvent::AddPattern { group }).unwrap();
+        let len = eng.snapshot().project.groups[group as usize].patterns.len();
+        assert!(len > 1);
+        eng.handle_event(EngineEvent::StepPattern { group, delta: 1 })
+            .unwrap();
+        let snap = eng.snapshot();
+        assert_eq!(
+            snap.project
+                .active_pattern_index(group as usize, snap.active_scene)
+                .unwrap(),
+            0
+        );
+
+        // Soft key 3 = + PAT : crée et sélectionne un pattern.
+        eng.handle_event(EngineEvent::SoftKey(3)).unwrap();
+        let snap = eng.snapshot();
+        assert_eq!(snap.project.groups[group as usize].patterns.len(), len + 1);
+        assert_eq!(
+            snap.project
+                .active_pattern_index(group as usize, snap.active_scene)
+                .unwrap(),
+            len
+        );
     }
 
     #[test]

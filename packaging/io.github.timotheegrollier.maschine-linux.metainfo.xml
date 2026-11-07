@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.8.0" date="2026-11-07">
+      <description>
+        <p>Release 0.8.0 with complete Pattern management, hideable workspace and MK3 panels, and a graceful MK3 shutdown that restores the default logo and turns pad LEDs off.</p>
+      </description>
+    </release>
     <release version="0.7.0" date="2026-11-07">
       <description>
         <p>Release 0.7.0 with latched MK3 navigation, a unified PLUGIN page, simplified TB-303 controls, per-Sound polyphony and choke, a responsive desktop GUI, and a standalone --no-hardware mode.</p>

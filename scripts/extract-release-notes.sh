@@ -4,8 +4,8 @@ set -euo pipefail
 # ==============================================================================
 # extract-release-notes.sh — Extrait la section anglaise du CHANGELOG
 # ==============================================================================
-# Usage: ./scripts/extract-release-notes.sh 0.7.0 > RELEASE_NOTES.md
-#        ./scripts/extract-release-notes.sh v0.7.0
+# Usage: ./scripts/extract-release-notes.sh 0.8.0 > RELEASE_NOTES.md
+#        ./scripts/extract-release-notes.sh v0.8.0
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"

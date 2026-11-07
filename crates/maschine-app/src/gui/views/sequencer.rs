@@ -77,6 +77,10 @@ pub fn render(
                 ui.add_space(6.0);
             }
 
+            // ── Gestionnaire de patterns (création / duplication / édition) ──
+            render_pattern_manager(ui, app, snap, &c, gf, pattern_index);
+            ui.add_space(6.0);
+
             // ── Barre d'outils ─────────────────────────────────────────
             ui.horizontal_wrapped(|ui| {
                 crate::gui::theme::view_header(ui, "SÉQUENCEUR", "");
@@ -395,4 +399,168 @@ pub fn render(
                 },
             );
         });
+}
+
+/// Gestionnaire de patterns : sélection, création, duplication, suppression,
+/// effacement, longueur et renommage. Toujours visible dans le séquenceur,
+/// mis en avant par le mode PATTERN hardware.
+fn render_pattern_manager(
+    ui: &mut egui::Ui,
+    app: &mut GuiApp,
+    snap: &maschine_engine::EngineSnapshot,
+    c: &MachColors,
+    group_idx: usize,
+    active_pattern: usize,
+) {
+    let group = snap.project.groups.get(group_idx);
+    let patterns = group.map(|g| g.patterns.as_slice()).unwrap_or(&[]);
+    let count = patterns.len();
+    let current_name = patterns
+        .get(active_pattern)
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| "—".to_string());
+    let current_bars = patterns
+        .get(active_pattern)
+        .map(|p| p.length.bars.max(1) as usize)
+        .unwrap_or(2);
+    let current_events = patterns
+        .get(active_pattern)
+        .map(|p| p.events.len())
+        .unwrap_or(0);
+
+    // Synchronise le buffer de renommage quand le pattern actif change.
+    let target = Some((snap.group_focus, active_pattern));
+    if app.pattern_name_target != target {
+        app.pattern_name_target = target;
+        app.pattern_name_buf = current_name.clone();
+    }
+
+    crate::gui::theme::card_frame().show(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.colored_label(
+                c.accent,
+                egui::RichText::new("PATTERNS").strong().size(12.5),
+            );
+            ui.label(
+                egui::RichText::new(format!(
+                    "Groupe {} • {count} pattern(s) • actif P{:02} « {} » • {current_bars} mes. • {current_events} événements",
+                    group_label(group_idx),
+                    active_pattern + 1,
+                    current_name,
+                ))
+                .small()
+                .color(c.text_dim),
+            );
+            ui.separator();
+            if chip(ui, "◀ PAT", false, c.accent_cyan) {
+                app.send(EngineEvent::StepPattern {
+                    group: snap.group_focus,
+                    delta: -1,
+                });
+            }
+            if chip(ui, "PAT ▶", false, c.accent_cyan) {
+                app.send(EngineEvent::StepPattern {
+                    group: snap.group_focus,
+                    delta: 1,
+                });
+            }
+            if chip(ui, "+ NOUVEAU", false, c.success) {
+                app.send(EngineEvent::AddPattern {
+                    group: snap.group_focus,
+                });
+            }
+        });
+
+        ui.add_space(4.0);
+        egui::ScrollArea::horizontal()
+            .id_salt("pattern_slots")
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if patterns.is_empty() {
+                        ui.label(
+                            egui::RichText::new("Aucun pattern — clique sur + NOUVEAU.")
+                                .small()
+                                .color(c.text_muted),
+                        );
+                    }
+                    for (idx, pat) in patterns.iter().enumerate().take(64) {
+                        let label = format!("P{:02} {}", idx + 1, short_name(&pat.name, 14));
+                        let active = idx == active_pattern;
+                        if chip(ui, &label, active, c.accent) {
+                            app.send(EngineEvent::PatternSelect {
+                                group: snap.group_focus,
+                                pattern: idx,
+                            });
+                        }
+                    }
+                });
+            });
+
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            if chip(ui, "DUPLIQUER", false, c.accent_cyan) && count > 0 {
+                app.send(EngineEvent::DuplicatePattern {
+                    group: snap.group_focus,
+                    pattern: active_pattern,
+                });
+            }
+            if chip(ui, "VIDER", false, c.warning) && count > 0 {
+                app.send(EngineEvent::ClearPattern {
+                    group: snap.group_focus,
+                    pattern: active_pattern,
+                });
+            }
+            if chip(ui, "SUPPRIMER", false, c.error) && count > 1 {
+                app.send(EngineEvent::DeletePattern {
+                    group: snap.group_focus,
+                    pattern: active_pattern,
+                });
+            }
+            ui.separator();
+            ui.label(
+                egui::RichText::new("LONGUEUR")
+                    .small()
+                    .strong()
+                    .color(c.text_muted),
+            );
+            for bars in [1usize, 2, 4, 8, 16] {
+                if chip(
+                    ui,
+                    &format!("{bars} mes."),
+                    current_bars == bars,
+                    c.accent_cyan,
+                ) {
+                    app.send(EngineEvent::SetPatternBars(bars));
+                }
+            }
+            ui.separator();
+            let edit = ui.add(
+                egui::TextEdit::singleline(&mut app.pattern_name_buf)
+                    .desired_width(150.0)
+                    .hint_text("Nom du pattern"),
+            );
+            let rename = chip(ui, "RENOMMER", false, c.success)
+                || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+            if rename && count > 0 {
+                app.send(EngineEvent::RenamePattern {
+                    group: snap.group_focus,
+                    pattern: active_pattern,
+                    name: app.pattern_name_buf.clone(),
+                });
+            }
+        });
+    });
+}
+
+fn group_label(group_idx: usize) -> char {
+    (b'A' + (group_idx.min(25) as u8)) as char
+}
+
+fn short_name(name: &str, max_chars: usize) -> String {
+    let mut s: String = name.chars().take(max_chars).collect();
+    if name.chars().count() > max_chars {
+        s.push('…');
+    }
+    s
 }

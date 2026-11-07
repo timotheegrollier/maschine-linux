@@ -1543,6 +1543,150 @@ pub fn render_daw_left(snap: &EngineSnapshot) -> DisplayFrame {
     frame
 }
 
+// ── PATTERN (écran gauche, mode PATTERN) ───────────────────────────────
+
+/// Écran gauche — mode PATTERN : les 16 slots du groupe focus.
+#[must_use]
+pub fn render_pattern_left(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
+    let group = focus_group(snap);
+    let count = group.map(|g| g.patterns.len()).unwrap_or(0);
+    let active = snap
+        .project
+        .active_pattern_index(snap.group_focus as usize, snap.active_scene);
+    let scene_lbl = match snap.active_scene {
+        Some(s) => format!("SCENE {}/{}", s + 1, snap.project.scenes.len().max(1)),
+        None => format!("SCENE -/{}", snap.project.scenes.len().max(1)),
+    };
+    header(
+        &mut frame,
+        &p,
+        snap,
+        "PATTERN / SLOTS",
+        &format!(
+            "GRP {} | {} PAT | {}",
+            group_letter(snap.group_focus),
+            count,
+            scene_lbl
+        ),
+    );
+
+    let y = 30usize;
+    for slot in 0..16usize {
+        let col = slot / 8;
+        let row = slot % 8;
+        let x = 8 + col * 236;
+        let cy = y + row * 19;
+        let exists = slot < count;
+        let focused = active == Some(slot);
+        let assigned = snap
+            .active_scene
+            .and_then(|si| snap.project.scenes.get(si))
+            .and_then(|sc| sc.patterns.get(snap.group_focus as usize))
+            .copied()
+            .flatten()
+            == Some(slot);
+        let bg = if focused { p.panel2 } else { p.panel };
+        fill_rect(&mut frame, x, cy, 226, 17, bg);
+        draw_rect_outline(
+            &mut frame,
+            x,
+            cy,
+            226,
+            17,
+            if focused { p.accent } else { p.border },
+        );
+        if focused {
+            fill_rect(&mut frame, x, cy, 3, 17, p.accent);
+        }
+        draw_text(
+            &mut frame,
+            x + 7,
+            cy + 4,
+            &format!("P{:02}", slot + 1),
+            if focused {
+                p.accent
+            } else if exists {
+                p.dim
+            } else {
+                p.muted
+            },
+            bg,
+        );
+
+        if let Some(pat) = group.and_then(|g| g.patterns.get(slot)) {
+            draw_text(
+                &mut frame,
+                x + 38,
+                cy + 4,
+                &trunc(&pat.name, 13),
+                if focused { p.white } else { p.dim },
+                bg,
+            );
+            draw_text(
+                &mut frame,
+                x + 148,
+                cy + 4,
+                &format!("{}m", pat.length.bars.max(1)),
+                p.cyan,
+                bg,
+            );
+            draw_text(
+                &mut frame,
+                x + 178,
+                cy + 4,
+                &format!("{:>3}ev", pat.events.len().min(999)),
+                p.muted,
+                bg,
+            );
+            if assigned {
+                fill_rect(&mut frame, x + 218, cy + 5, 3, 7, p.green);
+            }
+        } else {
+            draw_text(&mut frame, x + 38, cy + 4, "— libre —", p.muted, bg);
+            draw_text(&mut frame, x + 178, cy + 4, "PAD=+", p.muted, bg);
+        }
+    }
+
+    draw_text(
+        &mut frame,
+        8,
+        184,
+        "PAD VIDE = CREER | DUPLICATE = COPIER | SHIFT+ERASE = VIDER",
+        p.muted,
+        p.bg,
+    );
+
+    let gvol = focus_group(snap).map(|g| g.volume_db).unwrap_or(0.0);
+    let gpan = focus_group(snap).map(|g| g.pan).unwrap_or(0.0);
+    let slots = [
+        Some((
+            "1:TEMPO",
+            format!("{:.1}", snap.transport.bpm),
+            ((snap.transport.bpm - 40.0) / 200.0).clamp(0.0, 1.0),
+            p.accent,
+        )),
+        Some((
+            "2:SWING",
+            format!("{:.0}%", snap.project.swing * 100.0),
+            snap.project.swing.clamp(0.0, 1.0),
+            p.accent,
+        )),
+        Some(("3:VOL GRP", fmt_db(gvol), db_norm(gvol), p.cyan)),
+        Some(("4:PAN GRP", fmt_pan(gpan), (gpan + 1.0) * 0.5, p.cyan)),
+    ];
+    encoder_row(&mut frame, &p, &slots);
+
+    let mut footer_active = [false; 8];
+    if let Some(pat) = group.and_then(|g| active.and_then(|i| g.patterns.get(i))) {
+        footer_active[6] = pat.length.bars == 1;
+        footer_active[7] = pat.length.bars == 2;
+    }
+    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &footer_active);
+    frame
+}
+
 // ── PATTERN (écran droit) ──────────────────────────────────────────────
 
 /// Écran droit — vue PATTERN : grille 16 Sons x 16 pas de la mesure choisie.
@@ -1695,11 +1839,19 @@ pub fn render_daw_right(snap: &EngineSnapshot) -> DisplayFrame {
     encoder_row(&mut frame, &p, &slots);
 
     let mut active = [false; 8];
-    for (i, a) in active.iter_mut().take(4).enumerate() {
-        *a = i == snap.selected_bar.min(3);
-    }
-    for (i, v) in [1usize, 2, 4, 8].iter().enumerate() {
-        active[4 + i] = *v == snap.pattern_bars;
+    if snap.pattern_mode {
+        // En mode PATTERN, les soft keys 7/8 règlent la longueur à 1/2 mesures.
+        if let Some(pat) = pat {
+            active[6] = pat.length.bars == 1;
+            active[7] = pat.length.bars == 2;
+        }
+    } else {
+        for (i, a) in active.iter_mut().take(4).enumerate() {
+            *a = i == snap.selected_bar.min(3);
+        }
+        for (i, v) in [1usize, 2, 4, 8].iter().enumerate() {
+            active[4 + i] = *v == snap.pattern_bars;
+        }
     }
     footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
     frame
@@ -4037,6 +4189,8 @@ pub fn render_screens(snap: &EngineSnapshot) -> (DisplayFrame, DisplayFrame) {
         render_arranger_left(snap)
     } else if snap.scene_mode && snap.left_tab == 0 {
         render_scenes_left(snap)
+    } else if snap.pattern_mode && snap.left_tab == 0 {
+        render_pattern_left(snap)
     } else {
         match snap.left_tab {
             1 => render_mixer_left(snap),
@@ -4076,6 +4230,41 @@ pub fn render_screens(snap: &EngineSnapshot) -> (DisplayFrame, DisplayFrame) {
         }
     };
     (left, right)
+}
+
+/// Écrans de fermeture : splash neutre « MASCHINE MK3 LINUX » envoyé avant
+/// de libérer l'interface USB. Si le firmware réaffiche son logo au release,
+/// il remplace ce splash ; sinon les écrans ne restent jamais figés sur l'UI.
+#[must_use]
+pub fn render_shutdown_screens() -> (DisplayFrame, DisplayFrame) {
+    let p = Pal::new();
+    let make = |id| {
+        let mut frame = DisplayFrame::solid(id, p.bg);
+        // Liseré supérieur et inférieur, sobre.
+        fill_rect(&mut frame, 0, 0, SCR_W, 3, p.accent);
+        fill_rect(&mut frame, 0, SCR_H - 3, SCR_W, 3, p.accent);
+
+        let title = "MASCHINE";
+        let scale = 4usize;
+        let tx = (SCR_W - title.len() * 8 * scale) / 2;
+        draw_text_scaled(&mut frame, tx, 82, title, scale, p.white, p.bg);
+
+        fill_rect(&mut frame, 160, 132, 160, 2, p.accent);
+        let mk3 = "MK3";
+        let mk3_scale = 3usize;
+        let mx = (SCR_W - mk3.len() * 8 * mk3_scale) / 2;
+        draw_text_scaled(&mut frame, mx, 148, mk3, mk3_scale, p.cyan, p.bg);
+
+        let sub = "LINUX";
+        let sx = (SCR_W - sub.len() * 8 * 2) / 2;
+        draw_text_scaled(&mut frame, sx, 190, sub, 2, p.dim, p.bg);
+
+        let foot = "A BIENTOT";
+        let fx = (SCR_W - foot.len() * 8) / 2;
+        draw_text(&mut frame, fx, 228, foot, p.muted, p.bg);
+        frame
+    };
+    (make(DisplayId::Left), make(DisplayId::Right))
 }
 
 #[cfg(test)]
@@ -4148,6 +4337,30 @@ mod tests {
         let (l, r) = render_screens(&snap);
         check_pair(&l);
         check_pair(&r);
+    }
+
+    #[test]
+    fn pattern_mode_uses_slot_screen_and_shutdown_splash_is_clean() {
+        let eng = Engine::new_demo(48000);
+        let mut snap = eng.snapshot();
+        snap.pattern_mode = true;
+        snap.left_tab = 0;
+        snap.right_tab = 0;
+        snap.controller_mode = 0;
+        let (left, right) = render_screens(&snap);
+        check_pair(&left);
+        check_pair(&right);
+        assert_eq!(left.pixels, render_pattern_left(&snap).pixels);
+
+        let (left, right) = render_shutdown_screens();
+        check_pair(&left);
+        check_pair(&right);
+        // Le splash doit différer du fond uni (titre MASCHINE + liserés).
+        assert_ne!(
+            left.pixels,
+            DisplayFrame::solid(DisplayId::Left, Pal::new().bg).pixels
+        );
+        assert_eq!(left.pixels.len(), right.pixels.len());
     }
 
     #[test]

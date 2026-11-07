@@ -28,6 +28,17 @@ impl LedWriterHandle {
     }
 }
 
+impl Drop for LedWriterHandle {
+    fn drop(&mut self) {
+        // Filet de sécurité : tout arrêt (même par drop) doit envoyer le
+        // rapport « tout éteint » et rendre la MK3 à son mode par défaut.
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(j) = self.join.take() {
+            let _ = j.join();
+        }
+    }
+}
+
 /// Démarre le writer LEDs. `hidraw_path` est typiquement `/dev/hidraw3`.
 pub fn spawn_led_writer(
     hidraw_path: PathBuf,

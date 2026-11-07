@@ -38,6 +38,10 @@ pub(crate) fn packet_tail(px_rest: usize) -> Vec<u8> {
 pub struct BulkHandle {
     handle: DeviceHandle<Context>,
     iface: u8,
+    /// Interface déjà libérée proprement pour un arrêt d'application : le
+    /// `Drop` ne doit alors surtout pas resetter le device (le firmware MK3
+    /// réaffiche son logo dès que IF5 est rendue).
+    released_for_shutdown: bool,
 }
 
 #[cfg(feature = "usb")]
@@ -63,7 +67,11 @@ impl BulkHandle {
                 handle
                     .claim_interface(iface)
                     .map_err(|e| HardwareError::Usb(format!("claim IF5: {e}")))?;
-                return Ok(Self { handle, iface });
+                return Ok(Self {
+                    handle,
+                    iface,
+                    released_for_shutdown: false,
+                });
             }
         }
         Err(HardwareError::NotFound(
@@ -171,6 +179,18 @@ impl BulkHandle {
         let _ = self.handle.clear_halt(0x04);
     }
 
+    /// Libère proprement l'interface pour l'arrêt de l'application.
+    ///
+    /// Contrairement au `Drop` historique, on ne reset **pas** le device : la
+    /// MK3 réaffiche son logo par défaut dès que l'interface écrans est rendue,
+    /// et un reset USB peut laisser les écrans figés ou perturber le flux audio.
+    pub fn release_for_shutdown(&mut self) {
+        let _ = self.handle.release_interface(self.iface);
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        let _ = self.handle.attach_kernel_driver(self.iface);
+        self.released_for_shutdown = true;
+    }
+
     /// Ré-acquiert l'interface IF5 sans reset USB complet (récupération après
     /// plusieurs écritures en échec).
     pub fn reacquire(&mut self) -> Result<()> {
@@ -179,6 +199,7 @@ impl BulkHandle {
         self.handle
             .claim_interface(self.iface)
             .map_err(|e| HardwareError::Usb(format!("re-claim IF5: {e}")))?;
+        self.released_for_shutdown = false;
         self.clear_stall();
         Ok(())
     }
@@ -187,6 +208,10 @@ impl BulkHandle {
 #[cfg(feature = "usb")]
 impl Drop for BulkHandle {
     fn drop(&mut self) {
+        if self.released_for_shutdown {
+            // Arrêt propre : IF5 déjà rendue au firmware, ne jamais resetter.
+            return;
+        }
         let _ = self.handle.release_interface(self.iface);
         std::thread::sleep(std::time::Duration::from_millis(100));
         let _ = self.handle.reset();
@@ -216,6 +241,9 @@ impl BulkHandle {
 
     /// Efface un halt — stub.
     pub fn clear_stall(&mut self) {}
+
+    /// Libère proprement l'interface pour l'arrêt de l'application.
+    pub fn release_for_shutdown(&mut self) {}
 
     /// Ré-acquiert — stub.
     pub fn reacquire(&mut self) -> Result<()> {

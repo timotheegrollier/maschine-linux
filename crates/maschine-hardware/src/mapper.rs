@@ -1143,8 +1143,8 @@ impl HardwareMapper {
                             } else {
                                 self.clear_menu_modes(&mut actions);
                                 self.select_left_tab(4, &mut actions);
-                                self.plugin_page = 0;
-                                actions.push(MapperAction::SetPluginPage(0));
+                                // Le moteur choisit la page selon le Sound actif
+                                // (TB-303 si le pad sélectionné est un synthé, sinon SOUND).
                                 actions.push(MapperAction::NavigateView(nav::PLUGIN));
                             }
                         }
@@ -2619,7 +2619,7 @@ mod tests {
         let on = press_button(&mut m, maschine_proto::ButtonId::Plugin);
         assert_eq!(m.left_tab, 4);
         assert!(on.contains(&MapperAction::SetLeftTab(4)));
-        assert!(on.contains(&MapperAction::SetPluginPage(0)));
+        // La page (SOUND/TB-303) est choisie par le moteur selon le Sound actif.
         assert!(on.contains(&MapperAction::NavigateView(nav::PLUGIN)));
 
         let off = press_button(&mut m, maschine_proto::ButtonId::Plugin);

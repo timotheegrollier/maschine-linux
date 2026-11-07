@@ -1211,7 +1211,7 @@ impl Engine {
                     return Ok(());
                 }
                 if pressed {
-                    // trigger sampler pour le Sound du Group focus
+                    // trigger sampler ou TB-303 pour le Sound du Group focus
                     let sound = sampler_sound_id(self.group_focus, pad);
                     let note = 36 + pad;
                     self.note_pad_activity(pad, velocity);
@@ -1221,16 +1221,14 @@ impl Engine {
                         .get(self.group_focus as usize)
                         .map(|g| (10.0f32.powf(g.volume_db / 20.0), g.pan))
                         .unwrap_or((1.0, 0.0));
-                    let is_synth_sound = guard
+                    let snd_ref = guard
                         .groups
                         .get(self.group_focus as usize)
-                        .and_then(|g| g.sounds.get(pad as usize).and_then(|s| s.as_ref()))
-                        .map(|s| s.synth.is_some())
-                        .unwrap_or(false);
-                    let (snd_gain, snd_pan, vparams) = guard
-                        .groups
-                        .get(self.group_focus as usize)
-                        .and_then(|g| g.sounds.get(pad as usize).and_then(|s| s.as_ref()))
+                        .and_then(|g| g.sounds.get(pad as usize))
+                        .and_then(|s| s.as_ref());
+                    let synth_params = snd_ref.and_then(|s| s.synth.clone());
+                    let is_synth_sound = synth_params.is_some();
+                    let (snd_gain, snd_pan, vparams) = snd_ref
                         .map(|s| {
                             let filter_off = s.filter.kind == crate::project::FilterKind::Off;
                             (
@@ -1252,7 +1250,13 @@ impl Engine {
                         })
                         .unwrap_or((1.0, 0.0, crate::sampler::VoiceParams::default()));
                     drop(guard);
-                    if is_synth_sound || self.left_tab == 4 {
+                    if is_synth_sound {
+                        if let Some(p) = synth_params {
+                            self.acid_synth.params = p;
+                        }
+                        self.acid_synth.note_on(note, velocity);
+                    } else if self.left_tab == 4 && self.plugin_page == 1 {
+                        // Pré-écoute TB explicite sur la page TB.
                         self.acid_synth.note_on(note, velocity);
                     } else if let Some(idx) = self.sampler.note_on(sound, note, velocity, note) {
                         self.sampler.set_voice_gain(idx, group_gain * snd_gain);
@@ -1289,6 +1293,10 @@ impl Engine {
             }
             EngineEvent::GroupFocus(g) => {
                 self.group_focus = g.min(7);
+                self.sync_acid_from_active_sound();
+                if self.left_tab == 4 {
+                    self.plugin_page = if self.focus_sound_has_synth() { 1 } else { 0 };
+                }
             }
             EngineEvent::Scene(s) => {
                 let len = self.project.read().scenes.len();
@@ -1487,9 +1495,12 @@ impl Engine {
             EngineEvent::SetLeftTab(tab) => {
                 self.left_tab = tab.min(4);
                 // Une vue principale choisit son écran droit contextuel
-                // (SAMPLER, MIXER, BROWSER, ACID SYNTH, PATTERN/STEP). Un ancien overlay
+                // (SAMPLER, MIXER, BROWSER, PLUGIN, PATTERN/STEP). Un ancien overlay
                 // EVENTS/MACRO/SETTINGS ne doit pas masquer cette transition.
                 self.right_tab = 0;
+                if self.left_tab == 4 {
+                    self.sync_plugin_for_active_sound();
+                }
                 if self.left_tab != 0 {
                     self.song_mode = false;
                 }
@@ -1506,9 +1517,16 @@ impl Engine {
             }
             EngineEvent::SetPluginPage(page) => {
                 self.plugin_page = page.min(1);
+                if self.plugin_page == 1 {
+                    self.sync_acid_from_active_sound();
+                }
             }
             EngineEvent::SelectSound(snd) => {
                 self.active_sound = snd.min(15);
+                self.sync_acid_from_active_sound();
+                if self.left_tab == 4 {
+                    self.plugin_page = if self.focus_sound_has_synth() { 1 } else { 0 };
+                }
             }
             EngineEvent::SoundVolume {
                 group,
@@ -2190,71 +2208,104 @@ impl Engine {
                 let base = self.acid_synth.params.cutoff_hz.max(20.0);
                 let factor = 2.0f32.powf(delta * 0.05);
                 self.acid_synth.params.cutoff_hz = (base * factor).clamp(20.0, 18000.0);
+                self.persist_acid_to_active_sound();
             }
             EngineEvent::AcidResoDelta(delta) => {
                 let cur = self.acid_synth.params.resonance;
                 self.acid_synth.params.resonance = (cur + delta * 0.02).clamp(0.0, 0.985);
+                self.persist_acid_to_active_sound();
             }
             EngineEvent::AcidEnvModDelta(delta) => {
                 let cur = self.acid_synth.params.env_mod;
                 self.acid_synth.params.env_mod = (cur + delta * 0.02).clamp(0.0, 1.0);
+                self.persist_acid_to_active_sound();
             }
             EngineEvent::AcidDecayDelta(delta) => {
                 let cur = self.acid_synth.params.decay_ms;
                 let factor = 2.0f32.powf(delta * 0.05);
                 self.acid_synth.params.decay_ms = (cur * factor).clamp(20.0, 3000.0);
+                self.persist_acid_to_active_sound();
             }
             EngineEvent::AcidAccentDelta(delta) => {
                 let cur = self.acid_synth.params.accent;
                 self.acid_synth.params.accent = (cur + delta * 0.02).clamp(0.0, 1.0);
+                self.persist_acid_to_active_sound();
             }
             EngineEvent::AcidSlideDelta(delta) => {
                 let cur = self.acid_synth.params.slide_time_ms;
                 self.acid_synth.params.slide_time_ms = (cur + delta * 2.0).clamp(0.0, 250.0);
+                self.persist_acid_to_active_sound();
             }
             EngineEvent::AcidDriveDelta(delta) => {
                 let cur = self.acid_synth.params.drive;
                 self.acid_synth.params.drive = (cur + delta * 0.02).clamp(0.0, 1.0);
+                self.persist_acid_to_active_sound();
             }
             EngineEvent::AcidDriveToneDelta(delta) => {
                 let cur = self.acid_synth.params.drive_tone.max(200.0);
                 let factor = 2.0f32.powf(delta * 0.05);
                 self.acid_synth.params.drive_tone = (cur * factor).clamp(500.0, 16000.0);
+                self.persist_acid_to_active_sound();
             }
             EngineEvent::AcidDriveMixDelta(delta) => {
                 let cur = self.acid_synth.params.drive_mix;
                 self.acid_synth.params.drive_mix = (cur + delta * 0.02).clamp(0.0, 1.0);
+                self.persist_acid_to_active_sound();
             }
             EngineEvent::AcidDelayTimeDelta(delta) => {
                 let cur = self.acid_synth.params.delay_time_ms;
                 self.acid_synth.params.delay_time_ms = (cur + delta * 5.0).clamp(20.0, 1000.0);
+                self.persist_acid_to_active_sound();
             }
             EngineEvent::AcidDelayFeedbackDelta(delta) => {
                 let cur = self.acid_synth.params.delay_feedback;
                 self.acid_synth.params.delay_feedback = (cur + delta * 0.02).clamp(0.0, 0.95);
+                self.persist_acid_to_active_sound();
             }
             EngineEvent::AcidDelayMixDelta(delta) => {
                 let cur = self.acid_synth.params.delay_mix;
                 self.acid_synth.params.delay_mix = (cur + delta * 0.02).clamp(0.0, 1.0);
+                self.persist_acid_to_active_sound();
             }
             EngineEvent::AcidWaveformToggle => {
                 self.acid_synth.params.waveform = match self.acid_synth.params.waveform {
                     crate::acid_synth::AcidWaveform::Saw => crate::acid_synth::AcidWaveform::Square,
                     crate::acid_synth::AcidWaveform::Square => crate::acid_synth::AcidWaveform::Saw,
                 };
+                self.persist_acid_to_active_sound();
             }
             EngineEvent::AcidOctaveDelta(d) => {
                 self.acid_synth.params.octave = (self.acid_synth.params.octave + d).clamp(-2, 2);
+                self.persist_acid_to_active_sound();
             }
-            EngineEvent::AcidSelectPreset(idx) => match idx {
-                0 => self.acid_synth.params = crate::acid_synth::AcidParams::preset_classic_acid(),
-                1 => self.acid_synth.params = crate::acid_synth::AcidParams::preset_squelch_lead(),
-                2 => self.acid_synth.params = crate::acid_synth::AcidParams::preset_distorted(),
-                3 => self.acid_synth.params = crate::acid_synth::AcidParams::preset_dub_echo(),
-                _ => {}
-            },
+            EngineEvent::AcidSelectPreset(idx) => {
+                match idx {
+                    0 => {
+                        self.acid_synth.params =
+                            crate::acid_synth::AcidParams::preset_classic_acid()
+                    }
+                    1 => {
+                        self.acid_synth.params =
+                            crate::acid_synth::AcidParams::preset_squelch_lead()
+                    }
+                    2 => self.acid_synth.params = crate::acid_synth::AcidParams::preset_distorted(),
+                    3 => self.acid_synth.params = crate::acid_synth::AcidParams::preset_dub_echo(),
+                    _ => {}
+                }
+                if idx <= 3 {
+                    // En page TB, appliquer le preset au Sound actif (créé synthé si besoin).
+                    if self.left_tab == 4 && self.plugin_page == 1 {
+                        self.ensure_active_sound_synth();
+                    }
+                    self.persist_acid_to_active_sound();
+                }
+            }
             EngineEvent::AcidSetParams(p) => {
                 self.acid_synth.params = p;
+                if self.left_tab == 4 && self.plugin_page == 1 {
+                    self.ensure_active_sound_synth();
+                }
+                self.persist_acid_to_active_sound();
             }
         }
         Ok(())
@@ -2976,6 +3027,82 @@ impl Engine {
             .unwrap_or(32)
     }
 
+    /// Paramètres TB-303 du Sound actif, si ce Sound est un synthé.
+    fn focus_sound_synth_params(&self) -> Option<crate::acid_synth::AcidParams> {
+        let proj = self.project.read();
+        proj.groups
+            .get(self.group_focus as usize)
+            .and_then(|g| g.sounds.get(self.active_sound as usize))
+            .and_then(|s| s.as_ref())
+            .and_then(|s| s.synth.clone())
+    }
+
+    /// Le Sound actif est-il un synthétiseur TB-303 ?
+    fn focus_sound_has_synth(&self) -> bool {
+        self.focus_sound_synth_params().is_some()
+    }
+
+    /// Charge les paramètres TB-303 du Sound actif dans le synthé global
+    /// (édition, pré-écoute et écrans).
+    fn sync_acid_from_active_sound(&mut self) {
+        if let Some(params) = self.focus_sound_synth_params() {
+            self.acid_synth.params = params;
+        }
+    }
+
+    /// Garantit que le Sound actif possède un slot synthé TB-303 (utile quand
+    /// l'utilisateur applique un preset TB sur un pad sampler depuis la page PLUGIN).
+    fn ensure_active_sound_synth(&mut self) {
+        let params = self.acid_synth.params.clone();
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
+        if let Some(g) = proj.groups.get_mut(self.group_focus as usize) {
+            let slot = g
+                .sounds
+                .get_mut(self.active_sound as usize)
+                .and_then(|s| s.as_mut());
+            if slot.is_none() {
+                let mut s =
+                    crate::project::Sound::new(&format!("TB {}", self.active_sound + 1), 100);
+                s.synth = Some(params);
+                if let Some(entry) = g.sounds.get_mut(self.active_sound as usize) {
+                    *entry = Some(s);
+                }
+            } else if let Some(sound) = slot {
+                if sound.synth.is_none() {
+                    sound.synth = Some(params);
+                }
+            }
+        }
+    }
+
+    /// Persiste les paramètres TB-303 globaux dans le Sound actif lorsqu'il
+    /// s'agit d'un synthé, afin que les éditions suivent le pad sélectionné.
+    fn persist_acid_to_active_sound(&mut self) {
+        if !self.focus_sound_has_synth() {
+            return;
+        }
+        let params = self.acid_synth.params.clone();
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
+        if let Some(sound) = proj
+            .groups
+            .get_mut(self.group_focus as usize)
+            .and_then(|g| g.sounds.get_mut(self.active_sound as usize))
+            .and_then(|s| s.as_mut())
+        {
+            if sound.synth.is_some() {
+                sound.synth = Some(params);
+            }
+        }
+    }
+
+    /// Synchronise la page PLUGIN et les paramètres TB avec le Sound actif.
+    fn sync_plugin_for_active_sound(&mut self) {
+        self.plugin_page = if self.focus_sound_has_synth() { 1 } else { 0 };
+        self.sync_acid_from_active_sound();
+    }
+
     /// Exécute `f` sur le pattern actif du groupe focus (scène active).
     fn with_active_pattern<F: FnOnce(&mut crate::project::Pattern)>(&mut self, f: F) -> bool {
         let group_idx = self.group_focus as usize;
@@ -3240,6 +3367,61 @@ mod tests {
         assert_eq!(snap.left_tab, 2);
         assert_eq!(snap.right_tab, 0);
         assert!(!snap.song_mode);
+    }
+
+    #[test]
+    fn plugin_follows_selected_sound_and_persists_tb_edits() {
+        let mut eng = Engine::new_demo(48000);
+        // Un Sound sampler ouvre la page SOUND.
+        eng.handle_event(EngineEvent::SelectSound(0)).unwrap();
+        eng.handle_event(EngineEvent::SetLeftTab(4)).unwrap();
+        assert_eq!(eng.snapshot().plugin_page, 0);
+
+        // Sur la page TB, un preset rend le Sound actif synthé et persiste.
+        eng.handle_event(EngineEvent::SetPluginPage(1)).unwrap();
+        eng.handle_event(EngineEvent::AcidSelectPreset(1)).unwrap();
+        {
+            let snap = eng.snapshot();
+            assert_eq!(snap.plugin_page, 1);
+            let sound = snap.project.groups[snap.group_focus as usize].sounds[0]
+                .as_ref()
+                .unwrap();
+            assert!(sound.synth.is_some());
+            let cutoff = sound.synth.as_ref().unwrap().cutoff_hz;
+            assert!((cutoff - snap.acid_params.cutoff_hz).abs() < 0.01);
+        }
+
+        // L'édition d'un paramètre TB est persistée dans le Sound sélectionné.
+        eng.handle_event(EngineEvent::AcidCutoffDelta(10.0))
+            .unwrap();
+        let cutoff_after = {
+            let snap = eng.snapshot();
+            snap.project.groups[snap.group_focus as usize].sounds[0]
+                .as_ref()
+                .unwrap()
+                .synth
+                .as_ref()
+                .unwrap()
+                .cutoff_hz
+        };
+
+        // Changer de pad en vue PLUGIN suit le type du Sound.
+        eng.handle_event(EngineEvent::SelectSound(1)).unwrap();
+        assert_eq!(eng.snapshot().plugin_page, 0);
+
+        // Revenir sur le pad TB restaure sa page et ses paramètres.
+        eng.handle_event(EngineEvent::SelectSound(0)).unwrap();
+        let snap = eng.snapshot();
+        assert_eq!(snap.plugin_page, 1);
+        let restored = snap.project.groups[snap.group_focus as usize].sounds[0]
+            .as_ref()
+            .unwrap()
+            .synth
+            .as_ref()
+            .unwrap()
+            .cutoff_hz;
+        assert!((restored - cutoff_after).abs() < 0.01);
+        assert!((snap.acid_params.cutoff_hz - cutoff_after).abs() < 0.01);
     }
 
     #[test]

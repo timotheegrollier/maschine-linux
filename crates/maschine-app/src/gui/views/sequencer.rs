@@ -58,9 +58,28 @@ pub fn render(
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            if snap.pattern_mode {
+                crate::gui::theme::mode_banner(
+                    ui,
+                    "MODE PATTERN ACTIF — les 16 pads sélectionnent les patterns du groupe. \
+                     Appuie à nouveau sur PATTERN pour revenir au comportement par défaut.",
+                    c.accent,
+                );
+                ui.add_space(6.0);
+            }
+            if snap.controller_mode == 3 {
+                crate::gui::theme::mode_banner(
+                    ui,
+                    "MODE STEP ACTIF — les pads écrivent les pas du Sound actif. \
+                     Appuie à nouveau sur STEP pour revenir au mode PAD.",
+                    c.warning,
+                );
+                ui.add_space(6.0);
+            }
+
             // ── Barre d'outils ─────────────────────────────────────────
-            ui.horizontal(|ui| {
-                crate::gui::theme::view_header(ui, "🎹 SÉQUENCEUR", "");
+            ui.horizontal_wrapped(|ui| {
+                crate::gui::theme::view_header(ui, "SÉQUENCEUR", "");
                 ui.add_space(10.0);
 
                 let mut bar_sel = selected_bar;
@@ -110,23 +129,23 @@ pub fn render(
             ui.add_space(6.0);
 
             // ── Actions musicales ──────────────────────────────────────
-            ui.horizontal(|ui| {
-                if mach_button(ui, "🥁 4-on-Floor", false).clicked {
+            ui.horizontal_wrapped(|ui| {
+                if mach_button(ui, "4-ON-FLOOR", false).clicked {
                     app.fill_four_on_the_floor(0, selected_bar);
                 }
-                if mach_button(ui, "🎩 8ths Hats", false).clicked {
+                if mach_button(ui, "8ths Hats", false).clicked {
                     app.fill_eighths(2, selected_bar);
                 }
-                if mach_button(ui, "✨ Humanize", false).clicked {
+                if mach_button(ui, "Humanize", false).clicked {
                     let _ = app.engine.lock().handle_event(EngineEvent::Variation);
                 }
-                if mach_button(ui, "📐 Quantize", false).clicked {
+                if mach_button(ui, "QUANTIZE", false).clicked {
                     let _ = app.engine.lock().handle_event(EngineEvent::QuantizeActive);
                 }
-                if chip(ui, "🗑 Vider la mesure", false, c.error) {
+                if chip(ui, "VIDER LA MESURE", false, c.error) {
                     app.clear_bar(selected_bar);
                 }
-                if chip(ui, "♻ Reset 808", false, c.text_dim) {
+                if chip(ui, "Reset 808", false, c.text_dim) {
                     app.reset_demo_groove();
                 }
             });
@@ -135,10 +154,11 @@ pub fn render(
 
             // ── Grille ────────────────────────────────────────────────
             crate::gui::theme::card_frame().show(ui, |ui| {
-                let row_label_w = 172.0;
-                let avail = ui.available_width() - row_label_w - 8.0;
-                let cell_w = (avail / 16.0).clamp(20.0, 42.0);
-                let cell_h = 21.0;
+                let full_w = ui.available_width();
+                let row_label_w = (full_w * 0.24).clamp(112.0, 172.0);
+                let avail = (full_w - row_label_w - 8.0).max(16.0 * 14.0);
+                let cell_w = (avail / 16.0).clamp(14.0, 42.0);
+                let cell_h = if full_w < 560.0 { 19.0 } else { 21.0 };
 
                 // Numéros de pas + repères de temps.
                 ui.horizontal(|ui| {
@@ -235,6 +255,107 @@ pub fn render(
                 }
             });
 
+            // ── Éditeur du pas courant (mode STEP) ────────────────────
+            if snap.controller_mode == 3 {
+                ui.add_space(8.0);
+                let active = snap.active_sound;
+                let step_in_bar = snap.step_cursor % 16;
+                let tick = (selected_bar as u32 * 3840) + (step_in_bar as u32 * 240);
+                let current = events
+                    .iter()
+                    .find(|e| e.pad == active && e.tick >= tick && e.tick < tick + 240);
+                crate::gui::theme::card_frame().show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "ÉDITION STEP — pas {:02} • Sound {:02}",
+                                snap.step_cursor + 1,
+                                active + 1
+                            ))
+                            .strong()
+                            .small()
+                            .color(c.warning),
+                        );
+                        if let Some(ev) = current {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Vél {} • Pitch {} • Longueur {} ticks",
+                                    ev.velocity, ev.pitch, ev.length_ticks
+                                ))
+                                .small()
+                                .color(c.text_dim),
+                            );
+                        } else {
+                            ui.label(egui::RichText::new("Pas vide").small().color(c.text_muted));
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if chip(ui, "◀ PAS", false, c.text_dim) {
+                            let _ = app.engine.lock().handle_event(EngineEvent::StepScroll(-1));
+                        }
+                        if chip(ui, "PAS ▶", false, c.text_dim) {
+                            let _ = app.engine.lock().handle_event(EngineEvent::StepScroll(1));
+                        }
+                        if chip(ui, "◀ BAR", false, c.text_dim) {
+                            let _ = app.engine.lock().handle_event(EngineEvent::StepScroll(-16));
+                        }
+                        if chip(ui, "BAR ▶", false, c.text_dim) {
+                            let _ = app.engine.lock().handle_event(EngineEvent::StepScroll(16));
+                        }
+                        ui.separator();
+                        if chip(ui, "VÉL −", false, c.accent_cyan) {
+                            let _ = app
+                                .engine
+                                .lock()
+                                .handle_event(EngineEvent::StepVelocityDelta(-5));
+                        }
+                        if chip(ui, "VÉL +", false, c.accent_cyan) {
+                            let _ = app
+                                .engine
+                                .lock()
+                                .handle_event(EngineEvent::StepVelocityDelta(5));
+                        }
+                        if chip(ui, "PITCH −", false, c.accent) {
+                            let _ = app
+                                .engine
+                                .lock()
+                                .handle_event(EngineEvent::StepPitchDelta(-1));
+                        }
+                        if chip(ui, "PITCH +", false, c.accent) {
+                            let _ = app
+                                .engine
+                                .lock()
+                                .handle_event(EngineEvent::StepPitchDelta(1));
+                        }
+                        if chip(ui, "LONG −", false, c.success) {
+                            let _ = app
+                                .engine
+                                .lock()
+                                .handle_event(EngineEvent::StepLengthDelta(-1));
+                        }
+                        if chip(ui, "LONG +", false, c.success) {
+                            let _ = app
+                                .engine
+                                .lock()
+                                .handle_event(EngineEvent::StepLengthDelta(1));
+                        }
+                        if chip(
+                            ui,
+                            if current.is_some() {
+                                "SUPPRIMER LE PAS"
+                            } else {
+                                "AJOUTER LE PAS"
+                            },
+                            current.is_some(),
+                            c.error,
+                        ) {
+                            app.toggle_step(active, tick);
+                        }
+                    });
+                });
+            }
+
             ui.add_space(10.0);
 
             // ── Infos sound actif ──────────────────────────────────────
@@ -255,8 +376,8 @@ pub fn render(
                     active_name.to_uppercase()
                 ),
                 |ui| {
-                    ui.horizontal(|ui| {
-                        if chip(ui, "🧹 Effacer les notes de ce Sound", false, c.error) {
+                    ui.horizontal_wrapped(|ui| {
+                        if chip(ui, "EFFACER LES NOTES DE CE SOUND", false, c.error) {
                             let _ = app.engine.lock().handle_event(EngineEvent::EraseSound {
                                 group: snap.group_focus,
                                 sound: snap.active_sound,

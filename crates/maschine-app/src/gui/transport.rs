@@ -34,7 +34,7 @@ pub fn render_transport(
         .stroke(egui::Stroke::new(1.0_f32, c.border))
         .corner_radius(egui::CornerRadius::same(10))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 // ── Transport ────────────────────────────────────────────
                 ui.vertical(|ui| {
                     let play_btn = egui::Button::new(
@@ -148,13 +148,13 @@ pub fn render_transport(
 
                 // ── Boucle / métronome / song ───────────────────────────
                 ui.vertical(|ui| {
-                    if chip(ui, "🔁 LOOP", loop_on, c.success) {
+                    if chip(ui, "LOOP", loop_on, c.success) {
                         let _ = app.engine.lock().handle_event(EngineEvent::ToggleLoop);
                     }
-                    if chip(ui, "🎵 MÉTRO", metro_on, c.accent_cyan) {
+                    if chip(ui, "MÉTRO", metro_on, c.accent_cyan) {
                         let _ = app.engine.lock().handle_event(EngineEvent::ToggleMetronome);
                     }
-                    if chip(ui, "🧭 SONG", snap.song_mode, c.accent) {
+                    if chip(ui, "SONG", snap.song_mode, c.accent) {
                         let _ = app.engine.lock().handle_event(EngineEvent::ToggleSongMode);
                     }
                 });
@@ -175,11 +175,11 @@ pub fn render_transport(
                     // Bouton Mises à jour in-app
                     let update_ready = app.updater_state.lock().update_available.is_some();
                     let (up_txt, up_act) = if update_ready {
-                        ("🚀 MàJ DISPO", true)
+                        ("MàJ DISPO", true)
                     } else if app.show_updater {
-                        ("🚀 Fermer", true)
+                        ("Fermer", true)
                     } else {
-                        ("🚀 MàJ", false)
+                        ("MàJ", false)
                     };
                     if mach_button(ui, up_txt, up_act).clicked {
                         app.show_updater = !app.show_updater;
@@ -189,9 +189,9 @@ pub fn render_transport(
                     #[cfg(feature = "audio")]
                     {
                         let (txt, _col) = if app.show_settings {
-                            ("⚙ Fermer", c.warning)
+                            ("Fermer", c.warning)
                         } else {
-                            ("⚙ Audio", c.text)
+                            ("Audio", c.text)
                         };
                         if mach_button(ui, txt, app.show_settings).clicked {
                             app.show_settings = !app.show_settings;

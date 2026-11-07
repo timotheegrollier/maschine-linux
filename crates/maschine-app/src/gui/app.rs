@@ -45,9 +45,9 @@ enum KParam {
     AcidDelayMix,
 }
 
-fn knob_params(view: StudioView) -> &'static [KParam] {
+fn knob_params(view: StudioView, plugin_page: u8) -> &'static [KParam] {
     match view {
-        StudioView::Sequencer => &[
+        StudioView::Sequencer | StudioView::Keyboard => &[
             KParam::Tempo,
             KParam::Swing,
             KParam::Master,
@@ -68,6 +68,16 @@ fn knob_params(view: StudioView) -> &'static [KParam] {
             KParam::Reso,
         ],
         StudioView::Sampler | StudioView::Browser => &[
+            KParam::SndVol,
+            KParam::SndPan,
+            KParam::Cutoff,
+            KParam::Reso,
+            KParam::Attack,
+            KParam::Decay,
+            KParam::Sustain,
+            KParam::Release,
+        ],
+        StudioView::AcidSynth if plugin_page == 0 => &[
             KParam::SndVol,
             KParam::SndPan,
             KParam::Cutoff,
@@ -129,6 +139,16 @@ pub struct GuiApp {
     pub view: StudioView,
     /// Dernier onglet gauche vu (synchro hardware).
     pub last_left_tab: u8,
+    /// Dernière demande de navigation GUI traitée (synchro hardware).
+    last_nav_serial: u64,
+    /// Rail de navigation visible.
+    pub show_nav: bool,
+    /// Panneau MK3 visible.
+    pub show_mk3: bool,
+    /// Disposition initiale adaptée à la taille de la fenêtre.
+    layout_initialized: bool,
+    /// Mode avancé de la TB-303 (les macros restent le mode par défaut).
+    pub plugin_advanced: bool,
     /// Recherche browser.
     pub browser_search: String,
     /// Catégorie browser.
@@ -193,6 +213,11 @@ impl GuiApp {
             pad_down: None,
             view: StudioView::Sequencer,
             last_left_tab: 0,
+            last_nav_serial: 0,
+            show_nav: true,
+            show_mk3: true,
+            layout_initialized: false,
+            plugin_advanced: false,
             browser_search: String::new(),
             browser_category: 0,
             sample_path_input: String::new(),
@@ -234,6 +259,11 @@ impl GuiApp {
             pad_down: None,
             view: StudioView::Sequencer,
             last_left_tab: 0,
+            last_nav_serial: 0,
+            show_nav: true,
+            show_mk3: true,
+            layout_initialized: false,
+            plugin_advanced: false,
             browser_search: String::new(),
             browser_category: 0,
             sample_path_input: String::new(),
@@ -276,6 +306,14 @@ impl GuiApp {
     /// Envoie un événement moteur.
     pub fn send(&self, ev: EngineEvent) {
         let _ = self.engine.lock().handle_event(ev);
+    }
+
+    /// Change de vue depuis la GUI et synchronise le contexte hardware.
+    pub fn switch_view(&mut self, view: StudioView) {
+        self.view = view;
+        let tab = view.tab_index();
+        self.last_left_tab = tab;
+        self.send(EngineEvent::SetLeftTab(tab));
     }
 
     /// Décode le WAV sur un thread de travail puis installe ses données sans
@@ -386,7 +424,7 @@ impl GuiApp {
         if ctx.wants_keyboard_input() {
             return;
         }
-        let (space, digits, view_keys, save) = ctx.input(|i| {
+        let (space, digits, view_keys, save, toggle_nav, toggle_mk3) = ctx.input(|i| {
             let mut digits = [false; 8];
             for (d, pressed) in digits.iter_mut().enumerate() {
                 let key = match d {
@@ -404,9 +442,11 @@ impl GuiApp {
             let view_keys = [
                 (egui::Key::I, StudioView::Ideas),
                 (egui::Key::S, StudioView::Sequencer),
+                (egui::Key::K, StudioView::Keyboard),
                 (egui::Key::M, StudioView::Mixer),
                 (egui::Key::A, StudioView::Sampler),
                 (egui::Key::T, StudioView::AcidSynth),
+                (egui::Key::P, StudioView::AcidSynth),
                 (egui::Key::B, StudioView::Browser),
             ]
             .map(|(k, v)| (i.key_pressed(k), v));
@@ -415,13 +455,20 @@ impl GuiApp {
                 digits,
                 view_keys,
                 i.modifiers.command && i.key_pressed(egui::Key::S),
+                i.key_pressed(egui::Key::F1),
+                i.key_pressed(egui::Key::F2),
             )
         });
 
+        if toggle_nav {
+            self.show_nav = !self.show_nav;
+        }
+        if toggle_mk3 {
+            self.show_mk3 = !self.show_mk3;
+        }
         for (pressed, v) in view_keys {
             if pressed {
-                self.view = v;
-                self.send(EngineEvent::SetLeftTab(v.tab_index()));
+                self.switch_view(v);
             }
         }
         for (d, pressed) in digits.iter().enumerate() {
@@ -580,7 +627,7 @@ impl GuiApp {
     }
 
     fn render_mk3_knobs(&mut self, ui: &mut egui::Ui, snap: &maschine_engine::EngineSnapshot) {
-        let params = knob_params(self.view);
+        let params = knob_params(self.view, snap.plugin_page);
         let gf = snap.group_focus as usize;
         let snd = snap.active_sound as usize;
         let group = snap.project.groups.get(gf);
@@ -606,9 +653,17 @@ impl GuiApp {
         let grp_vol = group.map(|g| g.volume_db).unwrap_or(0.0);
         let grp_pan = group.map(|g| g.pan).unwrap_or(0.0);
 
-        ui.horizontal(|ui| {
+        let width = ui.available_width();
+        let knob_size = if width < 380.0 {
+            34.0
+        } else if width < 470.0 {
+            38.0
+        } else {
+            42.0
+        };
+        ui.horizontal_wrapped(|ui| {
             for (i, param) in params.iter().enumerate() {
-                let (spec, value) = match param {
+                let (mut spec, value) = match param {
                     KParam::Tempo => (
                         KnobSpec::linear("TEMPO", " BPM", 20.0, 300.0, 120.0),
                         snap.transport.bpm,
@@ -676,6 +731,7 @@ impl GuiApp {
                         snap.acid_params.delay_mix,
                     ),
                 };
+                spec.size = knob_size;
                 if let Some(v) = knob(ui, ("mk3_knob", i), value, &spec) {
                     self.apply_knob(*param, v, snap);
                 }
@@ -788,134 +844,210 @@ impl GuiApp {
         });
     }
 
-    fn render_pads(&mut self, ui: &mut egui::Ui, snap: &maschine_engine::EngineSnapshot) {
+    fn draw_pad_grid(
+        &self,
+        ui: &mut egui::Ui,
+        snap: &maschine_engine::EngineSnapshot,
+        pad_size: f32,
+        press: &mut Option<(u8, u8)>,
+        release: &mut Option<u8>,
+    ) {
+        const KEYBOARD_LABELS: [&str; 16] = [
+            "C3", "D3", "D#3", "F3", "G3", "G#3", "A#3", "C4", "D4", "D#4", "F4", "G4", "G#4",
+            "A#4", "C5", "D5",
+        ];
+        let c = MachColors::dark();
         let gf = snap.group_focus as usize;
-        let pad_size = ((ui.available_width() - 24.0) / 4.0).clamp(40.0, 62.0);
+        let assigned_pattern = snap
+            .active_scene
+            .and_then(|scene| snap.project.scenes.get(scene))
+            .and_then(|scene| scene.patterns.get(gf))
+            .copied()
+            .flatten();
+        for row in 0..4usize {
+            ui.horizontal(|ui| {
+                for col in 0..4usize {
+                    // Disposition Maschine : bas-gauche = pad 1.
+                    let index = ((3 - row) * 4 + col) as u8;
+                    let name = snap
+                        .project
+                        .groups
+                        .get(gf)
+                        .and_then(|g| g.sounds.get(index as usize))
+                        .and_then(|s| s.as_ref())
+                        .map(|s| s.name.clone())
+                        .unwrap_or_else(|| "—".to_string());
+                    let (label, selected, color) = if snap.scene_mode {
+                        (format!("SCN {:02}", index + 1), false, c.success)
+                    } else if snap.pattern_mode {
+                        (
+                            format!("PAT {:02}", index + 1),
+                            assigned_pattern == Some(index as usize),
+                            c.accent,
+                        )
+                    } else if snap.controller_mode == 3 {
+                        (
+                            format!("PAS {:02}", index + 1),
+                            index as usize == snap.step_cursor % 16,
+                            c.warning,
+                        )
+                    } else if snap.controller_mode == 1 {
+                        (
+                            KEYBOARD_LABELS[index as usize].to_string(),
+                            false,
+                            c.accent_cyan,
+                        )
+                    } else if snap.controller_mode == 2 {
+                        (format!("ACC {}", (index % 7) + 1), false, c.accent_cyan)
+                    } else {
+                        (
+                            name,
+                            index == snap.active_sound,
+                            crate::gui::views::pad_color(index as usize),
+                        )
+                    };
+                    let st = PadState {
+                        index,
+                        color,
+                        label: &label,
+                        flash: snap.triggered_pads[index as usize],
+                        selected,
+                        was_down: self.pad_down == Some(index),
+                    };
+                    let inter = pad_button(ui, &st, pad_size);
+                    if inter.pressed {
+                        *press = Some((index, inter.velocity));
+                    }
+                    if inter.released {
+                        *release = Some(index);
+                    }
+                    if inter.secondary_clicked {
+                        // Clic droit : sélectionner le Sound sans le jouer.
+                        self.send(EngineEvent::SelectSound(index));
+                    }
+                }
+            });
+        }
+    }
+
+    fn draw_group_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        snap: &maschine_engine::EngineSnapshot,
+        button_w: f32,
+    ) {
+        let c = MachColors::dark();
+        ui.label(egui::RichText::new("GROUPES").small().color(c.text_dim));
+        ui.horizontal_wrapped(|ui| {
+            for g in 0..8usize {
+                let active = g == snap.group_focus as usize;
+                let muted = (snap.muted_groups & (1 << g)) != 0;
+                let soloed = (snap.soloed_groups & (1 << g)) != 0;
+                let mut btn = egui::Button::new(
+                    egui::RichText::new(format!("{}", crate::gui::views::group_char(g)))
+                        .strong()
+                        .color(if active {
+                            egui::Color32::BLACK
+                        } else if muted {
+                            c.warning
+                        } else {
+                            c.text
+                        }),
+                )
+                .min_size(egui::vec2(button_w, 24.0))
+                .fill(if active {
+                    c.accent
+                } else if soloed {
+                    c.accent_cyan
+                } else {
+                    c.widget_bg
+                })
+                .stroke(egui::Stroke::new(1.0_f32, c.border));
+                if muted {
+                    btn = btn.stroke(egui::Stroke::new(1.5_f32, c.warning));
+                }
+                if ui.add(btn).clicked() {
+                    self.send(EngineEvent::GroupFocus(g as u8));
+                }
+            }
+        });
+        ui.add_space(6.0);
+        let scene_txt = match snap.active_scene {
+            Some(s) => format!("Scène {} active", s + 1),
+            None => "Scène —".to_string(),
+        };
+        ui.label(egui::RichText::new(scene_txt).small().color(c.text_dim));
+        ui.label(
+            egui::RichText::new(format!("Sound actif : {:02}", snap.active_sound + 1))
+                .small()
+                .color(c.text_dim),
+        );
+    }
+
+    fn render_pads(&mut self, ui: &mut egui::Ui, snap: &maschine_engine::EngineSnapshot) {
+        let width = ui.available_width();
+        let pad_size = ((width - 22.0) / 4.0).clamp(36.0, 60.0);
+        let side_by_side = width >= pad_size * 4.0 + 190.0;
         let mut press: Option<(u8, u8)> = None;
         let mut release: Option<u8> = None;
 
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                for row in 0..4usize {
-                    ui.horizontal(|ui| {
-                        for col in 0..4usize {
-                            // Disposition Maschine : bas-gauche = pad 1.
-                            let index = ((3 - row) * 4 + col) as u8;
-                            let name = snap
-                                .project
-                                .groups
-                                .get(gf)
-                                .and_then(|g| g.sounds.get(index as usize))
-                                .and_then(|s| s.as_ref())
-                                .map(|s| s.name.clone())
-                                .unwrap_or_else(|| "—".to_string());
-                            let st = PadState {
-                                index,
-                                color: crate::gui::views::pad_color(index as usize),
-                                label: &name,
-                                flash: snap.triggered_pads[index as usize],
-                                selected: index == snap.active_sound,
-                                was_down: self.pad_down == Some(index),
-                            };
-                            let inter = pad_button(ui, &st, pad_size);
-                            if inter.pressed {
-                                press = Some((index, inter.velocity));
-                            }
-                            if inter.released {
-                                release = Some(index);
-                            }
-                            if inter.secondary_clicked {
-                                // Clic droit : sélectionner le Sound sans le jouer.
-                                self.send(EngineEvent::SelectSound(index));
-                            }
-                        }
-                    });
-                }
-            });
-
-            ui.add_space(6.0);
-
-            // Colonne : groupes A–H + info.
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new("GROUPES")
-                        .small()
-                        .color(MachColors::dark().text_dim),
-                );
-                for row in 0..2usize {
-                    ui.horizontal(|ui| {
-                        for col in 0..4usize {
-                            let g = row * 4 + col;
-                            let active = g == snap.group_focus as usize;
-                            let muted = (snap.muted_groups & (1 << g)) != 0;
-                            let soloed = (snap.soloed_groups & (1 << g)) != 0;
-                            let mut btn = egui::Button::new(
-                                egui::RichText::new(format!(
-                                    "{}",
-                                    crate::gui::views::group_char(g)
-                                ))
-                                .strong()
-                                .color(if active {
-                                    egui::Color32::BLACK
-                                } else if muted {
-                                    MachColors::dark().warning
-                                } else {
-                                    MachColors::dark().text
-                                }),
-                            )
-                            .min_size(egui::vec2(pad_size / 1.6, pad_size / 2.4))
-                            .fill(if active {
-                                MachColors::dark().accent
-                            } else if soloed {
-                                MachColors::dark().accent_cyan
-                            } else {
-                                MachColors::dark().widget_bg
-                            })
-                            .stroke(egui::Stroke::new(1.0_f32, MachColors::dark().border));
-                            if muted {
-                                btn = btn
-                                    .stroke(egui::Stroke::new(1.5_f32, MachColors::dark().warning));
-                            }
-                            if ui.add(btn).clicked() {
-                                self.send(EngineEvent::GroupFocus(g as u8));
-                            }
-                        }
-                    });
-                }
+        if side_by_side {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    self.draw_pad_grid(ui, snap, pad_size, &mut press, &mut release);
+                });
                 ui.add_space(6.0);
-                // Scène active + mode.
-                let scene_txt = match snap.active_scene {
-                    Some(s) => format!("Scène {} active", s + 1),
-                    None => "Scène —".to_string(),
-                };
-                ui.label(
-                    egui::RichText::new(scene_txt)
-                        .small()
-                        .color(MachColors::dark().text_dim),
-                );
-                ui.label(
-                    egui::RichText::new(format!("Sound actif : {:02}", snap.active_sound + 1))
-                        .small()
-                        .color(MachColors::dark().text_dim),
-                );
+                ui.vertical(|ui| {
+                    self.draw_group_controls(ui, snap, (pad_size / 1.6).max(28.0));
+                });
             });
-        });
+        } else {
+            self.draw_pad_grid(ui, snap, pad_size, &mut press, &mut release);
+            ui.add_space(6.0);
+            self.draw_group_controls(ui, snap, 34.0);
+        }
 
         if let Some((pad, velocity)) = press {
-            self.pad_down = Some(pad);
-            self.send(EngineEvent::Pad {
-                pad,
-                velocity,
-                pressed: true,
-            });
+            if snap.scene_mode {
+                self.send(EngineEvent::Scene(pad as usize));
+            } else if snap.pattern_mode {
+                self.send(EngineEvent::PatternSelect {
+                    group: snap.group_focus,
+                    pattern: pad as usize,
+                });
+            } else if snap.select_mode {
+                self.send(EngineEvent::SelectSound(pad));
+            } else if snap.erase_mode {
+                self.send(EngineEvent::SelectSound(pad));
+                self.send(EngineEvent::EraseSound {
+                    group: snap.group_focus,
+                    sound: pad,
+                });
+            } else if snap.controller_mode == 3 {
+                let tick = (snap.selected_bar as u32 * 3840) + (pad as u32 * 240);
+                self.toggle_step(snap.active_sound, tick);
+            } else {
+                let trigger = if snap.controller_mode == 1 {
+                    snap.active_sound
+                } else {
+                    pad
+                };
+                self.pad_down = Some(trigger);
+                self.send(EngineEvent::Pad {
+                    pad: trigger,
+                    velocity,
+                    pressed: true,
+                });
+            }
         }
-        if let Some(pad) = release {
-            self.pad_down = None;
-            self.send(EngineEvent::Pad {
-                pad,
-                velocity: 0,
-                pressed: false,
-            });
+        if release.is_some() {
+            if let Some(down) = self.pad_down.take() {
+                self.send(EngineEvent::Pad {
+                    pad: down,
+                    velocity: 0,
+                    pressed: false,
+                });
+            }
         }
     }
 }
@@ -923,6 +1055,15 @@ impl GuiApp {
 impl eframe::App for GuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.repaint.attach(ctx);
+
+        // Première frame : adapte les panneaux à la résolution disponible.
+        if !self.layout_initialized {
+            let width = ctx.screen_rect().width();
+            self.show_nav = width >= 980.0;
+            self.show_mk3 = width >= 1280.0;
+            self.layout_initialized = true;
+        }
+
         self.handle_keyboard(ctx);
         while let Ok(message) = self.sample_load_rx.try_recv() {
             self.status_message = Some(message);
@@ -945,127 +1086,220 @@ impl eframe::App for GuiApp {
             };
         }
 
+        // Navigation explicite PATTERN / STEP / KEYBOARD / SCENE / PLUGIN.
+        // Le compteur ne change que sur une nouvelle demande hardware.
+        if snap.nav_serial != self.last_nav_serial {
+            self.last_nav_serial = snap.nav_serial;
+            self.view = match snap.nav_view {
+                2 => StudioView::Keyboard,
+                3 => StudioView::Ideas,
+                4 => StudioView::AcidSynth,
+                _ => StudioView::Sequencer,
+            };
+            self.last_left_tab = snap.left_tab;
+        }
+
+        // ── Barre d'application : vues rapides + panneaux + états latchés ──
+        egui::TopBottomPanel::top("appbar")
+            .exact_height(38.0)
+            .show(ctx, |ui| {
+                let c = MachColors::dark();
+                ui.horizontal_centered(|ui| {
+                    let nav_label = if self.show_nav {
+                        "◀ VUES"
+                    } else {
+                        "▶ VUES"
+                    };
+                    if crate::gui::widgets::chip(ui, nav_label, self.show_nav, c.accent_cyan) {
+                        self.show_nav = !self.show_nav;
+                    }
+                    ui.separator();
+                    ui.colored_label(c.accent, egui::RichText::new("MASCHINE").strong());
+                    ui.label(egui::RichText::new("MK3 LINUX").small().color(c.text_muted));
+
+                    let mut selected = self.view;
+                    egui::ComboBox::from_id_salt("view_picker")
+                        .selected_text(
+                            egui::RichText::new(selected.short_label())
+                                .strong()
+                                .size(11.5),
+                        )
+                        .width(132.0)
+                        .show_ui(ui, |ui| {
+                            for view in StudioView::ALL {
+                                ui.selectable_value(&mut selected, view, view.label());
+                            }
+                        });
+                    if selected != self.view {
+                        self.switch_view(selected);
+                    }
+
+                    for (on, label, color) in [
+                        (snap.pattern_mode, "PATTERN", c.accent),
+                        (snap.scene_mode, "SCENE", c.success),
+                        (snap.controller_mode == 3, "STEP", c.warning),
+                        (snap.controller_mode == 1, "CLAVIER", c.accent_cyan),
+                        (snap.select_mode, "SELECT", c.accent_cyan),
+                        (snap.erase_mode, "ERASE", c.error),
+                    ] {
+                        if on {
+                            ui.colored_label(
+                                color,
+                                egui::RichText::new(format!("● {label}"))
+                                    .strong()
+                                    .size(10.5),
+                            );
+                        }
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let mk3_label = if self.show_mk3 { "MK3 ✓" } else { "MK3" };
+                        if crate::gui::widgets::chip(ui, mk3_label, self.show_mk3, c.accent) {
+                            self.show_mk3 = !self.show_mk3;
+                        }
+                        ui.label(
+                            egui::RichText::new("F1 vues • F2 MK3")
+                                .small()
+                                .color(c.text_muted),
+                        );
+                    });
+                });
+            });
+
         egui::TopBottomPanel::top("transport").show(ctx, |ui| {
             crate::gui::transport::render_transport(ui, self, &snap);
         });
 
-        // Rail gauche : vues + groupes.
+        // Rail gauche : vues + groupes. Repliable et redimensionnable.
         egui::SidePanel::left("nav")
-            .resizable(false)
-            .default_width(196.0)
-            .show(ctx, |ui| {
-                ui.add_space(4.0);
-                for (v, label) in [
-                    (StudioView::Ideas, "🧭 IDEAS / SONG"),
-                    (StudioView::Sequencer, "🎹 SÉQUENCEUR"),
-                    (StudioView::Mixer, "🎚 MIXER"),
-                    (StudioView::Sampler, "🎛 SAMPLER"),
-                    (StudioView::AcidSynth, "⚡ ACID TB-303"),
-                    (StudioView::Browser, "🗂 BROWSER"),
-                ] {
-                    let active = self.view == v;
-                    if mach_button(ui, label, active).clicked {
-                        self.view = v;
-                        let tab = v.tab_index();
-                        // Re-sélectionner la vue active restaure aussi sa page
-                        // droite contextuelle après EVENTS/MACRO/SETTINGS.
-                        self.last_left_tab = tab;
-                        self.send(EngineEvent::SetLeftTab(tab));
-                    }
-                }
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                ui.colored_label(
-                    MachColors::dark().accent_cyan,
-                    egui::RichText::new("GROUPE FOCUS").strong().small(),
-                );
-                egui::Grid::new("nav_groups")
-                    .spacing(egui::vec2(4.0, 4.0))
-                    .show(ui, |ui| {
-                        for row in 0..2usize {
-                            for col in 0..4usize {
-                                let g = row * 4 + col;
-                                let active = g == snap.group_focus as usize;
-                                let muted = (snap.muted_groups & (1 << g)) != 0;
-                                let label = format!("{}", crate::gui::views::group_char(g));
-                                let mut btn =
-                                    egui::Button::new(egui::RichText::new(label).strong())
-                                        .min_size(egui::vec2(38.0, 28.0));
-                                if active {
-                                    btn = btn.fill(MachColors::dark().accent);
-                                }
-                                if muted {
-                                    btn = btn.stroke(egui::Stroke::new(
-                                        1.5_f32,
-                                        MachColors::dark().warning,
-                                    ));
-                                }
-                                if ui.add(btn).clicked() {
-                                    self.send(EngineEvent::GroupFocus(g as u8));
-                                }
-                            }
-                            ui.end_row();
-                        }
-                    });
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(6.0);
-                crate::gui::theme::caption(ui, format!("Position : {}", snap.bbt));
-                crate::gui::theme::caption(
-                    ui,
-                    format!("Pattern : {} mesure(s)", snap.pattern_bars),
-                );
-
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.add_space(4.0);
-                    if mach_button(ui, "💾 SAUVEGARDER", false).clicked {
-                        self.save_project();
-                    }
-                    if mach_button(ui, "▶ TEST KICK", false).clicked {
-                        self.send(EngineEvent::Pad {
-                            pad: 0,
-                            velocity: 115,
-                            pressed: true,
-                        });
-                    }
-                });
-            });
-
-        // Rail droit : panneau MK3 (écrans temps réel + knobs + soft keys + pads).
-        egui::SidePanel::right("mk3_panel")
-            .resizable(false)
-            .default_width(498.0)
-            .show(ctx, |ui| {
+            .resizable(true)
+            .default_width(204.0)
+            .width_range(164.0..=300.0)
+            .show_animated(ctx, self.show_nav, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.add_space(4.0);
-                        ui.colored_label(
-                            MachColors::dark().accent,
-                            egui::RichText::new("⌨ MASCHINE MK3 — MIROIR TEMPS RÉEL").strong(),
-                        );
-                        ui.add_space(4.0);
-
-                        // 8 knobs contextuels.
-                        self.render_mk3_knobs(ui, &snap);
-
-                        ui.add_space(4.0);
-                        ui.separator();
-                        ui.add_space(4.0);
-
-                        // Les deux écrans physiques en direct.
-                        self.render_displays(ui, &snap);
+                        for v in StudioView::ALL {
+                            if mach_button(ui, v.label(), self.view == v).clicked {
+                                self.switch_view(v);
+                            }
+                        }
 
                         ui.add_space(8.0);
                         ui.separator();
-                        ui.add_space(6.0);
+                        ui.add_space(8.0);
 
-                        // 16 pads.
-                        self.render_pads(ui, &snap);
+                        ui.colored_label(
+                            MachColors::dark().accent_cyan,
+                            egui::RichText::new("GROUPE FOCUS").strong().small(),
+                        );
+                        egui::Grid::new("nav_groups")
+                            .spacing(egui::vec2(4.0, 4.0))
+                            .show(ui, |ui| {
+                                for row in 0..2usize {
+                                    for col in 0..4usize {
+                                        let g = row * 4 + col;
+                                        let active = g == snap.group_focus as usize;
+                                        let muted = (snap.muted_groups & (1 << g)) != 0;
+                                        let label = format!("{}", crate::gui::views::group_char(g));
+                                        let mut btn =
+                                            egui::Button::new(egui::RichText::new(label).strong())
+                                                .min_size(egui::vec2(38.0, 28.0));
+                                        if active {
+                                            btn = btn.fill(MachColors::dark().accent);
+                                        }
+                                        if muted {
+                                            btn = btn.stroke(egui::Stroke::new(
+                                                1.5_f32,
+                                                MachColors::dark().warning,
+                                            ));
+                                        }
+                                        if ui.add(btn).clicked() {
+                                            self.send(EngineEvent::GroupFocus(g as u8));
+                                        }
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(6.0);
+                        crate::gui::theme::caption(ui, format!("Position : {}", snap.bbt));
+                        crate::gui::theme::caption(
+                            ui,
+                            format!("Pattern : {} mesure(s)", snap.pattern_bars),
+                        );
+                        crate::gui::theme::caption(
+                            ui,
+                            format!("Sound actif : {:02}", snap.active_sound + 1),
+                        );
+
+                        ui.add_space(10.0);
+                        if mach_button(ui, "SAUVEGARDER", false).clicked {
+                            self.save_project();
+                        }
+                        if mach_button(ui, "▶ TEST KICK", false).clicked {
+                            self.send(EngineEvent::Pad {
+                                pad: 0,
+                                velocity: 115,
+                                pressed: true,
+                            });
+                        }
+                    });
+            });
+
+        // Rail droit : panneau MK3 (sections repliables, largeur adaptative).
+        let mk3_width = if ctx.screen_rect().width() >= 1680.0 {
+            520.0
+        } else {
+            440.0
+        };
+        egui::SidePanel::right("mk3_panel")
+            .resizable(true)
+            .default_width(mk3_width)
+            .width_range(360.0..=680.0)
+            .show_animated(ctx, self.show_mk3, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.colored_label(
+                                MachColors::dark().accent,
+                                egui::RichText::new("MASCHINE MK3").strong().size(13.5),
+                            );
+                            ui.label(
+                                egui::RichText::new("miroir temps réel")
+                                    .small()
+                                    .color(MachColors::dark().text_muted),
+                            );
+                        });
+
+                        egui::CollapsingHeader::new(
+                            egui::RichText::new("KNOBS CONTEXTUELS").strong().size(11.5),
+                        )
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            self.render_mk3_knobs(ui, &snap);
+                        });
+
+                        egui::CollapsingHeader::new(
+                            egui::RichText::new("ÉCRANS MK3").strong().size(11.5),
+                        )
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            self.render_displays(ui, &snap);
+                        });
+
+                        egui::CollapsingHeader::new(
+                            egui::RichText::new("PADS & GROUPES").strong().size(11.5),
+                        )
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            self.render_pads(ui, &snap);
+                        });
                     });
             });
 
@@ -1076,7 +1310,7 @@ impl eframe::App for GuiApp {
 
         // Barre de statut basse.
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(
                     egui::RichText::new(format!(
                         "Maschine MK3 Linux • {} • {} groupes • {} scènes",
@@ -1102,12 +1336,9 @@ impl eframe::App for GuiApp {
                     ui.separator();
                     if ui
                         .button(
-                            egui::RichText::new(format!(
-                                "🚀 MÀJ v{} disponible",
-                                check.new_version
-                            ))
-                            .small()
-                            .color(MachColors::dark().accent_cyan),
+                            egui::RichText::new(format!("MÀJ v{} disponible", check.new_version))
+                                .small()
+                                .color(MachColors::dark().accent_cyan),
                         )
                         .clicked()
                     {
@@ -1123,7 +1354,7 @@ impl eframe::App for GuiApp {
             let mut settings_open = self.show_settings;
             let mut switch_target: Option<String> = None;
             let c = MachColors::dark();
-            egui::Window::new("⚙ Paramètres Audio — Choix de la Sortie Son")
+            egui::Window::new("Paramètres Audio — Choix de la Sortie Son")
                 .open(&mut settings_open)
                 .default_width(540.0)
                 .min_width(460.0)
@@ -1172,13 +1403,13 @@ impl eframe::App for GuiApp {
 
                     ui.horizontal(|ui| {
                         if ui
-                            .button(egui::RichText::new("🔊 Haut-parleurs PC").strong())
+                            .button(egui::RichText::new("Haut-parleurs PC").strong())
                             .clicked()
                         {
                             switch_target = Some("default".to_string());
                         }
                         if ui
-                            .button(egui::RichText::new("🎛 Maschine MK3").strong())
+                            .button(egui::RichText::new("Maschine MK3").strong())
                             .clicked()
                         {
                             switch_target = Some("maschine".to_string());
@@ -1216,8 +1447,7 @@ impl eframe::App for GuiApp {
                     ui.horizontal(|ui| {
                         if ui
                             .button(
-                                egui::RichText::new("✔ Activer le périphérique sélectionné")
-                                    .strong(),
+                                egui::RichText::new("Activer le périphérique sélectionné").strong(),
                             )
                             .clicked()
                         {
@@ -1287,7 +1517,7 @@ impl eframe::App for GuiApp {
         if self.show_updater {
             let mut updater_open = self.show_updater;
             let c = MachColors::dark();
-            egui::Window::new("🚀 Mises à jour de Maschine Linux")
+            egui::Window::new("Mises à jour de Maschine Linux")
                 .open(&mut updater_open)
                 .default_width(520.0)
                 .min_width(450.0)
@@ -1387,7 +1617,7 @@ fn render_updater_window(
         ui.group(|ui| {
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
-                    ui.colored_label(c.accent_cyan, egui::RichText::new("🚀").size(22.0));
+                    ui.colored_label(c.accent_cyan, egui::RichText::new("MISE À JOUR").size(13.0));
                     ui.colored_label(
                         egui::Color32::WHITE,
                         egui::RichText::new(format!(
@@ -1454,7 +1684,7 @@ fn render_updater_window(
         } else if s.update_completed {
             ui.colored_label(
                 c.success,
-                egui::RichText::new("✔ Mise à jour installée avec succès !")
+                egui::RichText::new("Mise à jour installée avec succès !")
                     .strong()
                     .size(14.0),
             );
@@ -1467,7 +1697,7 @@ fn render_updater_window(
         } else if check.matched_asset.is_some()
             && ui
                 .button(
-                    egui::RichText::new("⬇ Télécharger & Installer la mise à jour")
+                    egui::RichText::new("Télécharger & installer la mise à jour")
                         .strong()
                         .size(13.0),
                 )
@@ -1477,7 +1707,7 @@ fn render_updater_window(
         }
     } else {
         ui.horizontal(|ui| {
-            ui.colored_label(c.success, egui::RichText::new("✔").size(18.0));
+            ui.colored_label(c.success, egui::RichText::new("OK").size(13.0));
             ui.label(format!(
                 "Maschine Linux est à jour (v{}).",
                 crate::updater::CURRENT_VERSION
@@ -1497,10 +1727,10 @@ fn render_updater_window(
     ui.add_space(10.0);
     ui.separator();
     ui.horizontal(|ui| {
-        if ui.button("🔍 Vérifier maintenant").clicked() && !s.is_checking && !s.is_downloading {
+        if ui.button("Vérifier maintenant").clicked() && !s.is_checking && !s.is_downloading {
             crate::updater::spawn_background_update_check(state.clone());
         }
-        if ui.button("🌐 Voir sur GitHub").clicked() {
+        if ui.button("Voir sur GitHub").clicked() {
             let _ = std::process::Command::new("xdg-open")
                 .arg(format!(
                     "https://github.com/{}/releases",

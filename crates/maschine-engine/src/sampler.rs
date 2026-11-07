@@ -204,6 +204,8 @@ pub struct Sampler {
     age_counter: u64,
     /// Round-robin counters par Sound
     rr_counters: std::collections::HashMap<u16, u8>,
+    /// Polyphonie maximale par Sound (défaut : 8).
+    sound_polyphony: HashMap<u16, u8>,
     /// Polyphonie max globale
     pub max_voices: usize,
     /// Sample rate engine
@@ -241,6 +243,7 @@ impl Sampler {
     pub fn clear_sound(&mut self, sound: u16) {
         self.zones.remove(&sound);
         self.waveform_cache.remove(&sound);
+        self.sound_polyphony.remove(&sound);
     }
 
     /// Supprime tous les sons et leurs enveloppes pré-calculées.
@@ -248,6 +251,7 @@ impl Sampler {
         self.zones.clear();
         self.waveform_cache.clear();
         self.rr_counters.clear();
+        self.sound_polyphony.clear();
         self.voices.clear();
     }
 
@@ -323,6 +327,35 @@ impl Sampler {
                         v.release_samples = choke_rel;
                     }
                 }
+            }
+        }
+
+        // Limite de polyphonie propre au Sound : on fond la plus ancienne voix
+        // active du même Sound avant d'en créer une nouvelle.
+        let polyphony = usize::from(*self.sound_polyphony.get(&sound).unwrap_or(&8));
+        let active_same_sound = self
+            .voices
+            .iter()
+            .filter(|v| {
+                v.sound == sound
+                    && v.adsr_phase != AdsrPhase::Release
+                    && v.adsr_phase != AdsrPhase::Off
+            })
+            .count();
+        if active_same_sound >= polyphony {
+            if let Some(idx) = self
+                .voices
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| {
+                    v.sound == sound
+                        && v.adsr_phase != AdsrPhase::Release
+                        && v.adsr_phase != AdsrPhase::Off
+                })
+                .min_by_key(|(_, v)| v.age)
+                .map(|(i, _)| i)
+            {
+                self.fade_out_voice(idx, 0.005);
             }
         }
 
@@ -842,6 +875,26 @@ impl Sampler {
         }
     }
 
+    /// Définit la polyphonie maximale d'un Sound (1..32). Au-delà, la plus
+    /// ancienne voix du même Sound part en fondu court.
+    pub fn set_sound_polyphony(&mut self, sound: u16, polyphony: u8) {
+        self.sound_polyphony.insert(sound, polyphony.clamp(1, 32));
+    }
+
+    /// Applique un groupe de choke à toutes les zones et voix d'un Sound.
+    pub fn set_sound_choke_group(&mut self, sound: u16, choke_group: Option<u8>) {
+        if let Some(zones) = self.zones.get_mut(&sound) {
+            for zone in zones {
+                zone.choke_group = choke_group;
+            }
+        }
+        for v in &mut self.voices {
+            if v.sound == sound {
+                v.choke_group = choke_group;
+            }
+        }
+    }
+
     /// Nombre de voix.
     #[must_use]
     pub fn num_voices(&self) -> usize {
@@ -1266,5 +1319,38 @@ mod tests {
         let mut out = vec![0.0; 4096 * 2];
         s.render(&mut out);
         assert_eq!(s.num_voices(), 1);
+    }
+
+    #[test]
+    fn per_sound_polyphony_steals_only_that_sound() {
+        let mut s = Sampler::new(48000);
+        for sound in 0..2u16 {
+            s.add_zone(
+                sound,
+                ZoneMapping {
+                    sample: Some(dummy_sample()),
+                    sample_rate: 48000,
+                    root_key: 60,
+                    ..Default::default()
+                },
+            );
+        }
+        s.set_sound_polyphony(0, 1);
+        s.note_on(0, 60, 100, 60);
+        s.note_on(1, 60, 100, 60);
+        s.note_on(0, 62, 100, 62);
+        s.note_on(0, 64, 100, 64);
+        let active_sound_0 = s
+            .voices
+            .iter()
+            .filter(|v| {
+                v.sound == 0 && v.adsr_phase != AdsrPhase::Release && v.adsr_phase != AdsrPhase::Off
+            })
+            .count();
+        assert_eq!(active_sound_0, 1);
+        assert!(s
+            .voices
+            .iter()
+            .any(|v| v.sound == 1 && v.adsr_phase != AdsrPhase::Release));
     }
 }

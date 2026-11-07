@@ -4,6 +4,7 @@ use eframe::egui;
 
 pub mod browser;
 pub mod ideas;
+pub mod keyboard;
 pub mod mixer;
 pub mod sampler;
 pub mod sequencer;
@@ -14,6 +15,7 @@ pub mod synth;
 pub enum StudioView {
     Ideas,
     Sequencer,
+    Keyboard,
     Mixer,
     Sampler,
     Browser,
@@ -21,10 +23,47 @@ pub enum StudioView {
 }
 
 impl StudioView {
-    /// Onglet écran gauche associé (0: Arrange/Seq, 1: Mixer, 2: Sampler, 3: Browser, 4: Synth).
+    /// Toutes les vues, dans l'ordre du rail de navigation.
+    pub const ALL: [Self; 7] = [
+        Self::Ideas,
+        Self::Sequencer,
+        Self::Keyboard,
+        Self::Mixer,
+        Self::Sampler,
+        Self::AcidSynth,
+        Self::Browser,
+    ];
+
+    /// Libellé complet (rail de gauche).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ideas => "IDEAS / SONG",
+            Self::Sequencer => "SÉQUENCEUR",
+            Self::Keyboard => "CLAVIER / PERFORMANCE",
+            Self::Mixer => "MIXER",
+            Self::Sampler => "SAMPLER",
+            Self::AcidSynth => "PLUGIN / TB-303",
+            Self::Browser => "BROWSER",
+        }
+    }
+
+    /// Libellé court (barre supérieure, petits écrans).
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::Ideas => "IDEAS",
+            Self::Sequencer => "SÉQUENCEUR",
+            Self::Keyboard => "CLAVIER",
+            Self::Mixer => "MIXER",
+            Self::Sampler => "SAMPLER",
+            Self::AcidSynth => "PLUGIN",
+            Self::Browser => "BROWSER",
+        }
+    }
+
+    /// Onglet écran gauche associé (0: Arrange/Seq, 1: Mixer, 2: Sampler, 3: Browser, 4: Plugin).
     pub fn tab_index(&self) -> u8 {
         match self {
-            Self::Ideas | Self::Sequencer => 0,
+            Self::Ideas | Self::Sequencer | Self::Keyboard => 0,
             Self::Mixer => 1,
             Self::Sampler => 2,
             Self::Browser => 3,
@@ -43,6 +82,7 @@ pub fn render_view(
     match app.view {
         StudioView::Ideas => ideas::render(ui, app, snap),
         StudioView::Sequencer => sequencer::render(ui, app, snap, is_playing),
+        StudioView::Keyboard => keyboard::render(ui, app, snap),
         StudioView::Mixer => mixer::render(ui, app, snap),
         StudioView::Sampler => sampler::render(ui, app, snap),
         StudioView::Browser => browser::render(ui, app, snap),

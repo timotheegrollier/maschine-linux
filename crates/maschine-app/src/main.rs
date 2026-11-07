@@ -209,6 +209,9 @@ enum Commands {
         /// Pas d'audio
         #[arg(long)]
         no_audio: bool,
+        /// Force le mode autonome : ignore toute Maschine connectée
+        #[arg(long)]
+        no_hardware: bool,
         /// Instrumentation latence : stats audio (buffer réel, misses, erreurs)
         #[arg(long)]
         debug_latency: bool,
@@ -250,6 +253,7 @@ fn default_command() -> Commands {
         project: None,
         audio_device: None,
         no_audio: false,
+        no_hardware: false,
         debug_latency: false,
         stress: false,
     }
@@ -282,6 +286,7 @@ fn sync_mapper_context(
     mapper.active_sound = snap.active_sound;
     mapper.left_tab = snap.left_tab;
     mapper.right_tab = snap.right_tab;
+    mapper.plugin_page = snap.plugin_page;
 }
 
 fn main() -> anyhow::Result<()> {
@@ -309,6 +314,7 @@ fn main() -> anyhow::Result<()> {
             no_led,
             headphone_mode,
             false,
+            false,
             debug_latency,
             stress,
         )?,
@@ -331,6 +337,7 @@ fn main() -> anyhow::Result<()> {
             project,
             audio_device,
             no_audio,
+            no_hardware,
             debug_latency,
             stress,
         } => cmd_daemon(
@@ -340,6 +347,7 @@ fn main() -> anyhow::Result<()> {
             no_audio,
             false,
             "duplicate".to_string(),
+            no_hardware,
             true,
             debug_latency,
             stress,
@@ -450,6 +458,7 @@ fn cmd_daemon(
     no_audio: bool,
     no_led: bool,
     headphone_mode: String,
+    no_hardware: bool,
     with_gui: bool,
     debug_latency: bool,
     stress: bool,
@@ -474,15 +483,23 @@ fn cmd_daemon(
     );
 
     let gui_can_run_offline = with_gui && cfg!(feature = "gui");
-    let hardware_info = match find_maschine_devices() {
-        Ok(devices) => select_hidraw_device(devices, gui_can_run_offline)?,
-        Err(error) if gui_can_run_offline => {
-            warn!(
-                "Détection Maschine indisponible ({error}) — lancement de la GUI en mode autonome"
-            );
-            None
+    if no_hardware && !with_gui {
+        anyhow::bail!("--no-hardware n'est disponible qu'avec la GUI");
+    }
+    let hardware_info = if no_hardware {
+        warn!("--no-hardware : mode autonome forcé, la Maschine MK3 est ignorée");
+        None
+    } else {
+        match find_maschine_devices() {
+            Ok(devices) => select_hidraw_device(devices, gui_can_run_offline)?,
+            Err(error) if gui_can_run_offline => {
+                warn!(
+                    "Détection Maschine indisponible ({error}) — lancement de la GUI en mode autonome"
+                );
+                None
+            }
+            Err(error) => return Err(error.into()),
         }
-        Err(error) => return Err(error.into()),
     };
 
     let (hardware_tx, rx) = unbounded::<HardwareEvent>();
@@ -1267,6 +1284,12 @@ fn cmd_daemon(
                 MapperAction::SetRightTab(tab) => {
                     let _ = engine.lock().handle_event(EngineEvent::SetRightTab(tab));
                 }
+                MapperAction::NavigateView(view) => {
+                    let _ = engine.lock().handle_event(EngineEvent::NavigateView(view));
+                }
+                MapperAction::SetPluginPage(page) => {
+                    let _ = engine.lock().handle_event(EngineEvent::SetPluginPage(page));
+                }
                 MapperAction::Variation => {
                     engine.lock().humanize_active_pattern();
                 }
@@ -1471,7 +1494,10 @@ fn cmd_daemon(
                     }
 
                     // Détection et reconnexion automatique Plug & Play à chaud
-                    if !is_connected && last_hotplug_check.elapsed() >= Duration::from_millis(1000) {
+                    if !no_hardware
+                        && !is_connected
+                        && last_hotplug_check.elapsed() >= Duration::from_millis(1000)
+                    {
                         last_hotplug_check = std::time::Instant::now();
                         if let Some(device) = hotplug::probe_available_device() {
                             info!("🔌 Maschine MK3 détectée en Plug & Play ! Reconnexion en cours...");
@@ -1645,7 +1671,10 @@ fn cmd_daemon(
         }
 
         // Reconnexion automatique Plug & Play si déconnecté
-        if !is_connected && last_hotplug_check.elapsed() >= Duration::from_millis(1000) {
+        if !no_hardware
+            && !is_connected
+            && last_hotplug_check.elapsed() >= Duration::from_millis(1000)
+        {
             last_hotplug_check = std::time::Instant::now();
             if let Some(device) = hotplug::probe_available_device() {
                 info!("🔌 Maschine MK3 détectée en Plug & Play ! Reconnexion daemon...");
@@ -2305,6 +2334,9 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             soloed_groups: 0,
             left_tab: 0,
             right_tab: 0,
+            nav_view: 0,
+            nav_serial: 0,
+            plugin_page: 0,
             active_sound: 0,
             song_mode: false,
             active_section: None,
@@ -2491,6 +2523,19 @@ mod tests {
         assert!(matches!(default_command(), Commands::Gui { .. }));
     }
 
+    #[cfg(feature = "gui")]
+    #[test]
+    fn gui_accepts_the_no_hardware_flag() {
+        let cli = Cli::try_parse_from(["maschine-linux", "gui", "--no-hardware"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Gui {
+                no_hardware: true,
+                ..
+            })
+        ));
+    }
+
     #[test]
     fn gui_sampler_navigation_routes_next_hardware_knob_to_sound() {
         let mut engine = Engine::new_demo(48000);
@@ -2518,17 +2563,12 @@ mod tests {
     }
 
     #[test]
-    fn gui_synth_navigation_routes_hardware_knob_to_acid_cutoff() {
+    fn gui_plugin_navigation_routes_knobs_by_page() {
         let mut engine = Engine::new_demo(48000);
         engine.handle_event(EngineEvent::SetLeftTab(4)).unwrap();
 
         let mut mapper = HardwareMapper::with_default();
         mapper.left_tab = 0;
-        let context = engine.hardware_snapshot();
-        sync_mapper_context(&mut mapper, &context);
-
-        assert_eq!(mapper.left_tab, 4);
-
         let event = |value| {
             HardwareEvent::Encoder(maschine_proto::hid_input::EncoderEvent {
                 id: 1,
@@ -2536,8 +2576,21 @@ mod tests {
                 touched: true,
             })
         };
+
+        let context = engine.hardware_snapshot();
+        sync_mapper_context(&mut mapper, &context);
+        assert_eq!(mapper.left_tab, 4);
+        assert_eq!(mapper.plugin_page, 0);
         let _ = mapper.handle_hardware_event(event(100));
         let actions = mapper.handle_hardware_event(event(101));
+        assert!(actions.contains(&MapperAction::SoundVolumeDelta(1.0)));
+
+        engine.handle_event(EngineEvent::SetPluginPage(1)).unwrap();
+        let context = engine.hardware_snapshot();
+        sync_mapper_context(&mut mapper, &context);
+        assert_eq!(mapper.plugin_page, 1);
+        let _ = mapper.handle_hardware_event(event(101));
+        let actions = mapper.handle_hardware_event(event(102));
         assert!(actions.contains(&MapperAction::AcidCutoffDelta(1.0)));
     }
 }

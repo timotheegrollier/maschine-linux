@@ -15,103 +15,112 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
     let c = MachColors::dark();
     let focus = snap.group_focus as usize;
 
-    ui.horizontal(|ui| {
-        crate::gui::theme::view_header(
-            ui,
-            "🎚 MIXER",
-            "Faders par Groupe (A–H) — VU-mètres temps réel, Mute/Solo, pan.",
-        );
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                crate::gui::theme::view_header(
+                    ui,
+                    "MIXER",
+                    "Faders par Groupe (A–H) — VU-mètres temps réel, Mute/Solo, pan.",
+                );
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let mut master = snap.master_volume;
-            if ui
-                .add(
-                    egui::Slider::new(&mut master, 0.0..=1.0)
-                        .show_value(false)
-                        .text("Master volume"),
-                )
-                .changed()
-            {
-                let _ = app
-                    .engine
-                    .lock()
-                    .handle_event(EngineEvent::MasterVolume(master));
-            }
-            let mut hp = snap.headphone_volume;
-            if ui
-                .add(
-                    egui::Slider::new(&mut hp, 0.0..=1.0)
-                        .show_value(false)
-                        .text("Casque"),
-                )
-                .changed()
-            {
-                let _ = app
-                    .engine
-                    .lock()
-                    .handle_event(EngineEvent::HeadphoneVolume(hp));
-            }
-        });
-    });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut master = snap.master_volume;
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut master, 0.0..=1.0)
+                                .show_value(false)
+                                .text("Master volume"),
+                        )
+                        .changed()
+                    {
+                        let _ = app
+                            .engine
+                            .lock()
+                            .handle_event(EngineEvent::MasterVolume(master));
+                    }
+                    let mut hp = snap.headphone_volume;
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut hp, 0.0..=1.0)
+                                .show_value(false)
+                                .text("Casque"),
+                        )
+                        .changed()
+                    {
+                        let _ = app
+                            .engine
+                            .lock()
+                            .handle_event(EngineEvent::HeadphoneVolume(hp));
+                    }
+                });
+            });
 
-    ui.add_space(8.0);
+            ui.add_space(8.0);
 
-    egui::ScrollArea::horizontal().show(ui, |ui| {
-        ui.horizontal(|ui| {
-            for g in 0..8usize {
-                strip(ui, app, snap, g, g == focus);
-            }
+            egui::ScrollArea::horizontal().show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for g in 0..8usize {
+                        strip(ui, app, snap, g, g == focus);
+                    }
 
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(10.0);
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
 
-            // ── Tranche Master ────────────────────────────────────────
-            crate::gui::theme::card_frame().show(ui, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        egui::RichText::new("MASTER")
-                            .strong()
-                            .size(13.0)
-                            .color(c.accent),
-                    );
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        vu_meter(
-                            ui,
-                            [snap.master_level, snap.master_level],
-                            [snap.master_peak, snap.master_peak],
-                            20.0,
-                            170.0,
-                        );
-                        ui.add_space(4.0);
-                        ui.vertical(|ui| {
-                            let master_db = linear_to_db(snap.master_volume);
-                            if let Some(db) = fader_db(ui, "master_fader", master_db, 150.0, 34.0) {
-                                let master = 10f32.powf(db / 20.0).clamp(0.0, 1.0);
-                                let _ = app
-                                    .engine
-                                    .lock()
-                                    .handle_event(EngineEvent::MasterVolume(master));
-                            }
+                    // ── Tranche Master ────────────────────────────────────────
+                    crate::gui::theme::card_frame().show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
                             ui.label(
-                                egui::RichText::new(format!("{master_db:>5.1} dB"))
-                                    .monospace()
-                                    .small()
-                                    .color(c.text_dim),
+                                egui::RichText::new("MASTER")
+                                    .strong()
+                                    .size(13.0)
+                                    .color(c.accent),
+                            );
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                vu_meter(
+                                    ui,
+                                    [snap.master_level, snap.master_level],
+                                    [snap.master_peak, snap.master_peak],
+                                    20.0,
+                                    170.0,
+                                );
+                                ui.add_space(4.0);
+                                ui.vertical(|ui| {
+                                    let master_db = linear_to_db(snap.master_volume);
+                                    if let Some(db) =
+                                        fader_db(ui, "master_fader", master_db, 150.0, 34.0)
+                                    {
+                                        let master = 10f32.powf(db / 20.0).clamp(0.0, 1.0);
+                                        let _ = app
+                                            .engine
+                                            .lock()
+                                            .handle_event(EngineEvent::MasterVolume(master));
+                                    }
+                                    ui.label(
+                                        egui::RichText::new(format!("{master_db:>5.1} dB"))
+                                            .monospace()
+                                            .small()
+                                            .color(c.text_dim),
+                                    );
+                                });
+                            });
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{:>3.0} %",
+                                    snap.master_volume * 100.0
+                                ))
+                                .monospace()
+                                .color(c.text),
                             );
                         });
                     });
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(format!("{:>3.0} %", snap.master_volume * 100.0))
-                            .monospace()
-                            .color(c.text),
-                    );
                 });
             });
         });
-    });
 }
 
 fn linear_to_db(mul: f32) -> f32 {

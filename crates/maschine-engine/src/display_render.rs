@@ -4042,6 +4042,7 @@ pub fn render_screens(snap: &EngineSnapshot) -> (DisplayFrame, DisplayFrame) {
             1 => render_mixer_left(snap),
             2 => render_sampler_left(snap),
             3 => render_browser_left(snap),
+            4 if snap.plugin_page == 0 => render_sampler_left(snap),
             4 => render_synth_left(snap),
             _ => {
                 if snap.controller_mode == 3 {
@@ -4054,6 +4055,8 @@ pub fn render_screens(snap: &EngineSnapshot) -> (DisplayFrame, DisplayFrame) {
     };
     let right = if snap.song_mode {
         render_arranger_right(snap)
+    } else if snap.left_tab == 4 && snap.right_tab == 0 && snap.plugin_page == 0 {
+        render_sampler_right(snap)
     } else if snap.left_tab == 4 && snap.right_tab == 0 {
         render_synth_right(snap)
     } else if snap.left_tab == 2 && snap.right_tab == 0 {

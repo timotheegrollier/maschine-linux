@@ -70,6 +70,12 @@ pub enum EngineEvent {
     SetLeftTab(u8),
     /// Change Right display tab (0..3)
     SetRightTab(u8),
+    /// Demande de navigation GUI (0: Pattern, 1: Step, 2: Keyboard,
+    /// 3: Scene, 4: Plugin). Le matériel reste la source de vérité : la GUI
+    /// suit ce compteur pour changer de fenêtre au bon moment.
+    NavigateView(u8),
+    /// Page de l'éditeur PLUGIN (0: Sound, 1: TB-303)
+    SetPluginPage(u8),
     /// Select active sound (0..15)
     SelectSound(u8),
     /// Volume d'un groupe en dB
@@ -105,6 +111,24 @@ pub enum EngineEvent {
         sustain: f32,
         release_ms: f32,
     },
+    /// Type de filtre d'un Sound (Off / LowPass / HighPass / BandPass)
+    SoundFilterKind {
+        group: u8,
+        sound: u8,
+        kind: crate::project::FilterKind,
+    },
+    /// Polyphonie d'un Sound (1..32)
+    SoundPolyphony { group: u8, sound: u8, polyphony: u8 },
+    /// Groupe de choke d'un Sound (None = aucun)
+    SoundChoke {
+        group: u8,
+        sound: u8,
+        choke_group: Option<u8>,
+    },
+    /// Copie les réglages du Sound source vers tous les autres Sounds du Group.
+    SoundApplyToGroup { group: u8, source_sound: u8 },
+    /// Réinitialise les réglages de mixage/filtre/enveloppe du Sound.
+    SoundReset { group: u8, sound: u8 },
     /// Efface toutes les notes d'un son dans le pattern actif (ERASE + pad)
     EraseSound { group: u8, sound: u8 },
     /// Miroirs workflow pour les écrans (envoyés par le mapper)
@@ -295,6 +319,14 @@ pub struct EngineSnapshot {
     pub left_tab: u8,
     /// Tab écran droit actif (0: Pattern, 1: Events, 2: Macro, 3: Settings)
     pub right_tab: u8,
+    /// Dernière destination de navigation demandée par le hardware
+    /// (0: Pattern, 1: Step, 2: Keyboard, 3: Scene, 4: Plugin).
+    pub nav_view: u8,
+    /// Numéro de la dernière demande de navigation : la GUI ne réagit qu'aux
+    /// changements de ce compteur, pas à chaque snapshot.
+    pub nav_serial: u64,
+    /// Page de l'éditeur PLUGIN (0: Sound, 1: TB-303).
+    pub plugin_page: u8,
     /// Son actif sélectionné (0..15)
     pub active_sound: u8,
     /// Mode Song (arranger) vs Ideas (scènes)
@@ -356,6 +388,8 @@ pub struct HardwareSnapshot {
     pub active_sound: u8,
     pub left_tab: u8,
     pub right_tab: u8,
+    /// Page PLUGIN (0: Sound, 1: TB-303) — routage des knobs hardware.
+    pub plugin_page: u8,
     pub is_playing: bool,
     pub is_recording: bool,
     pub is_stopped: bool,
@@ -410,6 +444,12 @@ pub struct Engine {
     pub left_tab: u8,
     /// Tab écran droit
     pub right_tab: u8,
+    /// Navigation GUI demandée par le hardware (voir `EngineEvent::NavigateView`)
+    pub nav_view: u8,
+    /// Compteur monotone des demandes de navigation GUI
+    nav_serial: u64,
+    /// Page de l'éditeur PLUGIN (0: Sound, 1: TB-303)
+    pub plugin_page: u8,
     /// Son actif
     pub active_sound: u8,
     /// Mesure sélectionnée pour l'édition et l'affichage (0..pattern_bars-1)
@@ -556,6 +596,9 @@ impl Engine {
             soloed_groups: 0,
             left_tab: 0,
             right_tab: 0,
+            nav_view: 0,
+            nav_serial: 0,
+            plugin_page: 0,
             active_sound: 0,
             selected_bar: 0,
             step_cursor: 0,
@@ -630,6 +673,9 @@ impl Engine {
             soloed_groups: self.soloed_groups,
             left_tab: self.left_tab,
             right_tab: self.right_tab,
+            nav_view: self.nav_view,
+            nav_serial: self.nav_serial,
+            plugin_page: self.plugin_page,
             active_sound: self.active_sound,
             song_mode: self.song_mode,
             active_section: self.active_section,
@@ -727,6 +773,7 @@ impl Engine {
             active_sound: self.active_sound,
             left_tab: self.left_tab,
             right_tab: self.right_tab,
+            plugin_page: self.plugin_page,
             is_playing: playing,
             is_recording: recording,
             is_stopped: !playing && !recording,
@@ -801,6 +848,8 @@ impl Engine {
                 };
                 let sample = self.drum_preset_sample(preset as u8);
                 let sound_index = sound_index as u8;
+                sampler
+                    .set_sound_polyphony(sampler_sound_id(group_id, sound_index), sound.polyphony);
                 sampler.add_zone(
                     sampler_sound_id(group_id, sound_index),
                     crate::sampler::ZoneMapping {
@@ -835,6 +884,21 @@ impl Engine {
             self.sampler.clear_sound(sound_id);
             for zone in zones {
                 self.sampler.add_zone(sound_id, zone);
+            }
+        }
+        // `clear_sound` réinitialise la polyphonie : on la restaure depuis le
+        // projet après le rechargement des zones personnalisées.
+        for (group_index, group) in project.groups.iter().enumerate() {
+            let Ok(group_id) = u8::try_from(group_index) else {
+                continue;
+            };
+            for (sound_index, sound) in group.sounds.iter().enumerate() {
+                let Some(sound) = sound else { continue };
+                let Ok(sound_index) = u8::try_from(sound_index) else {
+                    continue;
+                };
+                self.sampler
+                    .set_sound_polyphony(sampler_sound_id(group_id, sound_index), sound.polyphony);
             }
         }
         Ok(())
@@ -1031,6 +1095,7 @@ impl Engine {
                         .get(self.group_focus as usize)
                         .and_then(|g| g.sounds.get(pad as usize).and_then(|s| s.as_ref()))
                         .map(|s| {
+                            let filter_off = s.filter.kind == crate::project::FilterKind::Off;
                             (
                                 10.0f32.powf(s.volume_db / 20.0),
                                 s.pan,
@@ -1039,8 +1104,12 @@ impl Engine {
                                     decay_ms: s.adsr.decay_ms,
                                     sustain: s.adsr.sustain,
                                     release_ms: s.adsr.release_ms,
-                                    cutoff_hz: s.filter.cutoff_hz,
-                                    resonance: s.filter.resonance,
+                                    cutoff_hz: if filter_off {
+                                        20000.0
+                                    } else {
+                                        s.filter.cutoff_hz
+                                    },
+                                    resonance: if filter_off { 0.0 } else { s.filter.resonance },
                                 },
                             )
                         })
@@ -1171,6 +1240,13 @@ impl Engine {
                     self.song_mode = false;
                 }
             }
+            EngineEvent::NavigateView(view) => {
+                self.nav_view = view.min(4);
+                self.nav_serial = self.nav_serial.wrapping_add(1);
+            }
+            EngineEvent::SetPluginPage(page) => {
+                self.plugin_page = page.min(1);
+            }
             EngineEvent::SelectSound(snd) => {
                 self.active_sound = snd.min(15);
             }
@@ -1286,6 +1362,164 @@ impl Engine {
                 if group == self.group_focus {
                     self.sampler
                         .update_sound_adsr(sampler_sound_id(group, sound), a, d, su, rel);
+                }
+            }
+            EngineEvent::SoundFilterKind { group, sound, kind } => {
+                let mut filter = None;
+                {
+                    let mut guard = self.project.write();
+                    let proj = project_mut(&mut guard);
+                    if let Some(s) = proj
+                        .groups
+                        .get_mut(group as usize)
+                        .and_then(|g| g.sounds.get_mut(sound as usize))
+                        .and_then(|s| s.as_mut())
+                    {
+                        s.filter.kind = kind;
+                        if s.filter.kind == crate::project::FilterKind::Off {
+                            s.filter.cutoff_hz = 20000.0;
+                            s.filter.resonance = 0.0;
+                        } else if s.filter.cutoff_hz >= 19000.0 {
+                            // Passage Off → filtre : ouvre une plage audible
+                            // au lieu de laisser le cutoff à 20 kHz.
+                            s.filter.cutoff_hz = 6000.0;
+                            s.filter.resonance = s.filter.resonance.max(0.15);
+                        }
+                        filter = Some((s.filter.cutoff_hz, s.filter.resonance));
+                    }
+                }
+                if let Some((cutoff, reso)) = filter {
+                    self.sampler
+                        .update_sound_filter(sampler_sound_id(group, sound), cutoff, reso);
+                }
+            }
+            EngineEvent::SoundPolyphony {
+                group,
+                sound,
+                polyphony,
+            } => {
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
+                if let Some(s) = proj
+                    .groups
+                    .get_mut(group as usize)
+                    .and_then(|g| g.sounds.get_mut(sound as usize))
+                    .and_then(|s| s.as_mut())
+                {
+                    s.polyphony = polyphony.clamp(1, 32);
+                }
+                drop(guard);
+                self.sampler
+                    .set_sound_polyphony(sampler_sound_id(group, sound), polyphony);
+            }
+            EngineEvent::SoundChoke {
+                group,
+                sound,
+                choke_group,
+            } => {
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
+                if let Some(s) = proj
+                    .groups
+                    .get_mut(group as usize)
+                    .and_then(|g| g.sounds.get_mut(sound as usize))
+                    .and_then(|s| s.as_mut())
+                {
+                    s.choke_group = choke_group;
+                }
+                drop(guard);
+                self.sampler
+                    .set_sound_choke_group(sampler_sound_id(group, sound), choke_group);
+            }
+            EngineEvent::SoundApplyToGroup {
+                group,
+                source_sound,
+            } => {
+                let updates = {
+                    let mut guard = self.project.write();
+                    let proj = project_mut(&mut guard);
+                    let Some(source) = proj
+                        .groups
+                        .get(group as usize)
+                        .and_then(|g| g.sounds.get(source_sound as usize))
+                        .and_then(|s| s.as_ref())
+                        .cloned()
+                    else {
+                        return Ok(());
+                    };
+                    let Some(target_group) = proj.groups.get_mut(group as usize) else {
+                        return Ok(());
+                    };
+                    let mut updates = Vec::new();
+                    for (index, slot) in target_group.sounds.iter_mut().enumerate() {
+                        if index == source_sound as usize {
+                            continue;
+                        }
+                        let Some(target) = slot.as_mut() else {
+                            continue;
+                        };
+                        target.volume_db = source.volume_db;
+                        target.pan = source.pan;
+                        target.choke_group = source.choke_group;
+                        target.polyphony = source.polyphony;
+                        target.adsr = source.adsr.clone();
+                        target.filter = source.filter.clone();
+                        updates.push((index as u8, target.clone()));
+                    }
+                    updates
+                };
+                for (index, sound) in updates {
+                    let id = sampler_sound_id(group, index);
+                    self.sampler.update_sound_pan(id, sound.pan);
+                    self.sampler.update_sound_filter(
+                        id,
+                        sound.filter.cutoff_hz,
+                        sound.filter.resonance,
+                    );
+                    self.sampler.update_sound_adsr(
+                        id,
+                        sound.adsr.attack_ms,
+                        sound.adsr.decay_ms,
+                        sound.adsr.sustain,
+                        sound.adsr.release_ms,
+                    );
+                    self.sampler.set_sound_choke_group(id, sound.choke_group);
+                    self.sampler.set_sound_polyphony(id, sound.polyphony);
+                }
+            }
+            EngineEvent::SoundReset { group, sound } => {
+                let mut reset = None;
+                {
+                    let mut guard = self.project.write();
+                    let proj = project_mut(&mut guard);
+                    if let Some(s) = proj
+                        .groups
+                        .get_mut(group as usize)
+                        .and_then(|g| g.sounds.get_mut(sound as usize))
+                        .and_then(|s| s.as_mut())
+                    {
+                        s.volume_db = 0.0;
+                        s.pan = 0.0;
+                        s.choke_group = None;
+                        s.polyphony = 8;
+                        s.adsr = crate::project::Adsr::default();
+                        s.filter = crate::project::Filter::default();
+                        reset = Some(s.clone());
+                    }
+                }
+                if let Some(sound_state) = reset {
+                    let id = sampler_sound_id(group, sound);
+                    self.sampler.update_sound_pan(id, sound_state.pan);
+                    self.sampler.update_sound_filter(id, 20000.0, 0.0);
+                    self.sampler.update_sound_adsr(
+                        id,
+                        sound_state.adsr.attack_ms,
+                        sound_state.adsr.decay_ms,
+                        sound_state.adsr.sustain,
+                        sound_state.adsr.release_ms,
+                    );
+                    self.sampler.set_sound_choke_group(id, None);
+                    self.sampler.set_sound_polyphony(id, 8);
                 }
             }
             EngineEvent::GroupVolume { group, volume_db } => {
@@ -2226,8 +2460,11 @@ impl Engine {
             3 => [
                 "PRES <", "PRES >", "SND <", "SND >", "ECOUTE", "CHARGER", "METRO", "LOOP",
             ],
+            4 if self.plugin_page == 0 => [
+                "SND <", "SND >", "PAGE TB", "ECOUTE", "APPLIQ", "RESET", "VOL -", "VOL +",
+            ],
             4 => [
-                "SAW/SQR", "OCT -", "OCT +", "SLIDE", "CLASSIC", "SQUELCH", "DISTORT", "DUB",
+                "SAW/SQR", "OCT -", "OCT +", "SLIDE", "CLASSIC", "SQUELCH", "PAGE SND", "DUB",
             ],
             _ => [
                 "BAR 1", "BAR 2", "BAR 3", "BAR 4", "1 MES", "2 MES", "4 MES", "8 MES",
@@ -2307,6 +2544,48 @@ impl Engine {
                 6 => self.handle_event(EngineEvent::ToggleMetronome),
                 _ => self.handle_event(EngineEvent::ToggleLoop),
             },
+            4 if self.plugin_page == 0 => match idx {
+                0 => {
+                    let s = self.active_sound.saturating_sub(1);
+                    self.handle_event(EngineEvent::SelectSound(s))
+                }
+                1 => {
+                    let s = (self.active_sound + 1).min(15);
+                    self.handle_event(EngineEvent::SelectSound(s))
+                }
+                2 => self.handle_event(EngineEvent::SetPluginPage(1)),
+                3 => self.handle_event(EngineEvent::Pad {
+                    pad: self.active_sound,
+                    velocity: 112,
+                    pressed: true,
+                }),
+                4 => self.handle_event(EngineEvent::SoundApplyToGroup {
+                    group: self.group_focus,
+                    source_sound: self.active_sound,
+                }),
+                5 => self.handle_event(EngineEvent::SoundReset {
+                    group: self.group_focus,
+                    sound: self.active_sound,
+                }),
+                6 | 7 => {
+                    let delta = if idx == 6 { -3.0 } else { 3.0 };
+                    let current = self
+                        .project
+                        .read()
+                        .groups
+                        .get(self.group_focus as usize)
+                        .and_then(|g| g.sounds.get(self.active_sound as usize))
+                        .and_then(|s| s.as_ref())
+                        .map(|s| s.volume_db)
+                        .unwrap_or(0.0);
+                    self.handle_event(EngineEvent::SoundVolume {
+                        group: self.group_focus,
+                        sound: self.active_sound,
+                        volume_db: (current + delta).clamp(-60.0, 12.0),
+                    })
+                }
+                _ => Ok(()),
+            },
             4 => match idx {
                 0 => self.handle_event(EngineEvent::AcidWaveformToggle),
                 1 => self.handle_event(EngineEvent::AcidOctaveDelta(-1)),
@@ -2321,7 +2600,7 @@ impl Engine {
                 }
                 4 => self.handle_event(EngineEvent::AcidSelectPreset(0)),
                 5 => self.handle_event(EngineEvent::AcidSelectPreset(1)),
-                6 => self.handle_event(EngineEvent::AcidSelectPreset(2)),
+                6 => self.handle_event(EngineEvent::SetPluginPage(0)),
                 _ => self.handle_event(EngineEvent::AcidSelectPreset(3)),
             },
             _ => match idx {

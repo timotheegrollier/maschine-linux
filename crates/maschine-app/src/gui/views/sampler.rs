@@ -52,7 +52,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let subtitle = format!(
                     "Groupe {} • Sound {:02} — {sound_name}{}",
                     group_char(gf),
@@ -63,7 +63,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                         String::new()
                     }
                 );
-                crate::gui::theme::view_header(ui, "🎛 SAMPLER", &subtitle);
+                crate::gui::theme::view_header(ui, "SAMPLER", &subtitle);
             });
 
             ui.add_space(6.0);
@@ -107,7 +107,8 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
 
             ui.add_space(8.0);
 
-            ui.horizontal_top(|ui| {
+            let wave_w = (ui.available_width() - 24.0).clamp(260.0, 430.0);
+            ui.horizontal_wrapped(|ui| {
                 // ── WAVEFORM ──────────────────────────────────────────
                 card_frame().show(ui, |ui| {
                     ui.label(
@@ -117,8 +118,10 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                             .color(c.accent),
                     );
                     ui.add_space(4.0);
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(430.0, 150.0), egui::Sense::hover());
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(wave_w, 150.0),
+                        egui::Sense::hover(),
+                    );
                     let painter = ui.painter();
                     painter.rect_filled(rect, egui::CornerRadius::same(4), c.bg);
                     painter.hline(
@@ -264,11 +267,12 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                         .small()
                         .color(c.accent),
                 );
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let path_w = (ui.available_width() - 130.0).clamp(160.0, 420.0);
                     ui.add(
                         egui::TextEdit::singleline(&mut app.sample_path_input)
                             .hint_text("Chemin vers un fichier WAV mono ou multicanal")
-                            .desired_width(420.0),
+                            .desired_width(path_w),
                     );
                     if chip(ui, "IMPORTER WAV", false, c.accent_cyan) {
                         app.load_sample_async(snap.group_focus, snap.active_sound);
@@ -294,7 +298,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                         .color(c.accent),
                 );
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if let Some(v) = knob(
                         ui,
                         "snd_vol",
@@ -361,7 +365,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                             });
                         }
                         ui.add_space(4.0);
-                        if chip(ui, "🎯 Charger le preset Browser", false, c.accent_cyan) {
+                        if chip(ui, "CHARGER LE PRESET BROWSER", false, c.accent_cyan) {
                             let preset = snap.browser_preset_idx;
                             let _ = app.engine.lock().handle_event(EngineEvent::LoadDrumPreset {
                                 group: snap.group_focus,
@@ -370,7 +374,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                             });
                         }
                         ui.add_space(4.0);
-                        if chip(ui, "🧹 Effacer les notes (patterns)", false, c.error) {
+                        if chip(ui, "EFFACER LES NOTES (PATTERNS)", false, c.error) {
                             let _ = app.engine.lock().handle_event(EngineEvent::EraseSound {
                                 group: snap.group_focus,
                                 sound: snap.active_sound,

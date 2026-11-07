@@ -154,6 +154,18 @@ pub fn value_label(ui: &mut egui::Ui, text: impl AsRef<str>, color: egui::Color3
     );
 }
 
+/// Bandeau d'état d'un menu matériel latché (PATTERN, STEP, SCENE…).
+pub fn mode_banner(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
+    egui::Frame::NONE
+        .fill(color.gamma_multiply(0.14))
+        .stroke(egui::Stroke::new(1.0_f32, color.gamma_multiply(0.75)))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(9, 6))
+        .show(ui, |ui| {
+            ui.colored_label(color, egui::RichText::new(text).strong().size(11.0));
+        });
+}
+
 /// Étiquette petite atténuée.
 pub fn caption(ui: &mut egui::Ui, text: impl AsRef<str>) {
     ui.colored_label(

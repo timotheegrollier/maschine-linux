@@ -12,6 +12,21 @@ use crate::events::HardwareEvent;
 /// pour un tap plus court qu'une frame LED 33ms), façon Maschine.
 const PAD_FLASH_MS: u64 = 200;
 
+/// Destinations de navigation GUI émises par les menus matériels.
+/// La GUI utilise ces identifiants pour ouvrir la fenêtre correspondante.
+pub mod nav {
+    /// Vue séquenceur / pattern.
+    pub const PATTERN: u8 = 0;
+    /// Vue édition pas-à-pas.
+    pub const STEP: u8 = 1;
+    /// Vue clavier / performance.
+    pub const KEYBOARD: u8 = 2;
+    /// Vue scènes.
+    pub const SCENE: u8 = 3;
+    /// Vue plugin / édition des sons.
+    pub const PLUGIN: u8 = 4;
+}
+
 /// Variante atténuée d'une couleur de pad pour l'état repos, façon Maschine :
 /// les pads brillent en demi-teinte au repos, la frappe flashe blanc et les
 /// pas programmés restent en couleur pleine.
@@ -281,6 +296,10 @@ pub enum MapperAction {
     SetLeftTab(u8),
     /// Définir le tab actif écran droit (0..3)
     SetRightTab(u8),
+    /// Ouvrir une fenêtre GUI (voir le module `nav`).
+    NavigateView(u8),
+    /// Choisir la page de l'éditeur PLUGIN (0: Sound, 1: TB-303).
+    SetPluginPage(u8),
     /// Humanisation / Variation
     Variation,
     /// Basculer mode Song / Arranger
@@ -406,6 +425,8 @@ pub struct HardwareMapper {
     pub left_tab: u8,
     /// Onglet écran droit (0..3)
     pub right_tab: u8,
+    /// Page de l'éditeur PLUGIN (0: Sound, 1: TB-303)
+    pub plugin_page: u8,
     /// Son actif sélectionné pour édition Step/Keyboard (0..15)
     pub active_sound: u8,
     /// Preset sélectionné dans le Browser (0..15)
@@ -489,6 +510,7 @@ impl HardwareMapper {
             note_repeat: false,
             left_tab: 0,
             right_tab: 0,
+            plugin_page: 0,
             active_sound: 0,
             browser_preset_idx: 0,
             selected_bar: 0,
@@ -536,6 +558,56 @@ impl HardwareMapper {
         self.left_tab = tab;
         self.right_tab = 0;
         actions.push(MapperAction::SetLeftTab(tab));
+        // Les anciens overlays (EVENTS/MACRO/SETTINGS) ne doivent pas rester
+        // affichés au-dessus de la nouvelle vue.
+        actions.push(MapperAction::SetRightTab(0));
+    }
+
+    /// Change le mode de jeu et reflète l'état sur les LEDs/écrans.
+    fn set_controller_mode(&mut self, mode: ControllerMode, actions: &mut Vec<MapperAction>) {
+        let code = match mode {
+            ControllerMode::Pad => 0,
+            ControllerMode::Keyboard => 1,
+            ControllerMode::Chords => 2,
+            ControllerMode::Step => 3,
+        };
+        if self.mode != mode {
+            self.mode = mode;
+            actions.push(MapperAction::ModeSwitch(mode));
+        }
+        actions.push(MapperAction::SetControllerMode(code));
+    }
+
+    /// Désactive tous les menus « latchés » (PATTERN, SCENE, SELECT, ERASE).
+    fn clear_menu_modes(&mut self, actions: &mut Vec<MapperAction>) {
+        if self.pattern_select_mode {
+            self.pattern_select_mode = false;
+            actions.push(MapperAction::SetPatternMode(false));
+        }
+        if self.scene_select_mode {
+            self.scene_select_mode = false;
+            actions.push(MapperAction::SetSceneMode(false));
+        }
+        if self.select_mode {
+            self.select_mode = false;
+            self.select_pinned = false;
+            self.select_held = false;
+            actions.push(MapperAction::SetSelectMode(false));
+        }
+        if self.erase_mode {
+            self.erase_mode = false;
+            self.erase_pinned = false;
+            self.erase_held = false;
+            actions.push(MapperAction::SetEraseMode(false));
+        }
+    }
+
+    /// Revient au comportement par défaut : pads performance + vue séquenceur.
+    fn exit_to_default(&mut self, actions: &mut Vec<MapperAction>) {
+        self.clear_menu_modes(actions);
+        self.select_left_tab(0, actions);
+        self.set_controller_mode(ControllerMode::Pad, actions);
+        actions.push(MapperAction::NavigateView(nav::PATTERN));
     }
 
     /// Traite un événement matériel complet et retourne la liste des actions à appliquer à l'engine.
@@ -735,7 +807,10 @@ impl HardwareMapper {
                             self.select_used = false;
                             self.select_mode = true;
                             actions.push(MapperAction::SetSelectMode(true));
-                        } else {
+                        } else if self.select_mode {
+                            // `select_mode` a pu être désactivé par un autre
+                            // menu (PATTERN, SCENE…) : ne pas le rallumer au
+                            // relâchement du bouton.
                             if self.select_used {
                                 self.select_pinned = false;
                                 self.select_mode = false;
@@ -757,7 +832,7 @@ impl HardwareMapper {
                                 self.erase_mode = true;
                                 actions.push(MapperAction::SetEraseMode(true));
                             }
-                        } else if !self.shift_held {
+                        } else if !self.shift_held && self.erase_mode {
                             if self.erase_used {
                                 self.erase_pinned = false;
                                 self.erase_mode = false;
@@ -808,26 +883,41 @@ impl HardwareMapper {
                             }
                         }
 
-                        // Modes de contrôle
+                        // Modes de contrôle — comportement Maschine : le bouton
+                        // active le menu, un second appui sur le même bouton
+                        // revient au mode Pad par défaut.
                         ButtonId::PadMode => {
-                            self.mode = ControllerMode::Pad;
-                            actions.push(MapperAction::ModeSwitch(ControllerMode::Pad));
-                            actions.push(MapperAction::SetControllerMode(0));
+                            self.exit_to_default(&mut actions);
                         }
                         ButtonId::Keyboard => {
-                            self.mode = ControllerMode::Keyboard;
-                            actions.push(MapperAction::ModeSwitch(ControllerMode::Keyboard));
-                            actions.push(MapperAction::SetControllerMode(1));
+                            if self.mode == ControllerMode::Keyboard {
+                                self.exit_to_default(&mut actions);
+                            } else {
+                                self.clear_menu_modes(&mut actions);
+                                self.select_left_tab(0, &mut actions);
+                                self.set_controller_mode(ControllerMode::Keyboard, &mut actions);
+                                actions.push(MapperAction::NavigateView(nav::KEYBOARD));
+                            }
                         }
                         ButtonId::Chords => {
-                            self.mode = ControllerMode::Chords;
-                            actions.push(MapperAction::ModeSwitch(ControllerMode::Chords));
-                            actions.push(MapperAction::SetControllerMode(2));
+                            if self.mode == ControllerMode::Chords {
+                                self.exit_to_default(&mut actions);
+                            } else {
+                                self.clear_menu_modes(&mut actions);
+                                self.select_left_tab(0, &mut actions);
+                                self.set_controller_mode(ControllerMode::Chords, &mut actions);
+                                actions.push(MapperAction::NavigateView(nav::KEYBOARD));
+                            }
                         }
                         ButtonId::Step => {
-                            self.mode = ControllerMode::Step;
-                            actions.push(MapperAction::ModeSwitch(ControllerMode::Step));
-                            actions.push(MapperAction::SetControllerMode(3));
+                            if self.mode == ControllerMode::Step {
+                                self.exit_to_default(&mut actions);
+                            } else {
+                                self.clear_menu_modes(&mut actions);
+                                self.select_left_tab(0, &mut actions);
+                                self.set_controller_mode(ControllerMode::Step, &mut actions);
+                                actions.push(MapperAction::NavigateView(nav::STEP));
+                            }
                         }
 
                         // Focus Encodeur 4D
@@ -894,8 +984,9 @@ impl HardwareMapper {
                             }
                         }
                         ButtonId::Settings => {
-                            self.right_tab = 3;
-                            actions.push(MapperAction::SetRightTab(3));
+                            let tab = if self.right_tab == 3 { 0 } else { 3 };
+                            self.right_tab = tab;
+                            actions.push(MapperAction::SetRightTab(tab));
                         }
 
                         // Groupes A..H (avec MUTE/SOLO + Group façon Maschine)
@@ -980,32 +1071,54 @@ impl HardwareMapper {
                             actions.push(MapperAction::DuplicateBar);
                         }
                         // Workflow officiel : SCENE / PATTERN / SELECT / EVENTS / MACRO / PLUGIN
+                        // Chaque menu reste actif (latch) et un second appui sur
+                        // le même bouton le désactive, comme sur Maschine Windows.
                         ButtonId::Scene => {
-                            self.scene_select_mode = !self.scene_select_mode;
                             if self.scene_select_mode {
-                                self.pattern_select_mode = false;
-                                actions.push(MapperAction::SetPatternMode(false));
+                                self.exit_to_default(&mut actions);
+                            } else {
+                                self.clear_menu_modes(&mut actions);
+                                self.scene_select_mode = true;
+                                self.select_left_tab(0, &mut actions);
+                                self.set_controller_mode(ControllerMode::Pad, &mut actions);
+                                actions.push(MapperAction::SetSceneMode(true));
+                                actions.push(MapperAction::NavigateView(nav::SCENE));
                             }
-                            actions.push(MapperAction::SetSceneMode(self.scene_select_mode));
                         }
                         ButtonId::Pattern => {
-                            self.pattern_select_mode = !self.pattern_select_mode;
                             if self.pattern_select_mode {
-                                self.scene_select_mode = false;
-                                actions.push(MapperAction::SetSceneMode(false));
+                                self.exit_to_default(&mut actions);
+                            } else {
+                                self.clear_menu_modes(&mut actions);
+                                self.pattern_select_mode = true;
+                                self.select_left_tab(0, &mut actions);
+                                self.set_controller_mode(ControllerMode::Pad, &mut actions);
+                                actions.push(MapperAction::SetPatternMode(true));
+                                actions.push(MapperAction::NavigateView(nav::PATTERN));
                             }
-                            actions.push(MapperAction::SetPatternMode(self.pattern_select_mode));
                         }
                         ButtonId::Events => {
-                            self.right_tab = 1;
-                            actions.push(MapperAction::SetRightTab(1));
+                            let tab = if self.right_tab == 1 { 0 } else { 1 };
+                            self.right_tab = tab;
+                            actions.push(MapperAction::SetRightTab(tab));
                         }
                         ButtonId::Macro => {
-                            self.right_tab = 2;
-                            actions.push(MapperAction::SetRightTab(2));
+                            let tab = if self.right_tab == 2 { 0 } else { 2 };
+                            self.right_tab = tab;
+                            actions.push(MapperAction::SetRightTab(tab));
                         }
                         ButtonId::Plugin => {
-                            self.select_left_tab(4, &mut actions); // ACID SYNTH / TB-303
+                            if self.left_tab == 4 {
+                                // Second appui : quitte l'éditeur PLUGIN.
+                                self.select_left_tab(0, &mut actions);
+                                actions.push(MapperAction::NavigateView(nav::PATTERN));
+                            } else {
+                                self.clear_menu_modes(&mut actions);
+                                self.select_left_tab(4, &mut actions);
+                                self.plugin_page = 0;
+                                actions.push(MapperAction::SetPluginPage(0));
+                                actions.push(MapperAction::NavigateView(nav::PLUGIN));
+                            }
                         }
                         ButtonId::ChannelMidi => {
                             self.select_left_tab(1, &mut actions); // MIXER
@@ -1146,8 +1259,23 @@ impl HardwareMapper {
                                 6 => actions.push(MapperAction::SoundSustainDelta(delta as f32)),
                                 _ => actions.push(MapperAction::SoundReleaseDelta(delta as f32)),
                             }
+                        } else if self.left_tab == 4 && self.plugin_page == 0 {
+                            // PLUGIN / SOUND : édition du Sound actif.
+                            // 1-4 = VOL/PAN/CUTOFF/RESO, 5-8 = ADSR.
+                            match idx {
+                                0 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
+                                1 => actions.push(MapperAction::SoundPanDelta(delta as f32)),
+                                2 => {
+                                    actions.push(MapperAction::SoundFilterCutoffDelta(delta as f32))
+                                }
+                                3 => actions.push(MapperAction::SoundFilterResoDelta(delta as f32)),
+                                4 => actions.push(MapperAction::SoundAttackDelta(delta as f32)),
+                                5 => actions.push(MapperAction::SoundDecayDelta(delta as f32)),
+                                6 => actions.push(MapperAction::SoundSustainDelta(delta as f32)),
+                                _ => actions.push(MapperAction::SoundReleaseDelta(delta as f32)),
+                            }
                         } else if self.left_tab == 4 {
-                            // ACID SYNTH : 1 CUTOFF, 2 RESO, 3 ENVMOD, 4 DECAY,
+                            // TB-303 : 1 CUTOFF, 2 RESO, 3 ENVMOD, 4 DECAY,
                             // 5 ACCENT, 6 DRIVE, 7 DELAY TIME, 8 DELAY MIX.
                             match idx {
                                 0 => actions.push(MapperAction::AcidCutoffDelta(delta as f32)),
@@ -2345,5 +2473,103 @@ mod tests {
         assert!(sampler.contains(&MapperAction::SetLeftTab(2)));
         assert_eq!(m.left_tab, 2);
         assert_eq!(m.right_tab, 0);
+    }
+
+    fn press_button(m: &mut HardwareMapper, id: maschine_proto::ButtonId) -> Vec<MapperAction> {
+        m.handle_hardware_event(HardwareEvent::Button {
+            id,
+            pressed: true,
+            ts_ns: 1,
+        })
+    }
+
+    #[test]
+    fn step_button_latches_and_toggles_back_to_pad() {
+        let mut m = HardwareMapper::with_default();
+        let on = press_button(&mut m, maschine_proto::ButtonId::Step);
+        assert_eq!(m.mode, ControllerMode::Step);
+        assert!(on.contains(&MapperAction::ModeSwitch(ControllerMode::Step)));
+        assert!(on.contains(&MapperAction::SetControllerMode(3)));
+        assert!(on.contains(&MapperAction::NavigateView(nav::STEP)));
+        assert!(on.contains(&MapperAction::SetLeftTab(0)));
+
+        let off = press_button(&mut m, maschine_proto::ButtonId::Step);
+        assert_eq!(m.mode, ControllerMode::Pad);
+        assert!(off.contains(&MapperAction::ModeSwitch(ControllerMode::Pad)));
+        assert!(off.contains(&MapperAction::SetControllerMode(0)));
+        assert!(off.contains(&MapperAction::NavigateView(nav::PATTERN)));
+    }
+
+    #[test]
+    fn keyboard_button_latches_and_toggles_back_to_pad() {
+        let mut m = HardwareMapper::with_default();
+        let on = press_button(&mut m, maschine_proto::ButtonId::Keyboard);
+        assert_eq!(m.mode, ControllerMode::Keyboard);
+        assert!(on.contains(&MapperAction::SetControllerMode(1)));
+        assert!(on.contains(&MapperAction::NavigateView(nav::KEYBOARD)));
+
+        let off = press_button(&mut m, maschine_proto::ButtonId::Keyboard);
+        assert_eq!(m.mode, ControllerMode::Pad);
+        assert!(off.contains(&MapperAction::SetControllerMode(0)));
+    }
+
+    #[test]
+    fn pattern_and_scene_buttons_latch_and_exclude_each_other() {
+        let mut m = HardwareMapper::with_default();
+        let pattern = press_button(&mut m, maschine_proto::ButtonId::Pattern);
+        assert!(m.pattern_select_mode);
+        assert!(!m.scene_select_mode);
+        assert!(pattern.contains(&MapperAction::SetPatternMode(true)));
+        assert!(pattern.contains(&MapperAction::NavigateView(nav::PATTERN)));
+
+        let scene = press_button(&mut m, maschine_proto::ButtonId::Scene);
+        assert!(!m.pattern_select_mode);
+        assert!(m.scene_select_mode);
+        assert!(scene.contains(&MapperAction::SetPatternMode(false)));
+        assert!(scene.contains(&MapperAction::SetSceneMode(true)));
+        assert!(scene.contains(&MapperAction::NavigateView(nav::SCENE)));
+
+        let scene_off = press_button(&mut m, maschine_proto::ButtonId::Scene);
+        assert!(!m.scene_select_mode);
+        assert!(scene_off.contains(&MapperAction::SetSceneMode(false)));
+        assert!(scene_off.contains(&MapperAction::NavigateView(nav::PATTERN)));
+    }
+
+    #[test]
+    fn events_macro_and_settings_are_toggle_menus() {
+        let mut m = HardwareMapper::with_default();
+        let events = press_button(&mut m, maschine_proto::ButtonId::Events);
+        assert_eq!(m.right_tab, 1);
+        assert!(events.contains(&MapperAction::SetRightTab(1)));
+        let events_off = press_button(&mut m, maschine_proto::ButtonId::Events);
+        assert_eq!(m.right_tab, 0);
+        assert!(events_off.contains(&MapperAction::SetRightTab(0)));
+
+        let macro_on = press_button(&mut m, maschine_proto::ButtonId::Macro);
+        assert_eq!(m.right_tab, 2);
+        assert!(macro_on.contains(&MapperAction::SetRightTab(2)));
+        let _ = press_button(&mut m, maschine_proto::ButtonId::Macro);
+        assert_eq!(m.right_tab, 0);
+
+        let settings = press_button(&mut m, maschine_proto::ButtonId::Settings);
+        assert_eq!(m.right_tab, 3);
+        assert!(settings.contains(&MapperAction::SetRightTab(3)));
+        let _ = press_button(&mut m, maschine_proto::ButtonId::Settings);
+        assert_eq!(m.right_tab, 0);
+    }
+
+    #[test]
+    fn plugin_button_latches_and_toggles_back_to_pattern() {
+        let mut m = HardwareMapper::with_default();
+        let on = press_button(&mut m, maschine_proto::ButtonId::Plugin);
+        assert_eq!(m.left_tab, 4);
+        assert!(on.contains(&MapperAction::SetLeftTab(4)));
+        assert!(on.contains(&MapperAction::SetPluginPage(0)));
+        assert!(on.contains(&MapperAction::NavigateView(nav::PLUGIN)));
+
+        let off = press_button(&mut m, maschine_proto::ButtonId::Plugin);
+        assert_eq!(m.left_tab, 0);
+        assert!(off.contains(&MapperAction::SetLeftTab(0)));
+        assert!(off.contains(&MapperAction::NavigateView(nav::PATTERN)));
     }
 }

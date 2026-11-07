@@ -97,7 +97,7 @@ The native GUI displays in real time:
 - **8-group mixer (A..H)**: volume faders, peak indicators, mute and solo.
 - **Import a sample**: in Sampler, enter the path of a WAV file and start the import. Decoding happens in the background; the GUI remains interactive. The selected Sound is replaced and the path is saved in the project.
 
-Useful shortcuts: `I` Ideas, `S` Sequencer, `K` Keyboard, `M` Mixer, `A` Sampler, `T`/`P` Plugin/TB-303, `B` Browser, `Space` Play/Stop, `F1` toggle navigation, `F2` toggle MK3 panel, `Ctrl+S` save.
+Useful shortcuts: `I` Ideas, `S` Sequencer, `K` Keyboard, `M` Mixer, `A` Sampler, `T`/`P` Plugin/TB-303, `B` Browser/File, `Space` Play/Stop, `F1` toggle navigation, `F2` toggle MK3 panel, `Ctrl+S` save, `Ctrl+Shift+S` quick save. On MK3, `FILE` opens the project browser and `Shift + FILE SAVE` performs a quick save.
 
 The official Sample Editor (recording, playback ranges, slicing and zone editing from the MK3) is not yet implemented. The EVENTS screen currently displays information without editing events.
 

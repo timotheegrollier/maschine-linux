@@ -2,6 +2,21 @@
 
 All notable changes.
 
+## [0.9.0] - 2026-11-08
+
+### Highlights
+
+- **FILE / project workflow (MK3 + GUI)**: The MK3 `FILE` button opens a project browser with quick navigation and loading from the hardware or GUI. `Shift + FILE SAVE` performs a compact quick save of the current project; normal saves write readable JSON. Projects are stored as viewable `*.maschine-linux.json` files with atomic writes, and recent/current project paths are remembered for fast reloads.
+- **Per-pad volume and pan per Group**: Every Sound/pad in every Group keeps its own mixer level and pan. The GUI Mixer exposes editable per-pad strips for the focused Group, and the selected pad/Sound can be edited from the MK3 mixer workflow and screens.
+- **Keyboard and Chords repaired**: Keyboard and Chords modes now play the active Sound melodically with engine-owned musical state (root note, scale, base octave, chord type, inversion). The top display buttons / soft keys change scales and musical behavior, and both MK3 screens plus the GUI Keyboard view show the correct performance information.
+
+### Validation
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- `cargo test --workspace` (all workspace library tests passing in this environment)
+- Hardware validation is recommended on a connected MK3 for HID/display/LED behavior, FILE navigation, mixer control, and Keyboard/Chords performance.
+
 ## [0.8.0] - 2026-11-07
 
 ### Highlights

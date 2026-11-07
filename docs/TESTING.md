@@ -18,6 +18,9 @@ This guide pairs each documented promise with a concrete check. Cargo tests cove
 | Latched MK3 menus | `cargo test -p maschine-hardware step_button_latches_and_toggles_back_to_pad keyboard_button_latches_and_toggles_back_to_pad pattern_and_scene_buttons_latch_and_exclude_each_other events_macro_and_settings_are_toggle_menus plugin_button_latches_and_toggles_back_to_pattern` | PATTERN, STEP, KEYBOARD, SCENE, EVENTS, MACRO, SETTINGS and PLUGIN latch on first press and return to the default workflow on second press. |
 | Per-Sound sampler control | `cargo test -p maschine-engine per_sound_polyphony_steals_only_that_sound` | Polyphony is enforced per Sound and voice stealing does not affect another Sound. |
 | Standalone GUI | `cargo test -p maschine-app gui_accepts_the_no_hardware_flag` | `gui --no-hardware` parses correctly and forces the hardware-free path. |
+| FILE/project workflow | manual / integration coverage | `FILE` opens the project browser, navigation loads projects, `Shift + FILE SAVE` quick-saves, and saves produce readable `*.maschine-linux.json` files. |
+| Mixer per pad | manual / integration coverage | Selecting pads changes the editable Sound; per-pad volume/pan edits apply and persist per Group. |
+| Keyboard/Chords | manual / integration coverage | Root/scale/octave/chord controls change musical state; pads play pitched notes/chords; MK3/GUI screens reflect the state. |
 | GUI/HID integration | `cargo test -p maschine-app` | Event routing, context transitions and the 2×1 RGB565 recovery probe. |
 | General regressions | `cargo test --workspace` | All unit and integration tests in the workspace. |
 | Optimized binary | `cargo build --workspace --release` | Compilation of the binary and crates in release mode. |

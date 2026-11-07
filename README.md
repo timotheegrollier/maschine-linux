@@ -14,7 +14,7 @@ Maschine Linux is an independent project. It does not include Native
 Instruments code or proprietary assets; it reproduces the documented workflow
 and hardware behavior through a clean-room implementation.
 
-## Current state (0.8.0)
+## Current state (0.9.0)
 
 Cargo workspace with four main crates:
 
@@ -34,7 +34,7 @@ inside each block, and a drum kit regenerated at the device sample rate.
 Instrumentation: `--debug-latency` (HID→Engine, real buffer size, misses,
 errors) and `--stress` (deliberate engine-lock contention).
 
-### Workflow and GUI parity in 0.8.0
+### Workflow and GUI parity in 0.9.0
 
 - **Complete PATTERN mode**: empty pads create pattern slots, `DUPLICATE`
   copies the active pattern, `SHIFT + ERASE` clears its events, and the 4D

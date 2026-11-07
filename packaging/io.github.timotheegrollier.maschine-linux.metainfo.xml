@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.9.0" date="2026-11-08">
+      <description>
+        <p>Release 0.9.0 adds a Maschine-style FILE/project workflow on MK3 and GUI, per-pad volume and pan editing for every Sound in each Group, and repaired Keyboard/Chords modes with scale, root, octave, chord controls and dedicated screens.</p>
+      </description>
+    </release>
     <release version="0.8.0" date="2026-11-07">
       <description>
         <p>Release 0.8.0 with complete Pattern management, hideable workspace and MK3 panels, and a graceful MK3 shutdown that restores the default logo and turns pad LEDs off.</p>

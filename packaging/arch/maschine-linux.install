@@ -1,0 +1,26 @@
+post_install() {
+    echo "==> Rechargement des règles udev..."
+    udevadm control --reload-rules 2>/dev/null || true
+    udevadm trigger --subsystem-match=usb --subsystem-match=hidraw 2>/dev/null || true
+
+    echo "==> Mise à jour du cache des icônes..."
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+    update-desktop-database -q /usr/share/applications 2>/dev/null || true
+
+    echo ""
+    echo "============================================"
+    echo "  Maschine Linux installé avec succès !"
+    echo "  Branchez votre contrôleur Maschine MK3"
+    echo "  et lancez : maschine-linux"
+    echo "============================================"
+}
+
+post_upgrade() {
+    post_install
+}
+
+post_remove() {
+    udevadm control --reload-rules 2>/dev/null || true
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+    update-desktop-database -q /usr/share/applications 2>/dev/null || true
+}

@@ -1,16 +1,45 @@
-# Maschine MK3 (17cc:1600) + Mikro MK3 (17cc:1700) — maschine-linux
-# Permet l'accès hidraw sans sudo via systemd-logind (TAG+="uaccess")
-# et fixe les permissions pour le bulk display (IF5) quand on utilise nusb/rusb.
+# ==============================================================================
+# Maschine Linux — Universal Plug & Play Udev Rules
+# Native Instruments Controllers (Maschine MK3, Mikro MK3, MK2, Studio, Jam, Plus)
+# ==============================================================================
 
-SUBSYSTEM=="usb", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1600", TAG+="uaccess", TAG+="udev-acl", MODE="0660", GROUP="plugdev"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1700", TAG+="uaccess", TAG+="udev-acl", MODE="0660", GROUP="plugdev"
+# ------------------------------------------------------------------------------
+# 1. USB Device Rules: Full access & disable power autosuspend
+# ------------------------------------------------------------------------------
+# Maschine MK3 (17cc:1600)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1600", TAG+="uaccess", TAG+="udev-acl", MODE="0666", GROUP="audio"
+# Maschine Mikro MK3 (17cc:1700)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1700", TAG+="uaccess", TAG+="udev-acl", MODE="0666", GROUP="audio"
+# Maschine MK2 (17cc:1140)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1140", TAG+="uaccess", TAG+="udev-acl", MODE="0666", GROUP="audio"
+# Maschine Mikro MK2 (17cc:1200)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1200", TAG+="uaccess", TAG+="udev-acl", MODE="0666", GROUP="audio"
+# Maschine Studio (17cc:1300)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1300", TAG+="uaccess", TAG+="udev-acl", MODE="0666", GROUP="audio"
+# Maschine Jam (17cc:1500)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1500", TAG+="uaccess", TAG+="udev-acl", MODE="0666", GROUP="audio"
+# Maschine+ Controller Mode (17cc:1800)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1800", TAG+="uaccess", TAG+="udev-acl", MODE="0666", GROUP="audio"
 
-# hidraw (IF4) — le driver usbhid reste chargé, on lit /dev/hidraw*
-KERNEL=="hidraw*", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1600", TAG+="uaccess", MODE="0660", GROUP="plugdev"
-KERNEL=="hidraw*", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1700", TAG+="uaccess", MODE="0660", GROUP="plugdev"
+# ------------------------------------------------------------------------------
+# 2. HIDRAW Device Rules (/dev/hidraw*) — Buttons, Knobs & Pads input/output
+# ------------------------------------------------------------------------------
+KERNEL=="hidraw*", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1600", TAG+="uaccess", TAG+="udev-acl", MODE="0666", GROUP="audio"
+KERNEL=="hidraw*", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1700", TAG+="uaccess", TAG+="udev-acl", MODE="0666", GROUP="audio"
+KERNEL=="hidraw*", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1140", TAG+="uaccess", TAG+="udev-acl", MODE="0666", GROUP="audio"
+KERNEL=="hidraw*", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1200", TAG+="uaccess", TAG+="udev-acl", MODE="0666", GROUP="audio"
+KERNEL=="hidraw*", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1300", TAG+="uaccess", TAG+="udev-acl", MODE="0666", GROUP="audio"
+KERNEL=="hidraw*", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1500", TAG+="uaccess", TAG+="udev-acl", MODE="0666", GROUP="audio"
+KERNEL=="hidraw*", ATTRS{idVendor}=="17cc", ATTRS{idProduct}=="1800", TAG+="uaccess", TAG+="udev-acl", MODE="0666", GROUP="audio"
 
-# Optionnel : pour l'audio, éviter autosuspend
+# ------------------------------------------------------------------------------
+# 3. Prevent USB Autosuspend (crucial for audio interfaces & bulk display transfers)
+# ------------------------------------------------------------------------------
 ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="17cc", ATTR{power/control}="on"
+ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="17cc", ATTR{power/autosuspend}="-1"
+ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="17cc", ATTR{power/autosuspend_delay_ms}="-1"
 
-# Pour nusb exclusif (si on détache usbhid) — autorise usbfs
-SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="17cc", TAG+="uaccess"
+# ------------------------------------------------------------------------------
+# 4. USBFS raw endpoints (Interface 5: dual 480x272 color displays bulk transfer)
+# ------------------------------------------------------------------------------
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTRS{idVendor}=="17cc", TAG+="uaccess", TAG+="udev-acl", MODE="0666", GROUP="audio"

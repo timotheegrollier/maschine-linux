@@ -33,6 +33,8 @@ libc = "0.2"
 # GUI optionnelle
 eframe = { version = "0.32", optional = true }
 egui = { version = "0.32", optional = true }
+ureq = { version = "3.5.1", features = ["json"] }
+semver = "1.0.28"
 
 [features]
 default = ["audio", "usb", "midi-alsa", "gui"]
@@ -44,3 +46,56 @@ full = ["audio", "usb", "gui"]
 
 [dev-dependencies]
 env_logger = { workspace = true }
+
+[package.metadata.generate-rpm]
+name = "maschine-linux"
+summary = "Native Instruments Maschine MK3 DAW & Controller integration for Linux"
+license = "GPL-3.0-or-later"
+assets = [
+    { source = "../../target/release/maschine-linux", dest = "/usr/bin/maschine-linux", mode = "755" },
+    { source = "../../packaging/maschine-linux.desktop", dest = "/usr/share/applications/maschine-linux.desktop", mode = "644" },
+    { source = "../../packaging/io.github.timotheegrollier.maschine-linux.metainfo.xml", dest = "/usr/share/metainfo/io.github.timotheegrollier.maschine-linux.metainfo.xml", mode = "644" },
+    { source = "../../packaging/icons/maschine-linux.svg", dest = "/usr/share/icons/hicolor/scalable/apps/maschine-linux.svg", mode = "644" },
+    { source = "../../packaging/icons/16x16/maschine-linux.png", dest = "/usr/share/icons/hicolor/16x16/apps/maschine-linux.png", mode = "644" },
+    { source = "../../packaging/icons/32x32/maschine-linux.png", dest = "/usr/share/icons/hicolor/32x32/apps/maschine-linux.png", mode = "644" },
+    { source = "../../packaging/icons/48x48/maschine-linux.png", dest = "/usr/share/icons/hicolor/48x48/apps/maschine-linux.png", mode = "644" },
+    { source = "../../packaging/icons/64x64/maschine-linux.png", dest = "/usr/share/icons/hicolor/64x64/apps/maschine-linux.png", mode = "644" },
+    { source = "../../packaging/icons/128x128/maschine-linux.png", dest = "/usr/share/icons/hicolor/128x128/apps/maschine-linux.png", mode = "644" },
+    { source = "../../packaging/icons/256x256/maschine-linux.png", dest = "/usr/share/icons/hicolor/256x256/apps/maschine-linux.png", mode = "644" },
+    { source = "../../packaging/icons/512x512/maschine-linux.png", dest = "/usr/share/icons/hicolor/512x512/apps/maschine-linux.png", mode = "644" },
+    { source = "../../packaging/udev/99-maschine-mk3.rules", dest = "/usr/lib/udev/rules.d/99-maschine-mk3.rules", mode = "644" },
+    { source = "../../packaging/limits/99-realtime-audio.conf", dest = "/etc/security/limits.d/99-realtime-audio.conf", mode = "644" },
+    { source = "../../packaging/pipewire/99-maschine-lowlatency.conf", dest = "/usr/share/pipewire/pipewire.conf.d/99-maschine-lowlatency.conf", mode = "644" },
+    { source = "../../packaging/wireplumber/51-maschine-mk3.conf", dest = "/usr/share/wireplumber/wireplumber.conf.d/51-maschine-mk3.conf", mode = "644" },
+    { source = "../../packaging/systemd/maschine-linux.service", dest = "/usr/lib/systemd/user/maschine-linux.service", mode = "644" },
+]
+post_install_script = "../../packaging/rpm/post_install.sh"
+post_uninstall_script = "../../packaging/rpm/post_uninstall.sh"
+
+[package.metadata.deb]
+name = "maschine-linux"
+maintainer = "Timothée Grollier <timo@example.com>"
+copyright = "2026, maschine-linux contributors"
+license-file = ["../../LICENSE", "4"]
+extended-description = "Native Instruments Maschine MK3 DAW & Controller integration for Linux"
+section = "sound"
+priority = "optional"
+assets = [
+    ["../../target/release/maschine-linux", "usr/bin/", "755"],
+    ["../../packaging/maschine-linux.desktop", "usr/share/applications/", "644"],
+    ["../../packaging/io.github.timotheegrollier.maschine-linux.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["../../packaging/icons/maschine-linux.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["../../packaging/icons/16x16/maschine-linux.png", "usr/share/icons/hicolor/16x16/apps/", "644"],
+    ["../../packaging/icons/32x32/maschine-linux.png", "usr/share/icons/hicolor/32x32/apps/", "644"],
+    ["../../packaging/icons/48x48/maschine-linux.png", "usr/share/icons/hicolor/48x48/apps/", "644"],
+    ["../../packaging/icons/64x64/maschine-linux.png", "usr/share/icons/hicolor/64x64/apps/", "644"],
+    ["../../packaging/icons/128x128/maschine-linux.png", "usr/share/icons/hicolor/128x128/apps/", "644"],
+    ["../../packaging/icons/256x256/maschine-linux.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["../../packaging/icons/512x512/maschine-linux.png", "usr/share/icons/hicolor/512x512/apps/", "644"],
+    ["../../packaging/udev/99-maschine-mk3.rules", "usr/lib/udev/rules.d/", "644"],
+    ["../../packaging/limits/99-realtime-audio.conf", "etc/security/limits.d/", "644"],
+    ["../../packaging/pipewire/99-maschine-lowlatency.conf", "usr/share/pipewire/pipewire.conf.d/", "644"],
+    ["../../packaging/wireplumber/51-maschine-mk3.conf", "usr/share/wireplumber/wireplumber.conf.d/", "644"],
+    ["../../packaging/systemd/maschine-linux.service", "usr/lib/systemd/user/", "644"],
+]
+

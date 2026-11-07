@@ -111,6 +111,10 @@ pub struct GuiApp {
     pub repaint: crate::gui::RepaintSignal,
     /// Fenêtre réglages audio ouverte.
     pub show_settings: bool,
+    /// Fenêtre de mise à jour ouverte.
+    pub show_updater: bool,
+    /// État partagé de l'auto-updater.
+    pub updater_state: crate::updater::SharedUpdateState,
     /// Périphériques disponibles.
     #[cfg(feature = "audio")]
     pub available_devices: Vec<crate::audio::AudioDeviceInfo>,
@@ -162,11 +166,27 @@ impl GuiApp {
         let settings = crate::settings::AppSettings::load();
         let selected = settings.audio_device.unwrap_or(current_dev);
         let (sample_load_tx, sample_load_rx) = crossbeam_channel::unbounded();
+        let updater_state = Arc::new(Mutex::new(crate::updater::UpdateState::default()));
+        {
+            let s_check = updater_state.clone();
+            let r_check = repaint.clone();
+            std::thread::Builder::new()
+                .name("maschine-update-check-startup".to_string())
+                .spawn(move || {
+                    std::thread::sleep(Duration::from_secs(3));
+                    crate::updater::spawn_background_update_check(s_check);
+                    std::thread::sleep(Duration::from_millis(1500));
+                    r_check.notify();
+                })
+                .ok();
+        }
         Self {
             engine,
             audio,
             repaint,
             show_settings: false,
+            show_updater: false,
+            updater_state,
             available_devices: devices,
             selected_device: selected,
             status_message: None,
@@ -189,10 +209,26 @@ impl GuiApp {
     #[cfg(not(feature = "audio"))]
     pub fn new(engine: Arc<Mutex<Engine>>, repaint: crate::gui::RepaintSignal) -> Self {
         let (sample_load_tx, sample_load_rx) = crossbeam_channel::unbounded();
+        let updater_state = Arc::new(Mutex::new(crate::updater::UpdateState::default()));
+        {
+            let s_check = updater_state.clone();
+            let r_check = repaint.clone();
+            std::thread::Builder::new()
+                .name("maschine-update-check-startup".to_string())
+                .spawn(move || {
+                    std::thread::sleep(Duration::from_secs(3));
+                    crate::updater::spawn_background_update_check(s_check);
+                    std::thread::sleep(Duration::from_millis(1500));
+                    r_check.notify();
+                })
+                .ok();
+        }
         Self {
             engine,
             repaint,
             show_settings: false,
+            show_updater: false,
+            updater_state,
             selected_device: "disabled".to_string(),
             status_message: None,
             pad_down: None,
@@ -1059,6 +1095,25 @@ impl eframe::App for GuiApp {
                     };
                     ui.colored_label(col, egui::RichText::new(msg).small());
                 }
+
+                // Notification discrète de mise à jour dans la barre de statut
+                let update_opt = self.updater_state.lock().update_available.clone();
+                if let Some(check) = update_opt {
+                    ui.separator();
+                    if ui
+                        .button(
+                            egui::RichText::new(format!(
+                                "🚀 MÀJ v{} disponible",
+                                check.new_version
+                            ))
+                            .small()
+                            .color(MachColors::dark().accent_cyan),
+                        )
+                        .clicked()
+                    {
+                        self.show_updater = true;
+                    }
+                }
             });
         });
 
@@ -1228,6 +1283,22 @@ impl eframe::App for GuiApp {
             }
         }
 
+        // Fenêtre de mise à jour logicielle in-app.
+        if self.show_updater {
+            let mut updater_open = self.show_updater;
+            let c = MachColors::dark();
+            egui::Window::new("🚀 Mises à jour de Maschine Linux")
+                .open(&mut updater_open)
+                .default_width(520.0)
+                .min_width(450.0)
+                .resizable(true)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    render_updater_window(ui, &self.updater_state, &c);
+                });
+            self.show_updater = updater_open;
+        }
+
         // Réactivité "tac-au-tac" : repaint continu pendant la lecture
         // (playhead, flash pads, VU-mètres), sinon rafraîchi à 20 Hz + sur
         // événement hardware (RepaintSignal.notify()).
@@ -1284,4 +1355,158 @@ pub fn run_native_gui(
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe: {e}"))
+}
+
+/// Affiche le panneau de mise à jour automatique in-app.
+fn render_updater_window(
+    ui: &mut egui::Ui,
+    state: &crate::updater::SharedUpdateState,
+    c: &MachColors,
+) {
+    let s = state.lock().clone();
+    ui.add_space(4.0);
+
+    ui.group(|ui| {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Version installée :").strong());
+            ui.colored_label(c.text, format!("v{}", crate::updater::CURRENT_VERSION));
+            ui.separator();
+            ui.label(egui::RichText::new("Environnement :").strong());
+            ui.colored_label(c.accent_cyan, crate::updater::PackageKind::detect().label());
+        });
+    });
+
+    ui.add_space(8.0);
+
+    if s.is_checking {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label("Vérification des mises à jour sur GitHub...");
+        });
+    } else if let Some(check) = &s.update_available {
+        ui.group(|ui| {
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.colored_label(c.accent_cyan, egui::RichText::new("🚀").size(22.0));
+                    ui.colored_label(
+                        egui::Color32::WHITE,
+                        egui::RichText::new(format!(
+                            "Nouvelle version disponible : v{}",
+                            check.new_version
+                        ))
+                        .strong()
+                        .size(15.0),
+                    );
+                });
+
+                if let Some(ref title) = check.release.name {
+                    ui.label(egui::RichText::new(title).strong().color(c.text_dim));
+                }
+
+                if let Some(ref asset) = check.matched_asset {
+                    ui.label(format!(
+                        "Paquet compatible : {} ({:.1} Mo)",
+                        asset.name,
+                        asset.size as f64 / (1024.0 * 1024.0)
+                    ));
+                } else {
+                    ui.colored_label(
+                        c.warning,
+                        "Aucun paquet pré-compilé spécifique pour cette distribution.",
+                    );
+                }
+
+                if let Some(ref body) = check.release.body {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new("Notes de version :")
+                            .strong()
+                            .size(12.0),
+                    );
+                    egui::ScrollArea::vertical()
+                        .max_height(140.0)
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new(body).small().color(c.text_dim));
+                        });
+                }
+            });
+        });
+
+        ui.add_space(10.0);
+
+        if s.is_downloading {
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    if let Some((dl, tot)) = s.progress {
+                        let pct = if tot > 0 { dl as f32 / tot as f32 } else { 0.0 };
+                        ui.add(egui::ProgressBar::new(pct).show_percentage());
+                        ui.label(format!(
+                            "{:.1} / {:.1} Mo",
+                            dl as f64 / 1_048_576.0,
+                            tot as f64 / 1_048_576.0
+                        ));
+                    } else {
+                        ui.label("Téléchargement en cours...");
+                    }
+                });
+            });
+        } else if s.update_completed {
+            ui.colored_label(
+                c.success,
+                egui::RichText::new("✔ Mise à jour installée avec succès !")
+                    .strong()
+                    .size(14.0),
+            );
+            if s.restart_required {
+                ui.colored_label(
+                    c.accent_cyan,
+                    "Veuillez redémarrer Maschine Linux pour appliquer les changements.",
+                );
+            }
+        } else if check.matched_asset.is_some()
+            && ui
+                .button(
+                    egui::RichText::new("⬇ Télécharger & Installer la mise à jour")
+                        .strong()
+                        .size(13.0),
+                )
+                .clicked()
+        {
+            crate::updater::spawn_background_update_apply(state.clone());
+        }
+    } else {
+        ui.horizontal(|ui| {
+            ui.colored_label(c.success, egui::RichText::new("✔").size(18.0));
+            ui.label(format!(
+                "Maschine Linux est à jour (v{}).",
+                crate::updater::CURRENT_VERSION
+            ));
+        });
+    }
+
+    if let Some(ref err) = s.error_message {
+        ui.add_space(6.0);
+        ui.colored_label(c.error, err);
+    }
+    if let Some(ref msg) = s.status_message {
+        ui.add_space(4.0);
+        ui.colored_label(c.text_dim, egui::RichText::new(msg).small());
+    }
+
+    ui.add_space(10.0);
+    ui.separator();
+    ui.horizontal(|ui| {
+        if ui.button("🔍 Vérifier maintenant").clicked() && !s.is_checking && !s.is_downloading {
+            crate::updater::spawn_background_update_check(state.clone());
+        }
+        if ui.button("🌐 Voir sur GitHub").clicked() {
+            let _ = std::process::Command::new("xdg-open")
+                .arg(format!(
+                    "https://github.com/{}/releases",
+                    crate::updater::GITHUB_REPO
+                ))
+                .spawn();
+        }
+    });
 }

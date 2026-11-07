@@ -172,6 +172,20 @@ pub fn render_transport(
 
                 // ── Droite : master + réglages ──────────────────────────
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Bouton Mises à jour in-app
+                    let update_ready = app.updater_state.lock().update_available.is_some();
+                    let (up_txt, up_act) = if update_ready {
+                        ("🚀 MàJ DISPO", true)
+                    } else if app.show_updater {
+                        ("🚀 Fermer", true)
+                    } else {
+                        ("🚀 MàJ", false)
+                    };
+                    if mach_button(ui, up_txt, up_act).clicked {
+                        app.show_updater = !app.show_updater;
+                    }
+                    ui.add_space(4.0);
+
                     #[cfg(feature = "audio")]
                     {
                         let (txt, _col) = if app.show_settings {

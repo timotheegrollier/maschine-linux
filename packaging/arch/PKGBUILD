@@ -1,0 +1,56 @@
+# Maintainer: Timothée Grollier <timo@example.com>
+pkgname=maschine-linux
+pkgver=0.6.0
+pkgrel=1
+pkgdesc="Native Instruments Maschine MK3 DAW & Controller for Linux"
+arch=('x86_64')
+url="https://github.com/timotheegrollier/maschine-linux"
+license=('MIT')
+depends=('alsa-lib' 'systemd-libs')
+makedepends=('cargo' 'rust')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/timotheegrollier/maschine-linux/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's|host: ||p')"
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --release --locked -p maschine-app
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+
+    # Binaire
+    install -Dm755 target/release/maschine-linux "$pkgdir/usr/bin/maschine-linux"
+
+    # Desktop entry
+    install -Dm644 packaging/maschine-linux.desktop "$pkgdir/usr/share/applications/maschine-linux.desktop"
+
+    # AppStream metadata
+    install -Dm644 packaging/io.github.timotheegrollier.maschine-linux.metainfo.xml \
+        "$pkgdir/usr/share/metainfo/io.github.timotheegrollier.maschine-linux.metainfo.xml"
+
+    # Icônes
+    install -Dm644 packaging/icons/maschine-linux.svg \
+        "$pkgdir/usr/share/icons/hicolor/scalable/apps/maschine-linux.svg"
+    for _size in 16 32 48 64 128 256 512; do
+        install -Dm644 "packaging/icons/${_size}x${_size}/maschine-linux.png" \
+            "$pkgdir/usr/share/icons/hicolor/${_size}x${_size}/apps/maschine-linux.png"
+    done
+
+    # Udev rules (plug & play)
+    install -Dm644 packaging/udev/99-maschine-mk3.rules "$pkgdir/usr/lib/udev/rules.d/99-maschine-mk3.rules"
+
+    # Limites temps réel audio
+    install -Dm644 packaging/limits/99-realtime-audio.conf "$pkgdir/etc/security/limits.d/99-realtime-audio.conf"
+
+    # Licence
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

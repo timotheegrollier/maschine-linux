@@ -25,8 +25,10 @@ mod audio;
 mod display_thread;
 #[cfg(feature = "gui")]
 mod gui;
+pub mod hotplug;
 mod hw_output;
 mod settings;
+pub mod updater;
 
 /// Statistiques latence HID (mode `--debug-latency`) : événement brut →
 /// action appliquée dans l'Engine.
@@ -214,6 +216,12 @@ enum Commands {
         #[arg(long)]
         stress: bool,
     },
+    /// Vérifie et applique les mises à jour depuis les releases GitHub
+    Update {
+        /// Vérifie seulement si une mise à jour est disponible (sans installer)
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -318,6 +326,7 @@ fn main() -> anyhow::Result<()> {
             duration,
             device,
         } => cmd_audio_test(freq, duration, device)?,
+        Commands::Update { check } => cmd_update(check)?,
         Commands::Gui {
             project,
             audio_device,
@@ -654,7 +663,7 @@ fn cmd_daemon(
             .as_ref()
             .expect("un contrôleur connecté a un chemin hidraw")
             .clone();
-        match hw_output::spawn_led_writer(hidraw_path.clone(), led_rx) {
+        match hw_output::spawn_led_writer(hidraw_path.clone(), led_rx.clone()) {
             Ok(h) => {
                 info!("✓ LED writer démarré sur {}", hidraw_path.display());
                 // envoie état initial (arc-en-ciel)
@@ -1422,23 +1431,31 @@ fn cmd_daemon(
     // ----- GUI mode: run event loop in background, GUI on main thread -----
     #[cfg(feature = "gui")]
     if with_gui {
-        // Spawn HID event loop in background thread
+        // Spawn HID event loop in background thread with Plug & Play auto-reconnect
         let engine_bg = engine.clone();
         let led_tx_bg = led_tx.clone();
         let latency_bg = latency_stats.clone();
         let display_activity_bg = display_activity.clone();
         #[cfg(feature = "gui")]
         let repaint_bg = repaint.clone();
+        let hw_tx_hotplug = hardware_tx.clone();
+        let led_rx_hotplug = led_rx.clone();
+
         std::thread::Builder::new()
             .name("maschine-hid-loop".to_string())
             .spawn(move || {
                 let mut mapper = HardwareMapper::new(MapperConfig::default());
-                if hardware_leds_enabled {
+                let mut hardware_session: Option<hotplug::HardwareSession> = None;
+                let mut is_connected = hardware_connected;
+                let mut last_hotplug_check = std::time::Instant::now();
+
+                if is_connected && !no_led {
                     sync_hardware_leds(&engine_bg, &mut mapper, &led_tx_bg);
                 }
                 let mut last_advance = std::time::Instant::now();
                 let mut last_led_sync = std::time::Instant::now();
                 let use_manual_advance = no_audio || cfg!(not(feature = "audio"));
+
                 loop {
                     if use_manual_advance {
                         let elapsed = last_advance.elapsed();
@@ -1453,8 +1470,40 @@ fn cmd_daemon(
                         }
                     }
 
+                    // Détection et reconnexion automatique Plug & Play à chaud
+                    if !is_connected && last_hotplug_check.elapsed() >= Duration::from_millis(1000) {
+                        last_hotplug_check = std::time::Instant::now();
+                        if let Some(device) = hotplug::probe_available_device() {
+                            info!("🔌 Maschine MK3 détectée en Plug & Play ! Reconnexion en cours...");
+                            match hotplug::HardwareSession::start(
+                                device,
+                                hw_tx_hotplug.clone(),
+                                led_rx_hotplug.clone(),
+                                engine_bg.clone(),
+                                display_activity_bg.clone(),
+                                no_led,
+                            ) {
+                                Ok(sess) => {
+                                    hardware_session = Some(sess);
+                                    is_connected = true;
+                                    info!("✓ Contrôleur Maschine MK3 reconnecté en direct !");
+                                    let context = engine_bg.lock().hardware_snapshot();
+                                    sync_mapper_context(&mut mapper, &context);
+                                    if !no_led {
+                                        sync_hardware_leds(&engine_bg, &mut mapper, &led_tx_bg);
+                                    }
+                                    display_activity_bg.store(true, Ordering::Relaxed);
+                                    repaint_bg.notify();
+                                }
+                                Err(e) => {
+                                    warn!("Échec de reconnexion Plug & Play: {e}");
+                                }
+                            }
+                        }
+                    }
+
                     // Rafraîchissement régulier des LEDs physiques (30 FPS)
-                    if hardware_leds_enabled && last_led_sync.elapsed() >= Duration::from_millis(16)
+                    if is_connected && !no_led && last_led_sync.elapsed() >= Duration::from_millis(16)
                     {
                         sync_hardware_leds(&engine_bg, &mut mapper, &led_tx_bg);
                         last_led_sync = std::time::Instant::now();
@@ -1466,11 +1515,17 @@ fn cmd_daemon(
                             match &ev {
                                 HardwareEvent::Connected { serial } => {
                                     info!("✓ MK3 connectée serial={:?}", serial);
+                                    is_connected = true;
                                 }
                                 HardwareEvent::Error(e) => error!("hardware error: {e}"),
                                 HardwareEvent::Disconnected => {
-                                    warn!("MK3 déconnectée");
-                                    return;
+                                    warn!("🔌 Contrôleur Maschine MK3 déconnecté — en attente de reconnexion Plug & Play...");
+                                    is_connected = false;
+                                    if let Some(mut sess) = hardware_session.take() {
+                                        sess.stop();
+                                    }
+                                    repaint_bg.notify();
+                                    continue;
                                 }
                                 HardwareEvent::Pot { id, value } => {
                                     use maschine_proto::ButtonId;
@@ -1510,7 +1565,7 @@ fn cmd_daemon(
                             apply_mapper_actions(&engine_bg, &mut mapper, actions);
                             display_activity_bg.store(true, Ordering::Relaxed);
 
-                            if hardware_leds_enabled {
+                            if is_connected && !no_led {
                                 sync_hardware_leds(&engine_bg, &mut mapper, &led_tx_bg);
                                 last_led_sync = std::time::Instant::now();
                             }
@@ -1524,8 +1579,7 @@ fn cmd_daemon(
                         }
                         Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                         Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                            warn!("channel disconnected");
-                            return;
+                            is_connected = false;
                         }
                     }
                 }
@@ -1573,6 +1627,9 @@ fn cmd_daemon(
     let mut last_advance = std::time::Instant::now();
     let mut last_led_sync = std::time::Instant::now();
     let use_manual_advance = no_audio || cfg!(not(feature = "audio"));
+    let mut is_connected = hardware_connected;
+    let mut hardware_session: Option<hotplug::HardwareSession> = None;
+    let mut last_hotplug_check = std::time::Instant::now();
     loop {
         if use_manual_advance {
             let elapsed = last_advance.elapsed();
@@ -1587,8 +1644,36 @@ fn cmd_daemon(
             }
         }
 
+        // Reconnexion automatique Plug & Play si déconnecté
+        if !is_connected && last_hotplug_check.elapsed() >= Duration::from_millis(1000) {
+            last_hotplug_check = std::time::Instant::now();
+            if let Some(device) = hotplug::probe_available_device() {
+                info!("🔌 Maschine MK3 détectée en Plug & Play ! Reconnexion daemon...");
+                match hotplug::HardwareSession::start(
+                    device,
+                    hardware_tx.clone(),
+                    led_rx.clone(),
+                    engine.clone(),
+                    display_activity.clone(),
+                    no_led,
+                ) {
+                    Ok(sess) => {
+                        hardware_session = Some(sess);
+                        is_connected = true;
+                        info!("✓ Contrôleur Maschine MK3 reconnecté avec succès en mode daemon !");
+                        if !no_led {
+                            sync_hardware_leds(&engine, &mut mapper, &led_tx);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Échec de reconnexion Plug & Play (daemon): {e}");
+                    }
+                }
+            }
+        }
+
         // Rafraîchissement régulier des LEDs physiques (30 FPS)
-        if hardware_leds_enabled && last_led_sync.elapsed() >= Duration::from_millis(33) {
+        if is_connected && !no_led && last_led_sync.elapsed() >= Duration::from_millis(33) {
             sync_hardware_leds(&engine, &mut mapper, &led_tx);
             last_led_sync = std::time::Instant::now();
         }
@@ -1600,11 +1685,15 @@ fn cmd_daemon(
                 match &ev {
                     HardwareEvent::Connected { serial } => {
                         info!("✓ MK3 connectée serial={:?}", serial);
+                        is_connected = true;
                     }
                     HardwareEvent::Error(e) => error!("hardware error: {e}"),
                     HardwareEvent::Disconnected => {
-                        warn!("MK3 déconnectée");
-                        break;
+                        warn!("🔌 Contrôleur Maschine MK3 déconnecté — en attente de reconnexion Plug & Play...");
+                        is_connected = false;
+                        if let Some(mut sess) = hardware_session.take() {
+                            sess.stop();
+                        }
                     }
                     HardwareEvent::Pot { id, value } => {
                         use maschine_proto::ButtonId;
@@ -1637,7 +1726,7 @@ fn cmd_daemon(
                 apply_mapper_actions(&engine, &mut mapper, actions);
                 display_activity.store(true, Ordering::Relaxed);
 
-                if hardware_leds_enabled {
+                if is_connected && !no_led {
                     sync_hardware_leds(&engine, &mut mapper, &led_tx);
                     last_led_sync = std::time::Instant::now();
                 }
@@ -1649,8 +1738,7 @@ fn cmd_daemon(
             }
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                warn!("channel disconnected");
-                break;
+                is_connected = false;
             }
         }
 
@@ -2315,6 +2403,72 @@ fn cmd_audio_test(freq: f32, duration: f32, device: Option<String>) -> anyhow::R
         let _ = (freq, duration, device);
         anyhow::bail!("feature `audio` non activée — rebuild avec --features audio");
     }
+}
+
+/// Commande CLI `update` pour vérifier ou appliquer les mises à jour GitHub.
+fn cmd_update(check_only: bool) -> anyhow::Result<()> {
+    use std::io::Write;
+    println!("==> Vérification des mises à jour pour Maschine Linux");
+    println!("    Version actuelle : v{}", updater::CURRENT_VERSION);
+    println!(
+        "    Environnement    : {}",
+        updater::PackageKind::detect().label()
+    );
+
+    match updater::check_for_updates()? {
+        Some(check) => {
+            println!("🚀 Nouvelle version disponible : v{}", check.new_version);
+            if let Some(ref title) = check.release.name {
+                println!("    Titre : {title}");
+            }
+            if let Some(ref asset) = check.matched_asset {
+                println!(
+                    "    Paquet compatible : {} ({:.1} Mo)",
+                    asset.name,
+                    asset.size as f64 / (1024.0 * 1024.0)
+                );
+            }
+            if let Some(ref body) = check.release.body {
+                println!("\nNotes de version :\n{body}\n");
+            }
+
+            if check_only {
+                return Ok(());
+            }
+
+            if let Some(ref asset) = check.matched_asset {
+                println!("==> Téléchargement de la mise à jour...");
+                let temp_file = std::env::temp_dir().join(&asset.name);
+                updater::download_asset(asset, &temp_file, |dl, total| {
+                    if total > 0 {
+                        let pct = (dl as f64 / total as f64) * 100.0;
+                        print!(
+                            "\r    Progression : {:.1}% ({:.1} / {:.1} Mo)",
+                            pct,
+                            dl as f64 / 1_048_576.0,
+                            total as f64 / 1_048_576.0
+                        );
+                        let _ = std::io::stdout().flush();
+                    }
+                })?;
+                println!("\n==> Application de la mise à jour...");
+                let msg = updater::apply_update(&check, &temp_file)?;
+                println!("{msg}");
+            } else {
+                println!(
+                    "⚠ Aucun paquet compatible trouvé pour ce système. Rendez-vous sur {}",
+                    check.release.html_url
+                );
+            }
+        }
+        None => {
+            println!(
+                "✓ Maschine Linux est déjà à jour (v{}).",
+                updater::CURRENT_VERSION
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

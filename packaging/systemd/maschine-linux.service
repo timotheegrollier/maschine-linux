@@ -1,0 +1,16 @@
+[Unit]
+Description=Maschine Linux Headless Audio & Hardware Daemon
+Documentation=https://github.com/timotheegrollier/maschine-linux
+After=pipewire.service sound.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/maschine-linux daemon
+Restart=on-failure
+RestartSec=3
+Nice=-15
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=default.target

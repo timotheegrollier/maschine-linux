@@ -1,0 +1,15 @@
+[Desktop Entry]
+Name=Maschine Linux
+GenericName=DAW & Groovebox
+Comment=Production musicale et contrôle Native Instruments Maschine MK3
+Comment[fr]=Production musicale et contrôle Native Instruments Maschine MK3
+Comment[en]=Music production and controller interface for Native Instruments Maschine MK3
+Exec=maschine-linux
+Icon=maschine-linux
+Terminal=false
+Type=Application
+Categories=AudioVideo;Audio;AudioVideoEditing;Midi;Sequencer;
+Keywords=maschine;mk3;groovebox;sampler;sequencer;midi;audio;drum;synth;
+StartupNotify=true
+StartupWMClass=maschine-linux
+X-PulseAudio-Properties=media.role=production

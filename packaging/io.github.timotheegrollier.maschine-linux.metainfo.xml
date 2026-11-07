@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.timotheegrollier.maschine-linux</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Maschine Linux</name>
+  <developer id="io.github.timotheegrollier">
+    <name>Timothée Grollier</name>
+  </developer>
+  <summary>Native Instruments Maschine MK3 DAW &amp; Controller integration for Linux</summary>
+  <summary xml:lang="fr">DAW et intégration contrôleur Native Instruments Maschine MK3 pour Linux</summary>
+
+  <description>
+    <p>
+      Maschine Linux is a modern, ultra-low-latency Digital Audio Workstation and hardware host tailored specifically for the Native Instruments Maschine MK3 and Mikro MK3 controllers on Linux.
+    </p>
+    <p xml:lang="fr">
+      Maschine Linux est une station de travail audio numérique (DAW) ultra basse latence conçue spécialement pour les contrôleurs Native Instruments Maschine MK3 et Mikro MK3 sous Linux.
+    </p>
+    <ul>
+      <li>Full plug-and-play hardware support for Maschine MK3 (Pads, Knobs, 4-way encoder, dual 480x272 color displays)</li>
+      <li>Integrated 808 analog drum synthesis engine and high-performance polyphonic sampler</li>
+      <li>Real-time DSP guitar multi-effects rack and Acid TB-303 synthesizer emulation</li>
+      <li>Seamless PipeWire / WirePlumber / ALSA low-latency audio support with dynamic sample-rate negotiation</li>
+      <li>Automatic in-app update mechanism from GitHub releases</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">maschine-linux.desktop</launchable>
+
+  <url type="homepage">https://github.com/timotheegrollier/maschine-linux</url>
+  <url type="bugtracker">https://github.com/timotheegrollier/maschine-linux/issues</url>
+
+  <provides>
+    <binary>maschine-linux</binary>
+  </provides>
+
+  <releases>
+    <release version="0.6.0" date="2026-11-01">
+      <description>
+        <p>Release 0.6.0 with GUI studio interface, 808 analog synthesis, dual-screen mirror, PipeWire low latency and hotplug support.</p>
+      </description>
+    </release>
+  </releases>
+
+  <content_rating type="oars-1.1" />
+</component>

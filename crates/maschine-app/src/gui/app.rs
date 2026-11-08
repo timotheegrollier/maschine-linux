@@ -613,16 +613,52 @@ impl GuiApp {
                 sound: snd,
                 pan: v,
             }),
-            KParam::Cutoff => self.send(EngineEvent::SoundFilterCutoff {
-                group: gf,
-                sound: snd,
-                cutoff_hz: v,
-            }),
-            KParam::Reso => self.send(EngineEvent::SoundFilterReso {
-                group: gf,
-                sound: snd,
-                resonance: v,
-            }),
+            KParam::Cutoff => {
+                // Route vers le filtre du synthétiseur actif (kick / wavetable / acid),
+                // sinon vers le filtre sampler multimode.
+                if let Some(kp) = snap.focus_sound_kick.as_ref() {
+                    let mut p = kp.clone();
+                    p.filter_cutoff_hz = v;
+                    self.send(EngineEvent::KickSetParams(p));
+                } else if let Some(wp) = snap.focus_sound_wavetable.as_ref() {
+                    let mut p = wp.clone();
+                    p.filter_cutoff = v;
+                    self.send(EngineEvent::WavetableSetParams(p));
+                } else if snap.focus_sound_acid.is_some() {
+                    let mut p = snap.acid_params.clone();
+                    p.cutoff_hz = v;
+                    self.send(EngineEvent::AcidSetParams(p));
+                } else {
+                    self.send(EngineEvent::SoundFilterCutoff {
+                        group: gf,
+                        sound: snd,
+                        cutoff_hz: v,
+                    });
+                }
+            }
+            KParam::Reso => {
+                // Route vers le filtre du synthétiseur actif (kick / wavetable / acid),
+                // sinon vers le filtre sampler multimode.
+                if let Some(kp) = snap.focus_sound_kick.as_ref() {
+                    let mut p = kp.clone();
+                    p.filter_reso = v;
+                    self.send(EngineEvent::KickSetParams(p));
+                } else if let Some(wp) = snap.focus_sound_wavetable.as_ref() {
+                    let mut p = wp.clone();
+                    p.filter_reso = v;
+                    self.send(EngineEvent::WavetableSetParams(p));
+                } else if snap.focus_sound_acid.is_some() {
+                    let mut p = snap.acid_params.clone();
+                    p.resonance = v;
+                    self.send(EngineEvent::AcidSetParams(p));
+                } else {
+                    self.send(EngineEvent::SoundFilterReso {
+                        group: gf,
+                        sound: snd,
+                        resonance: v,
+                    });
+                }
+            }
             KParam::Attack | KParam::Decay | KParam::Sustain | KParam::Release => {
                 let (mut a, mut d, mut s, mut r) = (2.0f32, 100.0f32, 0.8f32, 150.0f32);
                 if let Some(sound) = snap

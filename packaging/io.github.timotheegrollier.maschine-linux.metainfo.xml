@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.9.3" date="2026-11-08">
+      <description>
+        <p>Release 0.9.3 corrects the MK3 FILE/SAVE and BROWSER physical button mapping and updates on-screen guidance.</p>
+      </description>
+    </release>
     <release version="0.9.2" date="2026-11-08">
       <description>
         <p>Release 0.9.2 restores MK3 project browser access, improves mute pad LED visibility, and adds a restart button after auto-update.</p>

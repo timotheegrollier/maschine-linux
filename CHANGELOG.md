@@ -2,6 +2,17 @@
 
 All notable changes.
 
+## [0.9.3] - 2026-11-08
+
+### Fixes
+
+- **MK3 FILE/SAVE vs BROWSER mapping**: corrected physical button behavior. `FILE/SAVE` (the button below `BROWSER`) opens the project/file menu on tap and performs a quick save with `Shift + FILE/SAVE`. `BROWSER` opens the preset/sample browser; `Shift + BROWSER` opens the project browser. Updated MK3 on-screen guidance.
+
+### Validation
+
+- `cargo fmt --all -- --check`
+- `cargo test -p maschine-hardware --lib`
+
 ## [0.9.2] - 2026-11-08
 
 ### Fixes

@@ -38,7 +38,7 @@
   <releases>
     <release version="0.9.7" date="2026-11-08">
       <description>
-        <p>Release 0.9.7 adds Wavetable/Nexus Synth plugin with 16 presets, Kick Synth waveform and drive enhancements, 4D mixer pad drill-down, quick filter selection, and automatic exiting of latched modes from top-row buttons.</p>
+        <p>Release 0.9.7 adds Wavetable/Nexus Synth plugin with 28 factory presets, Kick Synth FM/drive/filter enhancements, 4D mixer pad drill-down with live pad VU meters, quick filter selection, and automatic exiting of latched modes from top-row buttons.</p>
       </description>
     </release>
     <release version="0.9.6" date="2026-11-08">

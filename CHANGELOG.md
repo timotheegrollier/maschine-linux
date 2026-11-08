@@ -6,10 +6,10 @@ All notable changes.
 
 ### Added
 
-- **Wavetable / Nexus Synth plugin**: 16-voice polyphonic synthesizer modeled with dual oscillators, 7-voice unison supersaw, acoustic and digital wavetables (Grand Piano, M1 Piano, Rhodes, Formants, Digital Waves), multimode SVF filter (LP12, LP24, HP, BP), dual ADSR envelopes, LFO modulation, stereo FX rack (Chorus, Ping-Pong Delay, Reverb, Distortion), and 16 factory presets (Piano, Bass, Lead, Pad, Pluck, Organ). Fully integrated in the Desktop GUI, Browser plugin selector, MK3 dual LCD screens, and hardware knob controls.
-- **Kick Synth Modeler enhancements**: extended body waveforms (Sine, Triangle, SatSine, SubSquare, NoiseTransient), selectable distortion drive types (Analog Tanh, Hard Clip, Wavefolder, Tube Drive), multimode resonant filter (LowPass, HighPass, BandPass, Off) with cutoff & resonance controls on MK3 and GUI, updated presets, and dedicated MK3 LCD screens.
-- **Mixer 4D Navigation & Drill-Down**: 4D Left/Right navigates between Pads 1-8, Pads 9-16, and Group mixer views. EncoderPush toggles between Group overview and pad drill-down with pad VU meters. 4D Up/Down selects sound without triggering audio.
-- **Instant Filter Selection**: instant filter kind selection chips and cycling (LP, HP, BP, Off) in Sampler and Kick synth via GUI and MK3 soft keys (`CYC FLT`, `LP`, `HP`, `BP`, `OFF`).
+- **Wavetable / Nexus Synth plugin**: 16-voice polyphonic synthesizer modeled with dual oscillators, 7-voice unison supersaw, acoustic and digital wavetables (Grand Piano, M1 Piano, Rhodes, Formants, Digital Waves), multimode SVF filter (LP12, LP24, HP, BP), dual ADSR envelopes, LFO modulation, stereo FX rack (Chorus, Ping-Pong Delay, Reverb, Distortion), and 28 factory presets (Concert Grand Piano, House M1 Piano, Vintage Upright Piano, Honky Tonk, Neo-Soul Rhodes, DX7 E-Piano, 808 Sub Boom, Reese Bass, Acid 303 Sub, Neurofunk Slither Bass, Slap Funk Bass, Cyberpunk Bass, Future House Donk, Titanium Supersaw Lead, Future Rave Lead, Hyperpop Chiptune Lead, Blade Runner Brass, Cyber-Drive Synth, Trance Euphoria, Celestial Strings, Analog Warmth, Cinematic Dark Pad, Spire Pluck, Pizzicato Strings, Kalimba Dream, Crystal Mallet, Deep House Organ, Hammond B3 Organ). Fully integrated in the Desktop GUI, Browser plugin selector, MK3 dual LCD screens, and hardware knob controls.
+- **Kick Synth Modeler enhancements**: extended body waveforms (Sine, Triangle, SatSine, SubSquare, NoiseTransient, Parabolic, Ramp), selectable distortion drive types (Analog Tanh, Hard Clip, Wavefolder, Tube Drive, Bitcrush, Fuzz, Rectifier), linear FM frequency modulation (FM AMT / FM RATIO) with hold stage before pitch/amplitude decay, 6 multimode resonant filter modes (Off, LowPass, HighPass, BandPass, Notch, Peak) with cutoff & resonance controls on MK3 and GUI, transient click layer, sub-bass tuning, and 13 factory presets (Techno Berlin, 909 Punch, Hardcore Wavefolder, Sub 808, Minimal Click, Industrial Tube, Acid Gabber, Deep Dub, Frenchcore Fuzz, Dark Psy FM Kick, Glitch Bitcrush, 909 Parabolic Punch, Trap 808 Long Boom).
+- **Mixer 4D Navigation & Drill-Down**: 4D Left/Right navigates between Pads 1-8, Pads 9-16, and Group mixer views. EncoderPush toggles between Group overview and pad drill-down with live per-pad audio VU meters (green/yellow/red gradient, clip indicators, peak hold) and volume faders in the GUI sound strips and on the MK3 dual screens. 4D Up/Down selects sound without triggering audio.
+- **Instant Filter Selection**: instant filter kind selection chips and cycling (LP, HP, BP, OFF, NOTCH, PEAK) in Sampler and Kick synth via GUI and MK3 soft keys (`CYC FLT`, `LP`, `HP`, `BP`, `OFF`, `NOTCH`, `PEAK`), or on the fly by holding `Shift` and turning the filter knob (cutoff / resonance) in Sampler and Kick synth.
 
 ### Fixes
 
@@ -43,6 +43,8 @@ All notable changes.
 - `cargo test -p maschine-hardware -p maschine-engine` (97 passing tests)
 - `cargo test -p maschine-app --no-default-features` (all tests passing)
 - `cargo clippy -p maschine-engine -p maschine-hardware -p maschine-dsp -p maschine-proto -- -D warnings` (clean)
+
+## [0.9.5] - 2026-11-08
 
 ### Fixes
 

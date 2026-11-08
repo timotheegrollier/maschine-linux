@@ -39,7 +39,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                     "Instruments, presets, effets et projets. Chargez rapidement sur les pads ou groupes.",
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if chip(ui, "EFFETS FX", snap.browser_kind == 3, c.accent_purple) {
+                    if chip(ui, "EFFETS FX", snap.browser_kind == 3, c.accent) {
                         app.send(EngineEvent::SetBrowserKind(3));
                         app.send(EngineEvent::SetLeftTab(3));
                     }
@@ -47,7 +47,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                         app.send(EngineEvent::SetBrowserKind(2));
                         app.send(EngineEvent::SetLeftTab(3));
                     }
-                    if chip(ui, "PROJETS / FILE", snap.browser_kind == 1, c.accent_yellow) {
+                    if chip(ui, "PROJETS / FILE", snap.browser_kind == 1, c.warning) {
                         app.open_project_browser();
                     }
                     if chip(ui, "PRESETS 808", snap.browser_kind == 0, c.accent) {
@@ -163,9 +163,9 @@ fn render_projects(
                             if ui
                                 .add(
                                     egui::Button::new(
-                                        egui::RichText::new("Supprimer").small().color(c.danger),
+                                        egui::RichText::new("Supprimer").small().color(c.error),
                                     )
-                                    .fill(c.panel2),
+                                    .fill(c.surface),
                                 )
                                 .clicked()
                             {
@@ -434,7 +434,7 @@ fn render_plugins(
             "ÉMULATION AUTHENTIQUE ROLAND TB-303",
             "Synthétiseur de basse acid avec filtre passe-bas résonant à diode 24dB, glide/slide analogique legato, accentuation percussive, overdrive tanh et delay stéréo ping-pong synchronisé. Presets rapides intégrés.",
             "ACID / 303",
-            c.accent_yellow,
+            c.warning,
         ),
         (
             2u8,
@@ -442,7 +442,7 @@ fn render_plugins(
             "SIMULATEUR DE PRÉAMPLI GUITARE À LAMPES & EFFETS",
             "Saturation à lampes agressive, égalisation 3 bandes active (Bass, Mid, Treble), réverbération à ressort intégrée et noise gate rapide. Conçu pour leads électriques, guitares et basses saturées.",
             "AMP / DRIVE",
-            c.danger,
+            c.error,
         ),
         (
             3u8,
@@ -518,7 +518,7 @@ fn render_effects(
                 crate::gui::views::group_char(gf as usize)
             ))
             .strong()
-            .color(c.accent_purple),
+            .color(c.accent_cyan),
         );
         ui.label(
             egui::RichText::new(
@@ -536,7 +536,7 @@ fn render_effects(
             egui::RichText::new("CHAÎNE D'EFFETS ACTUELLE")
                 .strong()
                 .small()
-                .color(c.accent_purple),
+                .color(c.accent_cyan),
         );
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -553,7 +553,7 @@ fn render_effects(
                 );
             } else {
                 for (slot_idx, fx) in snap.focus_sound_fx.iter().enumerate() {
-                    let fx_name = match fx.effect_type {
+                    let fx_name = match fx.fx_type {
                         FxType::Reverb => "Reverb",
                         FxType::Delay => "Delay",
                         FxType::Distortion => "Drive",
@@ -585,7 +585,7 @@ fn render_effects(
                 );
             } else {
                 for (slot_idx, fx) in snap.focus_group_fx.iter().enumerate() {
-                    let fx_name = match fx.effect_type {
+                    let fx_name = match fx.fx_type {
                         FxType::Reverb => "Reverb",
                         FxType::Delay => "Delay",
                         FxType::Distortion => "Drive",
@@ -595,7 +595,7 @@ fn render_effects(
                     ui.label(
                         egui::RichText::new(format!("{}. {}", slot_idx + 1, fx_name))
                             .small()
-                            .color(c.accent_yellow),
+                            .color(c.warning),
                     );
                 }
             }
@@ -626,7 +626,7 @@ fn render_effects(
             "LIGNE À RETARD SYNCHRONISÉE",
             "Délai numérique avec feedback, temps réglable en ms et filtrage passe-bas intégré pour des répétitions douces et atmosphériques.",
             "ÉCHO",
-            c.accent_purple,
+            c.accent_cyan,
         ),
         (
             FxType::Distortion,
@@ -634,7 +634,7 @@ fn render_effects(
             "SATURATION NON-LINÉAIRE ANALOGIQUE",
             "Saturation harmonique basée sur une fonction de transfert tanh, idéale pour rajouter du mordant aux kicks, caisses claires ou synthés.",
             "DRIVE",
-            c.danger,
+            c.error,
         ),
         (
             FxType::Filter,
@@ -642,7 +642,7 @@ fn render_effects(
             "LOWPASS / HIGHPASS / BANDPASS",
             "Filtre résonant modélisé avec coupure de 20 Hz à 20 kHz et résonance prononcée pour sculptage spectral dynamique.",
             "FILTRE",
-            c.accent_yellow,
+            c.warning,
         ),
         (
             FxType::Compressor,
@@ -665,7 +665,7 @@ fn render_effects(
                             egui::RichText::new(format!("[ {tag} ]")).small().strong(),
                         );
                     });
-                    ui.label(egui::RichText::new(subtitle).small().color(c.accent_purple));
+                    ui.label(egui::RichText::new(subtitle).small().color(c.accent_cyan));
                     ui.add_space(2.0);
                     ui.label(egui::RichText::new(desc).small().color(c.text_dim));
                 });
@@ -686,7 +686,7 @@ fn render_effects(
                     if ui
                         .add(
                             egui::Button::new(egui::RichText::new("+ Ajouter au Pad").strong())
-                                .fill(c.accent_purple)
+                                .fill(c.accent_cyan)
                                 .min_size(egui::vec2(130.0, 30.0)),
                         )
                         .clicked()

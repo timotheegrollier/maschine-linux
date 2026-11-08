@@ -2620,6 +2620,15 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             sample_duration: 0.0,
             revision: 0,
             acid_params: maschine_engine::AcidParams::default(),
+            kick_params: maschine_engine::KickParams::default(),
+            focus_sound_kick: None,
+            focus_sound_acid: None,
+            focus_sound_fx: Vec::new(),
+            focus_group_fx: Vec::new(),
+            mixer_mode: 0,
+            browser_plugin_idx: 0,
+            browser_fx_idx: 0,
+            delete_project_confirm: false,
         };
         snap.transport.state = maschine_engine::transport::TransportState::Playing;
 

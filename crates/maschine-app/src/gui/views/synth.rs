@@ -64,7 +64,7 @@ fn render_header(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::En
                             .strong()
                             .color(c.accent_cyan),
                     )
-                    .fill(c.panel2),
+                    .fill(c.surface),
                 )
                 .clicked()
             {
@@ -1288,79 +1288,43 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
             ui.separator();
 
             // Knobs : Tune, Decay, Snap, Sweep
-            let mut tune = params.tuning_semitones;
-            let resp = knob(
+            if let Some(v) = knob(
                 ui,
-                &KnobSpec {
-                    label: "ACCORD",
-                    min: -12.0,
-                    max: 12.0,
-                    step: 0.1,
-                    default: 0.0,
-                    unit: " st",
-                    accent: c.accent,
-                },
-                &mut tune,
-            );
-            if resp.changed() {
-                params.tuning_semitones = tune;
+                "kick_tune",
+                params.tuning_semitones,
+                &KnobSpec::linear("ACCORD", " st", -12.0, 12.0, 0.0),
+            ) {
+                params.tuning_semitones = v;
                 changed = true;
             }
 
-            let mut decay = params.decay_ms;
-            let resp = knob(
+            if let Some(v) = knob(
                 ui,
-                &KnobSpec {
-                    label: "DECAY",
-                    min: 40.0,
-                    max: 1500.0,
-                    step: 5.0,
-                    default: 320.0,
-                    unit: " ms",
-                    accent: c.accent,
-                },
-                &mut decay,
-            );
-            if resp.changed() {
-                params.decay_ms = decay;
+                "kick_decay",
+                params.decay_ms,
+                &KnobSpec::linear("DECAY", " ms", 40.0, 1500.0, 320.0),
+            ) {
+                params.decay_ms = v;
                 changed = true;
             }
 
-            let mut snap_val = params.snap;
-            let resp = knob(
+            if let Some(v) = knob(
                 ui,
-                &KnobSpec {
-                    label: "SNAP / PUNCH",
-                    min: 0.0,
-                    max: 1.0,
-                    step: 0.01,
-                    default: 0.7,
-                    unit: "",
-                    accent: c.accent_cyan,
-                },
-                &mut snap_val,
-            );
-            if resp.changed() {
-                params.snap = snap_val;
+                "kick_snap",
+                params.snap,
+                &KnobSpec::linear("SNAP / PUNCH", "", 0.0, 1.0, 0.7),
+            ) {
+                params.snap = v;
                 changed = true;
             }
 
-            let mut sweep = params.sweep_time_ms;
-            let resp = knob(
+            if let Some(v) = knob(
                 ui,
-                &KnobSpec {
-                    label: "SWEEP TIME",
-                    min: 5.0,
-                    max: 120.0,
-                    step: 1.0,
-                    default: 28.0,
-                    unit: " ms",
-                    accent: c.accent_cyan,
-                },
-                &mut sweep,
-            );
-            if resp.changed() {
-                params.sweep_time_ms = sweep;
+                "kick_sweep",
+                params.sweep_time_ms,
+                &KnobSpec::linear("SWEEP TIME", " ms", 5.0, 120.0, 28.0),
+            ) {
+                params.sweep_time_ms = v;
                 changed = true;
             }
         });
@@ -1374,83 +1338,47 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
             egui::RichText::new("TRANSIENT, ANALOG DRIVE & SUB BASS")
                 .strong()
                 .small()
-                .color(c.accent_yellow),
+                .color(c.warning),
         );
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            let mut click = params.click;
-            let resp = knob(
+            if let Some(v) = knob(
                 ui,
-                &KnobSpec {
-                    label: "CLICK ATTACK",
-                    min: 0.0,
-                    max: 1.0,
-                    step: 0.01,
-                    default: 0.5,
-                    unit: "",
-                    accent: c.accent_yellow,
-                },
-                &mut click,
-            );
-            if resp.changed() {
-                params.click = click;
+                "kick_click",
+                params.click,
+                &KnobSpec::linear("CLICK ATTACK", "", 0.0, 1.0, 0.5),
+            ) {
+                params.click = v;
                 changed = true;
             }
 
-            let mut drive = params.drive;
-            let resp = knob(
+            if let Some(v) = knob(
                 ui,
-                &KnobSpec {
-                    label: "ANALOG DRIVE",
-                    min: 0.0,
-                    max: 1.0,
-                    step: 0.01,
-                    default: 0.4,
-                    unit: "",
-                    accent: c.danger,
-                },
-                &mut drive,
-            );
-            if resp.changed() {
-                params.drive = drive;
+                "kick_drive",
+                params.drive,
+                &KnobSpec::linear("ANALOG DRIVE", "", 0.0, 1.0, 0.4),
+            ) {
+                params.drive = v;
                 changed = true;
             }
 
-            let mut sub = params.sub;
-            let resp = knob(
+            if let Some(v) = knob(
                 ui,
-                &KnobSpec {
-                    label: "SUB BOOST 50Hz",
-                    min: 0.0,
-                    max: 1.0,
-                    step: 0.01,
-                    default: 0.6,
-                    unit: "",
-                    accent: c.accent_purple,
-                },
-                &mut sub,
-            );
-            if resp.changed() {
-                params.sub = sub;
+                "kick_sub",
+                params.sub,
+                &KnobSpec::linear("SUB BOOST 50Hz", "", 0.0, 1.0, 0.6),
+            ) {
+                params.sub = v;
                 changed = true;
             }
 
-            let mut vol = params.volume_db;
-            let resp = knob(
+            if let Some(v) = knob(
                 ui,
-                &KnobSpec {
-                    label: "OUTPUT VOL",
-                    min: -24.0,
-                    max: 6.0,
-                    step: 0.2,
-                    default: 0.0,
-                    unit: " dB",
-                    accent: c.success,
-                },
-                &mut vol,
-            );
-            if resp.changed() {
-                params.volume_db = vol;
+                "kick_vol",
+                params.volume_db,
+                &KnobSpec::linear("OUTPUT VOL", " dB", -24.0, 6.0, 0.0),
+            ) {
+                params.volume_db = v;
                 changed = true;
             }
         });

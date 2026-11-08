@@ -2,6 +2,12 @@
 
 All notable changes.
 
+## [0.9.12] - 2026-11-08
+
+### Fixes
+
+- **Filter Knob Routing**: `KParam::Cutoff` / `KParam::Reso` now route to the focused sound's synth filter (`KickSetParams`, `WavetableSetParams`, `AcidSetParams`) when a synth is focused, falling back to the multimode sampler filter — the kick filter is now modifiable through knobs (plugin view / MK3 knob panel) exactly like the low-pass, for samples/pads and synths.
+
 ## [0.9.11] - 2026-11-08
 
 ### Fixes

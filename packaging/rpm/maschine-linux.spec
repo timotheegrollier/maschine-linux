@@ -1,5 +1,5 @@
 Name:           maschine-linux
-Version:        0.9.11
+Version:        0.9.12
 Release:        1%{?dist}
 Summary:        Native Instruments Maschine MK3 DAW & Controller integration for Linux
 License:        GPL-3.0-or-later
@@ -98,6 +98,9 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/maschine-linux.deskto
 %{_prefix}/lib/systemd/user/maschine-linux.service
 
 %changelog
+* Sun Nov 08 2026 timotheegrollier <timo@example.com> - 0.9.12-1
+- Route filter cutoff/resonance knobs to the focused sound's synth filter (kick/wavetable/acid) or multimode sampler filter
+
 * Sun Nov 08 2026 timotheegrollier <timo@example.com> - 0.9.11-1
 - Fix sampler filter multimode (LP/HP/BP) inaudible: the voice path was mono lowpass
 - Restore the last opened project at startup and persist the current project on last close

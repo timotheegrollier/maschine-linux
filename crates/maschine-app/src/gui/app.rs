@@ -1122,6 +1122,18 @@ impl GuiApp {
 }
 
 impl eframe::App for GuiApp {
+    /// Dernière fermeture : persiste le projet courant comme dernier projet ouvert.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let mut settings = crate::settings::AppSettings::load();
+        let path = {
+            let eng = self.engine.lock();
+            eng.snapshot().current_project_path.clone()
+        };
+        if let Some(path) = path {
+            crate::projects::remember_project(&mut settings, std::path::Path::new(&path));
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.repaint.attach(ctx);
 

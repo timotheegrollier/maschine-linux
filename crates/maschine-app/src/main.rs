@@ -483,8 +483,27 @@ fn cmd_daemon(
         println!("Chargement {p:?}");
         Project::load_json(&p)?
     } else {
-        println!("Projet démo (16 pads, kit 808, pattern 2 bars)");
-        Project::new_demo()
+        // Démarre sur le DERNIER projet ouvert (persistance settings), sinon démo.
+        let settings = settings::AppSettings::load();
+        let last: Option<std::path::PathBuf> = settings
+            .current_project_path
+            .clone()
+            .or_else(|| settings.recent_projects.first().cloned())
+            .and_then(|p| {
+                let pb = std::path::PathBuf::from(p);
+                if pb.try_exists().unwrap_or(false) {
+                    Some(pb)
+                } else {
+                    None
+                }
+            });
+        if let Some(p) = last {
+            println!("Projet précédent restauré : {p:?}");
+            Project::load_json(&p)?
+        } else {
+            println!("Projet démo (16 pads, kit 808, pattern 2 bars)");
+            Project::new_demo()
+        }
     };
     proj.validate()?;
     println!(

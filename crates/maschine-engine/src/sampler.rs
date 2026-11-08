@@ -92,6 +92,8 @@ pub struct VoiceParams {
     pub cutoff_hz: f32,
     /// Resonance 0..1
     pub resonance: f32,
+    /// Filtre actif : Off, LowPass, HighPass ou BandPass
+    pub kind: crate::project::FilterKind,
 }
 
 impl Default for VoiceParams {
@@ -103,6 +105,7 @@ impl Default for VoiceParams {
             release_ms: 150.0,
             cutoff_hz: 20000.0,
             resonance: 0.0,
+            kind: crate::project::FilterKind::LowPass,
         }
     }
 }
@@ -873,9 +876,24 @@ impl Sampler {
             .unwrap_or(0.0)
     }
 
-    /// Calcule les coefficients du filtre lowpass résonant biquad (RBJ).
-    fn calc_biquad(sr: f32, cutoff_hz: f32, resonance: f32, v: &mut SamplerVoice) {
+    /// Calcule les coefficients du filtre actif (LP / HP / BP) biquad (RBJ).
+    ///
+    /// - `LowPass` : filtre passe-bas (numerateur `(1 + z^-1)^2`).
+    /// - `HighPass` : filtre passe-haut (numerateur `(1 - z^-1)^2`).
+    /// - `BandPass` : filtre bande passante (numerateur `1 - 2*cos(w0)*z^-1 + z^-2`).
+    /// - `Off` : bypass (signal non filtre).
+    fn calc_biquad(
+        sr: f32,
+        cutoff_hz: f32,
+        resonance: f32,
+        kind: crate::project::FilterKind,
+        v: &mut SamplerVoice,
+    ) {
         v.resonance = resonance.clamp(0.0, 1.0);
+        if kind == crate::project::FilterKind::Off {
+            v.filter_enabled = false;
+            return;
+        }
         if cutoff_hz < 19500.0 || v.resonance > 0.05 {
             let fc = (cutoff_hz / sr).clamp(0.0005, 0.49);
             let w0 = 2.0 * std::f32::consts::PI * fc;
@@ -885,11 +903,37 @@ impl Sampler {
             let alpha = sin_w0 / (2.0 * q);
             let a0 = 1.0 + alpha;
             v.filter_enabled = true;
-            v.filter_b1 = (1.0 - cos_w0) / a0;
-            v.filter_b0 = v.filter_b1 * 0.5;
-            v.filter_b2 = v.filter_b0;
-            v.filter_a1 = (-2.0 * cos_w0) / a0;
-            v.filter_a2 = (1.0 - alpha) / a0;
+            match kind {
+                crate::project::FilterKind::LowPass => {
+                    v.filter_b1 = (1.0 - cos_w0) / a0;
+                    v.filter_b0 = v.filter_b1 * 0.5;
+                    v.filter_b2 = v.filter_b0;
+                    v.filter_a1 = (-2.0 * cos_w0) / a0;
+                    v.filter_a2 = (1.0 - alpha) / a0;
+                }
+                crate::project::FilterKind::HighPass => {
+                    // Filtre passe-haut : double zero en z = +1 (numerateur (1 - z^-1)^2),
+                    // denormalisant du design LPF (meme cutoff/resonance).
+                    let b = (1.0 - cos_w0) / (2.0 * a0);
+                    v.filter_b0 = b;
+                    v.filter_b1 = -2.0 * b;
+                    v.filter_b2 = b;
+                    v.filter_a1 = (-2.0 * cos_w0) / a0;
+                    v.filter_a2 = (1.0 - alpha) / a0;
+                }
+                crate::project::FilterKind::BandPass => {
+                    // Filtre bande passante : zero en e^{+j*w0} et e^{-j*w0}
+                    // (numerateur 1 - 2*cos(w0)*z^-1 + z^-2).
+                    v.filter_b0 = 1.0;
+                    v.filter_b1 = -2.0 * cos_w0;
+                    v.filter_b2 = 1.0;
+                    v.filter_a1 = (-2.0 * cos_w0) / a0;
+                    v.filter_a2 = (1.0 - alpha) / a0;
+                }
+                crate::project::FilterKind::Off => {
+                    v.filter_enabled = false;
+                }
+            }
         } else {
             v.filter_enabled = false;
         }
@@ -905,16 +949,22 @@ impl Sampler {
             v.decay_samples = (params.decay_ms.max(0.0) / 1000.0 * sr) as u32;
             v.sustain_level = params.sustain.clamp(0.0, 1.0);
             v.release_samples = ((params.release_ms.max(1.0) / 1000.0 * sr) as u32).max(1);
-            Self::calc_biquad(sr, params.cutoff_hz, params.resonance, v);
+            Self::calc_biquad(sr, params.cutoff_hz, params.resonance, params.kind, v);
         }
     }
 
     /// Met à jour en temps réel le filtre (cutoff + resonance) pour toutes les voix d'un son donné.
-    pub fn update_sound_filter(&mut self, sound: u16, cutoff_hz: f32, resonance: f32) {
+    pub fn update_sound_filter(
+        &mut self,
+        sound: u16,
+        cutoff_hz: f32,
+        resonance: f32,
+        kind: crate::project::FilterKind,
+    ) {
         let sr = self.sample_rate.max(1) as f32;
         for v in &mut self.voices {
             if v.sound == sound {
-                Self::calc_biquad(sr, cutoff_hz, resonance, v);
+                Self::calc_biquad(sr, cutoff_hz, resonance, kind, v);
             }
         }
     }

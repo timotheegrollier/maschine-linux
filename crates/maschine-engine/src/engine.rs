@@ -1602,6 +1602,7 @@ impl Engine {
                             s.filter.cutoff_hz
                         },
                         resonance: if filter_off { 0.0 } else { s.filter.resonance },
+                        kind: s.filter.kind,
                     },
                 )
             })
@@ -2057,6 +2058,7 @@ impl Engine {
             } => {
                 let c = cutoff_hz.clamp(20.0, 20000.0);
                 let mut reso = 0.0;
+                let mut filter_kind = crate::project::FilterKind::LowPass;
                 {
                     let mut guard = self.project.write();
                     let proj = project_mut(&mut guard);
@@ -2067,12 +2069,17 @@ impl Engine {
                                 s.filter.kind = crate::project::FilterKind::LowPass;
                             }
                             reso = s.filter.resonance;
+                            filter_kind = s.filter.kind;
                         }
                     }
                 }
                 if group == self.group_focus {
-                    self.sampler
-                        .update_sound_filter(sampler_sound_id(group, sound), c, reso);
+                    self.sampler.update_sound_filter(
+                        sampler_sound_id(group, sound),
+                        c,
+                        reso,
+                        filter_kind,
+                    );
                 }
             }
             EngineEvent::SoundFilterReso {
@@ -2082,6 +2089,7 @@ impl Engine {
             } => {
                 let r = resonance.clamp(0.0, 1.0);
                 let mut cutoff = 20000.0;
+                let mut filter_kind = crate::project::FilterKind::LowPass;
                 {
                     let mut guard = self.project.write();
                     let proj = project_mut(&mut guard);
@@ -2092,12 +2100,17 @@ impl Engine {
                                 s.filter.kind = crate::project::FilterKind::LowPass;
                             }
                             cutoff = s.filter.cutoff_hz;
+                            filter_kind = s.filter.kind;
                         }
                     }
                 }
                 if group == self.group_focus {
-                    self.sampler
-                        .update_sound_filter(sampler_sound_id(group, sound), cutoff, r);
+                    self.sampler.update_sound_filter(
+                        sampler_sound_id(group, sound),
+                        cutoff,
+                        r,
+                        filter_kind,
+                    );
                 }
             }
             EngineEvent::SoundAdsr {
@@ -2154,8 +2167,12 @@ impl Engine {
                     }
                 }
                 if let Some((cutoff, reso)) = filter {
-                    self.sampler
-                        .update_sound_filter(sampler_sound_id(group, sound), cutoff, reso);
+                    self.sampler.update_sound_filter(
+                        sampler_sound_id(group, sound),
+                        cutoff,
+                        reso,
+                        kind,
+                    );
                 }
             }
             EngineEvent::SoundPolyphony {
@@ -2240,6 +2257,7 @@ impl Engine {
                         id,
                         sound.filter.cutoff_hz,
                         sound.filter.resonance,
+                        sound.filter.kind,
                     );
                     self.sampler.update_sound_adsr(
                         id,
@@ -2275,7 +2293,12 @@ impl Engine {
                 if let Some(sound_state) = reset {
                     let id = sampler_sound_id(group, sound);
                     self.sampler.update_sound_pan(id, sound_state.pan);
-                    self.sampler.update_sound_filter(id, 20000.0, 0.0);
+                    self.sampler.update_sound_filter(
+                        id,
+                        20000.0,
+                        0.0,
+                        crate::project::FilterKind::Off,
+                    );
                     self.sampler.update_sound_adsr(
                         id,
                         sound_state.adsr.attack_ms,
@@ -3615,6 +3638,7 @@ impl Engine {
                                         release_ms: snd.adsr.release_ms,
                                         cutoff_hz: snd.filter.cutoff_hz,
                                         resonance: snd.filter.resonance,
+                                        kind: snd.filter.kind,
                                     };
                                     sg[s] = db_to_linear(snd.volume_db);
                                     sp[s] = snd.pan;

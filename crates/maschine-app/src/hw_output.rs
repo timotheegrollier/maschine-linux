@@ -253,9 +253,11 @@ pub mod display {
 #[cfg(not(feature = "usb"))]
 pub mod display {
     use super::*;
+    #[allow(dead_code)]
     pub fn show_solid(_color: DisplayPixel, _duration_ms: u64) -> anyhow::Result<()> {
         anyhow::bail!("feature `usb` non activée — rebuild avec --features usb")
     }
+    #[allow(dead_code)]
     pub fn show_text(_left_text: &str, _right_text: &str) -> anyhow::Result<()> {
         anyhow::bail!("feature `usb` non activée")
     }

@@ -289,6 +289,10 @@ fn sync_mapper_context(
     mapper.right_tab = snap.right_tab;
     mapper.browser_kind = snap.browser_kind;
     mapper.plugin_page = snap.plugin_page;
+    mapper.mixer_mode = snap.mixer_mode;
+    mapper.has_kick_synth = snap.has_kick_synth;
+    mapper.has_acid_synth = snap.has_acid_synth;
+    mapper.delete_project_confirm = snap.delete_project_confirm;
     mapper.kbd_root = snap.keyboard.root;
     mapper.kbd_octave = snap.keyboard.octave;
     mapper.kbd_scale = snap.keyboard.scale;
@@ -1171,6 +1175,86 @@ fn cmd_daemon(
                         volume_db: new_db,
                     });
                 }
+                MapperAction::SoundVolumeDeltaFor {
+                    group,
+                    sound,
+                    delta,
+                } => {
+                    let proj = engine.lock().project_handle();
+                    let current = proj
+                        .read()
+                        .groups
+                        .get(group as usize)
+                        .and_then(|g| g.sounds.get(sound as usize).and_then(|s| s.as_ref()))
+                        .map(|s| s.volume_db)
+                        .unwrap_or(0.0);
+                    let new_db = (current + delta * knob_rate::VOL_DB).clamp(-60.0, 12.0);
+                    let _ = engine.lock().handle_event(EngineEvent::SoundVolume {
+                        group,
+                        sound,
+                        volume_db: new_db,
+                    });
+                }
+                MapperAction::SoundPanDeltaFor {
+                    group,
+                    sound,
+                    delta,
+                } => {
+                    let proj = engine.lock().project_handle();
+                    let current = proj
+                        .read()
+                        .groups
+                        .get(group as usize)
+                        .and_then(|g| g.sounds.get(sound as usize).and_then(|s| s.as_ref()))
+                        .map(|s| s.pan)
+                        .unwrap_or(0.0);
+                    let new_pan = (current + delta * knob_rate::PAN).clamp(-1.0, 1.0);
+                    let _ = engine.lock().handle_event(EngineEvent::SoundPan {
+                        group,
+                        sound,
+                        pan: new_pan,
+                    });
+                }
+                MapperAction::KickTuneDelta(delta) => {
+                    let mut p = engine.lock().kick_synth.params.clone();
+                    p.tune_hz = (p.tune_hz + delta * 0.5).clamp(30.0, 90.0);
+                    let _ = engine.lock().handle_event(EngineEvent::KickSetParams(p));
+                }
+                MapperAction::KickDecayDelta(delta) => {
+                    let mut p = engine.lock().kick_synth.params.clone();
+                    p.decay_ms = (p.decay_ms + delta * 5.0).clamp(40.0, 2000.0);
+                    let _ = engine.lock().handle_event(EngineEvent::KickSetParams(p));
+                }
+                MapperAction::KickSnapDelta(delta) => {
+                    let mut p = engine.lock().kick_synth.params.clone();
+                    p.snap = (p.snap + delta * 0.02).clamp(0.0, 1.0);
+                    let _ = engine.lock().handle_event(EngineEvent::KickSetParams(p));
+                }
+                MapperAction::KickSweepDelta(delta) => {
+                    let mut p = engine.lock().kick_synth.params.clone();
+                    p.sweep_time_ms = (p.sweep_time_ms + delta * 1.0).clamp(5.0, 120.0);
+                    let _ = engine.lock().handle_event(EngineEvent::KickSetParams(p));
+                }
+                MapperAction::KickClickDelta(delta) => {
+                    let mut p = engine.lock().kick_synth.params.clone();
+                    p.click = (p.click + delta * 0.02).clamp(0.0, 1.0);
+                    let _ = engine.lock().handle_event(EngineEvent::KickSetParams(p));
+                }
+                MapperAction::KickDriveDelta(delta) => {
+                    let mut p = engine.lock().kick_synth.params.clone();
+                    p.drive = (p.drive + delta * 0.02).clamp(0.0, 1.0);
+                    let _ = engine.lock().handle_event(EngineEvent::KickSetParams(p));
+                }
+                MapperAction::KickSubDelta(delta) => {
+                    let mut p = engine.lock().kick_synth.params.clone();
+                    p.sub = (p.sub + delta * 0.02).clamp(0.0, 1.0);
+                    let _ = engine.lock().handle_event(EngineEvent::KickSetParams(p));
+                }
+                MapperAction::KickVolumeDelta(delta) => {
+                    let mut p = engine.lock().kick_synth.params.clone();
+                    p.volume_db = (p.volume_db + delta * knob_rate::VOL_DB).clamp(-60.0, 12.0);
+                    let _ = engine.lock().handle_event(EngineEvent::KickSetParams(p));
+                }
                 MapperAction::BrowseSoundStep(step) => {
                     let cur = mapper.active_sound as i32;
                     let next = cur + step;
@@ -1571,6 +1655,10 @@ fn cmd_daemon(
             left_tab: snap.left_tab,
             right_tab: snap.right_tab,
             browser_kind: snap.browser_kind,
+            mixer_mode: snap.mixer_mode,
+            has_kick_synth: snap.has_kick_synth,
+            has_acid_synth: snap.has_acid_synth,
+            delete_project_confirm: snap.delete_project_confirm,
             scene_mode: mapper.scene_select_mode,
             pattern_mode: mapper.pattern_select_mode,
             select_mode: mapper.select_mode,

@@ -77,7 +77,7 @@ fn knob_params(view: StudioView, plugin_page: u8) -> &'static [KParam] {
             KParam::Sustain,
             KParam::Release,
         ],
-        StudioView::AcidSynth if plugin_page == 0 => &[
+        StudioView::Plugin if plugin_page == 0 => &[
             KParam::SndVol,
             KParam::SndPan,
             KParam::Cutoff,
@@ -87,7 +87,7 @@ fn knob_params(view: StudioView, plugin_page: u8) -> &'static [KParam] {
             KParam::Sustain,
             KParam::Release,
         ],
-        StudioView::AcidSynth => &[
+        StudioView::Plugin => &[
             KParam::AcidCutoff,
             KParam::AcidReso,
             KParam::AcidEnvMod,
@@ -457,8 +457,8 @@ impl GuiApp {
                     (egui::Key::K, StudioView::Keyboard),
                     (egui::Key::M, StudioView::Mixer),
                     (egui::Key::A, StudioView::Sampler),
-                    (egui::Key::T, StudioView::AcidSynth),
-                    (egui::Key::P, StudioView::AcidSynth),
+                    (egui::Key::T, StudioView::Plugin),
+                    (egui::Key::P, StudioView::Plugin),
                     (egui::Key::B, StudioView::Browser),
                 ]
                 .map(|(k, v)| (i.key_pressed(k), v));
@@ -1149,7 +1149,7 @@ impl eframe::App for GuiApp {
                 1 => StudioView::Mixer,
                 2 => StudioView::Sampler,
                 3 => StudioView::Browser,
-                4 => StudioView::AcidSynth,
+                4 => StudioView::Plugin,
                 _ => StudioView::Sequencer,
             };
         }
@@ -1161,7 +1161,7 @@ impl eframe::App for GuiApp {
             self.view = match snap.nav_view {
                 2 => StudioView::Keyboard,
                 3 => StudioView::Ideas,
-                4 => StudioView::AcidSynth,
+                4 => StudioView::Plugin,
                 _ => StudioView::Sequencer,
             };
             self.last_left_tab = snap.left_tab;
@@ -1792,11 +1792,7 @@ fn render_updater_window(
                     )
                     .clicked()
                 {
-                    if let Ok(exe) = std::env::current_exe() {
-                        let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-                        let _ = std::process::Command::new(exe).args(args).spawn();
-                    }
-                    std::process::exit(0);
+                    restart_app();
                 }
             }
         } else if check.matched_asset.is_some()
@@ -1844,4 +1840,40 @@ fn render_updater_window(
                 .spawn();
         }
     });
+}
+
+/// Redémarre proprement l'application (support natif & AppImage).
+/// Attend 0.4s avant de lancer le nouveau processus afin de libérer
+/// les périphériques audio (ALSA/JACK) et USB HID.
+fn restart_app() -> ! {
+    let target = if let Some(appimage) = std::env::var_os("APPIMAGE") {
+        std::path::PathBuf::from(appimage)
+    } else if let Ok(exe) = std::env::current_exe() {
+        exe
+    } else {
+        std::process::exit(0);
+    };
+
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let quoted_args = args
+        .iter()
+        .map(|a| format!("'{}'", a.replace('\'', "'\\''")))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let cmd = format!(
+        "sleep 0.4 && exec '{}' {}",
+        target.to_string_lossy().replace('\'', "'\\''"),
+        quoted_args
+    );
+
+    let _ = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+
+    std::process::exit(0);
 }

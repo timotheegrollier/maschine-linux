@@ -19,7 +19,7 @@ pub enum StudioView {
     Mixer,
     Sampler,
     Browser,
-    AcidSynth,
+    Plugin,
 }
 
 impl StudioView {
@@ -30,7 +30,7 @@ impl StudioView {
         Self::Keyboard,
         Self::Mixer,
         Self::Sampler,
-        Self::AcidSynth,
+        Self::Plugin,
         Self::Browser,
     ];
 
@@ -42,7 +42,7 @@ impl StudioView {
             Self::Keyboard => "CLAVIER / PERFORMANCE",
             Self::Mixer => "MIXER",
             Self::Sampler => "SAMPLER",
-            Self::AcidSynth => "PLUGIN / TB-303",
+            Self::Plugin => "PLUGIN",
             Self::Browser => "BROWSER",
         }
     }
@@ -55,7 +55,7 @@ impl StudioView {
             Self::Keyboard => "CLAVIER",
             Self::Mixer => "MIXER",
             Self::Sampler => "SAMPLER",
-            Self::AcidSynth => "PLUGIN",
+            Self::Plugin => "PLUGIN",
             Self::Browser => "BROWSER",
         }
     }
@@ -67,7 +67,7 @@ impl StudioView {
             Self::Mixer => 1,
             Self::Sampler => 2,
             Self::Browser => 3,
-            Self::AcidSynth => 4,
+            Self::Plugin => 4,
         }
     }
 }
@@ -86,7 +86,7 @@ pub fn render_view(
         StudioView::Mixer => mixer::render(ui, app, snap),
         StudioView::Sampler => sampler::render(ui, app, snap),
         StudioView::Browser => browser::render(ui, app, snap),
-        StudioView::AcidSynth => synth::render(ui, app, snap),
+        StudioView::Plugin => synth::render(ui, app, snap),
     }
 }
 

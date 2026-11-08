@@ -10,6 +10,7 @@ use crate::gui::theme::{card_frame, MachColors};
 use crate::gui::widgets::{chip, knob, KnobSpec};
 use eframe::egui;
 
+use maschine_engine::kick_synth::{KickParams, KickWaveform};
 use maschine_engine::project::{Adsr, FilterKind};
 use maschine_engine::{AcidParams, AcidWaveform, EngineEvent};
 
@@ -21,40 +22,76 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
             ui.add_space(8.0);
             if snap.plugin_page == 0 {
                 render_sound_page(ui, app, snap);
-            } else {
+            } else if snap.focus_sound_kick.is_some() {
+                render_kick_page(ui, app, snap);
+            } else if snap.focus_sound_acid.is_some() {
                 render_acid_page(ui, app, snap);
+            } else {
+                render_sound_page(ui, app, snap);
             }
         });
 }
 
 fn render_header(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::EngineSnapshot) {
     let c = MachColors::dark();
-    let subtitle = if snap.plugin_page == 0 {
-        "Tous les réglages du Sound actif — volume, pan, filtre, ADSR, voix."
+    let is_kick = snap.focus_sound_kick.is_some();
+    let is_acid = snap.focus_sound_acid.is_some();
+    let plugin_title = if is_kick {
+        "PLUGIN | KICK SYNTH MODELER"
+    } else if is_acid {
+        "PLUGIN | TB-303 ACID BASS"
     } else {
-        "TB-303 simple : presets et macros d'abord, réglages avancés à la demande."
+        "PLUGIN | SAMPLER 808"
     };
+
+    let subtitle = if is_kick {
+        "Modélisation de kick techno analogique : punch, decay, sub 50Hz, overdrive."
+    } else if is_acid {
+        "TB-303 Acid Bassline : filtre résonant à diode, slide, overdrive, delay."
+    } else {
+        "Tous les réglages du Sound actif — volume, pan, filtre, ADSR, voix."
+    };
+
     ui.horizontal_wrapped(|ui| {
-        crate::gui::theme::view_header(ui, "PLUGIN", subtitle);
+        crate::gui::theme::view_header(ui, plugin_title, subtitle);
         ui.add_space(8.0);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.colored_label(
-                c.text_muted,
-                egui::RichText::new("bouton PLUGIN = ouvrir / fermer").small(),
-            );
+            if ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new("🔍  Changer d'instrument (Browser)")
+                            .small()
+                            .strong()
+                            .color(c.accent_cyan),
+                    )
+                    .fill(c.panel2),
+                )
+                .clicked()
+            {
+                app.send(EngineEvent::SetBrowserKind(2));
+                app.send(EngineEvent::SetLeftTab(3));
+                app.view = crate::gui::views::StudioView::Browser;
+            }
         });
     });
 
     ui.add_space(6.0);
     ui.horizontal_wrapped(|ui| {
         let sound_on = snap.plugin_page == 0;
-        if chip(ui, "SOUND — ÉDITION DU SON ACTIF", sound_on, c.accent) {
+        if chip(ui, "ENVELOPPE & MIX PAD", sound_on, c.accent) {
             let _ = app
                 .engine
                 .lock()
                 .handle_event(EngineEvent::SetPluginPage(0));
         }
-        if chip(ui, "TB-303", !sound_on, c.accent_cyan) {
+        let inst_label = if is_kick {
+            "SYNTH : KICK MODELER"
+        } else if is_acid {
+            "SYNTH : TB-303 ACID"
+        } else {
+            "SYNTH : INSTRUMENT"
+        };
+        if chip(ui, inst_label, !sound_on, c.accent_cyan) {
             let _ = app
                 .engine
                 .lock()
@@ -1155,5 +1192,271 @@ fn note_name(midi: u8) -> &'static str {
         ("D", 4) => "D2",
         ("D#", 4) => "D#2",
         _ => "—",
+    }
+}
+
+// ── Page KICK SYNTH MODELER ──────────────────────────────────────────────
+
+fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::EngineSnapshot) {
+    let c = MachColors::dark();
+    let mut params = snap.focus_sound_kick.clone().unwrap_or_default();
+    let mut changed = false;
+
+    // 1. Presets rapides
+    card_frame().show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("PRESETS KICK TECHNO")
+                    .strong()
+                    .small()
+                    .color(c.accent),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(format!("Preset actif : {}", params.preset_name))
+                        .small()
+                        .color(c.accent_cyan),
+                );
+            });
+        });
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            let presets = [
+                (0u8, "1. Techno Berlin"),
+                (1u8, "2. 909 Punch"),
+                (2u8, "3. Hardcore Drive"),
+                (3u8, "4. Sub 808"),
+                (4u8, "5. Minimal Click"),
+                (5u8, "6. Industrial"),
+            ];
+            for (p_idx, p_name) in presets {
+                let is_sel = params.preset_name.contains(&p_name[3..]);
+                if ui
+                    .add(
+                        egui::Button::new(egui::RichText::new(p_name).small().strong())
+                            .fill(if is_sel { c.accent } else { c.widget_bg }),
+                    )
+                    .clicked()
+                {
+                    app.send(EngineEvent::KickSetPreset(p_idx));
+                }
+            }
+        });
+    });
+
+    ui.add_space(8.0);
+
+    // 2. Modélisation : Oscillateur, Sweep & Enveloppe
+    card_frame().show(ui, |ui| {
+        ui.label(
+            egui::RichText::new("CORPS & PUNCH DU KICK")
+                .strong()
+                .small()
+                .color(c.accent_cyan),
+        );
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            // Forme d'onde
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new("ONDE").small().color(c.text_muted));
+                ui.horizontal(|ui| {
+                    if chip(ui, "SINE", params.waveform == KickWaveform::Sine, c.accent) {
+                        params.waveform = KickWaveform::Sine;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "TRI",
+                        params.waveform == KickWaveform::Triangle,
+                        c.accent,
+                    ) {
+                        params.waveform = KickWaveform::Triangle;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "SAT SINE",
+                        params.waveform == KickWaveform::SatSine,
+                        c.accent,
+                    ) {
+                        params.waveform = KickWaveform::SatSine;
+                        changed = true;
+                    }
+                });
+            });
+
+            ui.separator();
+
+            // Knobs : Tune, Decay, Snap, Sweep
+            let mut tune = params.tuning_semitones;
+            let resp = knob(
+                ui,
+                &KnobSpec {
+                    label: "ACCORD",
+                    min: -12.0,
+                    max: 12.0,
+                    step: 0.1,
+                    default: 0.0,
+                    unit: " st",
+                    accent: c.accent,
+                },
+                &mut tune,
+            );
+            if resp.changed() {
+                params.tuning_semitones = tune;
+                changed = true;
+            }
+
+            let mut decay = params.decay_ms;
+            let resp = knob(
+                ui,
+                &KnobSpec {
+                    label: "DECAY",
+                    min: 40.0,
+                    max: 1500.0,
+                    step: 5.0,
+                    default: 320.0,
+                    unit: " ms",
+                    accent: c.accent,
+                },
+                &mut decay,
+            );
+            if resp.changed() {
+                params.decay_ms = decay;
+                changed = true;
+            }
+
+            let mut snap_val = params.snap;
+            let resp = knob(
+                ui,
+                &KnobSpec {
+                    label: "SNAP / PUNCH",
+                    min: 0.0,
+                    max: 1.0,
+                    step: 0.01,
+                    default: 0.7,
+                    unit: "",
+                    accent: c.accent_cyan,
+                },
+                &mut snap_val,
+            );
+            if resp.changed() {
+                params.snap = snap_val;
+                changed = true;
+            }
+
+            let mut sweep = params.sweep_time_ms;
+            let resp = knob(
+                ui,
+                &KnobSpec {
+                    label: "SWEEP TIME",
+                    min: 5.0,
+                    max: 120.0,
+                    step: 1.0,
+                    default: 28.0,
+                    unit: " ms",
+                    accent: c.accent_cyan,
+                },
+                &mut sweep,
+            );
+            if resp.changed() {
+                params.sweep_time_ms = sweep;
+                changed = true;
+            }
+        });
+    });
+
+    ui.add_space(8.0);
+
+    // 3. Impact, Saturation & Infrabasse
+    card_frame().show(ui, |ui| {
+        ui.label(
+            egui::RichText::new("TRANSIENT, ANALOG DRIVE & SUB BASS")
+                .strong()
+                .small()
+                .color(c.accent_yellow),
+        );
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            let mut click = params.click;
+            let resp = knob(
+                ui,
+                &KnobSpec {
+                    label: "CLICK ATTACK",
+                    min: 0.0,
+                    max: 1.0,
+                    step: 0.01,
+                    default: 0.5,
+                    unit: "",
+                    accent: c.accent_yellow,
+                },
+                &mut click,
+            );
+            if resp.changed() {
+                params.click = click;
+                changed = true;
+            }
+
+            let mut drive = params.drive;
+            let resp = knob(
+                ui,
+                &KnobSpec {
+                    label: "ANALOG DRIVE",
+                    min: 0.0,
+                    max: 1.0,
+                    step: 0.01,
+                    default: 0.4,
+                    unit: "",
+                    accent: c.danger,
+                },
+                &mut drive,
+            );
+            if resp.changed() {
+                params.drive = drive;
+                changed = true;
+            }
+
+            let mut sub = params.sub;
+            let resp = knob(
+                ui,
+                &KnobSpec {
+                    label: "SUB BOOST 50Hz",
+                    min: 0.0,
+                    max: 1.0,
+                    step: 0.01,
+                    default: 0.6,
+                    unit: "",
+                    accent: c.accent_purple,
+                },
+                &mut sub,
+            );
+            if resp.changed() {
+                params.sub = sub;
+                changed = true;
+            }
+
+            let mut vol = params.volume_db;
+            let resp = knob(
+                ui,
+                &KnobSpec {
+                    label: "OUTPUT VOL",
+                    min: -24.0,
+                    max: 6.0,
+                    step: 0.2,
+                    default: 0.0,
+                    unit: " dB",
+                    accent: c.success,
+                },
+                &mut vol,
+            );
+            if resp.changed() {
+                params.volume_db = vol;
+                changed = true;
+            }
+        });
+    });
+
+    if changed {
+        app.send(EngineEvent::KickSetParams(params));
     }
 }

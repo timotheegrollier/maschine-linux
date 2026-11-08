@@ -268,6 +268,26 @@ pub enum MapperAction {
         /// Delta relatif
         delta: f32,
     },
+    /// Ajustement Volume d'un son/pad précis (mode MIXER pad, knobs 1..8)
+    SoundVolumeDeltaFor { group: u8, sound: u8, delta: f32 },
+    /// Ajustement Pan d'un son/pad précis (mode MIXER pad + shift)
+    SoundPanDeltaFor { group: u8, sound: u8, delta: f32 },
+    /// Ajustement Tune Kick Synth
+    KickTuneDelta(f32),
+    /// Ajustement Decay Kick Synth
+    KickDecayDelta(f32),
+    /// Ajustement Snap / Punch Kick Synth
+    KickSnapDelta(f32),
+    /// Ajustement Sweep time Kick Synth
+    KickSweepDelta(f32),
+    /// Ajustement Click Kick Synth
+    KickClickDelta(f32),
+    /// Ajustement Drive Kick Synth
+    KickDriveDelta(f32),
+    /// Ajustement Sub Kick Synth
+    KickSubDelta(f32),
+    /// Ajustement Volume Kick Synth
+    KickVolumeDelta(f32),
     /// Mode STEP : vélocité du pas sélectionné (delta entier)
     StepVelocityDelta(i32),
     /// Mode STEP : position (nudge) du pas sélectionné (delta en ticks)
@@ -387,8 +407,16 @@ pub struct SequencerLedInfo {
     pub soloed_groups: u8,
     pub left_tab: u8,
     pub right_tab: u8,
-    /// Type de navigateur (0: presets 808, 1: projets FILE)
+    /// Type de navigateur (0: presets 808, 1: projets FILE, 2: plugins, 3: effets)
     pub browser_kind: u8,
+    /// Mode mixer (0: Pads 1-8, 1: Pads 9-16, 2: Groupes A-H, 3: Master)
+    pub mixer_mode: u8,
+    /// Son actif possède un Kick Synth
+    pub has_kick_synth: bool,
+    /// Son actif possède un TB-303
+    pub has_acid_synth: bool,
+    /// Confirmation de suppression de projet
+    pub delete_project_confirm: bool,
     /// Mode SCENE actif (pads déclenchent les scènes)
     pub scene_mode: bool,
     /// Mode PATTERN actif (pads sélectionnent le pattern)
@@ -458,8 +486,16 @@ pub struct HardwareMapper {
     pub active_sound: u8,
     /// Preset sélectionné dans le Browser (0..15)
     pub browser_preset_idx: u8,
-    /// Type de navigateur (0: presets 808, 1: projets FILE)
+    /// Type de navigateur (0: presets 808, 1: projets FILE, 2: plugins, 3: effets)
     pub browser_kind: u8,
+    /// Mode mixer (0: Pads 1-8, 1: Pads 9-16, 2: Groupes A-H, 3: Master)
+    pub mixer_mode: u8,
+    /// Son actif possède un Kick Synth
+    pub has_kick_synth: bool,
+    /// Son actif possède un TB-303
+    pub has_acid_synth: bool,
+    /// Confirmation de suppression de projet
+    pub delete_project_confirm: bool,
     /// État musical Keyboard/Chords (miroir moteur).
     pub kbd_root: u8,
     pub kbd_octave: i8,
@@ -553,6 +589,10 @@ impl HardwareMapper {
             active_sound: 0,
             browser_preset_idx: 0,
             browser_kind: 0,
+            mixer_mode: 0,
+            has_kick_synth: false,
+            has_acid_synth: false,
+            delete_project_confirm: false,
             kbd_root: 0,
             kbd_octave: 3,
             kbd_scale: 2,
@@ -936,6 +976,11 @@ impl HardwareMapper {
                     }
                     ButtonId::Erase => {
                         self.erase_held = pressed;
+                        if pressed && self.left_tab == 3 && self.browser_kind == 1 {
+                            // En mode FILE, ERASE déclenche / confirme la suppression de projet
+                            actions.push(MapperAction::SoftKey(6));
+                            return actions;
+                        }
                         if pressed {
                             if self.shift_held {
                                 if self.pattern_select_mode {
@@ -1391,10 +1436,41 @@ impl HardwareMapper {
                                 _ => {}
                             }
                         } else if self.left_tab == 1 {
-                            // MIXER : édition du pad/son sélectionné dans le groupe focus.
-                            // 1 VOL SND, 2 PAN SND, 3 VOL GRP, 4 PAN GRP, 5 CUTOFF, 6 RESO, 7 MASTER, 8 CASQUE.
-                            // SHIFT+1..8 = volumes des groupes A..H (banque complète).
-                            if self.shift_held && idx < 8 {
+                            // Mode MIXER :
+                            // Si mixer_mode == 0 : Knobs 1..8 = Pads 1..8 du groupe focus (Volume ou Pan si shift)
+                            // Si mixer_mode == 1 : Knobs 1..8 = Pads 9..16 du groupe focus (Volume ou Pan si shift)
+                            // Si mixer_mode == 2 : Knobs 1..8 = Groupes A..H
+                            if self.mixer_mode == 0 && idx < 8 {
+                                let pad = idx as u8;
+                                if self.shift_held {
+                                    actions.push(MapperAction::SoundPanDeltaFor {
+                                        group: self.group_focus,
+                                        sound: pad,
+                                        delta: delta as f32,
+                                    });
+                                } else {
+                                    actions.push(MapperAction::SoundVolumeDeltaFor {
+                                        group: self.group_focus,
+                                        sound: pad,
+                                        delta: delta as f32,
+                                    });
+                                }
+                            } else if self.mixer_mode == 1 && idx < 8 {
+                                let pad = (idx + 8) as u8;
+                                if self.shift_held {
+                                    actions.push(MapperAction::SoundPanDeltaFor {
+                                        group: self.group_focus,
+                                        sound: pad,
+                                        delta: delta as f32,
+                                    });
+                                } else {
+                                    actions.push(MapperAction::SoundVolumeDeltaFor {
+                                        group: self.group_focus,
+                                        sound: pad,
+                                        delta: delta as f32,
+                                    });
+                                }
+                            } else if self.shift_held || self.mixer_mode == 2 {
                                 actions.push(MapperAction::GroupVolumeDeltaFor {
                                     group: idx as u8,
                                     delta: delta as f32,
@@ -1432,33 +1508,76 @@ impl HardwareMapper {
                                 6 => actions.push(MapperAction::SoundSustainDelta(delta as f32)),
                                 _ => actions.push(MapperAction::SoundReleaseDelta(delta as f32)),
                             }
-                        } else if self.left_tab == 4 && self.plugin_page == 0 {
-                            // PLUGIN / SOUND : édition du Sound actif.
-                            // 1-4 = VOL/PAN/CUTOFF/RESO, 5-8 = ADSR.
-                            match idx {
-                                0 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
-                                1 => actions.push(MapperAction::SoundPanDelta(delta as f32)),
-                                2 => {
-                                    actions.push(MapperAction::SoundFilterCutoffDelta(delta as f32))
-                                }
-                                3 => actions.push(MapperAction::SoundFilterResoDelta(delta as f32)),
-                                4 => actions.push(MapperAction::SoundAttackDelta(delta as f32)),
-                                5 => actions.push(MapperAction::SoundDecayDelta(delta as f32)),
-                                6 => actions.push(MapperAction::SoundSustainDelta(delta as f32)),
-                                _ => actions.push(MapperAction::SoundReleaseDelta(delta as f32)),
-                            }
                         } else if self.left_tab == 4 {
-                            // TB-303 : 1 CUTOFF, 2 RESO, 3 ENVMOD, 4 DECAY,
-                            // 5 ACCENT, 6 DRIVE, 7 DELAY TIME, 8 DELAY MIX.
-                            match idx {
-                                0 => actions.push(MapperAction::AcidCutoffDelta(delta as f32)),
-                                1 => actions.push(MapperAction::AcidResoDelta(delta as f32)),
-                                2 => actions.push(MapperAction::AcidEnvModDelta(delta as f32)),
-                                3 => actions.push(MapperAction::AcidDecayDelta(delta as f32)),
-                                4 => actions.push(MapperAction::AcidAccentDelta(delta as f32)),
-                                5 => actions.push(MapperAction::AcidDriveDelta(delta as f32)),
-                                6 => actions.push(MapperAction::AcidDelayTimeDelta(delta as f32)),
-                                _ => actions.push(MapperAction::AcidDelayMixDelta(delta as f32)),
+                            if self.plugin_page == 1 {
+                                if self.has_kick_synth {
+                                    // KICK SYNTH : 1 TUNE, 2 DECAY, 3 SNAP/PUNCH, 4 SWEEP, 5 CLICK, 6 DRIVE, 7 SUB, 8 VOL
+                                    match idx {
+                                        0 => {
+                                            actions.push(MapperAction::KickTuneDelta(delta as f32))
+                                        }
+                                        1 => {
+                                            actions.push(MapperAction::KickDecayDelta(delta as f32))
+                                        }
+                                        2 => {
+                                            actions.push(MapperAction::KickSnapDelta(delta as f32))
+                                        }
+                                        3 => {
+                                            actions.push(MapperAction::KickSweepDelta(delta as f32))
+                                        }
+                                        4 => {
+                                            actions.push(MapperAction::KickClickDelta(delta as f32))
+                                        }
+                                        5 => {
+                                            actions.push(MapperAction::KickDriveDelta(delta as f32))
+                                        }
+                                        6 => actions.push(MapperAction::KickSubDelta(delta as f32)),
+                                        _ => actions
+                                            .push(MapperAction::KickVolumeDelta(delta as f32)),
+                                    }
+                                } else {
+                                    // TB-303 : 1 CUTOFF, 2 RESO, 3 ENVMOD, 4 DECAY,
+                                    // 5 ACCENT, 6 DRIVE, 7 DELAY TIME, 8 DELAY MIX.
+                                    match idx {
+                                        0 => actions
+                                            .push(MapperAction::AcidCutoffDelta(delta as f32)),
+                                        1 => {
+                                            actions.push(MapperAction::AcidResoDelta(delta as f32))
+                                        }
+                                        2 => actions
+                                            .push(MapperAction::AcidEnvModDelta(delta as f32)),
+                                        3 => {
+                                            actions.push(MapperAction::AcidDecayDelta(delta as f32))
+                                        }
+                                        4 => actions
+                                            .push(MapperAction::AcidAccentDelta(delta as f32)),
+                                        5 => {
+                                            actions.push(MapperAction::AcidDriveDelta(delta as f32))
+                                        }
+                                        6 => actions
+                                            .push(MapperAction::AcidDelayTimeDelta(delta as f32)),
+                                        _ => actions
+                                            .push(MapperAction::AcidDelayMixDelta(delta as f32)),
+                                    }
+                                }
+                            } else {
+                                // PLUGIN / SOUND : édition du Sound actif (page 0).
+                                match idx {
+                                    0 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
+                                    1 => actions.push(MapperAction::SoundPanDelta(delta as f32)),
+                                    2 => actions
+                                        .push(MapperAction::SoundFilterCutoffDelta(delta as f32)),
+                                    3 => actions
+                                        .push(MapperAction::SoundFilterResoDelta(delta as f32)),
+                                    4 => actions.push(MapperAction::SoundAttackDelta(delta as f32)),
+                                    5 => actions.push(MapperAction::SoundDecayDelta(delta as f32)),
+                                    6 => {
+                                        actions.push(MapperAction::SoundSustainDelta(delta as f32))
+                                    }
+                                    _ => {
+                                        actions.push(MapperAction::SoundReleaseDelta(delta as f32))
+                                    }
+                                }
                             }
                         } else if self.left_tab == 3 {
                             if self.browser_kind == 1 {
@@ -1748,8 +1867,12 @@ impl HardwareMapper {
             .set_button_raw(offsets::NOTE_REPEAT, if self.note_repeat { 7 } else { 1 });
         self.led_state.set_button_raw(offsets::VARIATION, 2);
         self.led_state.set_button_raw(offsets::AUTO, 2);
+        self.mixer_mode = info.mixer_mode;
+        self.has_kick_synth = info.has_kick_synth;
+        self.has_acid_synth = info.has_acid_synth;
+        self.delete_project_confirm = info.delete_project_confirm;
         let is_file_active = self.left_tab == 3 && info.browser_kind == 1;
-        let is_browser_active = self.left_tab == 3 && info.browser_kind == 0;
+        let is_browser_active = self.left_tab == 3 && info.browser_kind != 1;
         self.led_state.set_button_raw(
             offsets::FILE_SAVE,
             if is_file_active {
@@ -2687,11 +2810,34 @@ mod tests {
         m.left_tab = 1; // MIXER
         let _ = m.handle_hardware_event(knob_ev(1, 0, 0));
         let a = m.handle_hardware_event(knob_ev(1, 4, 1));
-        assert_eq!(a, vec![MapperAction::SoundVolumeDelta(4.0)]);
+        // En mode Mixer Pads 1-8 (défaut), le bouton 1 règle le volume du pad 1 directement
+        assert_eq!(
+            a,
+            vec![MapperAction::SoundVolumeDeltaFor {
+                group: 0,
+                sound: 0,
+                delta: 4.0
+            }]
+        );
 
         m.shift_held = true;
         let _ = m.handle_hardware_event(knob_ev(1, 4, 2));
         let a = m.handle_hardware_event(knob_ev(1, 8, 3));
+        // Shift en mode Mixer Pads règle le panoramique du pad 1
+        assert_eq!(
+            a,
+            vec![MapperAction::SoundPanDeltaFor {
+                group: 0,
+                sound: 0,
+                delta: 4.0
+            }]
+        );
+
+        // En mode Mixer Groupes (mode 2)
+        m.mixer_mode = 2;
+        m.shift_held = false;
+        let _ = m.handle_hardware_event(knob_ev(1, 8, 4));
+        let a = m.handle_hardware_event(knob_ev(1, 12, 5));
         assert_eq!(
             a,
             vec![MapperAction::GroupVolumeDeltaFor {
@@ -2888,6 +3034,10 @@ mod tests {
         let info_browser = SequencerLedInfo {
             left_tab: 3,
             browser_kind: 0,
+            mixer_mode: 0,
+            has_kick_synth: false,
+            has_acid_synth: false,
+            delete_project_confirm: false,
             ..Default::default()
         };
         m.update_leds(&info_browser);

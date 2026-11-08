@@ -2631,11 +2631,120 @@ pub fn render_scenes_left(snap: &EngineSnapshot) -> DisplayFrame {
 
 // ── MIXER ──────────────────────────────────────────────────────────────
 
+fn render_pad_mixer_strips(
+    frame: &mut DisplayFrame,
+    p: &Pal,
+    snap: &EngineSnapshot,
+    start_pad: usize,
+) {
+    let gf = snap.group_focus as usize;
+    let grp = snap.project.groups.get(gf);
+    for i in 0..8usize {
+        let pad_idx = start_pad + i;
+        let x = 6 + i * 59;
+        let y = 30usize;
+        let w = 55usize;
+        let h = 156usize;
+        let is_focused = pad_idx == snap.active_sound as usize;
+        panel(frame, p, x, y, w, h);
+        if is_focused {
+            draw_rect_outline(frame, x - 1, y - 1, w + 2, h + 2, p.accent);
+        }
+        let snd = grp
+            .and_then(|g| g.sounds.get(pad_idx))
+            .and_then(|s| s.as_ref());
+        let s_name = snd
+            .map(|s| s.name.as_str())
+            .unwrap_or_else(|| DRUM_PRESET_NAMES.get(pad_idx).copied().unwrap_or("Sound"));
+        let vol_db = snd.map(|s| s.volume_db).unwrap_or(0.0);
+        let pan = snd.map(|s| s.pan).unwrap_or(0.0);
+        let is_muted = snd.map(|s| s.muted).unwrap_or(false)
+            || (snap
+                .muted_sounds
+                .get(gf)
+                .map(|m| (m & (1 << pad_idx)) != 0)
+                .unwrap_or(false));
+
+        // Pad header chip
+        let chip_color = if is_focused { p.accent } else { p.track };
+        fill_rect(frame, x + 3, y + 3, w - 6, 14, chip_color);
+        draw_text(
+            frame,
+            x + 6,
+            y + 4,
+            &format!("S{:02}", pad_idx + 1),
+            if is_focused { p.bg } else { p.white },
+            chip_color,
+        );
+        draw_text(
+            frame,
+            x + 4,
+            y + 20,
+            &trunc(s_name, 6),
+            if is_muted { p.muted } else { p.white },
+            p.panel,
+        );
+
+        // Vertical level bar / VU
+        let vu_h = 56usize;
+        let vu_y = y + 36;
+        fill_rect(frame, x + 16, vu_y, 14, vu_h, p.track);
+        let norm = db_norm(vol_db).clamp(0.0, 1.0);
+        let bar_h = (norm * vu_h as f32) as usize;
+        if bar_h > 0 {
+            let by = vu_y + vu_h - bar_h;
+            fill_rect(
+                frame,
+                x + 16,
+                by,
+                14,
+                bar_h,
+                if is_muted {
+                    p.muted
+                } else if is_focused {
+                    p.accent
+                } else {
+                    p.cyan
+                },
+            );
+        }
+
+        // dB text
+        draw_text(frame, x + 4, y + 98, &fmt_db(vol_db), p.dim, p.panel);
+        // Pan text
+        draw_text(frame, x + 4, y + 114, &fmt_pan(pan), p.muted, p.panel);
+        // Mute status
+        if is_muted {
+            pill(frame, p, x + 6, y + 134, 42, "MUTE", p.red, true);
+        }
+    }
+}
+
 /// Écran gauche — vue MIXER : groupes A-D (VU, dB, pan, M/S).
 #[must_use]
 pub fn render_mixer_left(snap: &EngineSnapshot) -> DisplayFrame {
     let p = Pal::new();
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
+    if snap.mixer_mode == 0 || snap.mixer_mode == 1 {
+        header(
+            &mut frame,
+            &p,
+            snap,
+            "PAD MIXER | PADS 1-8",
+            &format!(
+                "GRP {} | KNOBS = VOL 1-8 (SHIFT = PAN)",
+                group_letter(snap.group_focus)
+            ),
+        );
+        render_pad_mixer_strips(&mut frame, &p, snap, 0);
+        let mut active = [false; 8];
+        if (snap.active_sound as usize) < 8 {
+            active[snap.active_sound as usize] = true;
+        }
+        footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+        return frame;
+    }
+
     header(
         &mut frame,
         &p,
@@ -2774,6 +2883,24 @@ pub fn render_mixer_left(snap: &EngineSnapshot) -> DisplayFrame {
 pub fn render_mixer_right(snap: &EngineSnapshot) -> DisplayFrame {
     let p = Pal::new();
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
+    if snap.mixer_mode == 0 || snap.mixer_mode == 1 {
+        header(
+            &mut frame,
+            &p,
+            snap,
+            "PAD MIXER | PADS 9-16",
+            &format!("GRP {} | ENCODEURS 1-8", group_letter(snap.group_focus)),
+        );
+        render_pad_mixer_strips(&mut frame, &p, snap, 8);
+        let mut active = [false; 8];
+        let snd = snap.active_sound as usize;
+        if (8..16).contains(&snd) {
+            active[snd - 8] = true;
+        }
+        footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+        return frame;
+    }
+
     header(
         &mut frame,
         &p,
@@ -3223,11 +3350,233 @@ pub fn render_sampler_right(snap: &EngineSnapshot) -> DisplayFrame {
     frame
 }
 
+// ── KICK SYNTH (TECHNO MODELER) ─────────────────────────────────────────
+
+/// Écran gauche — vue KICK SYNTH : Pitch Envelope, Tune, Attack & Snap.
+#[must_use]
+pub fn render_kick_synth_left(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
+    let s_name = sound_name(snap, snap.active_sound as usize);
+    let kp = snap.focus_sound_kick.as_ref().unwrap_or(&snap.kick_params);
+    header(
+        &mut frame,
+        &p,
+        snap,
+        "KICK SYNTH | TECHNO",
+        &format!(
+            "GRP {} | SND {:02} {} | {}",
+            group_letter(snap.group_focus),
+            snap.active_sound + 1,
+            trunc(&s_name, 10),
+            kp.preset_name
+        ),
+    );
+
+    // Panneau Pitch Envelope / Sweep
+    panel(&mut frame, &p, 8, 28, 226, 92);
+    draw_text(&mut frame, 14, 32, "PITCH DROP & TUNE", p.dim, p.panel);
+    let p_x = 18usize;
+    let p_y = 44usize;
+    let p_w = 204usize;
+    let p_h = 56usize;
+    fill_rect(&mut frame, p_x, p_y, p_w, p_h, p.track);
+    for x in 0..p_w {
+        let t = x as f32 / p_w as f32;
+        let drop = (-t * 3.5).exp();
+        let py = p_y + p_h - 4 - ((drop * (p_h - 8) as f32) as usize);
+        fill_rect(&mut frame, p_x + x, py, 1, 2, p.accent);
+    }
+    draw_text(
+        &mut frame,
+        p_x + 6,
+        p_y + 6,
+        &format!("{:.1} Hz", kp.tune_hz),
+        p.white,
+        p.track,
+    );
+
+    // Panneau Click & Snap
+    panel(&mut frame, &p, 246, 28, 226, 92);
+    draw_text(&mut frame, 252, 32, "ATTAQUE & TRANSIENT", p.dim, p.panel);
+    let c_x = 256usize;
+    let c_y = 44usize;
+    let c_w = 204usize;
+    let c_h = 56usize;
+    fill_rect(&mut frame, c_x, c_y, c_w, c_h, p.track);
+    for x in 0..c_w {
+        let h = if x < 15 {
+            let env = 1.0 - (x as f32 / 15.0);
+            (env * kp.click * (c_h - 10) as f32) as usize
+        } else {
+            0
+        };
+        if h > 0 {
+            fill_rect(&mut frame, c_x + x, c_y + c_h - 4 - h, 1, h, p.yellow);
+        }
+    }
+    draw_text(
+        &mut frame,
+        c_x + 6,
+        c_y + 6,
+        &format!("SNAP {:.0}%", kp.snap * 100.0),
+        p.white,
+        p.track,
+    );
+
+    let slots = [
+        Some((
+            "1:TUNE",
+            format!("{:.1}Hz", kp.tune_hz),
+            (kp.tune_hz - 30.0) / 60.0,
+            p.cyan,
+        )),
+        Some((
+            "2:DECAY",
+            format!("{:.0}ms", kp.decay_ms),
+            (kp.decay_ms - 40.0) / 1960.0,
+            p.cyan,
+        )),
+        Some((
+            "3:PUNCH",
+            format!("{:.0}%", kp.snap * 100.0),
+            kp.snap,
+            p.green,
+        )),
+        Some((
+            "4:SWEEP",
+            format!("{:.0}ms", kp.sweep_time_ms),
+            (kp.sweep_time_ms - 5.0) / 115.0,
+            p.green,
+        )),
+    ];
+    encoder_row(&mut frame, &p, &slots);
+
+    let mut active = [false; 8];
+    for (i, a) in active.iter_mut().enumerate() {
+        *a = i == snap.active_sound as usize;
+    }
+    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    frame
+}
+
+/// Écran droit — vue KICK SYNTH : Overdrive, Sub & Sortie.
+#[must_use]
+pub fn render_kick_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
+    let kp = snap.focus_sound_kick.as_ref().unwrap_or(&snap.kick_params);
+    header(
+        &mut frame,
+        &p,
+        snap,
+        "KICK SYNTH | SHAPING",
+        &format!(
+            "DRIVE {:.0}% | SUB {:.0}%",
+            kp.drive * 100.0,
+            kp.sub * 100.0
+        ),
+    );
+
+    // Panneau Saturation / Overdrive
+    panel(&mut frame, &p, 8, 28, 226, 92);
+    draw_text(&mut frame, 14, 32, "OVERDRIVE ANALOGIQUE", p.dim, p.panel);
+    let d_x = 18usize;
+    let d_y = 44usize;
+    let d_w = 204usize;
+    let d_h = 56usize;
+    fill_rect(&mut frame, d_x, d_y, d_w, d_h, p.track);
+    let drive_gain = 1.0 + kp.drive * 5.0;
+    for x in 0..d_w {
+        let t = (x as f32 / d_w as f32) * 2.0 * std::f32::consts::PI;
+        let s = (t.sin() * drive_gain).tanh();
+        let sy = d_y + d_h / 2 - ((s * (d_h / 2 - 4) as f32) as i32) as usize;
+        fill_rect(&mut frame, d_x + x, sy, 1, 2, p.red);
+    }
+    draw_text(
+        &mut frame,
+        d_x + 6,
+        d_y + 6,
+        &format!("DRIVE {:.0}%", kp.drive * 100.0),
+        p.white,
+        p.track,
+    );
+
+    // Panneau Sub & Volume
+    panel(&mut frame, &p, 246, 28, 226, 92);
+    draw_text(&mut frame, 252, 32, "INFRABASSE & SORTIE", p.dim, p.panel);
+    let s_x = 256usize;
+    let s_y = 44usize;
+    let s_w = 204usize;
+    let s_h = 56usize;
+    fill_rect(&mut frame, s_x, s_y, s_w, s_h, p.track);
+    draw_text(
+        &mut frame,
+        s_x + 10,
+        s_y + 10,
+        &format!("SUB BASS : {:.0}%", kp.sub * 100.0),
+        p.cyan,
+        p.track,
+    );
+    draw_text(
+        &mut frame,
+        s_x + 10,
+        s_y + 26,
+        &format!("NIVEAU : {:.1} dB", kp.volume_db),
+        p.yellow,
+        p.track,
+    );
+    draw_text(
+        &mut frame,
+        s_x + 10,
+        s_y + 40,
+        &format!("PRESET : {}", kp.preset_name),
+        p.white,
+        p.track,
+    );
+
+    let slots = [
+        Some((
+            "5:CLICK",
+            format!("{:.0}%", kp.click * 100.0),
+            kp.click,
+            p.accent,
+        )),
+        Some((
+            "6:DRIVE",
+            format!("{:.0}%", kp.drive * 100.0),
+            kp.drive,
+            p.red,
+        )),
+        Some(("7:SUB", format!("{:.0}%", kp.sub * 100.0), kp.sub, p.cyan)),
+        Some((
+            "8:VOLUME",
+            format!("{:.1}dB", kp.volume_db),
+            db_norm(kp.volume_db),
+            p.yellow,
+        )),
+    ];
+    encoder_row(&mut frame, &p, &slots);
+
+    let mut active = [false; 8];
+    for (i, a) in active.iter_mut().enumerate() {
+        *a = i == snap.active_sound as usize;
+    }
+    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    frame
+}
+
 // ── SYNTH (TB-303 ACID) ──────────────────────────────────────────────────
 
 /// Écran gauche — vue SYNTH : Oscillateur, Filtre résonant, Enveloppes.
 #[must_use]
 pub fn render_synth_left(snap: &EngineSnapshot) -> DisplayFrame {
+    if snap.focus_sound_kick.is_some() {
+        return render_kick_synth_left(snap);
+    }
+    if snap.focus_sound_acid.is_none() {
+        return render_sampler_left(snap);
+    }
     let p = Pal::new();
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
     let s_name = sound_name(snap, snap.active_sound as usize);
@@ -3429,6 +3778,12 @@ pub fn render_synth_left(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran droit — vue SYNTH : Distorsion / Overdrive, Delay, Presets rapides.
 #[must_use]
 pub fn render_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
+    if snap.focus_sound_kick.is_some() {
+        return render_kick_synth_right(snap);
+    }
+    if snap.focus_sound_acid.is_none() {
+        return render_sampler_right(snap);
+    }
     let p = Pal::new();
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     header(
@@ -3586,6 +3941,142 @@ pub fn render_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
 pub fn render_browser_left(snap: &EngineSnapshot) -> DisplayFrame {
     let p = Pal::new();
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
+
+    if snap.browser_kind == 2 {
+        header(
+            &mut frame,
+            &p,
+            snap,
+            "BROWSER | PLUGINS",
+            "SELECTIONNER UN INSTRUMENT (BTN 4 CHARGER)",
+        );
+        let plugins = [
+            (
+                "1. KICK SYNTH",
+                "Modélisation de Kick Techno / Analogique",
+                "TECHNO",
+            ),
+            (
+                "2. TB-303 ACID",
+                "Synthétiseur de basse Acid 303 classique",
+                "ACID",
+            ),
+            (
+                "3. GUITAR AMP",
+                "Ampli & rack d'effets guitare / saturation",
+                "AMP",
+            ),
+            (
+                "4. SAMPLER 808",
+                "Lecteur d'échantillons de batterie Maschine",
+                "SAMPLE",
+            ),
+        ];
+        let p_idx = (snap.browser_plugin_idx as usize).min(3);
+        for (i, (name, desc, tag)) in plugins.iter().enumerate() {
+            let y = 32 + i * 38;
+            let selected = i == p_idx;
+            panel(&mut frame, &p, 10, y, 460, 34);
+            if selected {
+                draw_rect_outline(&mut frame, 9, y - 1, 462, 36, p.accent);
+                fill_rect(&mut frame, 12, y + 2, 4, 30, p.accent);
+            }
+            draw_text(
+                &mut frame,
+                22,
+                y + 4,
+                name,
+                if selected { p.white } else { p.dim },
+                p.panel,
+            );
+            draw_text(&mut frame, 22, y + 18, desc, p.muted, p.panel);
+            pill(
+                &mut frame,
+                &p,
+                390,
+                y + 8,
+                65,
+                tag,
+                if selected { p.accent } else { p.track },
+                selected,
+            );
+        }
+        let mut active = [false; 8];
+        active[3] = true;
+        footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+        return frame;
+    }
+
+    if snap.browser_kind == 3 {
+        header(
+            &mut frame,
+            &p,
+            snap,
+            "BROWSER | EFFETS",
+            "AJOUTER UN EFFET SUR LE PAD/GROUPE (BTN 4)",
+        );
+        let effects = [
+            (
+                "1. REVERB STEREO",
+                "Réverbération algorithmique espace & diffusion",
+                "SPACE",
+            ),
+            (
+                "2. DELAY ECHO",
+                "Ligne à retard ping-pong synchronisée",
+                "ECHO",
+            ),
+            (
+                "3. OVERDRIVE",
+                "Distorsion analogique, saturation & fuzz",
+                "DRIVE",
+            ),
+            (
+                "4. FILTER MULTIMODE",
+                "Filtre résonant Lowpass / Highpass / Bandpass",
+                "FILTER",
+            ),
+            (
+                "5. COMPRESSOR",
+                "Compresseur de dynamique punchy & limiteur",
+                "DYNAMICS",
+            ),
+        ];
+        let f_idx = (snap.browser_fx_idx as usize).min(4);
+        for (i, (name, desc, tag)) in effects.iter().enumerate() {
+            let y = 32 + i * 31;
+            let selected = i == f_idx;
+            panel(&mut frame, &p, 10, y, 460, 28);
+            if selected {
+                draw_rect_outline(&mut frame, 9, y - 1, 462, 30, p.cyan);
+                fill_rect(&mut frame, 12, y + 2, 4, 24, p.cyan);
+            }
+            draw_text(
+                &mut frame,
+                22,
+                y + 3,
+                name,
+                if selected { p.white } else { p.dim },
+                p.panel,
+            );
+            draw_text(&mut frame, 22, y + 15, desc, p.muted, p.panel);
+            pill(
+                &mut frame,
+                &p,
+                385,
+                y + 5,
+                70,
+                tag,
+                if selected { p.cyan } else { p.track },
+                selected,
+            );
+        }
+        let mut active = [false; 8];
+        active[3] = true;
+        footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+        return frame;
+    }
+
     let idx = snap.browser_preset_idx as usize % DRUM_PRESET_NAMES.len();
     header(
         &mut frame,
@@ -3668,6 +4159,196 @@ pub fn render_browser_left(snap: &EngineSnapshot) -> DisplayFrame {
 pub fn render_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
     let p = Pal::new();
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
+
+    if snap.browser_kind == 2 {
+        let p_idx = (snap.browser_plugin_idx as usize).min(3);
+        let plugin_info = match p_idx {
+            0 => (
+                "KICK SYNTH TECHNO",
+                "Synthese analogique dediee aux kicks club/techno.",
+                "Pitch env exponentielle, click de transient,",
+                "Drive/saturation analogique et boost sub 50Hz.",
+                "6 presets inclus : Techno Berlin, 909 Punch...",
+            ),
+            1 => (
+                "TB-303 ACID BASS",
+                "Emulation authentique Roland TB-303 Bassline.",
+                "Filtre 24dB resonant a diode avec saturation,",
+                "Accentuation, slide analogique et overdrive tanh.",
+                "Presets rapides : Acid Squelch, Distort, Dub 303.",
+            ),
+            2 => (
+                "GUITAR AMP STANDALONE",
+                "Simulateur de preampli guitare a lampes & baffle.",
+                "Drive agressif, egalisation 3-bandes active,",
+                "Reverb a ressort et noise gate rapide integre.",
+                "Ideal pour leads corrosifs et basses distordues.",
+            ),
+            _ => (
+                "SAMPLER 808 DRUM",
+                "Lecteur de samples percussifs pour Maschine.",
+                "Pitch tuning, enveloppe AHD, volume, pan,",
+                "Routing direct vers la grille de pads 4x4.",
+                "Chargement direct d'echantillons WAV.",
+            ),
+        };
+        header(
+            &mut frame,
+            &p,
+            snap,
+            "BROWSER | PLUGIN CIBLE",
+            &format!("SLOT PAD {:02}", snap.active_sound + 1),
+        );
+        draw_text_scaled(
+            &mut frame,
+            12,
+            38,
+            &trunc(plugin_info.0, 24),
+            2,
+            p.white,
+            p.bg,
+        );
+        panel(&mut frame, &p, 10, 78, 460, 84);
+        draw_text(&mut frame, 18, 86, plugin_info.1, p.accent, p.panel);
+        draw_text(&mut frame, 18, 102, plugin_info.2, p.dim, p.panel);
+        draw_text(&mut frame, 18, 118, plugin_info.3, p.dim, p.panel);
+        draw_text(&mut frame, 18, 134, plugin_info.4, p.cyan, p.panel);
+
+        let target_str = format!(
+            "CIBLE: GRP {} | PAD {:02} [{}]",
+            group_letter(snap.group_focus),
+            snap.active_sound + 1,
+            trunc(&sound_name(snap, snap.active_sound as usize), 12)
+        );
+        draw_text(&mut frame, 12, 172, &target_str, p.green, p.bg);
+        draw_text(
+            &mut frame,
+            12,
+            190,
+            "-> Appuyez sur [CHARGER] (Bouton 4) pour assigner au pad",
+            p.white,
+            p.bg,
+        );
+
+        let slots = [
+            Some(("5:PREV PAD", "PAD -1".to_string(), 0.0, p.panel2)),
+            Some(("6:NEXT PAD", "PAD +1".to_string(), 0.0, p.panel2)),
+            Some(("7:--", String::new(), 0.0, p.border)),
+            Some((
+                "8:MASTER",
+                format!("{:.0}%", snap.master_volume * 100.0),
+                snap.master_volume,
+                p.accent,
+            )),
+        ];
+        encoder_row(&mut frame, &p, &slots);
+
+        let mut active = [false; 8];
+        active[4] = true;
+        active[5] = true;
+        footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+        return frame;
+    }
+
+    if snap.browser_kind == 3 {
+        let f_idx = (snap.browser_fx_idx as usize).min(4);
+        let fx_info = match f_idx {
+            0 => (
+                "REVERB STEREO",
+                "Reverberation spaciale avec damping, pre-delay et decay.",
+            ),
+            1 => (
+                "DELAY STEREO",
+                "Echo stereo synchronise avec feedback et filtre passe-bas.",
+            ),
+            2 => (
+                "OVERDRIVE",
+                "Saturation analogique tanh avec tone et compensation de gain.",
+            ),
+            3 => (
+                "FILTER MULTIMODE",
+                "Filtre passe-bas/passe-haut/passe-bande 12dB resonant.",
+            ),
+            _ => (
+                "COMPRESSOR",
+                "Compresseur de dynamique avec seuil, ratio, attaque et release.",
+            ),
+        };
+        header(
+            &mut frame,
+            &p,
+            snap,
+            "BROWSER | EFFET CIBLE",
+            "DESTINATION FX",
+        );
+        draw_text_scaled(&mut frame, 12, 38, &trunc(fx_info.0, 24), 2, p.white, p.bg);
+        panel(&mut frame, &p, 10, 78, 460, 68);
+        draw_text(&mut frame, 18, 86, fx_info.1, p.accent, p.panel);
+
+        let pad_fx_count = snap.focus_sound_fx.len();
+        let grp_fx_count = snap.focus_group_fx.len();
+
+        let s1 = format!(
+            "PAD {:02} [{}]: {} effet(s)",
+            snap.active_sound + 1,
+            trunc(&sound_name(snap, snap.active_sound as usize), 10),
+            pad_fx_count
+        );
+        let s2 = format!(
+            "GROUPE {}: {} effet(s)",
+            group_letter(snap.group_focus),
+            grp_fx_count
+        );
+        draw_text(&mut frame, 18, 106, &s1, p.cyan, p.panel);
+        draw_text(&mut frame, 18, 124, &s2, p.yellow, p.panel);
+
+        draw_text(
+            &mut frame,
+            12,
+            160,
+            "BTN 4: AJOUTER SUR LE PAD ACTIF",
+            p.green,
+            p.bg,
+        );
+        draw_text(
+            &mut frame,
+            12,
+            178,
+            "BTN 5: AJOUTER SUR LE GROUPE ACTIF",
+            p.yellow,
+            p.bg,
+        );
+
+        let slots = [
+            Some((
+                "5:GRP FX",
+                format!("GRP {}", group_letter(snap.group_focus)),
+                0.0,
+                p.yellow,
+            )),
+            Some((
+                "6:PAD FX",
+                format!("PAD {:02}", snap.active_sound + 1),
+                0.0,
+                p.cyan,
+            )),
+            Some(("7:--", String::new(), 0.0, p.border)),
+            Some((
+                "8:MASTER",
+                format!("{:.0}%", snap.master_volume * 100.0),
+                snap.master_volume,
+                p.accent,
+            )),
+        ];
+        encoder_row(&mut frame, &p, &slots);
+
+        let mut active = [false; 8];
+        active[4] = true;
+        active[5] = true;
+        footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+        return frame;
+    }
+
     let idx = snap.browser_preset_idx as usize % DRUM_PRESET_NAMES.len();
     let name = DRUM_PRESET_NAMES[idx];
     header(
@@ -3868,6 +4549,51 @@ pub fn render_project_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     let entry = snap.project_entries.get(snap.project_selected);
     header(&mut frame, &p, snap, "FILE | ACTIONS", "PROJET SELECTIONNE");
+
+    if snap.delete_project_confirm {
+        panel(&mut frame, &p, 10, 32, 460, 160);
+        draw_rect_outline(&mut frame, 10, 32, 460, 160, p.red);
+        fill_rect(&mut frame, 12, 34, 456, 30, p.red);
+        draw_text_scaled(
+            &mut frame,
+            24,
+            40,
+            "SUPPRIMER CE PROJET ?",
+            2,
+            p.white,
+            p.red,
+        );
+        if let Some(entry) = entry {
+            draw_text_scaled(
+                &mut frame,
+                24,
+                74,
+                &trunc(&entry.name, 22),
+                2,
+                p.yellow,
+                p.panel,
+            );
+            draw_text(
+                &mut frame,
+                24,
+                112,
+                &trunc(&entry.path, 52),
+                p.muted,
+                p.panel,
+            );
+        }
+        draw_text(
+            &mut frame,
+            24,
+            138,
+            "BTN 6 : CONFIRMER LA SUPPRESSION",
+            p.red,
+            p.panel,
+        );
+        draw_text(&mut frame, 24, 158, "BTN 1 : ANNULER", p.cyan, p.panel);
+        footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &[false; 8]);
+        return frame;
+    }
 
     if let Some(entry) = entry {
         draw_text_scaled(

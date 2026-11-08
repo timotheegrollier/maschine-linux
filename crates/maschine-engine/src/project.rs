@@ -338,6 +338,9 @@ pub struct Group {
     /// Pan
     #[serde(default)]
     pub pan: f32,
+    /// Chaîne d'effets du Group
+    #[serde(default)]
+    pub fx_chain: Vec<crate::fx::FxSlot>,
 }
 
 impl Group {
@@ -353,6 +356,7 @@ impl Group {
             solo: false,
             volume_db: 0.0,
             pan: 0.0,
+            fx_chain: Vec::new(),
         }
     }
 }
@@ -393,6 +397,12 @@ pub struct Sound {
     /// Synthétiseur optionnel (ex. TB-303 Acid)
     #[serde(default)]
     pub synth: Option<crate::acid_synth::AcidParams>,
+    /// Modélisation de Kick optionnelle (Techno / Analog)
+    #[serde(default)]
+    pub kick_synth: Option<crate::kick_synth::KickParams>,
+    /// Chaîne d'effets du Pad
+    #[serde(default)]
+    pub fx_chain: Vec<crate::fx::FxSlot>,
 }
 
 fn default_poly() -> u8 {
@@ -416,6 +426,8 @@ impl Sound {
             adsr: Adsr::default(),
             filter: Filter::default(),
             synth: None,
+            kick_synth: None,
+            fx_chain: Vec::new(),
         }
     }
 }

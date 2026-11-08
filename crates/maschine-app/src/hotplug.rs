@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use log::{error, info, warn};
+use log::{error, info};
 use parking_lot::Mutex;
 
 use maschine_engine::Engine;

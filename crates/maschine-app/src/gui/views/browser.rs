@@ -10,6 +10,7 @@ use crate::gui::theme::{card_frame, MachColors};
 use crate::gui::widgets::chip;
 use eframe::egui;
 
+use maschine_engine::fx::FxType;
 use maschine_engine::EngineEvent;
 
 /// Catégories du browser → index des presets du kit 808.
@@ -35,10 +36,18 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                 crate::gui::theme::view_header(
                     ui,
                     "BROWSER / FILE",
-                    "Presets batterie et projets. Chargez rapidement depuis la MK3 ou la GUI.",
+                    "Instruments, presets, effets et projets. Chargez rapidement sur les pads ou groupes.",
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if chip(ui, "PROJETS / FILE", snap.browser_kind == 1, c.accent_cyan) {
+                    if chip(ui, "EFFETS FX", snap.browser_kind == 3, c.accent_purple) {
+                        app.send(EngineEvent::SetBrowserKind(3));
+                        app.send(EngineEvent::SetLeftTab(3));
+                    }
+                    if chip(ui, "PLUGINS / INSTRUMENTS", snap.browser_kind == 2, c.accent_cyan) {
+                        app.send(EngineEvent::SetBrowserKind(2));
+                        app.send(EngineEvent::SetLeftTab(3));
+                    }
+                    if chip(ui, "PROJETS / FILE", snap.browser_kind == 1, c.accent_yellow) {
                         app.open_project_browser();
                     }
                     if chip(ui, "PRESETS 808", snap.browser_kind == 0, c.accent) {
@@ -49,10 +58,11 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
             });
             ui.add_space(8.0);
 
-            if snap.browser_kind == 1 {
-                render_projects(ui, app, snap, &c);
-            } else {
-                render_presets(ui, app, snap, &c);
+            match snap.browser_kind {
+                1 => render_projects(ui, app, snap, &c),
+                2 => render_plugins(ui, app, snap, &c),
+                3 => render_effects(ui, app, snap, &c),
+                _ => render_presets(ui, app, snap, &c),
             }
         });
 }
@@ -65,6 +75,7 @@ fn render_projects(
 ) {
     let mut refresh = false;
     let mut load_path: Option<String> = None;
+    let mut delete_path: Option<String> = None;
     let mut select_idx: Option<usize> = None;
 
     ui.horizontal(|ui| {
@@ -135,7 +146,7 @@ fn render_projects(
                                         .color(if selected { c.accent } else { c.text }),
                                 )
                                 .fill(fill)
-                                .min_size(egui::vec2(ui.available_width() - 120.0, 28.0)),
+                                .min_size(egui::vec2(ui.available_width() - 170.0, 28.0)),
                             );
                             if resp.clicked() {
                                 select_idx = Some(i);
@@ -148,6 +159,17 @@ fn render_projects(
                             }
                             if ui.small_button("Charger").clicked() {
                                 load_path = Some(entry.path.clone());
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("Supprimer").small().color(c.danger),
+                                    )
+                                    .fill(c.panel2),
+                                )
+                                .clicked()
+                            {
+                                delete_path = Some(entry.path.clone());
                             }
                         });
                     }
@@ -168,6 +190,15 @@ fn render_projects(
     }
     if let Some(path) = load_path {
         app.load_project_file(std::path::Path::new(&path));
+    }
+    if let Some(path) = delete_path {
+        let p = std::path::Path::new(&path);
+        if p.exists() {
+            let _ = std::fs::remove_file(p);
+        }
+        let settings = crate::settings::AppSettings::load();
+        let entries = crate::projects::scan_projects(&settings);
+        app.send(EngineEvent::SetProjectEntries(entries));
     }
 }
 
@@ -349,5 +380,326 @@ fn render_presets(
             sound: snap.active_sound,
             preset_idx: p as u8,
         });
+    }
+}
+
+fn render_plugins(
+    ui: &mut egui::Ui,
+    app: &mut GuiApp,
+    snap: &maschine_engine::EngineSnapshot,
+    c: &MachColors,
+) {
+    let gf = snap.group_focus;
+    let snd = snap.active_sound;
+    let pad_name = snap
+        .project
+        .groups
+        .get(gf as usize)
+        .and_then(|g| g.sounds.get(snd as usize))
+        .and_then(|s| s.as_ref())
+        .map(|s| s.name.clone())
+        .unwrap_or_else(|| format!("Sound {}", snd + 1));
+
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(format!(
+                "CIBLE : Groupe {} • Pad {:02} [{}]",
+                crate::gui::views::group_char(gf as usize),
+                snd + 1,
+                pad_name
+            ))
+            .strong()
+            .color(c.accent_cyan),
+        );
+        ui.label(
+            egui::RichText::new("— Sélectionnez un instrument à charger sur ce pad")
+                .color(c.text_muted)
+                .small(),
+        );
+    });
+    ui.add_space(8.0);
+
+    let plugins = [
+        (
+            0u8,
+            "KICK SYNTH MODELER",
+            "MODÉLISATION DE KICK TECHNO / CLUB",
+            "Synthèse analogique de kick percussif. Pitch envelope exponentielle ultra-punchy, contrôle du sweep time, transient click réglable, drive / saturation analogique tanh et sub-bass boost dédié 50Hz. 6 presets pros intégrés (Techno Berlin, 909 Punch, Hardcore Drive, Sub 808...).",
+            "TECHNO / ANALOG",
+            c.accent,
+        ),
+        (
+            1u8,
+            "TB-303 ACID BASSLINE",
+            "ÉMULATION AUTHENTIQUE ROLAND TB-303",
+            "Synthétiseur de basse acid avec filtre passe-bas résonant à diode 24dB, glide/slide analogique legato, accentuation percussive, overdrive tanh et delay stéréo ping-pong synchronisé. Presets rapides intégrés.",
+            "ACID / 303",
+            c.accent_yellow,
+        ),
+        (
+            2u8,
+            "GUITAR AMP STANDALONE",
+            "SIMULATEUR DE PRÉAMPLI GUITARE À LAMPES & EFFETS",
+            "Saturation à lampes agressive, égalisation 3 bandes active (Bass, Mid, Treble), réverbération à ressort intégrée et noise gate rapide. Conçu pour leads électriques, guitares et basses saturées.",
+            "AMP / DRIVE",
+            c.danger,
+        ),
+        (
+            3u8,
+            "SAMPLER 808 DRUMS",
+            "LECTEUR D'ÉCHANTILLONS MASCHINE",
+            "Lecteur de samples percussifs stéréo 24/32-bit avec pitch tuning, enveloppe AHD, filtrage multi-pôles, volume et panoramique stéréophonique.",
+            "SAMPLE / DRUM",
+            c.accent_cyan,
+        ),
+    ];
+
+    for (idx, title, subtitle, desc, tag, tag_color) in plugins {
+        card_frame().show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(title).strong().size(14.0).color(c.text));
+                        ui.colored_label(
+                            tag_color,
+                            egui::RichText::new(format!("[ {tag} ]")).small().strong(),
+                        );
+                    });
+                    ui.label(egui::RichText::new(subtitle).small().color(c.accent_cyan));
+                    ui.add_space(2.0);
+                    ui.label(egui::RichText::new(desc).small().color(c.text_dim));
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let is_active = match idx {
+                        0 => snap.focus_sound_kick.is_some(),
+                        1 => snap.focus_sound_acid.is_some(),
+                        _ => snap.focus_sound_kick.is_none() && snap.focus_sound_acid.is_none(),
+                    };
+                    if is_active {
+                        ui.label(egui::RichText::new("✓ ACTIF").strong().color(c.success));
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new("Charger sur le Pad").strong())
+                                .fill(c.accent)
+                                .min_size(egui::vec2(150.0, 32.0)),
+                        )
+                        .clicked()
+                    {
+                        app.send(EngineEvent::LoadPluginToSound {
+                            group: gf,
+                            sound: snd,
+                            plugin_idx: idx,
+                        });
+                        app.send(EngineEvent::SetLeftTab(4));
+                        app.view = StudioView::Plugin;
+                    }
+                });
+            });
+        });
+        ui.add_space(6.0);
+    }
+}
+
+fn render_effects(
+    ui: &mut egui::Ui,
+    app: &mut GuiApp,
+    snap: &maschine_engine::EngineSnapshot,
+    c: &MachColors,
+) {
+    let gf = snap.group_focus;
+    let snd = snap.active_sound;
+
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(format!(
+                "DESTINATION : Pad {:02} ou Groupe {}",
+                snd + 1,
+                crate::gui::views::group_char(gf as usize)
+            ))
+            .strong()
+            .color(c.accent_purple),
+        );
+        ui.label(
+            egui::RichText::new(
+                "— Ajoutez des processeurs DSP sur le pad sélectionné ou sur le groupe entier",
+            )
+            .color(c.text_muted)
+            .small(),
+        );
+    });
+    ui.add_space(8.0);
+
+    // Liste des effets déjà actifs sur le pad et le groupe
+    card_frame().show(ui, |ui| {
+        ui.label(
+            egui::RichText::new("CHAÎNE D'EFFETS ACTUELLE")
+                .strong()
+                .small()
+                .color(c.accent_purple),
+        );
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!("Pad {:02} :", snd + 1))
+                    .strong()
+                    .color(c.text),
+            );
+            if snap.focus_sound_fx.is_empty() {
+                ui.label(
+                    egui::RichText::new("(aucun effet)")
+                        .small()
+                        .color(c.text_muted),
+                );
+            } else {
+                for (slot_idx, fx) in snap.focus_sound_fx.iter().enumerate() {
+                    let fx_name = match fx.effect_type {
+                        FxType::Reverb => "Reverb",
+                        FxType::Delay => "Delay",
+                        FxType::Distortion => "Drive",
+                        FxType::Filter => "Filter",
+                        FxType::Compressor => "Comp",
+                    };
+                    ui.label(
+                        egui::RichText::new(format!("{}. {}", slot_idx + 1, fx_name))
+                            .small()
+                            .color(c.accent_cyan),
+                    );
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!(
+                    "Groupe {} :",
+                    crate::gui::views::group_char(gf as usize)
+                ))
+                .strong()
+                .color(c.text),
+            );
+            if snap.focus_group_fx.is_empty() {
+                ui.label(
+                    egui::RichText::new("(aucun effet)")
+                        .small()
+                        .color(c.text_muted),
+                );
+            } else {
+                for (slot_idx, fx) in snap.focus_group_fx.iter().enumerate() {
+                    let fx_name = match fx.effect_type {
+                        FxType::Reverb => "Reverb",
+                        FxType::Delay => "Delay",
+                        FxType::Distortion => "Drive",
+                        FxType::Filter => "Filter",
+                        FxType::Compressor => "Comp",
+                    };
+                    ui.label(
+                        egui::RichText::new(format!("{}. {}", slot_idx + 1, fx_name))
+                            .small()
+                            .color(c.accent_yellow),
+                    );
+                }
+            }
+        });
+    });
+
+    ui.add_space(8.0);
+    ui.label(
+        egui::RichText::new("BIBLIOTHÈQUE D'EFFETS DISPONIBLES")
+            .strong()
+            .small()
+            .color(c.text_dim),
+    );
+    ui.add_space(4.0);
+
+    let fx_library = [
+        (
+            FxType::Reverb,
+            "RÉVERBÉRATION STÉRÉO",
+            "ESPACE & DIFFUSION SPATIALE",
+            "Simulateur de réverbération algorithmique pour donner de l'ampleur et de l'espace à vos sons. Paramètres : taille de pièce, damping et mix dry/wet.",
+            "ESPACE",
+            c.accent_cyan,
+        ),
+        (
+            FxType::Delay,
+            "DELAY ÉCHO STÉRÉO",
+            "LIGNE À RETARD SYNCHRONISÉE",
+            "Délai numérique avec feedback, temps réglable en ms et filtrage passe-bas intégré pour des répétitions douces et atmosphériques.",
+            "ÉCHO",
+            c.accent_purple,
+        ),
+        (
+            FxType::Distortion,
+            "OVERDRIVE / DISTORSION",
+            "SATURATION NON-LINÉAIRE ANALOGIQUE",
+            "Saturation harmonique basée sur une fonction de transfert tanh, idéale pour rajouter du mordant aux kicks, caisses claires ou synthés.",
+            "DRIVE",
+            c.danger,
+        ),
+        (
+            FxType::Filter,
+            "FILTRE MULTIMODE 12dB",
+            "LOWPASS / HIGHPASS / BANDPASS",
+            "Filtre résonant modélisé avec coupure de 20 Hz à 20 kHz et résonance prononcée pour sculptage spectral dynamique.",
+            "FILTRE",
+            c.accent_yellow,
+        ),
+        (
+            FxType::Compressor,
+            "COMPRESSEUR DE DYNAMIQUE",
+            "CONTRÔLE DU PUNCH & DE LA DYNAMIQUE",
+            "Compresseur avec seuil (threshold), ratio, temps d'attaque, release et gain de sortie (makeup) pour compacter vos pistes de batterie.",
+            "DYNAMIQUES",
+            c.success,
+        ),
+    ];
+
+    for (fx_type, title, subtitle, desc, tag, tag_color) in fx_library {
+        card_frame().show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(title).strong().size(14.0).color(c.text));
+                        ui.colored_label(
+                            tag_color,
+                            egui::RichText::new(format!("[ {tag} ]")).small().strong(),
+                        );
+                    });
+                    ui.label(egui::RichText::new(subtitle).small().color(c.accent_purple));
+                    ui.add_space(2.0);
+                    ui.label(egui::RichText::new(desc).small().color(c.text_dim));
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new("+ Ajouter au Groupe").strong())
+                                .fill(c.widget_bg)
+                                .min_size(egui::vec2(140.0, 30.0)),
+                        )
+                        .clicked()
+                    {
+                        app.send(EngineEvent::AddFxToGroup {
+                            group: gf,
+                            fx_type: fx_type.clone(),
+                        });
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new("+ Ajouter au Pad").strong())
+                                .fill(c.accent_purple)
+                                .min_size(egui::vec2(130.0, 30.0)),
+                        )
+                        .clicked()
+                    {
+                        app.send(EngineEvent::AddFxToSound {
+                            group: gf,
+                            sound: snd,
+                            fx_type,
+                        });
+                    }
+                });
+            });
+        });
+        ui.add_space(6.0);
     }
 }

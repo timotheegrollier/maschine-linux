@@ -352,6 +352,33 @@ pub enum EngineEvent {
     AcidSelectPreset(u8),
     /// Remplacement complet des paramètres Acid
     AcidSetParams(crate::acid_synth::AcidParams),
+    /// Supprime définitivement le projet sélectionné dans le navigateur
+    DeleteSelectedProject,
+    /// Annule la confirmation de suppression de projet
+    CancelDeleteProject,
+    /// Définit le mode mixer (0: Pads 1-8, 1: Pads 9-16, 2: Groupes A-H, 3: Master)
+    SetMixerMode(u8),
+    /// Remplacement complet des paramètres Kick Synth
+    KickSetParams(crate::kick_synth::KickParams),
+    /// Sélectionne un preset de Kick Synth (0..5)
+    KickSetPreset(u8),
+    /// Charge un plugin sur un Sound
+    LoadPluginToSound {
+        group: u8,
+        sound: u8,
+        plugin_idx: u8,
+    },
+    /// Ajoute un effet à un Sound
+    AddFxToSound {
+        group: u8,
+        sound: u8,
+        fx_type: crate::fx::FxType,
+    },
+    /// Ajoute un effet au bus d'un Group
+    AddFxToGroup {
+        group: u8,
+        fx_type: crate::fx::FxType,
+    },
 }
 
 /// Noms des 16 presets de batterie DSP 808
@@ -484,6 +511,24 @@ pub struct EngineSnapshot {
     pub sample_duration: f32,
     /// Paramètres actuels du synthétiseur TB-303 Acid.
     pub acid_params: crate::acid_synth::AcidParams,
+    /// Paramètres actuels de modélisation de Kick.
+    pub kick_params: crate::kick_synth::KickParams,
+    /// Le son actif possède-t-il un Kick Synth ?
+    pub focus_sound_kick: Option<crate::kick_synth::KickParams>,
+    /// Le son actif possède-t-il un TB-303 ?
+    pub focus_sound_acid: Option<crate::acid_synth::AcidParams>,
+    /// Chaîne d'effets du Sound actif.
+    pub focus_sound_fx: Vec<crate::fx::FxSlot>,
+    /// Chaîne d'effets du Group focus.
+    pub focus_group_fx: Vec<crate::fx::FxSlot>,
+    /// Mode mixer (0: Pads 1-8, 1: Pads 9-16, 2: Groupes A-H, 3: Master).
+    pub mixer_mode: u8,
+    /// Index plugin sélectionné dans le browser (0..3).
+    pub browser_plugin_idx: u8,
+    /// Index effet sélectionné dans le browser (0..4).
+    pub browser_fx_idx: u8,
+    /// Confirmation de suppression de projet active sur la MK3.
+    pub delete_project_confirm: bool,
     /// Compteur de révision : change dès qu'un état a bougé (repaint UI/écrans).
     pub revision: u64,
 }
@@ -501,8 +546,16 @@ pub struct HardwareSnapshot {
     pub active_sound: u8,
     pub left_tab: u8,
     pub right_tab: u8,
-    /// Type de navigateur (0: presets 808, 1: projets FILE)
+    /// Type de navigateur (0: presets 808, 1: projets FILE, 2: plugins, 3: effets)
     pub browser_kind: u8,
+    /// Mode mixer (0: Pads 1-8, 1: Pads 9-16, 2: Groupes A-H, 3: Master)
+    pub mixer_mode: u8,
+    /// Le son actif a-t-il un Kick Synth ?
+    pub has_kick_synth: bool,
+    /// Le son actif a-t-il un TB-303 Acid ?
+    pub has_acid_synth: bool,
+    /// Confirmation de suppression de projet active
+    pub delete_project_confirm: bool,
     /// Page PLUGIN (0: Sound, 1: TB-303) — routage des knobs hardware.
     pub plugin_page: u8,
     pub controller_mode: u8,
@@ -579,8 +632,20 @@ pub struct Engine {
     pub step_cursor: usize,
     /// Index preset sélectionné dans le Browser
     pub browser_preset_idx: u8,
-    /// Type de navigateur sur l'onglet BROWSER/FILE (0: presets 808, 1: projets).
+    /// Type de navigateur sur l'onglet BROWSER/FILE (0: presets 808, 1: projets, 2: plugins, 3: effets).
     pub browser_kind: u8,
+    /// Mode mixer (0: Pads 1-8, 1: Pads 9-16, 2: Groupes A-H, 3: Master).
+    pub mixer_mode: u8,
+    /// Confirmation suppression de projet active.
+    pub delete_project_confirm: bool,
+    /// Index plugin sélectionné dans le browser (0..3).
+    pub browser_plugin_idx: u8,
+    /// Index effet sélectionné dans le browser (0..4).
+    pub browser_fx_idx: u8,
+    /// Moteur de modélisation de Kick Techno.
+    pub kick_synth: crate::kick_synth::KickSynth,
+    /// Processeur d'effets temps réel.
+    pub fx_processor: crate::fx::FxChainProcessor,
     /// Entrées du navigateur de projets.
     pub project_entries: Vec<ProjectFileEntry>,
     /// Entrée projet sélectionnée.
@@ -824,6 +889,12 @@ impl Engine {
             step_cursor: 0,
             browser_preset_idx: 0,
             browser_kind: 0,
+            mixer_mode: 0,
+            delete_project_confirm: false,
+            browser_plugin_idx: 0,
+            browser_fx_idx: 0,
+            kick_synth: crate::kick_synth::KickSynth::new(sample_rate),
+            fx_processor: crate::fx::FxChainProcessor::new(sample_rate),
             project_entries: Vec::new(),
             project_selected: 0,
             current_project_path: None,
@@ -956,6 +1027,15 @@ impl Engine {
                 .sampler
                 .sample_duration_secs(sampler_sound_id(self.group_focus, self.active_sound)),
             acid_params: self.acid_synth.params.clone(),
+            kick_params: self.kick_synth.params.clone(),
+            focus_sound_kick: self.focus_sound_kick_params(),
+            focus_sound_acid: self.focus_sound_synth_params(),
+            focus_sound_fx: self.focus_sound_fx(),
+            focus_group_fx: self.focus_group_fx(),
+            mixer_mode: self.mixer_mode,
+            browser_plugin_idx: self.browser_plugin_idx,
+            browser_fx_idx: self.browser_fx_idx,
+            delete_project_confirm: self.delete_project_confirm,
             revision: self.revision,
         }
     }
@@ -1028,6 +1108,10 @@ impl Engine {
             left_tab: self.left_tab,
             right_tab: self.right_tab,
             browser_kind: self.browser_kind,
+            mixer_mode: self.mixer_mode,
+            has_kick_synth: self.focus_sound_has_kick(),
+            has_acid_synth: self.focus_sound_has_acid(),
+            delete_project_confirm: self.delete_project_confirm,
             plugin_page: self.plugin_page,
             controller_mode: self.controller_mode,
             keyboard: self.keyboard,
@@ -1351,7 +1435,9 @@ impl Engine {
                         .and_then(|g| g.sounds.get(pad as usize))
                         .and_then(|s| s.as_ref());
                     let synth_params = snd_ref.and_then(|s| s.synth.clone());
+                    let kick_params = snd_ref.and_then(|s| s.kick_synth.clone());
                     let is_synth_sound = synth_params.is_some();
+                    let is_kick_sound = kick_params.is_some();
                     let (snd_gain, snd_pan, vparams) = snd_ref
                         .map(|s| {
                             let filter_off = s.filter.kind == crate::project::FilterKind::Off;
@@ -1374,13 +1460,15 @@ impl Engine {
                         })
                         .unwrap_or((1.0, 0.0, crate::sampler::VoiceParams::default()));
                     drop(guard);
-                    if is_synth_sound {
+                    if is_kick_sound {
+                        if let Some(p) = kick_params {
+                            self.kick_synth.params = p;
+                        }
+                        self.kick_synth.trigger(note, velocity);
+                    } else if is_synth_sound {
                         if let Some(p) = synth_params {
                             self.acid_synth.params = p;
                         }
-                        self.acid_synth.note_on(note, velocity);
-                    } else if self.left_tab == 4 && self.plugin_page == 1 {
-                        // Pré-écoute TB explicite sur la page TB.
                         self.acid_synth.note_on(note, velocity);
                     } else if let Some(idx) = self.sampler.note_on(sound, note, velocity, note) {
                         self.sampler.set_voice_gain(idx, group_gain * snd_gain);
@@ -2221,6 +2309,7 @@ impl Engine {
                         .and_then(|g| g.sounds.get(self.active_sound as usize))
                         .and_then(|s| s.as_ref());
                     let synth_params = snd_ref.and_then(|s| s.synth.clone());
+                    let kick_params = snd_ref.and_then(|s| s.kick_synth.clone());
                     let (snd_gain, snd_pan, vparams) = snd_ref
                         .map(|s| {
                             let filter_off = s.filter.kind == crate::project::FilterKind::Off;
@@ -2243,7 +2332,10 @@ impl Engine {
                         })
                         .unwrap_or((1.0, 0.0, crate::sampler::VoiceParams::default()));
                     drop(guard);
-                    if let Some(p) = synth_params {
+                    if let Some(p) = kick_params {
+                        self.kick_synth.params = p;
+                        self.kick_synth.trigger(note, velocity);
+                    } else if let Some(p) = synth_params {
                         self.acid_synth.params = p;
                         self.acid_synth.note_on(note, velocity);
                     } else if let Some(idx) = self.sampler.note_on(sound, note, velocity, note) {
@@ -2336,22 +2428,28 @@ impl Engine {
             EngineEvent::LoadPreparedSample { group, sound, zone } => {
                 self.install_sample_zone(group, sound, zone)?;
             }
-            EngineEvent::BrowsePresetStep(step) => {
-                if self.browser_kind == 1 {
+            EngineEvent::BrowsePresetStep(step) => match self.browser_kind {
+                1 => {
                     let len = self.project_entries.len().max(1);
                     self.project_selected =
                         (self.project_selected as i32 + step).rem_euclid(len as i32) as usize;
-                } else {
+                }
+                2 => {
+                    self.browser_plugin_idx =
+                        (self.browser_plugin_idx as i32 + step).rem_euclid(4) as u8;
+                }
+                3 => {
+                    self.browser_fx_idx = (self.browser_fx_idx as i32 + step).rem_euclid(5) as u8;
+                }
+                _ => {
                     let next = (self.browser_preset_idx as i32 + step).rem_euclid(16) as u8;
                     self.browser_preset_idx = next;
                     self.preview_preset(next);
                 }
-            }
+            },
             EngineEvent::SetBrowserKind(kind) => {
-                self.browser_kind = kind.min(1);
-                if self.browser_kind == 1 {
-                    self.left_tab = 3;
-                }
+                self.browser_kind = kind.min(3);
+                self.left_tab = 3;
             }
             EngineEvent::SetProjectEntries(entries) => {
                 self.project_entries = entries;
@@ -2359,31 +2457,102 @@ impl Engine {
                     self.project_selected = self.project_entries.len().saturating_sub(1);
                 }
             }
-            EngineEvent::BrowseBrowserStep(step) => {
-                if self.browser_kind == 1 {
+            EngineEvent::BrowseBrowserStep(step) => match self.browser_kind {
+                1 => {
                     let len = self.project_entries.len();
                     if len > 0 {
                         self.project_selected =
                             (self.project_selected as i32 + step).rem_euclid(len as i32) as usize;
                     }
-                } else {
+                }
+                2 => {
+                    self.browser_plugin_idx =
+                        (self.browser_plugin_idx as i32 + step).rem_euclid(4) as u8;
+                }
+                3 => {
+                    self.browser_fx_idx = (self.browser_fx_idx as i32 + step).rem_euclid(5) as u8;
+                }
+                _ => {
                     let next = (self.browser_preset_idx as i32 + step).rem_euclid(16) as u8;
                     self.browser_preset_idx = next;
                     self.preview_preset(next);
                 }
-            }
-            EngineEvent::LoadSelectedBrowserItem { group, sound } => {
-                if self.browser_kind == 1 {
+            },
+            EngineEvent::LoadSelectedBrowserItem { group, sound } => match self.browser_kind {
+                1 => {
                     if let Some(entry) = self.project_entries.get(self.project_selected).cloned() {
                         self.handle_event(EngineEvent::Load(std::path::PathBuf::from(entry.path)))?;
                     }
-                } else {
+                }
+                2 => {
+                    self.load_plugin_to_sound(group, sound, self.browser_plugin_idx)?;
+                    self.left_tab = 4;
+                }
+                3 => {
+                    let fx_type = match self.browser_fx_idx {
+                        0 => crate::fx::FxType::Reverb,
+                        1 => crate::fx::FxType::Delay,
+                        2 => crate::fx::FxType::Distortion,
+                        3 => crate::fx::FxType::Filter,
+                        _ => crate::fx::FxType::Compressor,
+                    };
+                    self.add_fx_to_sound(group, sound, fx_type)?;
+                }
+                _ => {
                     self.handle_event(EngineEvent::LoadDrumPreset {
                         group,
                         sound,
                         preset_idx: self.browser_preset_idx,
                     })?;
                 }
+            },
+            EngineEvent::DeleteSelectedProject => {
+                self.delete_selected_project()?;
+            }
+            EngineEvent::CancelDeleteProject => {
+                self.delete_project_confirm = false;
+                self.status_message = Some("Suppression annulée".to_string());
+                self.status_expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_millis(2000);
+            }
+            EngineEvent::SetMixerMode(mode) => {
+                self.mixer_mode = mode.min(3);
+            }
+            EngineEvent::KickSetParams(params) => {
+                self.kick_synth.params = params.clone();
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
+                if let Some(s) = proj
+                    .groups
+                    .get_mut(self.group_focus as usize)
+                    .and_then(|g| g.sounds.get_mut(self.active_sound as usize))
+                    .and_then(|s| s.as_mut())
+                {
+                    s.kick_synth = Some(params);
+                }
+            }
+            EngineEvent::KickSetPreset(idx) => {
+                let presets = crate::kick_synth::KickParams::all_presets();
+                if let Some(p) = presets.get(idx as usize) {
+                    self.handle_event(EngineEvent::KickSetParams(p.clone()))?;
+                }
+            }
+            EngineEvent::LoadPluginToSound {
+                group,
+                sound,
+                plugin_idx,
+            } => {
+                self.load_plugin_to_sound(group, sound, plugin_idx)?;
+            }
+            EngineEvent::AddFxToSound {
+                group,
+                sound,
+                fx_type,
+            } => {
+                self.add_fx_to_sound(group, sound, fx_type)?;
+            }
+            EngineEvent::AddFxToGroup { group, fx_type } => {
+                self.add_fx_to_group(group, fx_type)?;
             }
             EngineEvent::SelectBar(bar) => {
                 let max_bars = {
@@ -2785,6 +2954,7 @@ impl Engine {
                                 let mut sg = [1.0f32; 16];
                                 let mut sp = [0.0f32; 16];
                                 let mut is_synth = [false; 16];
+                                let mut is_kick = [false; 16];
                                 for s in 0..16 {
                                     if let Some(snd) = group.sounds[s].as_ref() {
                                         vp[s] = crate::sampler::VoiceParams {
@@ -2798,6 +2968,7 @@ impl Engine {
                                         sg[s] = 10.0f32.powf(snd.volume_db / 20.0);
                                         sp[s] = snd.pan;
                                         is_synth[s] = snd.synth.is_some();
+                                        is_kick[s] = snd.kick_synth.is_some();
                                     }
                                 }
                                 Self::trigger_pattern_events(
@@ -2806,6 +2977,7 @@ impl Engine {
                                     new_tick,
                                     &mut self.sampler,
                                     &mut self.acid_synth,
+                                    &mut self.kick_synth,
                                     gi as u8,
                                     gain,
                                     group.pan,
@@ -2813,6 +2985,7 @@ impl Engine {
                                     &sp,
                                     &vp,
                                     &is_synth,
+                                    &is_kick,
                                     self.transport.swing,
                                     &mut self.pad_flash_until,
                                     new_tick,
@@ -2858,6 +3031,7 @@ impl Engine {
         new_tick: u64,
         sampler: &mut Sampler,
         acid_synth: &mut crate::acid_synth::AcidSynth,
+        kick_synth: &mut crate::kick_synth::KickSynth,
         group: u8,
         group_gain: f32,
         group_pan: f32,
@@ -2865,6 +3039,7 @@ impl Engine {
         sound_pans: &[f32],
         voice_params: &[crate::sampler::VoiceParams],
         is_synth: &[bool],
+        is_kick: &[bool],
         swing: f32,
         flash_until: &mut [u64; 16],
         now_tick: u64,
@@ -2919,7 +3094,10 @@ impl Engine {
                     };
                     let start_frame = ctx.offset(rel_ticks);
                     let is_acid = is_synth.get(sound as usize).copied().unwrap_or(false);
-                    if is_acid {
+                    let is_k = is_kick.get(sound as usize).copied().unwrap_or(false);
+                    if is_k {
+                        kick_synth.trigger(note, ev.velocity);
+                    } else if is_acid {
                         acid_synth.note_on_at(note, ev.velocity, start_frame);
                     } else if let Some(idx) = sampler.note_on_at(
                         sampler_sound_id(group, sound),
@@ -3008,6 +3186,11 @@ impl Engine {
     pub fn render_audio(&mut self, out: &mut [f32]) {
         self.sampler.render(out);
         self.acid_synth.render(out);
+        self.kick_synth.render(out);
+        let group_fx = self.focus_group_fx();
+        if !group_fx.is_empty() {
+            self.fx_processor.process(out, &group_fx);
+        }
         // VU-mètres : crêtes par groupe du sampler, attaque immédiate / release
         // exponentiel par bloc (≈ -20 dB en 300 ms), peak hold plus lent (~1,7 s).
         let peaks = self.sampler.group_peaks();
@@ -3120,24 +3303,48 @@ impl Engine {
             ];
         }
         match self.left_tab {
+            1 if self.mixer_mode == 0 || self.mixer_mode == 1 => [
+                "PAD 1-8", "PAD 9-16", "GROUPES", "MASTER", "PAN/VOL", "MUTE", "SOLO", "RETOUR",
+            ],
             1 => [
                 "GRP A", "GRP B", "GRP C", "GRP D", "GRP E", "GRP F", "GRP G", "GRP H",
             ],
             2 => [
                 "SND 1", "SND 2", "SND 3", "SND 4", "SND 5", "SND 6", "SND 7", "SND 8",
             ],
+            3 if self.browser_kind == 1 && self.delete_project_confirm => {
+                ["ANNULER", "", "", "", "", "CONFIRMER", "", ""]
+            }
             3 if self.browser_kind == 1 => [
-                "PROJ <", "PROJ >", "NOUVEAU", "CHARGER", "SAUVER", "RAPIDE", "PRESETS", "RETOUR",
+                "PROJ <", "PROJ >", "NOUVEAU", "CHARGER", "SAUVER", "SUPPR", "PRESETS", "RETOUR",
+            ],
+            3 if self.browser_kind == 2 => [
+                "PLUG <", "PLUG >", "PRESETS", "CHARGER", "KICK", "303", "SAMPLER", "RETOUR",
+            ],
+            3 if self.browser_kind == 3 => [
+                "FX <", "FX >", "GRP/PAD", "CHARGER", "REVERB", "DELAY", "DISTO", "RETOUR",
             ],
             3 => [
-                "PRES <", "PRES >", "SND <", "SND >", "ECOUTE", "CHARGER", "METRO", "LOOP",
+                "PRES <", "PRES >", "SND <", "SND >", "ECOUTE", "CHARGER", "PLUGINS", "PROJETS",
             ],
-            4 if self.plugin_page == 0 => [
-                "SND <", "SND >", "PAGE TB", "ECOUTE", "APPLIQ", "RESET", "VOL -", "VOL +",
-            ],
-            4 => [
-                "SAW/SQR", "OCT -", "OCT +", "SLIDE", "CLASSIC", "SQUELCH", "PAGE SND", "DUB",
-            ],
+            4 => {
+                if self.focus_sound_has_kick() {
+                    [
+                        "PREV", "NEXT", "TECHNO", "909", "HARDCORE", "808 SUB", "MINIMAL",
+                        "BROWSER",
+                    ]
+                } else if self.focus_sound_has_acid() {
+                    [
+                        "SAW/SQR", "OCT -", "OCT +", "SLIDE", "CLASSIC", "SQUELCH", "DUB",
+                        "BROWSER",
+                    ]
+                } else {
+                    [
+                        "SND <", "SND >", "ONE-SHOT", "ECOUTE", "PLUGINS", "RESET", "VOL -",
+                        "VOL +",
+                    ]
+                }
+            }
             _ => [
                 "BAR 1", "BAR 2", "BAR 3", "BAR 4", "1 MES", "2 MES", "4 MES", "8 MES",
             ],
@@ -3253,8 +3460,32 @@ impl Engine {
             };
         }
         match self.left_tab {
+            1 if self.mixer_mode == 0 || self.mixer_mode == 1 => match idx {
+                0 => self.handle_event(EngineEvent::SetMixerMode(0)),
+                1 => self.handle_event(EngineEvent::SetMixerMode(1)),
+                2 => self.handle_event(EngineEvent::SetMixerMode(2)),
+                3 => self.handle_event(EngineEvent::SetMixerMode(3)),
+                4 => Ok(()),
+                5 => {
+                    let p = self.active_sound;
+                    self.handle_event(EngineEvent::TogglePadMute {
+                        group: self.group_focus,
+                        pad: p,
+                    })
+                }
+                6 => self.handle_event(EngineEvent::Solo(self.group_focus)),
+                _ => {
+                    self.left_tab = 0;
+                    Ok(())
+                }
+            },
             1 => self.handle_event(EngineEvent::GroupFocus(idx as u8)),
             2 => self.handle_event(EngineEvent::SelectSound(idx as u8)),
+            3 if self.browser_kind == 1 && self.delete_project_confirm => match idx {
+                0 => self.handle_event(EngineEvent::CancelDeleteProject),
+                5 => self.handle_event(EngineEvent::DeleteSelectedProject),
+                _ => self.handle_event(EngineEvent::CancelDeleteProject),
+            },
             3 if self.browser_kind == 1 => match idx {
                 0 => self.handle_event(EngineEvent::BrowseBrowserStep(-1)),
                 1 => self.handle_event(EngineEvent::BrowseBrowserStep(1)),
@@ -3266,13 +3497,76 @@ impl Engine {
                     sound: self.active_sound,
                 }),
                 4 => self.handle_event(EngineEvent::SaveCurrent { quick: false }),
-                5 => self.handle_event(EngineEvent::SaveCurrent { quick: true }),
+                5 => {
+                    self.delete_project_confirm = true;
+                    self.status_message =
+                        Some("Supprimer le projet ? BTN 6: CONFIRMER / BTN 1: ANNULER".into());
+                    self.status_expires_at =
+                        std::time::Instant::now() + std::time::Duration::from_millis(5000);
+                    Ok(())
+                }
                 6 => self.handle_event(EngineEvent::SetBrowserKind(0)),
                 7 => {
                     self.left_tab = 0;
                     Ok(())
                 }
                 _ => Ok(()),
+            },
+            3 if self.browser_kind == 2 => match idx {
+                0 => self.handle_event(EngineEvent::BrowseBrowserStep(-1)),
+                1 => self.handle_event(EngineEvent::BrowseBrowserStep(1)),
+                2 => self.handle_event(EngineEvent::SetBrowserKind(0)),
+                3 => self.handle_event(EngineEvent::LoadSelectedBrowserItem {
+                    group: self.group_focus,
+                    sound: self.active_sound,
+                }),
+                4 => self.handle_event(EngineEvent::LoadPluginToSound {
+                    group: self.group_focus,
+                    sound: self.active_sound,
+                    plugin_idx: 0,
+                }),
+                5 => self.handle_event(EngineEvent::LoadPluginToSound {
+                    group: self.group_focus,
+                    sound: self.active_sound,
+                    plugin_idx: 1,
+                }),
+                6 => self.handle_event(EngineEvent::LoadPluginToSound {
+                    group: self.group_focus,
+                    sound: self.active_sound,
+                    plugin_idx: 3,
+                }),
+                _ => {
+                    self.left_tab = 0;
+                    Ok(())
+                }
+            },
+            3 if self.browser_kind == 3 => match idx {
+                0 => self.handle_event(EngineEvent::BrowseBrowserStep(-1)),
+                1 => self.handle_event(EngineEvent::BrowseBrowserStep(1)),
+                2 => self.handle_event(EngineEvent::SetBrowserKind(0)),
+                3 => self.handle_event(EngineEvent::LoadSelectedBrowserItem {
+                    group: self.group_focus,
+                    sound: self.active_sound,
+                }),
+                4 => self.handle_event(EngineEvent::AddFxToSound {
+                    group: self.group_focus,
+                    sound: self.active_sound,
+                    fx_type: crate::fx::FxType::Reverb,
+                }),
+                5 => self.handle_event(EngineEvent::AddFxToSound {
+                    group: self.group_focus,
+                    sound: self.active_sound,
+                    fx_type: crate::fx::FxType::Delay,
+                }),
+                6 => self.handle_event(EngineEvent::AddFxToSound {
+                    group: self.group_focus,
+                    sound: self.active_sound,
+                    fx_type: crate::fx::FxType::Distortion,
+                }),
+                _ => {
+                    self.left_tab = 0;
+                    Ok(())
+                }
             },
             3 => match idx {
                 0 => self.handle_event(EngineEvent::BrowsePresetStep(-1)),
@@ -3298,68 +3592,107 @@ impl Engine {
                         preset_idx: p,
                     })
                 }
-                6 => self.handle_event(EngineEvent::ToggleMetronome),
-                _ => self.handle_event(EngineEvent::ToggleLoop),
+                6 => self.handle_event(EngineEvent::SetBrowserKind(2)),
+                _ => self.handle_event(EngineEvent::SetBrowserKind(1)),
             },
-            4 if self.plugin_page == 0 => match idx {
-                0 => {
-                    let s = self.active_sound.saturating_sub(1);
-                    self.handle_event(EngineEvent::SelectSound(s))
+            4 => {
+                if self.focus_sound_has_kick() {
+                    match idx {
+                        0 => {
+                            let cur = self.kick_synth.params.tuning_semitones;
+                            let mut p = self.kick_synth.params.clone();
+                            p.tuning_semitones = (cur - 1.0).clamp(-12.0, 12.0);
+                            self.handle_event(EngineEvent::KickSetParams(p))
+                        }
+                        1 => {
+                            let cur = self.kick_synth.params.tuning_semitones;
+                            let mut p = self.kick_synth.params.clone();
+                            p.tuning_semitones = (cur + 1.0).clamp(-12.0, 12.0);
+                            self.handle_event(EngineEvent::KickSetParams(p))
+                        }
+                        2 => self.handle_event(EngineEvent::KickSetPreset(0)),
+                        3 => self.handle_event(EngineEvent::KickSetPreset(1)),
+                        4 => self.handle_event(EngineEvent::KickSetPreset(2)),
+                        5 => self.handle_event(EngineEvent::KickSetPreset(3)),
+                        6 => self.handle_event(EngineEvent::KickSetPreset(4)),
+                        _ => {
+                            self.left_tab = 3;
+                            self.browser_kind = 2;
+                            Ok(())
+                        }
+                    }
+                } else if self.focus_sound_has_acid() {
+                    match idx {
+                        0 => self.handle_event(EngineEvent::AcidWaveformToggle),
+                        1 => self.handle_event(EngineEvent::AcidOctaveDelta(-1)),
+                        2 => self.handle_event(EngineEvent::AcidOctaveDelta(1)),
+                        3 => {
+                            let slide = if self.acid_synth.params.slide_time_ms > 1.0 {
+                                -100.0
+                            } else {
+                                60.0
+                            };
+                            self.handle_event(EngineEvent::AcidSlideDelta(slide))
+                        }
+                        4 => self.handle_event(EngineEvent::AcidSelectPreset(0)),
+                        5 => self.handle_event(EngineEvent::AcidSelectPreset(1)),
+                        6 => self.handle_event(EngineEvent::AcidSelectPreset(3)),
+                        _ => {
+                            self.left_tab = 3;
+                            self.browser_kind = 2;
+                            Ok(())
+                        }
+                    }
+                } else {
+                    match idx {
+                        0 => {
+                            let s = self.active_sound.saturating_sub(1);
+                            self.handle_event(EngineEvent::SelectSound(s))
+                        }
+                        1 => {
+                            let s = (self.active_sound + 1).min(15);
+                            self.handle_event(EngineEvent::SelectSound(s))
+                        }
+                        2 => self.handle_event(EngineEvent::Pad {
+                            pad: self.active_sound,
+                            velocity: 112,
+                            pressed: true,
+                        }),
+                        3 => {
+                            let preset = self.browser_preset_idx;
+                            self.preview_preset(preset);
+                            Ok(())
+                        }
+                        4 => {
+                            self.left_tab = 3;
+                            self.browser_kind = 2;
+                            Ok(())
+                        }
+                        5 => self.handle_event(EngineEvent::SoundReset {
+                            group: self.group_focus,
+                            sound: self.active_sound,
+                        }),
+                        6 | 7 => {
+                            let delta = if idx == 6 { -3.0 } else { 3.0 };
+                            let current = self
+                                .project
+                                .read()
+                                .groups
+                                .get(self.group_focus as usize)
+                                .and_then(|g| g.sounds.get(self.active_sound as usize))
+                                .and_then(|s| s.as_ref())
+                                .map(|s| s.volume_db)
+                                .unwrap_or(0.0);
+                            self.handle_event(EngineEvent::SoundVolume {
+                                group: self.group_focus,
+                                sound: self.active_sound,
+                                volume_db: (current + delta).clamp(-60.0, 12.0),
+                            })
+                        }
+                        _ => Ok(()),
+                    }
                 }
-                1 => {
-                    let s = (self.active_sound + 1).min(15);
-                    self.handle_event(EngineEvent::SelectSound(s))
-                }
-                2 => self.handle_event(EngineEvent::SetPluginPage(1)),
-                3 => self.handle_event(EngineEvent::Pad {
-                    pad: self.active_sound,
-                    velocity: 112,
-                    pressed: true,
-                }),
-                4 => self.handle_event(EngineEvent::SoundApplyToGroup {
-                    group: self.group_focus,
-                    source_sound: self.active_sound,
-                }),
-                5 => self.handle_event(EngineEvent::SoundReset {
-                    group: self.group_focus,
-                    sound: self.active_sound,
-                }),
-                6 | 7 => {
-                    let delta = if idx == 6 { -3.0 } else { 3.0 };
-                    let current = self
-                        .project
-                        .read()
-                        .groups
-                        .get(self.group_focus as usize)
-                        .and_then(|g| g.sounds.get(self.active_sound as usize))
-                        .and_then(|s| s.as_ref())
-                        .map(|s| s.volume_db)
-                        .unwrap_or(0.0);
-                    self.handle_event(EngineEvent::SoundVolume {
-                        group: self.group_focus,
-                        sound: self.active_sound,
-                        volume_db: (current + delta).clamp(-60.0, 12.0),
-                    })
-                }
-                _ => Ok(()),
-            },
-            4 => match idx {
-                0 => self.handle_event(EngineEvent::AcidWaveformToggle),
-                1 => self.handle_event(EngineEvent::AcidOctaveDelta(-1)),
-                2 => self.handle_event(EngineEvent::AcidOctaveDelta(1)),
-                3 => {
-                    let slide = if self.acid_synth.params.slide_time_ms > 1.0 {
-                        -100.0
-                    } else {
-                        60.0
-                    };
-                    self.handle_event(EngineEvent::AcidSlideDelta(slide))
-                }
-                4 => self.handle_event(EngineEvent::AcidSelectPreset(0)),
-                5 => self.handle_event(EngineEvent::AcidSelectPreset(1)),
-                6 => self.handle_event(EngineEvent::SetPluginPage(0)),
-                _ => self.handle_event(EngineEvent::AcidSelectPreset(3)),
-            },
+            }
             _ => match idx {
                 0..=3 => self.handle_event(EngineEvent::SelectBar(idx)),
                 4 => self.handle_event(EngineEvent::SetPatternBars(1)),
@@ -3436,7 +3769,7 @@ impl Engine {
     }
 
     /// Paramètres TB-303 du Sound actif, si ce Sound est un synthé.
-    fn focus_sound_synth_params(&self) -> Option<crate::acid_synth::AcidParams> {
+    pub fn focus_sound_synth_params(&self) -> Option<crate::acid_synth::AcidParams> {
         let proj = self.project.read();
         proj.groups
             .get(self.group_focus as usize)
@@ -3445,9 +3778,180 @@ impl Engine {
             .and_then(|s| s.synth.clone())
     }
 
-    /// Le Sound actif est-il un synthétiseur TB-303 ?
-    fn focus_sound_has_synth(&self) -> bool {
+    /// Le Sound actif est-il un synthétiseur (TB-303 ou Kick Synth) ?
+    pub fn focus_sound_has_synth(&self) -> bool {
+        self.focus_sound_synth_params().is_some() || self.focus_sound_kick_params().is_some()
+    }
+
+    /// Le Sound actif est-il un synthétiseur TB-303 Acid ?
+    pub fn focus_sound_has_acid(&self) -> bool {
         self.focus_sound_synth_params().is_some()
+    }
+
+    /// Paramètres Kick Synth du Sound actif.
+    pub fn focus_sound_kick_params(&self) -> Option<crate::kick_synth::KickParams> {
+        let proj = self.project.read();
+        proj.groups
+            .get(self.group_focus as usize)
+            .and_then(|g| g.sounds.get(self.active_sound as usize))
+            .and_then(|s| s.as_ref())
+            .and_then(|s| s.kick_synth.clone())
+    }
+
+    /// Le Sound actif est-il un Kick Synth modélisé ?
+    pub fn focus_sound_has_kick(&self) -> bool {
+        self.focus_sound_kick_params().is_some()
+    }
+
+    /// Chaîne d'effets du Sound actif.
+    pub fn focus_sound_fx(&self) -> Vec<crate::fx::FxSlot> {
+        let proj = self.project.read();
+        proj.groups
+            .get(self.group_focus as usize)
+            .and_then(|g| g.sounds.get(self.active_sound as usize))
+            .and_then(|s| s.as_ref())
+            .map(|s| s.fx_chain.clone())
+            .unwrap_or_default()
+    }
+
+    /// Chaîne d'effets du Group focus.
+    pub fn focus_group_fx(&self) -> Vec<crate::fx::FxSlot> {
+        let proj = self.project.read();
+        proj.groups
+            .get(self.group_focus as usize)
+            .map(|g| g.fx_chain.clone())
+            .unwrap_or_default()
+    }
+
+    /// Charge les paramètres Kick du Sound actif dans le KickSynth interne.
+    pub fn sync_kick_from_active_sound(&mut self) {
+        if let Some(params) = self.focus_sound_kick_params() {
+            self.kick_synth.params = params;
+        }
+    }
+
+    /// Supprime définitivement le projet sélectionné dans le navigateur.
+    pub fn delete_selected_project(&mut self) -> crate::Result<()> {
+        self.delete_project_confirm = false;
+        if let Some(entry) = self.project_entries.get(self.project_selected).cloned() {
+            let path = std::path::Path::new(&entry.path);
+            if path.exists() {
+                let _ = std::fs::remove_file(path);
+            }
+            let deleted_name = entry.name;
+            self.rescan_local_projects();
+            if self.project_selected >= self.project_entries.len() {
+                self.project_selected = self.project_entries.len().saturating_sub(1);
+            }
+            self.status_message = Some(format!("Projet '{}' supprimé", deleted_name));
+            self.status_expires_at =
+                std::time::Instant::now() + std::time::Duration::from_millis(3000);
+            self.revision = self.revision.wrapping_add(1);
+        }
+        Ok(())
+    }
+
+    /// Charge un plugin (0: Kick Synth, 1: TB-303, 2: Guitar Amp, 3: Sampler) sur un pad.
+    pub fn load_plugin_to_sound(
+        &mut self,
+        group: u8,
+        sound: u8,
+        plugin_idx: u8,
+    ) -> crate::Result<()> {
+        let mut guard = self.project.write();
+        let project = project_mut(&mut guard);
+        if let Some(grp) = project.groups.get_mut(group as usize) {
+            let target_sound = grp.sounds[sound as usize].get_or_insert_with(|| {
+                crate::project::Sound::new(&format!("Sound {}", sound + 1), 78)
+            });
+            match plugin_idx {
+                0 => {
+                    target_sound.kick_synth = Some(crate::kick_synth::KickParams::default());
+                    target_sound.synth = None;
+                    target_sound.name = "Kick Synth".to_string();
+                    self.kick_synth.params = crate::kick_synth::KickParams::default();
+                    self.status_message =
+                        Some("Plugin chargé : Kick Synth (Modélisation Techno)".to_string());
+                }
+                1 => {
+                    target_sound.synth = Some(crate::acid_synth::AcidParams::preset_classic_acid());
+                    target_sound.kick_synth = None;
+                    target_sound.name = "TB-303".to_string();
+                    self.acid_synth.params = crate::acid_synth::AcidParams::preset_classic_acid();
+                    self.status_message = Some("Plugin chargé : TB-303 Acid Bass".to_string());
+                }
+                2 => {
+                    target_sound.synth = None;
+                    target_sound.kick_synth = None;
+                    target_sound.name = "Guitar Amp".to_string();
+                    target_sound.fx_chain = vec![
+                        crate::fx::FxSlot::default_for(crate::fx::FxType::Distortion),
+                        crate::fx::FxSlot::default_for(crate::fx::FxType::Delay),
+                    ];
+                    self.status_message = Some("Plugin chargé : Guitar Amp & FX".to_string());
+                }
+                _ => {
+                    target_sound.synth = None;
+                    target_sound.kick_synth = None;
+                    target_sound.name = DRUM_PRESET_NAMES
+                        .get(sound as usize)
+                        .copied()
+                        .unwrap_or("Sampler")
+                        .to_string();
+                    self.status_message = Some("Plugin chargé : Sampler Kit 808".to_string());
+                }
+            }
+            self.status_expires_at =
+                std::time::Instant::now() + std::time::Duration::from_millis(3000);
+            self.revision = self.revision.wrapping_add(1);
+        }
+        Ok(())
+    }
+
+    /// Ajoute un effet au pad actif.
+    pub fn add_fx_to_sound(
+        &mut self,
+        group: u8,
+        sound: u8,
+        fx_type: crate::fx::FxType,
+    ) -> crate::Result<()> {
+        let mut guard = self.project.write();
+        let project = project_mut(&mut guard);
+        if let Some(grp) = project.groups.get_mut(group as usize) {
+            let target_sound = grp.sounds[sound as usize].get_or_insert_with(|| {
+                crate::project::Sound::new(&format!("Sound {}", sound + 1), 78)
+            });
+            let slot = crate::fx::FxSlot::default_for(fx_type);
+            target_sound.fx_chain.push(slot);
+            self.status_message = Some(format!(
+                "Effet {} ajouté au Pad {}",
+                fx_type.name(),
+                sound + 1
+            ));
+            self.status_expires_at =
+                std::time::Instant::now() + std::time::Duration::from_millis(3000);
+            self.revision = self.revision.wrapping_add(1);
+        }
+        Ok(())
+    }
+
+    /// Ajoute un effet au groupe focus.
+    pub fn add_fx_to_group(&mut self, group: u8, fx_type: crate::fx::FxType) -> crate::Result<()> {
+        let mut guard = self.project.write();
+        let project = project_mut(&mut guard);
+        if let Some(grp) = project.groups.get_mut(group as usize) {
+            let slot = crate::fx::FxSlot::default_for(fx_type);
+            grp.fx_chain.push(slot);
+            self.status_message = Some(format!(
+                "Effet {} ajouté au Groupe {}",
+                fx_type.name(),
+                (b'A' + group) as char
+            ));
+            self.status_expires_at =
+                std::time::Instant::now() + std::time::Duration::from_millis(3000);
+            self.revision = self.revision.wrapping_add(1);
+        }
+        Ok(())
     }
 
     /// Charge les paramètres TB-303 du Sound actif dans le synthé global
@@ -4649,10 +5153,10 @@ mod tests {
         eng.left_tab = 3;
         eng.browser_kind = 1; // FILE mode
 
-        // 1. Softkey labels en mode FILE
+        // 1. Softkey labels en mode FILE (avec suppression directe depuis MK3)
         assert_eq!(
             eng.soft_key_labels(),
-            ["PROJ <", "PROJ >", "NOUVEAU", "CHARGER", "SAUVER", "RAPIDE", "PRESETS", "RETOUR"]
+            ["PROJ <", "PROJ >", "NOUVEAU", "CHARGER", "SAUVER", "SUPPR", "PRESETS", "RETOUR"]
         );
 
         // 2. SoftKey 3 = NOUVEAU projet
@@ -4661,6 +5165,14 @@ mod tests {
         assert!(snap.current_project_path.is_some());
         let path = std::path::PathBuf::from(snap.current_project_path.as_ref().unwrap());
         assert!(path.exists(), "Le fichier projet doit être créé sur disque");
+
+        // 3. Test de confirmation et suppression de projet depuis MK3
+        eng.handle_event(EngineEvent::SoftKey(6)).unwrap();
+        assert!(eng.snapshot().delete_project_confirm);
+        assert_eq!(eng.soft_key_labels()[5], "CONFIRMER");
+        eng.handle_event(EngineEvent::CancelDeleteProject).unwrap();
+        assert!(!eng.snapshot().delete_project_confirm);
+        assert_eq!(eng.soft_key_labels()[5], "SUPPR");
 
         // Le projet doit avoir un kit jouable (16 sons) et Pattern 1 vide
         assert_eq!(snap.project.groups.len(), 1);

@@ -2,6 +2,31 @@
 
 All notable changes.
 
+## [0.9.8] - 2026-11-08
+
+### Added
+
+- **Pattern Toggle-off / Silence**: pressing the pad of an active pattern in PATTERN mode deselects it (sets scene slot to None), silencing the group while keeping the pattern intact in the project, allowing all patterns across any group to be deactivated simultaneously matching authentic Maschine MK3 behavior.
+- **Multi-Pad Pattern Chaining**: pressing two pads simultaneously in PATTERN mode chains patterns sequentially (e.g., Pattern 1 + Pattern 2), seamlessly cycling through the chained patterns in a continuous loop based on their individual bar/tick lengths.
+- **Real-Time Contextual Shift Labels**: holding the physical `SHIFT` button dynamically updates soft key labels on the MK3 displays across all views (e.g. `DOUBLE`, `HALF`, `QUANT`, `HUMAN`, `SAV PROJ`, `COUNT-IN`), providing instant visual discovery of shift shortcuts right above the display buttons.
+- **Contextual Shift Soft-Key Actions**: Shift + SoftKey presses execute contextual operations including `DOUBLE` (double pattern length), `HALF` (halve pattern length), `QUANT` (50% grid quantize), `HUMAN` (humanize timing), `SAV PROJ` (quick project save), and `COUNT-IN` (toggle recording count-in).
+- **Latchable Note Repeat & Arpeggiator**: pressing `NOTE REPEAT` enables note repeat; pressing `LOCK` latches note repeat active with illuminated LED feedback. Display buttons 1..8 allow immediate rate selection (1/32 to 1/2, triplets) with active rate LED indicators, fully playable live and recordable in real time with the `REC` button.
+- **Sustained Melodic Notes**: holding a pad on melodic instruments (Wavetable / Nexus Synth, TB-303) sustains the note until pad release (NoteOff), while one-shot drum sampler pads retain authentic one-shot playback.
+- **Wavetable / Nexus Synth Hardware Controls**: knobs 1..8 on MK3 dual screens directly modulate Filter Cutoff, Resonance, Env Amount, Drive, and full ADSR envelope parameters with complete parameter responsiveness.
+
+### Fixes
+
+- **4D Encoder Mixer Navigation**: pushing 4D encoder **Up** enters pad drill-down of the focused group, and pushing 4D encoder **Down** exits back to group overview / master view. Resolves navigation lock-in when returning from group to master.
+- **Per-Pad Mixer Volume & Mute Isolation**: adjusting pad volume in the mixer only affects that specific sound track, ensuring Wavetable / Nexus Synth, Kick Synth, and Sampler pad levels do not bleed or affect neighboring synth/sampler volumes.
+- **Wider Pad Mixer Strips**: updated MK3 display render to 4 wider channel strips per screen (Pads 1-4 and 5-8, or 9-12 and 13-16) with enlarged faders, higher-resolution VU meters, and clear dB readouts.
+- **Hardware LED Synchronization**: fixed LED states for `NOTE REPEAT`, `LOCK`, `SHIFT`, `DUPLICATE`, and soft display rate buttons so physical LEDs accurately mirror system state.
+- **Lock Button Functionality**: the physical `LOCK` button toggles lock state and illuminates its LED, providing authentic locking capability for Note Repeat and view locks.
+
+### Validation
+
+- `cargo test --workspace --no-default-features` (150+ passing tests)
+- `cargo check --workspace --no-default-features` (clean)
+
 ## [0.9.7] - 2026-11-08
 
 ### Added

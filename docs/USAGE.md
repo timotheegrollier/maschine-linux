@@ -36,17 +36,24 @@ Logs: `RUST_LOG=debug maschine-linux -vv daemon`
 ### Supported Maschine MK3 hardware controls
 
 - **Pads 1..16**:
-  - **PAD mode**: full-dynamics one-shot triggering (velocity + pressure) of the active sound or full kit, white hit flash then the color assigned to the sound.
-  - **PATTERN mode**: select an existing pattern of the focus Group, or create the corresponding slot when the pad is empty. The active Scene is assigned to the selected pattern.
+  - **PAD mode**: full-dynamics triggering (velocity + pressure) of the active sound or full kit. Melodic instruments (Wavetable/Nexus Synth, TB-303) sustain notes for the duration of the pad hold with clean NoteOff release; drum sampler pads trigger authentic one-shots. White hit flash then the color assigned to the sound.
+  - **PATTERN mode**: select an existing pattern of the focus Group, or create the corresponding slot when the pad is empty. Pressing the currently active pattern toggles it off (silencing the group), allowing all patterns across any group to be deactivated. Holding two pads simultaneously chains those patterns to play sequentially in a continuous loop.
   - **STEP mode**: silent step sequencer (no stray playback when placing/removing steps), active step LEDs + live white playhead cursor.
-  - **KEYBOARD mode**: melodic playing in a minor scale C3..D5.
-  - **CHORDS mode**: enriched diatonic chords.
+  - **KEYBOARD mode**: melodic playing in a minor scale C3..D5 with sustained notes.
+  - **CHORDS mode**: enriched diatonic chords with sustained notes.
+- **NOTE REPEAT & LOCK**:
+  - Pressing `NOTE REPEAT` activates real-time note repetition.
+  - Pressing `LOCK` latches Note Repeat mode on with illuminated physical LED feedback.
+  - Soft display buttons 1..8 select repeat divisions (1/32, 1/24, 1/16, 1/12, 1/8, 1/6, 1/4, 1/2) with the active rate highlighted on both the screen and the button LED.
+  - Live repeat notes are fully recordable into patterns with the `REC` transport button.
 - **4-D encoder**:
-  - **Up / Down**: selection of the active sound (with one-shot preview); in Browser mode, scrolling through synthesizer presets.
-  - **Left / Right** or `<` / `>` keys: step-by-step navigation between pattern bars (Bar 1, Bar 2, Bar 3, Bar 4...); in PATTERN mode, previous/next pattern.
+  - **Up / Down**: selection of the active sound (with one-shot preview); in Browser mode, scrolling through synthesizer presets; in MIXER mode, **Up** drills down into the group's pad mixer strips, and **Down** exits back to group overview / master view.
+  - **Left / Right** or `<` / `>` keys: step-by-step navigation between pattern bars (Bar 1, Bar 2, Bar 3, Bar 4...); in PATTERN mode, previous/next pattern; in MIXER pad view, switches between Pads 1-8 and Pads 9-16 banks.
   - **Shift + Right**: dynamic extension of the pattern to 4 or 8 bars.
   - **Pressure (Push)**: one-shot preview of the active sound (or loading the selected preset in Browser mode) — does not accidentally start loop playback.
   - **Rotation**: fine adjustment according to the active focus (Tempo, Master Volume, Swing).
+- **Shift & Contextual Real-Time Display Labels**:
+  - Holding the physical `SHIFT` button dynamically repaints the 8 display button labels across all views in real time, exposing immediate shortcuts directly above each button: `DOUBLE` (double pattern length), `HALF` (halve pattern length), `QUANT` (50% grid quantize), `HUMAN` (humanize timing), `SAV PROJ` (instant quick save), and `COUNT-IN` (toggle recording count-in).
 - **Pattern editing buttons**: `DUPLICATE` copies the active pattern and inserts the copy after it. `SHIFT + ERASE` clears the active pattern events without deleting the pattern or changing its length.
 - **Color LCD screens (2 × 480×272)**:
   - **Display Buttons 1..4 (Left screen) & PLUGIN button**: tab selection (ARRANGE, MIXER, SAMPLER, BROWSER, and the unified **PLUGIN** page). The physical PLUGIN button opens the SOUND page and a second press closes it.
@@ -96,11 +103,11 @@ The native GUI displays in real time:
 - **Nexus / Serum Wavetable Synth (`PLUGINS` -> `NEXUS SYNTH`)**: 16-voice polyphonic instrument with multi-oscillators, 7-voice unison supersaw, acoustic/digital tables (Grand Piano, M1 Piano, Rhodes, Formants), multimode SVF filter (LP12, LP24, HP, BP), dual ADSR envelopes, LFO modulation, and stereo FX rack (Chorus, Ping-Pong Delay, Reverb, Distortion) with 28 factory presets (Concert Grand Piano, House M1 Piano, Vintage Upright Piano, Honky Tonk, Neo-Soul Rhodes, DX7 E-Piano, 808 Sub Boom, Reese Bass, Acid 303 Sub, Neurofunk Slither Bass, Slap Funk Bass, Cyberpunk Bass, Future House Donk, Titanium Supersaw Lead, Future Rave Lead, Hyperpop Chiptune Lead, Blade Runner Brass, Cyber-Drive Synth, Trance Euphoria, Celestial Strings, Analog Warmth, Cinematic Dark Pad, Spire Pluck, Pizzicato Strings, Kalimba Dream, Crystal Mallet, Deep House Organ, Hammond B3 Organ).
 - **Techno Kick Synth Modeler (`PLUGINS` -> `KICK SYNTH`)**: Analog & techno kick drum modeling with exponential pitch drop, 7 body waveforms (Sine, Triangle, SatSine, SubSquare, NoiseTransient, Parabolic, Ramp), 7 drive & distortion models (Analog Tanh, Hard Clip, Wavefolder, Tube Drive, Bitcrush, Fuzz, Rectifier), 6 multimode resonant filter modes (Off, LowPass, HighPass, BandPass, Notch, Peak) with cutoff & resonance, FM linear frequency modulation, hold stage before pitch/amplitude decay, transient click layer, sub-bass tuning, and 13 factory presets (Techno Berlin, 909 Punch, Hardcore Wavefolder, Sub 808, Minimal Click, Industrial Tube, Acid Gabber, Deep Dub, Frenchcore Fuzz, Dark Psy FM Kick, Glitch Bitcrush, 909 Parabolic Punch, Trap 808 Long Boom).
 - **Acid TB-303 page**: PolyBLEP oscillator (Saw/Square, octave, slide), 4-pole resonant low-pass filter with frequency response curve display, tanh distortion waveshaper with dynamic transfer curve, stereo ping-pong delay with graphical echo preview, quick preset selector and 16-key virtual keyboard (C1 to D#2) to play directly with the mouse.
-- **8-group mixer (A..H) & Pad VU drill-down**: volume faders, peak indicators, mute and solo. On MK3 hardware, pushing the 4D encoder or nudging 4D Right drills down into the focused group's pad mixer view (Pads 1-8 / 9-16) with individual live audio VU meters (green/yellow/red gradient), clip indicators, peak hold markers, and volume fader tick controls. In the GUI, sound strips show dynamic dual VU meters alongside volume faders.
+- **8-group mixer (A..H) & Pad VU drill-down**: volume faders, peak indicators, mute and solo. On MK3 hardware, pushing the 4D encoder **Up** drills down into the focused group's pad mixer view (with 4 wide channel strips per screen: Pads 1-4/5-8 or 9-12/13-16) with individual live audio VU meters (green/yellow/red gradient), clip indicators, peak hold markers, and volume faders that strictly isolate each sound. Pushing 4D encoder **Down** returns back to group overview / master view. In the GUI, sound strips show dynamic dual VU meters alongside volume faders.
 - **Instant Filter Mode Selection**: In Sampler and Plugin views, filter modes (`LP`, `HP`, `BP`, `OFF`, `NOTCH`, `PEAK`) can be selected instantly on MK3 hardware via Soft Buttons 5..8, cycled via Soft Button 4 (`CYC FLT`), or cycled on-the-fly by holding `Shift` and turning Knob 3 (Filter Cutoff) or pushing `Shift + EncoderPush`.
 - **Import a sample**: in Sampler, enter the path of a WAV file and start the import. Decoding happens in the background; the GUI remains interactive. The selected Sound is replaced and the path is saved in the project.
 
-Useful shortcuts: `I` Ideas, `S` Sequencer, `K` Keyboard, `M` Mixer, `A` Sampler, `T`/`P` Plugin/Synth, `B` Browser/File, `Space` Play/Stop, `F1` toggle navigation, `F2` toggle MK3 panel, `Ctrl+S` save, `Ctrl+Shift+S` quick save. On MK3, `FILE` opens the project browser, `Shift + FILE SAVE` performs a quick save, pushing the 4D encoder in Mixer enters the group pad meters, and `Shift + EncoderPush` in Sampler cycles filter mode.
+Useful shortcuts: `I` Ideas, `S` Sequencer, `K` Keyboard, `M` Mixer, `A` Sampler, `T`/`P` Plugin/Synth, `B` Browser/File, `Space` Play/Stop, `F1` toggle navigation, `F2` toggle MK3 panel, `Ctrl+S` save, `Ctrl+Shift+S` quick save. On MK3, `FILE` opens the project browser, `Shift + FILE SAVE` performs a quick save, pushing 4D Up in Mixer enters group pad strips, 4D Down exits back to groups/master, and `Shift + EncoderPush` in Sampler cycles filter mode.
 
 The official Sample Editor (recording, playback ranges, slicing and zone editing from the MK3) is not yet implemented. The EVENTS screen currently displays information without editing events.
 

@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.9.8" date="2026-11-08">
+      <description>
+        <p>Release 0.9.8 brings authentic Maschine MK3 pattern toggle-off, multi-pad pattern chaining, dynamic real-time Shift labels on display buttons with contextual actions, improved 4D mixer navigation (Up to drill into group, Down to return), per-pad synth/sampler mixer volume isolation, full Nexus/Wavetable synth knob controls, latchable Note Repeat with rate selection, and hardware LED state fixes.</p>
+      </description>
+    </release>
     <release version="0.9.7" date="2026-11-08">
       <description>
         <p>Release 0.9.7 adds Wavetable/Nexus Synth plugin with 28 factory presets, Kick Synth FM/drive/filter enhancements, 4D mixer pad drill-down with live pad VU meters, quick filter selection, and automatic exiting of latched modes from top-row buttons.</p>

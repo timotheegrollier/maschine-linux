@@ -1278,6 +1278,113 @@ fn cmd_daemon(
                 MapperAction::SetMixerMode(mode) => {
                     let _ = engine.lock().handle_event(EngineEvent::SetMixerMode(mode));
                 }
+                MapperAction::WavetableCutoffDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::WavetableCutoffDelta(delta));
+                }
+                MapperAction::WavetableResoDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::WavetableResoDelta(delta));
+                }
+                MapperAction::WavetableEnvAmtDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::WavetableEnvAmtDelta(delta));
+                }
+                MapperAction::WavetableDriveDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::WavetableDriveDelta(delta));
+                }
+                MapperAction::WavetableAttackDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::WavetableAttackDelta(delta));
+                }
+                MapperAction::WavetableDecayDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::WavetableDecayDelta(delta));
+                }
+                MapperAction::WavetableSustainDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::WavetableSustainDelta(delta));
+                }
+                MapperAction::WavetableReleaseDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::WavetableReleaseDelta(delta));
+                }
+                MapperAction::WavetableFilterModeCycle => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::WavetableFilterModeCycle);
+                }
+                MapperAction::WavetableUnisonVoicesDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::WavetableUnisonVoicesDelta(delta));
+                }
+                MapperAction::WavetableOsc1WaveCycle => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::WavetableOsc1WaveCycle);
+                }
+                MapperAction::WavetableOsc2WaveCycle => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::WavetableOsc2WaveCycle);
+                }
+                MapperAction::WavetableChorusDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::WavetableChorusDelta(delta));
+                }
+                MapperAction::WavetableDelayDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::WavetableDelayDelta(delta));
+                }
+                MapperAction::WavetableReverbDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::WavetableReverbDelta(delta));
+                }
+                MapperAction::WavetableVolumeDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::WavetableVolumeDelta(delta));
+                }
+                MapperAction::WavetableNextPreset => {
+                    let _ = engine.lock().handle_event(EngineEvent::WavetableNextPreset);
+                }
+                MapperAction::WavetablePrevPreset => {
+                    let _ = engine.lock().handle_event(EngineEvent::WavetablePrevPreset);
+                }
+                MapperAction::SetNoteRepeat(enabled) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::SetNoteRepeat(enabled));
+                }
+                MapperAction::SetNoteRepeatRate(rate) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::SetNoteRepeatRate(rate));
+                }
+                MapperAction::PatternChain { group, patterns } => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::PatternChain { group, patterns });
+                }
+                MapperAction::SetShiftHeld(held) => {
+                    let _ = engine.lock().handle_event(EngineEvent::SetShiftHeld(held));
+                }
+                MapperAction::ToggleLock(locked) => {
+                    let _ = engine.lock().handle_event(EngineEvent::ToggleLock(locked));
+                }
                 MapperAction::CycleSoundFilterKind => {
                     let (g, s) = {
                         let eng = engine.lock();
@@ -1440,35 +1547,7 @@ fn cmd_daemon(
                     engine.lock().clear_bar(b);
                 }
                 MapperAction::DuplicateBar => {
-                    let (g, scene, proj) = {
-                        let eng = engine.lock();
-                        let snap = eng.snapshot();
-                        (
-                            snap.group_focus as usize,
-                            snap.active_scene,
-                            eng.project_handle(),
-                        )
-                    };
-                    let mut guard = proj.write();
-                    let pat_idx = guard.active_pattern_index(g, scene);
-                    if let Some(group) = guard.groups.get_mut(g) {
-                        if let Some(pi) = pat_idx {
-                            if let Some(pat) = group.patterns.get_mut(pi) {
-                                let bar1_events: Vec<_> = pat
-                                    .events
-                                    .iter()
-                                    .filter(|e| e.tick < 4 * 960)
-                                    .cloned()
-                                    .collect();
-                                pat.events.retain(|e| e.tick < 4 * 960);
-                                for mut ev in bar1_events {
-                                    ev.tick += 4 * 960;
-                                    pat.events.push(ev);
-                                }
-                            }
-                        }
-                    }
-                    drop(guard);
+                    engine.lock().duplicate_bar();
                     engine.lock().invalidate_display();
                 }
                 MapperAction::ModeSwitch(mode) => {
@@ -1705,6 +1784,9 @@ fn cmd_daemon(
             metronome: snap.metronome,
             selected_bar: snap.selected_bar,
             pattern_bars: snap.pattern_bars,
+            note_repeat_enabled: snap.note_repeat_enabled,
+            lock_active: snap.lock_active,
+            shift_held: snap.shift_held,
         };
         mapper.update_leds(&led_info);
         let _ = led_tx.send(mapper.led_state().clone());
@@ -2666,6 +2748,11 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             browser_plugin_idx: 0,
             browser_fx_idx: 0,
             delete_project_confirm: false,
+            note_repeat_enabled: false,
+            note_repeat_rate: 1,
+            shift_held: false,
+            lock_active: false,
+            pattern_chains: [None, None, None, None, None, None, None, None],
         };
         snap.transport.state = maschine_engine::transport::TransportState::Playing;
 

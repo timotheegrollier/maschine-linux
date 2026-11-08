@@ -690,13 +690,16 @@ impl Project {
         if group_len == 0 {
             return None;
         }
-        let assigned = active_scene
-            .and_then(|si| self.scenes.get(si))
-            .and_then(|sc| sc.patterns.get(group).copied().flatten());
-        match assigned {
-            Some(pi) if pi < group_len => Some(pi),
-            _ => Some(0),
+        if let Some(scene) = active_scene.and_then(|si| self.scenes.get(si)) {
+            if let Some(slot) = scene.patterns.get(group) {
+                return match *slot {
+                    Some(pi) if pi < group_len => Some(pi),
+                    Some(_) => Some(0),
+                    None => None,
+                };
+            }
         }
+        Some(0)
     }
 }
 
@@ -770,6 +773,9 @@ mod tests {
         // Assignation hors borne : repli sur 0.
         p.scenes[0].patterns[0] = Some(7);
         assert_eq!(p.active_pattern_index(0, Some(0)), Some(0));
+        // Désélection explicite : None
+        p.scenes[0].patterns[0] = None;
+        assert_eq!(p.active_pattern_index(0, Some(0)), None);
         // Groupe sans pattern : None.
         p.groups[0].patterns.clear();
         assert_eq!(p.active_pattern_index(0, Some(0)), None);

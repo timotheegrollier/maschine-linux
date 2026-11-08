@@ -403,6 +403,48 @@ pub enum EngineEvent {
         group: u8,
         fx_type: crate::fx::FxType,
     },
+    /// Ajuste la fréquence de coupure du filtre Wavetable Synth (Hz)
+    WavetableCutoffDelta(f32),
+    /// Ajuste la résonance du filtre Wavetable Synth (0..1)
+    WavetableResoDelta(f32),
+    /// Ajuste la modulation d'enveloppe du filtre Wavetable Synth (-1..1)
+    WavetableEnvAmtDelta(f32),
+    /// Ajuste le drive du filtre Wavetable Synth (0..1)
+    WavetableDriveDelta(f32),
+    /// Ajuste l'attaque de l'enveloppe d'amplitude Wavetable Synth (ms)
+    WavetableAttackDelta(f32),
+    /// Ajuste le decay de l'enveloppe d'amplitude Wavetable Synth (ms)
+    WavetableDecayDelta(f32),
+    /// Ajuste le sustain de l'enveloppe d'amplitude Wavetable Synth (0..1)
+    WavetableSustainDelta(f32),
+    /// Ajuste le release de l'enveloppe d'amplitude Wavetable Synth (ms)
+    WavetableReleaseDelta(f32),
+    /// Alterne le mode de filtre Wavetable
+    WavetableFilterModeCycle,
+    /// Ajuste les voix d'unisson Wavetable (1..7)
+    WavetableUnisonVoicesDelta(i32),
+    /// Alterne la forme d'onde OSC 1 Wavetable
+    WavetableOsc1WaveCycle,
+    /// Alterne la forme d'onde OSC 2 Wavetable
+    WavetableOsc2WaveCycle,
+    /// Ajuste le mix de chorus Wavetable (0..1)
+    WavetableChorusDelta(f32),
+    /// Ajuste le mix de delay Wavetable (0..1)
+    WavetableDelayDelta(f32),
+    /// Ajuste le mix de reverb Wavetable (0..1)
+    WavetableReverbDelta(f32),
+    /// Ajuste le volume principal Wavetable (dB)
+    WavetableVolumeDelta(f32),
+    /// Active / désactive le mode Note Repeat
+    SetNoteRepeat(bool),
+    /// Définit la division temporelle du Note Repeat (0: 1/32, 1: 1/16, etc.)
+    SetNoteRepeatRate(u8),
+    /// Indique si le bouton SHIFT physique est enfoncé (bascule des commandes contextuelles à l'écran)
+    SetShiftHeld(bool),
+    /// Bascule le verrouillage LOCK
+    ToggleLock(bool),
+    /// Enchaîne plusieurs patterns (chain) pour un groupe
+    PatternChain { group: u8, patterns: Vec<usize> },
 }
 
 /// Noms des 16 presets de batterie DSP 808
@@ -561,6 +603,16 @@ pub struct EngineSnapshot {
     pub browser_fx_idx: u8,
     /// Confirmation de suppression de projet active sur la MK3.
     pub delete_project_confirm: bool,
+    /// Mode Note Repeat actif ?
+    pub note_repeat_enabled: bool,
+    /// Division temporelle du Note Repeat (0: 1/32, 1: 1/16, etc.)
+    pub note_repeat_rate: u8,
+    /// Bouton SHIFT enfoncé sur le contrôleur ?
+    pub shift_held: bool,
+    /// Verrou LOCK actif ?
+    pub lock_active: bool,
+    /// Chaîne de patterns active par groupe
+    pub pattern_chains: [Option<Vec<usize>>; 8],
     /// Compteur de révision : change dès qu'un état a bougé (repaint UI/écrans).
     pub revision: u64,
 }
@@ -617,6 +669,12 @@ pub struct HardwareSnapshot {
     /// Pas sélectionné du step sequencer (index absolu)
     pub step_cursor: usize,
     pub pad_colors: [Option<u8>; 16],
+    /// Mode Note Repeat actif ?
+    pub note_repeat_enabled: bool,
+    /// Bouton SHIFT enfoncé ?
+    pub shift_held: bool,
+    /// Verrou LOCK actif ?
+    pub lock_active: bool,
 }
 
 /// Engine principal.
@@ -724,6 +782,28 @@ pub struct Engine {
     master_meter: f32,
     /// Peak hold master
     master_peak_hold: f32,
+    /// Mode Note Repeat actif ?
+    pub note_repeat_enabled: bool,
+    /// Division temporelle du Note Repeat (0: 1/32, 1: 1/16, etc.)
+    pub note_repeat_rate: u8,
+    /// Vélocités des pads maintenus pour le Note Repeat (None si relâché)
+    pub note_repeat_held_pads: [Option<u8>; 16],
+    /// Accumulateur d'échantillons pour Note Repeat en mode Stop
+    note_repeat_samples: u64,
+    /// Buffer de mixage temporaire pour le rendu des synthés
+    synth_buf: Vec<f32>,
+    /// Emplacement cible pour Kick Synth (group, sound)
+    pub kick_sound_target: Option<(u8, u8)>,
+    /// Emplacement cible pour Acid Synth (group, sound)
+    pub acid_sound_target: Option<(u8, u8)>,
+    /// Emplacement cible pour Wavetable Synth (group, sound)
+    pub wavetable_sound_target: Option<(u8, u8)>,
+    /// Bouton SHIFT enfoncé sur le contrôleur ?
+    pub shift_held: bool,
+    /// Verrou LOCK actif ?
+    pub lock_active: bool,
+    /// Chaîne de patterns active par groupe
+    pub pattern_chains: [Option<Vec<usize>>; 8],
     /// Compteur de révision (incrémenté à chaque changement d'état) :
     /// l'UI et les écrans évitent de re-rendre/repaint inutilement.
     revision: u64,
@@ -959,6 +1039,17 @@ impl Engine {
             pad_peak_hold: [[0.0; 16]; 8],
             master_meter: 0.0,
             master_peak_hold: 0.0,
+            note_repeat_enabled: false,
+            note_repeat_rate: 1, // 1/16 par défaut
+            note_repeat_held_pads: [None; 16],
+            note_repeat_samples: 0,
+            synth_buf: vec![0.0; 4096],
+            kick_sound_target: None,
+            acid_sound_target: Some((0, 14)), // TB-303 sur Pad 14 par défaut
+            wavetable_sound_target: None,
+            shift_held: false,
+            lock_active: false,
+            pattern_chains: [None, None, None, None, None, None, None, None],
             revision: 0,
         };
         eng.rescan_local_projects();
@@ -1083,6 +1174,11 @@ impl Engine {
             browser_plugin_idx: self.browser_plugin_idx,
             browser_fx_idx: self.browser_fx_idx,
             delete_project_confirm: self.delete_project_confirm,
+            note_repeat_enabled: self.note_repeat_enabled,
+            note_repeat_rate: self.note_repeat_rate,
+            shift_held: self.shift_held,
+            lock_active: self.lock_active,
+            pattern_chains: self.pattern_chains.clone(),
             revision: self.revision,
         }
     }
@@ -1185,6 +1281,9 @@ impl Engine {
             pattern_bars,
             step_cursor: self.step_cursor.min(pattern_bars * 16 - 1),
             pad_colors,
+            note_repeat_enabled: self.note_repeat_enabled,
+            shift_held: self.shift_held,
+            lock_active: self.lock_active,
         }
     }
 
@@ -1449,6 +1548,82 @@ impl Engine {
         }
     }
 
+    /// Déclenche un son de pad (Kick Synth, TB-303, Wavetable ou Sampler)
+    pub fn trigger_pad_voice(&mut self, pad: u8, velocity: u8) {
+        if self.muted_groups & (1 << self.group_focus) != 0
+            || self.is_sound_muted(self.group_focus, pad)
+        {
+            return;
+        }
+        let sound = sampler_sound_id(self.group_focus, pad);
+        let note = 36 + pad;
+        self.note_pad_activity(pad, velocity);
+        let guard = self.project.read();
+        let (group_gain, group_pan) = guard
+            .groups
+            .get(self.group_focus as usize)
+            .map(|g| (10.0f32.powf(g.volume_db / 20.0), g.pan))
+            .unwrap_or((1.0, 0.0));
+        let snd_ref = guard
+            .groups
+            .get(self.group_focus as usize)
+            .and_then(|g| g.sounds.get(pad as usize))
+            .and_then(|s| s.as_ref());
+        let synth_params = snd_ref.and_then(|s| s.synth.clone());
+        let kick_params = snd_ref.and_then(|s| s.kick_synth.clone());
+        let wavetable_params = snd_ref.and_then(|s| s.wavetable_synth.clone());
+        let is_synth_sound = synth_params.is_some();
+        let is_kick_sound = kick_params.is_some();
+        let is_wavetable_sound = wavetable_params.is_some();
+        let (snd_gain, snd_pan, vparams) = snd_ref
+            .map(|s| {
+                let filter_off = s.filter.kind == crate::project::FilterKind::Off;
+                (
+                    10.0f32.powf(s.volume_db / 20.0),
+                    s.pan,
+                    crate::sampler::VoiceParams {
+                        attack_ms: s.adsr.attack_ms,
+                        decay_ms: s.adsr.decay_ms,
+                        sustain: s.adsr.sustain,
+                        release_ms: s.adsr.release_ms,
+                        cutoff_hz: if filter_off {
+                            20000.0
+                        } else {
+                            s.filter.cutoff_hz
+                        },
+                        resonance: if filter_off { 0.0 } else { s.filter.resonance },
+                    },
+                )
+            })
+            .unwrap_or((1.0, 0.0, crate::sampler::VoiceParams::default()));
+        drop(guard);
+        if is_kick_sound {
+            self.kick_sound_target = Some((self.group_focus, pad));
+            if let Some(p) = kick_params {
+                self.kick_synth.params = p;
+            }
+            self.kick_synth.trigger(note, velocity);
+        } else if is_synth_sound {
+            self.acid_sound_target = Some((self.group_focus, pad));
+            if let Some(p) = synth_params {
+                self.acid_synth.params = p;
+            }
+            self.acid_synth.note_on(note, velocity);
+        } else if is_wavetable_sound {
+            self.wavetable_sound_target = Some((self.group_focus, pad));
+            if let Some(p) = wavetable_params {
+                self.wavetable_synth.params = p;
+            }
+            self.wavetable_synth.note_on(note, velocity);
+        } else if let Some(idx) = self.sampler.note_on(sound, note, velocity, note) {
+            self.sampler.set_voice_gain(idx, group_gain * snd_gain);
+            self.sampler.set_voice_pan(idx, snd_pan);
+            self.sampler.set_voice_group(idx, self.group_focus);
+            self.sampler.set_voice_group_pan(idx, group_pan);
+            self.sampler.set_voice_params(idx, &vparams);
+        }
+    }
+
     /// Traite un `EngineEvent`.
     pub fn handle_event(&mut self, ev: EngineEvent) -> crate::Result<()> {
         // Toute action utilisateur invalide l'affichage (repaint UI + écrans).
@@ -1459,84 +1634,20 @@ impl Engine {
                 velocity,
                 pressed,
             } => {
-                // Groupe ou pad muté ? pas de son ni d'enregistrement
-                if self.muted_groups & (1 << self.group_focus) != 0
-                    || self.is_sound_muted(self.group_focus, pad)
-                {
-                    // En mode MUTE, l'appui sert au toggle via mapper ; sinon on ignore.
-                    return Ok(());
-                }
                 if pressed {
-                    // trigger sampler ou TB-303 pour le Sound du Group focus
-                    let sound = sampler_sound_id(self.group_focus, pad);
-                    let note = 36 + pad;
-                    self.note_pad_activity(pad, velocity);
-                    let guard = self.project.read();
-                    let (group_gain, group_pan) = guard
-                        .groups
-                        .get(self.group_focus as usize)
-                        .map(|g| (10.0f32.powf(g.volume_db / 20.0), g.pan))
-                        .unwrap_or((1.0, 0.0));
-                    let snd_ref = guard
-                        .groups
-                        .get(self.group_focus as usize)
-                        .and_then(|g| g.sounds.get(pad as usize))
-                        .and_then(|s| s.as_ref());
-                    let synth_params = snd_ref.and_then(|s| s.synth.clone());
-                    let kick_params = snd_ref.and_then(|s| s.kick_synth.clone());
-                    let wavetable_params = snd_ref.and_then(|s| s.wavetable_synth.clone());
-                    let is_synth_sound = synth_params.is_some();
-                    let is_kick_sound = kick_params.is_some();
-                    let is_wavetable_sound = wavetable_params.is_some();
-                    let (snd_gain, snd_pan, vparams) = snd_ref
-                        .map(|s| {
-                            let filter_off = s.filter.kind == crate::project::FilterKind::Off;
-                            (
-                                10.0f32.powf(s.volume_db / 20.0),
-                                s.pan,
-                                crate::sampler::VoiceParams {
-                                    attack_ms: s.adsr.attack_ms,
-                                    decay_ms: s.adsr.decay_ms,
-                                    sustain: s.adsr.sustain,
-                                    release_ms: s.adsr.release_ms,
-                                    cutoff_hz: if filter_off {
-                                        20000.0
-                                    } else {
-                                        s.filter.cutoff_hz
-                                    },
-                                    resonance: if filter_off { 0.0 } else { s.filter.resonance },
-                                },
-                            )
-                        })
-                        .unwrap_or((1.0, 0.0, crate::sampler::VoiceParams::default()));
-                    drop(guard);
-                    if is_kick_sound {
-                        if let Some(p) = kick_params {
-                            self.kick_synth.params = p;
-                        }
-                        self.kick_synth.trigger(note, velocity);
-                    } else if is_synth_sound {
-                        if let Some(p) = synth_params {
-                            self.acid_synth.params = p;
-                        }
-                        self.acid_synth.note_on(note, velocity);
-                    } else if is_wavetable_sound {
-                        if let Some(p) = wavetable_params {
-                            self.wavetable_synth.params = p;
-                        }
-                        self.wavetable_synth.note_on(note, velocity);
-                    } else if let Some(idx) = self.sampler.note_on(sound, note, velocity, note) {
-                        self.sampler.set_voice_gain(idx, group_gain * snd_gain);
-                        self.sampler.set_voice_pan(idx, snd_pan);
-                        self.sampler.set_voice_group(idx, self.group_focus);
-                        self.sampler.set_voice_group_pan(idx, group_pan);
-                        self.sampler.set_voice_params(idx, &vparams);
+                    self.trigger_pad_voice(pad, velocity);
+                    if self.note_repeat_enabled && (pad as usize) < 16 {
+                        self.note_repeat_held_pads[pad as usize] = Some(velocity);
+                        self.note_repeat_samples = 0;
                     }
                     // si Recording, ajoute event au pattern actif
                     if self.transport.state == TransportState::Recording {
                         self.record_pad_event(pad, velocity);
                     }
                 } else {
+                    if (pad as usize) < 16 {
+                        self.note_repeat_held_pads[pad as usize] = None;
+                    }
                     let note = 36 + pad;
                     self.acid_synth.note_off(note);
                     self.wavetable_synth.note_off(note);
@@ -1562,6 +1673,8 @@ impl Engine {
             EngineEvent::GroupFocus(g) => {
                 self.group_focus = g.min(7);
                 self.sync_acid_from_active_sound();
+                self.sync_kick_from_active_sound();
+                self.sync_wavetable_from_active_sound();
                 if self.left_tab == 4 {
                     self.plugin_page = if self.focus_sound_has_synth() { 1 } else { 0 };
                 }
@@ -1699,6 +1812,7 @@ impl Engine {
             }
             EngineEvent::PatternSelect { group, pattern } => {
                 let group_idx = group as usize;
+                self.pattern_chains[group_idx] = None;
                 let mut guard = self.project.write();
                 let proj = project_mut(&mut guard);
                 let valid = proj
@@ -1707,12 +1821,17 @@ impl Engine {
                     .map(|g| pattern < g.patterns.len())
                     .unwrap_or(false);
                 if valid {
-                    assign_pattern_to_active_scene(
-                        proj,
-                        &mut self.active_scene,
-                        group_idx,
-                        pattern,
-                    );
+                    let scene_idx = ensure_active_scene(proj, &mut self.active_scene);
+                    if let Some(scene) = proj.scenes.get_mut(scene_idx) {
+                        if let Some(slot) = scene.patterns.get_mut(group_idx) {
+                            if *slot == Some(pattern) {
+                                // Appuyer sur un pattern déjà actif le désactive (tous les pads peuvent être désactivés)
+                                *slot = None;
+                            } else {
+                                *slot = Some(pattern);
+                            }
+                        }
+                    }
                 }
             }
             EngineEvent::AddPattern { group } => {
@@ -1859,11 +1978,15 @@ impl Engine {
                 self.plugin_page = page.min(1);
                 if self.plugin_page == 1 {
                     self.sync_acid_from_active_sound();
+                    self.sync_kick_from_active_sound();
+                    self.sync_wavetable_from_active_sound();
                 }
             }
             EngineEvent::SelectSound(snd) => {
                 self.active_sound = snd.min(15);
                 self.sync_acid_from_active_sound();
+                self.sync_kick_from_active_sound();
+                self.sync_wavetable_from_active_sound();
                 if self.left_tab == 4 {
                     self.plugin_page = if self.focus_sound_has_synth() { 1 } else { 0 };
                 }
@@ -2808,6 +2931,220 @@ impl Engine {
                 self.status_expires_at =
                     std::time::Instant::now() + std::time::Duration::from_millis(2500);
             }
+            EngineEvent::WavetableCutoffDelta(delta) => {
+                let base = if self.wavetable_synth.params.filter_cutoff <= 20.0 {
+                    20000.0
+                } else {
+                    self.wavetable_synth.params.filter_cutoff
+                };
+                let factor = 2.0f32.powf(delta * 0.08);
+                self.wavetable_synth.params.filter_cutoff = (base * factor).clamp(20.0, 20000.0);
+                self.save_wavetable_params_to_active_sound();
+            }
+            EngineEvent::WavetableResoDelta(delta) => {
+                let next =
+                    (self.wavetable_synth.params.filter_reso + delta * 0.02).clamp(0.0, 0.99);
+                self.wavetable_synth.params.filter_reso = next;
+                self.save_wavetable_params_to_active_sound();
+            }
+            EngineEvent::WavetableEnvAmtDelta(delta) => {
+                let next =
+                    (self.wavetable_synth.params.filter_env_amt + delta * 0.03).clamp(-1.0, 1.0);
+                self.wavetable_synth.params.filter_env_amt = next;
+                self.save_wavetable_params_to_active_sound();
+            }
+            EngineEvent::WavetableDriveDelta(delta) => {
+                let next =
+                    (self.wavetable_synth.params.filter_drive + delta * 0.02).clamp(0.0, 1.0);
+                self.wavetable_synth.params.filter_drive = next;
+                self.save_wavetable_params_to_active_sound();
+            }
+            EngineEvent::WavetableAttackDelta(delta) => {
+                let next =
+                    (self.wavetable_synth.params.amp_attack_ms + delta * 15.0).clamp(0.1, 5000.0);
+                self.wavetable_synth.params.amp_attack_ms = next;
+                self.save_wavetable_params_to_active_sound();
+            }
+            EngineEvent::WavetableDecayDelta(delta) => {
+                let next =
+                    (self.wavetable_synth.params.amp_decay_ms + delta * 30.0).clamp(1.0, 5000.0);
+                self.wavetable_synth.params.amp_decay_ms = next;
+                self.save_wavetable_params_to_active_sound();
+            }
+            EngineEvent::WavetableSustainDelta(delta) => {
+                let next = (self.wavetable_synth.params.amp_sustain + delta * 0.02).clamp(0.0, 1.0);
+                self.wavetable_synth.params.amp_sustain = next;
+                self.save_wavetable_params_to_active_sound();
+            }
+            EngineEvent::WavetableReleaseDelta(delta) => {
+                let next =
+                    (self.wavetable_synth.params.amp_release_ms + delta * 30.0).clamp(1.0, 5000.0);
+                self.wavetable_synth.params.amp_release_ms = next;
+                self.save_wavetable_params_to_active_sound();
+            }
+            EngineEvent::WavetableFilterModeCycle => {
+                use crate::wavetable_synth::WavetableFilterMode;
+                let next = match self.wavetable_synth.params.filter_mode {
+                    WavetableFilterMode::Off => WavetableFilterMode::LowPass12,
+                    WavetableFilterMode::LowPass12 => WavetableFilterMode::LowPass24,
+                    WavetableFilterMode::LowPass24 => WavetableFilterMode::HighPass,
+                    WavetableFilterMode::HighPass => WavetableFilterMode::BandPass,
+                    WavetableFilterMode::BandPass => WavetableFilterMode::Off,
+                };
+                self.wavetable_synth.params.filter_mode = next;
+                self.status_message = Some(format!("Filter Mode: {:?}", next));
+                self.status_expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_millis(1500);
+                self.save_wavetable_params_to_active_sound();
+            }
+            EngineEvent::WavetableUnisonVoicesDelta(delta) => {
+                let next =
+                    (self.wavetable_synth.params.unison_voices as i32 + delta).clamp(1, 7) as u8;
+                self.wavetable_synth.params.unison_voices = next;
+                self.status_message = Some(format!("Unison: {} voices", next));
+                self.status_expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_millis(1500);
+                self.save_wavetable_params_to_active_sound();
+            }
+            EngineEvent::WavetableOsc1WaveCycle => {
+                use crate::wavetable_synth::WavetableWaveform::*;
+                let waves = [
+                    Sine,
+                    Triangle,
+                    Saw,
+                    Square,
+                    Supersaw,
+                    GrandPiano,
+                    M1Piano,
+                    RhodesTines,
+                    DigiLead,
+                    TonewheelOrgan,
+                    VocalFormant,
+                    Noise,
+                ];
+                let cur = self.wavetable_synth.params.osc1_wave;
+                let idx = waves.iter().position(|&w| w == cur).unwrap_or(0);
+                let next = waves[(idx + 1) % waves.len()];
+                self.wavetable_synth.params.osc1_wave = next;
+                self.status_message = Some(format!("Osc1 Wave: {:?}", next));
+                self.status_expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_millis(1500);
+                self.save_wavetable_params_to_active_sound();
+            }
+            EngineEvent::WavetableOsc2WaveCycle => {
+                use crate::wavetable_synth::WavetableWaveform::*;
+                let waves = [
+                    Sine,
+                    Triangle,
+                    Saw,
+                    Square,
+                    Supersaw,
+                    GrandPiano,
+                    M1Piano,
+                    RhodesTines,
+                    DigiLead,
+                    TonewheelOrgan,
+                    VocalFormant,
+                    Noise,
+                ];
+                let cur = self.wavetable_synth.params.osc2_wave;
+                let idx = waves.iter().position(|&w| w == cur).unwrap_or(0);
+                let next = waves[(idx + 1) % waves.len()];
+                self.wavetable_synth.params.osc2_wave = next;
+                self.status_message = Some(format!("Osc2 Wave: {:?}", next));
+                self.status_expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_millis(1500);
+                self.save_wavetable_params_to_active_sound();
+            }
+            EngineEvent::WavetableChorusDelta(delta) => {
+                let next =
+                    (self.wavetable_synth.params.fx_chorus_mix + delta * 0.02).clamp(0.0, 1.0);
+                self.wavetable_synth.params.fx_chorus_mix = next;
+                self.save_wavetable_params_to_active_sound();
+            }
+            EngineEvent::WavetableDelayDelta(delta) => {
+                let next =
+                    (self.wavetable_synth.params.fx_delay_mix + delta * 0.02).clamp(0.0, 1.0);
+                self.wavetable_synth.params.fx_delay_mix = next;
+                self.save_wavetable_params_to_active_sound();
+            }
+            EngineEvent::WavetableReverbDelta(delta) => {
+                let next =
+                    (self.wavetable_synth.params.fx_reverb_mix + delta * 0.02).clamp(0.0, 1.0);
+                self.wavetable_synth.params.fx_reverb_mix = next;
+                self.save_wavetable_params_to_active_sound();
+            }
+            EngineEvent::WavetableVolumeDelta(delta) => {
+                let next =
+                    (self.wavetable_synth.params.master_volume_db + delta * 0.5).clamp(-30.0, 6.0);
+                self.wavetable_synth.params.master_volume_db = next;
+                self.save_wavetable_params_to_active_sound();
+            }
+            EngineEvent::SetNoteRepeat(enabled) => {
+                self.note_repeat_enabled = enabled;
+                if !enabled {
+                    self.note_repeat_held_pads = [None; 16];
+                    self.note_repeat_samples = 0;
+                }
+                self.status_message = Some(if enabled {
+                    "Note Repeat: ACTIF".to_string()
+                } else {
+                    "Note Repeat: DÉSACTIVÉ".to_string()
+                });
+                self.status_expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_millis(1500);
+                self.revision = self.revision.wrapping_add(1);
+            }
+            EngineEvent::SetNoteRepeatRate(rate) => {
+                self.note_repeat_rate = rate.min(7);
+                let label = match rate {
+                    0 => "1/32",
+                    1 => "1/16",
+                    2 => "1/8",
+                    3 => "1/4",
+                    4 => "1/2",
+                    5 => "1/16T",
+                    6 => "1/8T",
+                    _ => "1/4T",
+                };
+                self.status_message = Some(format!("Note Repeat: {label}"));
+                self.status_expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_millis(1500);
+                self.revision = self.revision.wrapping_add(1);
+            }
+            EngineEvent::SetShiftHeld(held) => {
+                self.shift_held = held;
+                self.revision = self.revision.wrapping_add(1);
+            }
+            EngineEvent::ToggleLock(locked) => {
+                self.lock_active = locked;
+                self.status_message = Some(if locked {
+                    "Lock: ACTIF".to_string()
+                } else {
+                    "Lock: DÉSACTIVÉ".to_string()
+                });
+                self.status_expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_millis(1500);
+                self.revision = self.revision.wrapping_add(1);
+            }
+            EngineEvent::PatternChain { group, patterns } => {
+                let group_idx = group as usize;
+                if !patterns.is_empty() {
+                    self.pattern_chains[group_idx] = Some(patterns.clone());
+                    let mut guard = self.project.write();
+                    let proj = project_mut(&mut guard);
+                    assign_pattern_to_active_scene(
+                        proj,
+                        &mut self.active_scene,
+                        group_idx,
+                        patterns[0],
+                    );
+                    self.status_message = Some(format!("Patterns chaînés: {:?}", patterns));
+                    self.status_expires_at =
+                        std::time::Instant::now() + std::time::Duration::from_millis(1500);
+                    self.revision = self.revision.wrapping_add(1);
+                }
+            }
             EngineEvent::LoadPluginToSound {
                 group,
                 sound,
@@ -3158,6 +3495,44 @@ impl Engine {
         if new_tick != prev_tick {
             self.revision = self.revision.wrapping_add(1);
         }
+
+        // Traitement du Note Repeat
+        const NOTE_REPEAT_TICKS: [u32; 8] = [120, 240, 480, 960, 1920, 160, 320, 640];
+        let rep_rate_ticks = NOTE_REPEAT_TICKS[self.note_repeat_rate.min(7) as usize];
+        if self.note_repeat_enabled {
+            if self.transport.is_playing() {
+                let prev_div = prev_tick / rep_rate_ticks as u64;
+                let new_div = new_tick / rep_rate_ticks as u64;
+                if new_div > prev_div {
+                    let held = self.note_repeat_held_pads;
+                    for (pad, opt_v) in held.iter().enumerate() {
+                        if let Some(vel) = *opt_v {
+                            self.trigger_pad_voice(pad as u8, vel);
+                            if self.transport.state == TransportState::Recording {
+                                self.record_pad_event(pad as u8, vel);
+                            }
+                        }
+                    }
+                }
+            } else if self.note_repeat_held_pads.iter().any(|v| v.is_some()) {
+                let bpm = self.transport.bpm.max(1.0) as f64;
+                let samples_per_repeat = ((rep_rate_ticks as f64 / 960.0)
+                    * (60.0 / bpm)
+                    * self.transport.sample_rate.max(1) as f64)
+                    as u64;
+                self.note_repeat_samples += samples;
+                if self.note_repeat_samples >= samples_per_repeat {
+                    self.note_repeat_samples %= samples_per_repeat.max(1);
+                    let held = self.note_repeat_held_pads;
+                    for (pad, opt_v) in held.iter().enumerate() {
+                        if let Some(vel) = *opt_v {
+                            self.trigger_pad_voice(pad as u8, vel);
+                        }
+                    }
+                }
+            }
+        }
+
         if !self.transport.is_playing() {
             return;
         }
@@ -3217,58 +3592,92 @@ impl Engine {
                     if proj.groups.get(gi).map(|g| g.muted).unwrap_or(false) {
                         continue;
                     }
-                    if let Some(pat_idx) = pat_opt {
-                        if let Some(group) = proj.groups.get(gi) {
-                            if let Some(pat) = group.patterns.get(*pat_idx) {
-                                let gain = 10.0f32.powf(group.volume_db / 20.0);
-                                let mut vp = [crate::sampler::VoiceParams::default(); 16];
-                                let mut sg = [1.0f32; 16];
-                                let mut sp = [0.0f32; 16];
-                                let mut is_synth = [false; 16];
-                                let mut is_kick = [false; 16];
-                                let mut is_wavetable = [false; 16];
-                                for s in 0..16 {
-                                    if let Some(snd) = group.sounds[s].as_ref() {
-                                        vp[s] = crate::sampler::VoiceParams {
-                                            attack_ms: snd.adsr.attack_ms,
-                                            decay_ms: snd.adsr.decay_ms,
-                                            sustain: snd.adsr.sustain,
-                                            release_ms: snd.adsr.release_ms,
-                                            cutoff_hz: snd.filter.cutoff_hz,
-                                            resonance: snd.filter.resonance,
-                                        };
-                                        sg[s] = 10.0f32.powf(snd.volume_db / 20.0);
-                                        sp[s] = snd.pan;
-                                        is_synth[s] = snd.synth.is_some();
-                                        is_kick[s] = snd.kick_synth.is_some();
-                                        is_wavetable[s] = snd.wavetable_synth.is_some();
+                    if let Some(group) = proj.groups.get(gi) {
+                        let mut pat_to_play = None;
+                        let mut eff_prev = prev_tick;
+                        let mut eff_new = new_tick;
+
+                        if let Some(ref chain) = self.pattern_chains[gi] {
+                            if chain.len() > 1 {
+                                let total: u64 = chain
+                                    .iter()
+                                    .filter_map(|&pi| group.patterns.get(pi))
+                                    .map(|p| p.length.to_ticks() as u64)
+                                    .sum();
+                                if total > 0 {
+                                    let pos = new_tick % total;
+                                    let mut acc = 0u64;
+                                    for &pi in chain {
+                                        if let Some(p) = group.patterns.get(pi) {
+                                            let plen = p.length.to_ticks() as u64;
+                                            if pos < acc + plen {
+                                                pat_to_play = Some(p);
+                                                eff_prev = (prev_tick % total).saturating_sub(acc);
+                                                eff_new = pos.saturating_sub(acc);
+                                                break;
+                                            }
+                                            acc += plen;
+                                        }
                                     }
                                 }
-                                Self::trigger_pattern_events(
-                                    pat,
-                                    prev_tick,
-                                    new_tick,
-                                    &mut self.sampler,
-                                    &mut self.acid_synth,
-                                    &mut self.kick_synth,
-                                    &mut self.wavetable_synth,
-                                    gi as u8,
-                                    gain,
-                                    group.pan,
-                                    &sg,
-                                    &sp,
-                                    &vp,
-                                    &is_synth,
-                                    &is_kick,
-                                    &is_wavetable,
-                                    self.transport.swing,
-                                    &mut self.pad_flash_until,
-                                    new_tick,
-                                    &ctx,
-                                    &mut self.pad_activity,
-                                    self.muted_sounds[gi],
-                                );
                             }
+                        }
+
+                        if pat_to_play.is_none() {
+                            if let Some(pat_idx) = pat_opt {
+                                pat_to_play = group.patterns.get(*pat_idx);
+                            }
+                        }
+
+                        if let Some(pat) = pat_to_play {
+                            let gain = 10.0f32.powf(group.volume_db / 20.0);
+                            let mut vp = [crate::sampler::VoiceParams::default(); 16];
+                            let mut sg = [1.0f32; 16];
+                            let mut sp = [0.0f32; 16];
+                            let mut is_synth = [false; 16];
+                            let mut is_kick = [false; 16];
+                            let mut is_wavetable = [false; 16];
+                            for s in 0..16 {
+                                if let Some(snd) = group.sounds[s].as_ref() {
+                                    vp[s] = crate::sampler::VoiceParams {
+                                        attack_ms: snd.adsr.attack_ms,
+                                        decay_ms: snd.adsr.decay_ms,
+                                        sustain: snd.adsr.sustain,
+                                        release_ms: snd.adsr.release_ms,
+                                        cutoff_hz: snd.filter.cutoff_hz,
+                                        resonance: snd.filter.resonance,
+                                    };
+                                    sg[s] = 10.0f32.powf(snd.volume_db / 20.0);
+                                    sp[s] = snd.pan;
+                                    is_synth[s] = snd.synth.is_some();
+                                    is_kick[s] = snd.kick_synth.is_some();
+                                    is_wavetable[s] = snd.wavetable_synth.is_some();
+                                }
+                            }
+                            Self::trigger_pattern_events(
+                                pat,
+                                eff_prev,
+                                eff_new,
+                                &mut self.sampler,
+                                &mut self.acid_synth,
+                                &mut self.kick_synth,
+                                &mut self.wavetable_synth,
+                                gi as u8,
+                                gain,
+                                group.pan,
+                                &sg,
+                                &sp,
+                                &vp,
+                                &is_synth,
+                                &is_kick,
+                                &is_wavetable,
+                                self.transport.swing,
+                                &mut self.pad_flash_until,
+                                new_tick,
+                                &ctx,
+                                &mut self.pad_activity,
+                                self.muted_sounds[gi],
+                            );
                         }
                     }
                 }
@@ -3467,9 +3876,258 @@ impl Engine {
     /// Render audio stéréo — à appeler depuis callback cpal/jack.
     pub fn render_audio(&mut self, out: &mut [f32]) {
         self.sampler.render(out);
-        self.acid_synth.render(out);
-        self.kick_synth.render(out);
-        self.wavetable_synth.render(out);
+
+        // Rendu des synthétiseurs avec application des volumes, panoramiques et mutes par pad/groupe
+        let out_len = out.len();
+        if self.synth_buf.len() < out_len {
+            self.synth_buf.resize(out_len, 0.0);
+        }
+
+        let proj = self.project.read();
+
+        // 1. Kick Synth
+        let kick_loc = self.kick_sound_target.or_else(|| {
+            for (g, grp) in proj.groups.iter().enumerate() {
+                for (s, snd) in grp.sounds.iter().enumerate() {
+                    if snd
+                        .as_ref()
+                        .map(|x| x.kick_synth.is_some())
+                        .unwrap_or(false)
+                    {
+                        return Some((g as u8, s as u8));
+                    }
+                }
+            }
+            None
+        });
+        if let Some((kg, ks)) = kick_loc {
+            self.synth_buf[..out_len].fill(0.0);
+            self.kick_synth.render(&mut self.synth_buf[..out_len]);
+
+            let is_muted = (self.muted_groups & (1 << (kg % 8))) != 0
+                || proj
+                    .groups
+                    .get(kg as usize)
+                    .map(|g| g.muted)
+                    .unwrap_or(false)
+                || self.is_sound_muted(kg, ks)
+                || proj
+                    .groups
+                    .get(kg as usize)
+                    .and_then(|g| g.sounds.get(ks as usize))
+                    .and_then(|s| s.as_ref())
+                    .map(|s| s.muted)
+                    .unwrap_or(false);
+
+            if !is_muted {
+                let snd_gain = proj
+                    .groups
+                    .get(kg as usize)
+                    .and_then(|g| g.sounds.get(ks as usize))
+                    .and_then(|s| s.as_ref())
+                    .map(|s| 10.0f32.powf(s.volume_db / 20.0))
+                    .unwrap_or(1.0);
+                let grp_gain = proj
+                    .groups
+                    .get(kg as usize)
+                    .map(|g| 10.0f32.powf(g.volume_db / 20.0))
+                    .unwrap_or(1.0);
+                let total_gain = snd_gain * grp_gain;
+                let snd_pan = proj
+                    .groups
+                    .get(kg as usize)
+                    .and_then(|g| g.sounds.get(ks as usize))
+                    .and_then(|s| s.as_ref())
+                    .map(|s| s.pan)
+                    .unwrap_or(0.0);
+                let grp_pan = proj.groups.get(kg as usize).map(|g| g.pan).unwrap_or(0.0);
+                let total_pan = (snd_pan + grp_pan).clamp(-1.0, 1.0);
+                let pan_l = (1.0 - total_pan).min(1.0) * total_gain;
+                let pan_r = (1.0 + total_pan).min(1.0) * total_gain;
+
+                let mut peak = 0.0f32;
+                for f in 0..out_len / 2 {
+                    let l = self.synth_buf[f * 2] * pan_l;
+                    let r = self.synth_buf[f * 2 + 1] * pan_r;
+                    out[f * 2] += l;
+                    out[f * 2 + 1] += r;
+                    let p = l.abs().max(r.abs());
+                    if p > peak {
+                        peak = p;
+                    }
+                }
+                if peak > 0.001 && (kg as usize) < 8 && (ks as usize) < 16 {
+                    if peak > self.pad_meter[kg as usize][ks as usize] {
+                        self.pad_meter[kg as usize][ks as usize] = peak;
+                    }
+                    if peak > self.group_meter[kg as usize] {
+                        self.group_meter[kg as usize] = peak;
+                    }
+                }
+            }
+        }
+
+        // 2. TB-303 Acid Synth
+        let acid_loc = self.acid_sound_target.or_else(|| {
+            for (g, grp) in proj.groups.iter().enumerate() {
+                for (s, snd) in grp.sounds.iter().enumerate() {
+                    if snd.as_ref().map(|x| x.synth.is_some()).unwrap_or(false) {
+                        return Some((g as u8, s as u8));
+                    }
+                }
+            }
+            None
+        });
+        if let Some((ag, asnd)) = acid_loc {
+            self.synth_buf[..out_len].fill(0.0);
+            self.acid_synth.render(&mut self.synth_buf[..out_len]);
+
+            let is_muted = (self.muted_groups & (1 << (ag % 8))) != 0
+                || proj
+                    .groups
+                    .get(ag as usize)
+                    .map(|g| g.muted)
+                    .unwrap_or(false)
+                || self.is_sound_muted(ag, asnd)
+                || proj
+                    .groups
+                    .get(ag as usize)
+                    .and_then(|g| g.sounds.get(asnd as usize))
+                    .and_then(|s| s.as_ref())
+                    .map(|s| s.muted)
+                    .unwrap_or(false);
+
+            if !is_muted {
+                let snd_gain = proj
+                    .groups
+                    .get(ag as usize)
+                    .and_then(|g| g.sounds.get(asnd as usize))
+                    .and_then(|s| s.as_ref())
+                    .map(|s| 10.0f32.powf(s.volume_db / 20.0))
+                    .unwrap_or(1.0);
+                let grp_gain = proj
+                    .groups
+                    .get(ag as usize)
+                    .map(|g| 10.0f32.powf(g.volume_db / 20.0))
+                    .unwrap_or(1.0);
+                let total_gain = snd_gain * grp_gain;
+                let snd_pan = proj
+                    .groups
+                    .get(ag as usize)
+                    .and_then(|g| g.sounds.get(asnd as usize))
+                    .and_then(|s| s.as_ref())
+                    .map(|s| s.pan)
+                    .unwrap_or(0.0);
+                let grp_pan = proj.groups.get(ag as usize).map(|g| g.pan).unwrap_or(0.0);
+                let total_pan = (snd_pan + grp_pan).clamp(-1.0, 1.0);
+                let pan_l = (1.0 - total_pan).min(1.0) * total_gain;
+                let pan_r = (1.0 + total_pan).min(1.0) * total_gain;
+
+                let mut peak = 0.0f32;
+                for f in 0..out_len / 2 {
+                    let l = self.synth_buf[f * 2] * pan_l;
+                    let r = self.synth_buf[f * 2 + 1] * pan_r;
+                    out[f * 2] += l;
+                    out[f * 2 + 1] += r;
+                    let p = l.abs().max(r.abs());
+                    if p > peak {
+                        peak = p;
+                    }
+                }
+                if peak > 0.001 && (ag as usize) < 8 && (asnd as usize) < 16 {
+                    if peak > self.pad_meter[ag as usize][asnd as usize] {
+                        self.pad_meter[ag as usize][asnd as usize] = peak;
+                    }
+                    if peak > self.group_meter[ag as usize] {
+                        self.group_meter[ag as usize] = peak;
+                    }
+                }
+            }
+        }
+
+        // 3. Wavetable / Nexus Synth
+        let wt_loc = self.wavetable_sound_target.or_else(|| {
+            for (g, grp) in proj.groups.iter().enumerate() {
+                for (s, snd) in grp.sounds.iter().enumerate() {
+                    if snd
+                        .as_ref()
+                        .map(|x| x.wavetable_synth.is_some())
+                        .unwrap_or(false)
+                    {
+                        return Some((g as u8, s as u8));
+                    }
+                }
+            }
+            None
+        });
+        if let Some((wg, ws)) = wt_loc {
+            self.synth_buf[..out_len].fill(0.0);
+            self.wavetable_synth.render(&mut self.synth_buf[..out_len]);
+
+            let is_muted = (self.muted_groups & (1 << (wg % 8))) != 0
+                || proj
+                    .groups
+                    .get(wg as usize)
+                    .map(|g| g.muted)
+                    .unwrap_or(false)
+                || self.is_sound_muted(wg, ws)
+                || proj
+                    .groups
+                    .get(wg as usize)
+                    .and_then(|g| g.sounds.get(ws as usize))
+                    .and_then(|s| s.as_ref())
+                    .map(|s| s.muted)
+                    .unwrap_or(false);
+
+            if !is_muted {
+                let snd_gain = proj
+                    .groups
+                    .get(wg as usize)
+                    .and_then(|g| g.sounds.get(ws as usize))
+                    .and_then(|s| s.as_ref())
+                    .map(|s| 10.0f32.powf(s.volume_db / 20.0))
+                    .unwrap_or(1.0);
+                let grp_gain = proj
+                    .groups
+                    .get(wg as usize)
+                    .map(|g| 10.0f32.powf(g.volume_db / 20.0))
+                    .unwrap_or(1.0);
+                let total_gain = snd_gain * grp_gain;
+                let snd_pan = proj
+                    .groups
+                    .get(wg as usize)
+                    .and_then(|g| g.sounds.get(ws as usize))
+                    .and_then(|s| s.as_ref())
+                    .map(|s| s.pan)
+                    .unwrap_or(0.0);
+                let grp_pan = proj.groups.get(wg as usize).map(|g| g.pan).unwrap_or(0.0);
+                let total_pan = (snd_pan + grp_pan).clamp(-1.0, 1.0);
+                let pan_l = (1.0 - total_pan).min(1.0) * total_gain;
+                let pan_r = (1.0 + total_pan).min(1.0) * total_gain;
+
+                let mut peak = 0.0f32;
+                for f in 0..out_len / 2 {
+                    let l = self.synth_buf[f * 2] * pan_l;
+                    let r = self.synth_buf[f * 2 + 1] * pan_r;
+                    out[f * 2] += l;
+                    out[f * 2 + 1] += r;
+                    let p = l.abs().max(r.abs());
+                    if p > peak {
+                        peak = p;
+                    }
+                }
+                if peak > 0.001 && (wg as usize) < 8 && (ws as usize) < 16 {
+                    if peak > self.pad_meter[wg as usize][ws as usize] {
+                        self.pad_meter[wg as usize][ws as usize] = peak;
+                    }
+                    if peak > self.group_meter[wg as usize] {
+                        self.group_meter[wg as usize] = peak;
+                    }
+                }
+            }
+        }
+        drop(proj);
+
         let group_fx = self.focus_group_fx();
         if !group_fx.is_empty() {
             self.fx_processor.process(out, &group_fx);
@@ -3575,6 +4233,68 @@ impl Engine {
     /// GUI : le bouton fait toujours ce que le label annonce.
     #[must_use]
     pub fn soft_key_labels(&self) -> [&'static str; 8] {
+        if self.note_repeat_enabled {
+            return ["1/32", "1/16", "1/8", "1/4", "1/2", "1/16T", "1/8T", "LOCK"];
+        }
+        if self.shift_held {
+            if self.pattern_mode {
+                return [
+                    "DOUBLE", "HALF", "QUANT", "HUMAN", "VIDER", "SUPPR", "4 MES", "8 MES",
+                ];
+            }
+            if self.controller_mode == 3 {
+                return [
+                    "VIDER", "QUANT", "HUMAN", "NUDG -", "NUDG +", "OCT -", "OCT +", "FILL",
+                ];
+            }
+            match self.left_tab {
+                1 if self.mixer_mode == 0 => {
+                    return [
+                        "PAN 1", "PAN 2", "PAN 3", "PAN 4", "PAN 5", "PAN 6", "PAN 7", "PAN 8",
+                    ];
+                }
+                1 if self.mixer_mode == 1 => {
+                    return [
+                        "PAN 9", "PAN 10", "PAN 11", "PAN 12", "PAN 13", "PAN 14", "PAN 15",
+                        "PAN 16",
+                    ];
+                }
+                1 => {
+                    return [
+                        "PAN A", "PAN B", "PAN C", "PAN D", "PAN E", "PAN F", "PAN G", "PAN H",
+                    ];
+                }
+                2 => {
+                    return [
+                        "REVERSE", "LOOP", "NORMLZ", "CYC FLT", "ATTACK", "DECAY", "SUSTAIN",
+                        "RELEASE",
+                    ];
+                }
+                4 => {
+                    if self.focus_sound_has_wavetable() {
+                        return [
+                            "FLT MOD", "UNISON", "OSC1 WV", "OSC2 WV", "CHORUS", "DELAY", "REVERB",
+                            "VOLUME",
+                        ];
+                    } else if self.focus_sound_has_kick() {
+                        return [
+                            "DRV TYP", "FLT MOD", "SWEEP", "SNAP", "DECAY", "PITCH", "DISTO",
+                            "VOLUME",
+                        ];
+                    } else if self.focus_sound_has_acid() {
+                        return [
+                            "WAVE", "CUTOFF", "RESO", "ENV AMT", "DECAY", "ACCENT", "DRIVE",
+                            "DISTO",
+                        ];
+                    }
+                }
+                _ => {
+                    return [
+                        "METRO", "COUNT-IN", "QUANT", "HUMAN", "VIDER", "DUPL", "4 MES", "8 MES",
+                    ];
+                }
+            }
+        }
         if self.song_mode {
             return [
                 "SEC <", "SEC >", "+SEC", "IDEE", "SCN <", "SCN >", "+SCN", "SCN 1",
@@ -3669,9 +4389,173 @@ impl Engine {
         }
     }
 
+    /// Double la longueur du pattern actif (jusqu'à 16 mesures).
+    pub fn double_pattern_length(&mut self) -> crate::Result<()> {
+        let cur = {
+            let proj = self.project.read();
+            proj.active_pattern_index(self.group_focus as usize, self.active_scene)
+                .and_then(|pi| proj.groups.get(self.group_focus as usize)?.patterns.get(pi))
+                .map(|p| p.length.bars as usize)
+                .unwrap_or(2)
+        };
+        self.handle_event(EngineEvent::SetPatternBars((cur * 2).min(16)))
+    }
+
+    /// Divise par 2 la longueur du pattern actif (au minimum 1 mesure).
+    pub fn half_pattern_length(&mut self) -> crate::Result<()> {
+        let cur = {
+            let proj = self.project.read();
+            proj.active_pattern_index(self.group_focus as usize, self.active_scene)
+                .and_then(|pi| proj.groups.get(self.group_focus as usize)?.patterns.get(pi))
+                .map(|p| p.length.bars as usize)
+                .unwrap_or(2)
+        };
+        self.handle_event(EngineEvent::SetPatternBars((cur / 2).max(1)))
+    }
+
+    /// Duplique la première mesure du pattern actif sur la deuxième mesure.
+    pub fn duplicate_bar(&mut self) {
+        let g = self.group_focus as usize;
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
+        let pat_idx = proj.active_pattern_index(g, self.active_scene);
+        if let Some(group) = proj.groups.get_mut(g) {
+            if let Some(pi) = pat_idx {
+                if let Some(pat) = group.patterns.get_mut(pi) {
+                    let bar1_events: Vec<_> = pat
+                        .events
+                        .iter()
+                        .filter(|e| e.tick < 4 * 960)
+                        .cloned()
+                        .collect();
+                    pat.events.retain(|e| e.tick < 4 * 960);
+                    for mut ev in bar1_events {
+                        ev.tick += 4 * 960;
+                        pat.events.push(ev);
+                    }
+                }
+            }
+        }
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     /// Exécute l'action contextuelle d'une soft key d'écran (1..8).
     fn handle_soft_key(&mut self, n: u8) -> crate::Result<()> {
         let idx = (n.saturating_sub(1) as usize).min(7);
+        if self.note_repeat_enabled {
+            return match idx {
+                0..=6 => self.handle_event(EngineEvent::SetNoteRepeatRate(idx as u8)),
+                _ => self.handle_event(EngineEvent::SetNoteRepeat(false)),
+            };
+        }
+        if self.shift_held {
+            if self.pattern_mode {
+                return match idx {
+                    0 => self.double_pattern_length(),
+                    1 => self.half_pattern_length(),
+                    2 => {
+                        self.quantize_active_pattern();
+                        Ok(())
+                    }
+                    3 => {
+                        self.humanize_active_pattern();
+                        Ok(())
+                    }
+                    4 => {
+                        let active = self
+                            .project
+                            .read()
+                            .active_pattern_index(self.group_focus as usize, self.active_scene);
+                        if let Some(pattern) = active {
+                            self.handle_event(EngineEvent::ClearPattern {
+                                group: self.group_focus,
+                                pattern,
+                            })
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    5 => {
+                        let active = self
+                            .project
+                            .read()
+                            .active_pattern_index(self.group_focus as usize, self.active_scene);
+                        if let Some(pattern) = active {
+                            self.handle_event(EngineEvent::DeletePattern {
+                                group: self.group_focus,
+                                pattern,
+                            })
+                        } else {
+                            Ok(())
+                        }
+                    }
+                    6 => self.handle_event(EngineEvent::SetPatternBars(4)),
+                    _ => self.handle_event(EngineEvent::SetPatternBars(8)),
+                };
+            }
+            if self.left_tab == 4 && self.focus_sound_has_wavetable() {
+                return match idx {
+                    0 => self.handle_event(EngineEvent::WavetableFilterModeCycle),
+                    1 => self.handle_event(EngineEvent::WavetableUnisonVoicesDelta(1)),
+                    2 => self.handle_event(EngineEvent::WavetableOsc1WaveCycle),
+                    3 => self.handle_event(EngineEvent::WavetableOsc2WaveCycle),
+                    4 => self.handle_event(EngineEvent::WavetableChorusDelta(0.1)),
+                    5 => self.handle_event(EngineEvent::WavetableDelayDelta(0.1)),
+                    6 => self.handle_event(EngineEvent::WavetableReverbDelta(0.1)),
+                    _ => self.handle_event(EngineEvent::WavetableVolumeDelta(1.0)),
+                };
+            }
+            if self.left_tab == 4 && self.focus_sound_has_kick() {
+                return match idx {
+                    0 => self.handle_event(EngineEvent::KickDriveTypeDelta(1)),
+                    1 => self.handle_event(EngineEvent::KickFilterModeDelta(1)),
+                    _ => Ok(()),
+                };
+            }
+            if self.left_tab == 2 {
+                return match idx {
+                    3 => self.handle_event(EngineEvent::CycleSoundFilterKind {
+                        group: self.group_focus,
+                        sound: self.active_sound,
+                    }),
+                    _ => Ok(()),
+                };
+            }
+            return match idx {
+                0 => {
+                    self.transport.metronome = !self.transport.metronome;
+                    self.revision = self.revision.wrapping_add(1);
+                    Ok(())
+                }
+                1 => {
+                    self.transport.count_in_bars = if self.transport.count_in_bars > 0 {
+                        0
+                    } else {
+                        1
+                    };
+                    self.revision = self.revision.wrapping_add(1);
+                    Ok(())
+                }
+                2 => {
+                    self.quantize_active_pattern();
+                    Ok(())
+                }
+                3 => {
+                    self.humanize_active_pattern();
+                    Ok(())
+                }
+                4 => {
+                    self.clear_bar(self.selected_bar);
+                    Ok(())
+                }
+                5 => {
+                    self.duplicate_bar();
+                    Ok(())
+                }
+                6 => self.handle_event(EngineEvent::SetPatternBars(4)),
+                _ => self.handle_event(EngineEvent::SetPatternBars(8)),
+            };
+        }
         if self.song_mode {
             return match idx {
                 0 => self.handle_event(EngineEvent::PrevSection),
@@ -4211,6 +5095,21 @@ impl Engine {
         }
     }
 
+    /// Enregistre les paramètres Wavetable courants dans le Sound actif du projet.
+    pub fn save_wavetable_params_to_active_sound(&mut self) {
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
+        if let Some(snd) = proj
+            .groups
+            .get_mut(self.group_focus as usize)
+            .and_then(|g| g.sounds.get_mut(self.active_sound as usize))
+            .and_then(|s| s.as_mut())
+        {
+            snd.wavetable_synth = Some(self.wavetable_synth.params.clone());
+        }
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     /// Supprime définitivement le projet sélectionné dans le navigateur.
     pub fn delete_selected_project(&mut self) -> crate::Result<()> {
         self.delete_project_confirm = false;
@@ -4252,6 +5151,7 @@ impl Engine {
                     target_sound.wavetable_synth = None;
                     target_sound.name = "Kick Synth".to_string();
                     self.kick_synth.params = crate::kick_synth::KickParams::default();
+                    self.kick_sound_target = Some((group, sound));
                     self.status_message =
                         Some("Plugin chargé : Kick Synth (Modélisation Techno)".to_string());
                 }
@@ -4261,6 +5161,7 @@ impl Engine {
                     target_sound.wavetable_synth = None;
                     target_sound.name = "TB-303".to_string();
                     self.acid_synth.params = crate::acid_synth::AcidParams::preset_classic_acid();
+                    self.acid_sound_target = Some((group, sound));
                     self.status_message = Some("Plugin chargé : TB-303 Acid Bass".to_string());
                 }
                 2 => {
@@ -4271,6 +5172,7 @@ impl Engine {
                     target_sound.name = "Nexus Synth".to_string();
                     self.wavetable_synth.params =
                         crate::wavetable_synth::WavetableParams::default();
+                    self.wavetable_sound_target = Some((group, sound));
                     self.status_message =
                         Some("Plugin chargé : Nexus / Serum Wavetable Synth".to_string());
                 }
@@ -4409,6 +5311,8 @@ impl Engine {
     fn sync_plugin_for_active_sound(&mut self) {
         self.plugin_page = if self.focus_sound_has_synth() { 1 } else { 0 };
         self.sync_acid_from_active_sound();
+        self.sync_kick_from_active_sound();
+        self.sync_wavetable_from_active_sound();
     }
 
     /// Exécute `f` sur le pattern actif du groupe focus (scène active).
@@ -5730,6 +6634,123 @@ mod tests {
         assert!(
             max_amp > 0.01,
             "Le synthé wavetable doit produire du son audible"
+        );
+    }
+
+    #[test]
+    fn test_pattern_deselect_and_chaining() {
+        let mut eng = Engine::new_demo(48000);
+        let group = eng.group_focus;
+
+        // 1. Désélection d'un pattern actif
+        // Initialement, pattern 0 est sélectionné
+        let init_pat = eng
+            .project
+            .read()
+            .active_pattern_index(group as usize, eng.active_scene);
+        assert_eq!(init_pat, Some(0));
+
+        // Un second appui sur pattern 0 le désélectionne (tous les pads désactivés)
+        eng.handle_event(EngineEvent::PatternSelect { group, pattern: 0 })
+            .unwrap();
+        let desel_pat = eng
+            .project
+            .read()
+            .active_pattern_index(group as usize, eng.active_scene);
+        assert_eq!(
+            desel_pat, None,
+            "Appuyer sur un pattern actif doit le désélectionner (None)"
+        );
+
+        // Ré-appuyer le réactive
+        eng.handle_event(EngineEvent::PatternSelect { group, pattern: 0 })
+            .unwrap();
+        let re_pat = eng
+            .project
+            .read()
+            .active_pattern_index(group as usize, eng.active_scene);
+        assert_eq!(re_pat, Some(0));
+
+        // 2. Chaining de patterns (ex: Patterns 0 et 1)
+        eng.handle_event(EngineEvent::AddPattern { group }).unwrap(); // Pattern 1 créé
+        eng.handle_event(EngineEvent::PatternChain {
+            group,
+            patterns: vec![0, 1],
+        })
+        .unwrap();
+        assert_eq!(eng.pattern_chains[group as usize], Some(vec![0, 1]));
+
+        // L'avance du transport tourne sans panic avec la chaîne
+        eng.transport.state = crate::transport::TransportState::Playing;
+        eng.advance(1920);
+        eng.advance(1920);
+        assert!(eng.transport.tick > 0);
+    }
+
+    #[test]
+    fn test_shift_held_labels_and_actions() {
+        let mut eng = Engine::new_demo(48000);
+        eng.handle_event(EngineEvent::SetPatternMode(true)).unwrap();
+
+        // Labels normaux en mode Pattern
+        let normal_labels = eng.soft_key_labels();
+        assert_eq!(normal_labels[0], "PAT <");
+
+        // Shift enfoncé -> labels Shift (DOUBLE, HALF, QUANT, HUMAN...)
+        eng.handle_event(EngineEvent::SetShiftHeld(true)).unwrap();
+        let shift_labels = eng.soft_key_labels();
+        assert_eq!(shift_labels[0], "DOUBLE");
+        assert_eq!(shift_labels[1], "HALF");
+        assert_eq!(shift_labels[2], "QUANT");
+
+        // Action DOUBLE via SoftKey(1)
+        let pat_len_before = eng.project.read().groups[0].patterns[0].length.bars;
+        eng.handle_event(EngineEvent::SoftKey(1)).unwrap();
+        let pat_len_after = eng.project.read().groups[0].patterns[0].length.bars;
+        assert_eq!(pat_len_after, pat_len_before * 2);
+
+        // Action HALF via SoftKey(2)
+        eng.handle_event(EngineEvent::SoftKey(2)).unwrap();
+        let pat_len_half = eng.project.read().groups[0].patterns[0].length.bars;
+        assert_eq!(pat_len_half, pat_len_before);
+
+        // Relâche Shift
+        eng.handle_event(EngineEvent::SetShiftHeld(false)).unwrap();
+        let normal_again = eng.soft_key_labels();
+        assert_eq!(normal_again[0], "PAT <");
+    }
+
+    #[test]
+    fn test_synth_pad_mixer_volume_and_mute() {
+        let mut eng = Engine::new_demo(48000);
+        // Charge Wavetable sur pad 2
+        eng.load_plugin_to_sound(0, 2, 2).unwrap();
+
+        let mut out = vec![0.0f32; 1024];
+        eng.handle_event(EngineEvent::Pad {
+            pad: 2,
+            velocity: 120,
+            pressed: true,
+        })
+        .unwrap();
+        eng.render_audio(&mut out);
+        let max_amp1 = out.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(max_amp1 > 0.01);
+
+        // Baisse le volume du pad 2 dans le mixeur (-60 dB)
+        eng.handle_event(EngineEvent::SoundVolume {
+            group: 0,
+            sound: 2,
+            volume_db: -60.0,
+        })
+        .unwrap();
+
+        let mut out2 = vec![0.0f32; 1024];
+        eng.render_audio(&mut out2);
+        let max_amp2 = out2.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(
+            max_amp2 < max_amp1 * 0.1,
+            "L'atténuation du mixeur doit impacter le synthé"
         );
     }
 }

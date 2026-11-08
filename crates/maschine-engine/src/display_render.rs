@@ -2639,16 +2639,18 @@ fn render_pad_mixer_strips(
 ) {
     let gf = snap.group_focus as usize;
     let grp = snap.project.groups.get(gf);
-    for i in 0..8usize {
+    for i in 0..4usize {
         let pad_idx = start_pad + i;
-        let x = 6 + i * 59;
+        let x = 8 + i * 118;
         let y = 30usize;
-        let w = 55usize;
+        let w = 110usize;
         let h = 156usize;
         let is_focused = pad_idx == snap.active_sound as usize;
         panel(frame, p, x, y, w, h);
         if is_focused {
             draw_rect_outline(frame, x - 1, y - 1, w + 2, h + 2, p.accent);
+            fill_rect(frame, x - 1, y - 1, 3, 3, p.accent);
+            fill_rect(frame, x + w - 2, y - 1, 3, 3, p.accent);
         }
         let snd = grp
             .and_then(|g| g.sounds.get(pad_idx))
@@ -2667,94 +2669,53 @@ fn render_pad_mixer_strips(
 
         // Pad header chip
         let chip_color = if is_focused { p.accent } else { p.track };
-        fill_rect(frame, x + 3, y + 3, w - 6, 14, chip_color);
+        fill_rect(frame, x + 5, y + 4, 20, 16, chip_color);
         draw_text(
             frame,
-            x + 6,
+            x + 7,
             y + 4,
-            &format!("S{:02}", pad_idx + 1),
+            &format!("{:02}", pad_idx + 1),
             if is_focused { p.bg } else { p.white },
             chip_color,
         );
         draw_text(
             frame,
-            x + 4,
-            y + 20,
-            &trunc(s_name, 6),
+            x + 28,
+            y + 4,
+            &trunc(s_name, 9),
             if is_muted { p.muted } else { p.white },
             p.panel,
         );
 
-        // Live audio VU meter & volume fader
-        let vu_h = 56usize;
-        let vu_y = y + 36;
-        let vu_x = x + 10;
-        let vu_w = 14usize;
-
-        // Clip indicator
+        // Vertical VU meter
         let pad_lvl = snap.pad_levels.get(pad_idx).copied().unwrap_or(0.0);
         let pad_peak = snap.pad_peaks.get(pad_idx).copied().unwrap_or(0.0);
-        let is_clipped = pad_peak >= 0.99;
-        fill_rect(
-            frame,
-            vu_x,
-            vu_y - 4,
-            vu_w,
-            2,
-            if is_clipped { p.red } else { p.track },
-        );
+        vu_v(frame, p, x + 10, y + 24, 18, 92, pad_lvl, pad_peak);
 
-        // VU meter background
-        fill_rect(frame, vu_x, vu_y, vu_w, vu_h, p.track);
-
-        // Dynamic VU meter bar
-        let lvl_norm = (pad_lvl * 1.25).clamp(0.0, 1.0);
-        let bar_h = (lvl_norm * vu_h as f32) as usize;
-        if bar_h > 0 {
-            let by = vu_y + vu_h - bar_h;
-            let bar_col = if is_muted {
-                p.muted
-            } else if lvl_norm > 0.92 {
-                p.red
-            } else if lvl_norm > 0.78 {
-                p.yellow
-            } else if is_focused {
-                p.accent
-            } else {
-                p.cyan
-            };
-            fill_rect(frame, vu_x, by, vu_w, bar_h, bar_col);
-        }
-
-        // Peak hold tick
-        let peak_norm = (pad_peak * 1.25).clamp(0.0, 1.0);
-        let peak_h = (peak_norm * vu_h as f32) as usize;
-        if peak_h > 1 && !is_muted {
-            let py = vu_y + vu_h - peak_h;
-            fill_rect(frame, vu_x, py, vu_w, 1, p.white);
-        }
-
-        // Volume fader track and notch
-        let fader_track_x = x + 32;
-        fill_rect(frame, fader_track_x, vu_y, 2, vu_h, p.border);
+        // Fader track and knob
+        let fader_x = x + 40;
+        let fader_y = y + 26;
+        let fader_h = 88;
+        fill_rect(frame, fader_x, fader_y, 4, fader_h, p.border);
         let norm = db_norm(vol_db).clamp(0.0, 1.0);
-        let fader_y = vu_y + vu_h - (norm * (vu_h - 4) as f32) as usize - 4;
+        let fader_knob_y = fader_y + fader_h - (norm * (fader_h - 6) as f32) as usize - 6;
         fill_rect(
             frame,
-            fader_track_x - 3,
-            fader_y,
-            8,
-            4,
+            fader_x - 6,
+            fader_knob_y,
+            16,
+            6,
             if is_focused { p.accent } else { p.white },
         );
 
-        // dB text
-        draw_text(frame, x + 4, y + 98, &fmt_db(vol_db), p.dim, p.panel);
-        // Pan text
-        draw_text(frame, x + 4, y + 114, &fmt_pan(pan), p.muted, p.panel);
-        // Mute status
+        // Info readouts (dB, Pan, Mute)
+        draw_text(frame, x + 58, y + 36, &fmt_db(vol_db), p.white, p.panel);
+        draw_text(frame, x + 58, y + 56, &fmt_pan(pan), p.cyan, p.panel);
+
         if is_muted {
-            pill(frame, p, x + 6, y + 134, 42, "MUTE", p.red, true);
+            pill(frame, p, x + 56, y + 84, 46, "MUTE", p.red, true);
+        } else if snd.map(|s| s.solo).unwrap_or(false) {
+            pill(frame, p, x + 56, y + 84, 46, "SOLO", p.yellow, true);
         }
     }
 }
@@ -2765,20 +2726,26 @@ pub fn render_mixer_left(snap: &EngineSnapshot) -> DisplayFrame {
     let p = Pal::new();
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
     if snap.mixer_mode == 0 || snap.mixer_mode == 1 {
+        let bank_pad = if snap.mixer_mode == 0 { 0 } else { 8 };
         header(
             &mut frame,
             &p,
             snap,
-            "PAD MIXER | PADS 1-8",
+            if snap.mixer_mode == 0 {
+                "PAD MIXER | PADS 1-4"
+            } else {
+                "PAD MIXER | PADS 9-12"
+            },
             &format!(
-                "GRP {} | KNOBS = VOL 1-8 (SHIFT = PAN)",
+                "GRP {} | KNOBS 1-4 = VOL (SHIFT: PAN)",
                 group_letter(snap.group_focus)
             ),
         );
-        render_pad_mixer_strips(&mut frame, &p, snap, 0);
+        render_pad_mixer_strips(&mut frame, &p, snap, bank_pad);
         let mut active = [false; 8];
-        if (snap.active_sound as usize) < 8 {
-            active[snap.active_sound as usize] = true;
+        let snd = snap.active_sound as usize;
+        if snd >= bank_pad && snd < bank_pad + 4 {
+            active[snd - bank_pad] = true;
         }
         footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
         return frame;
@@ -2923,18 +2890,26 @@ pub fn render_mixer_right(snap: &EngineSnapshot) -> DisplayFrame {
     let p = Pal::new();
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     if snap.mixer_mode == 0 || snap.mixer_mode == 1 {
+        let bank_pad = if snap.mixer_mode == 0 { 4 } else { 12 };
         header(
             &mut frame,
             &p,
             snap,
-            "PAD MIXER | PADS 9-16",
-            &format!("GRP {} | ENCODEURS 1-8", group_letter(snap.group_focus)),
+            if snap.mixer_mode == 0 {
+                "PAD MIXER | PADS 5-8"
+            } else {
+                "PAD MIXER | PADS 13-16"
+            },
+            &format!(
+                "GRP {} | KNOBS 5-8 = VOL (SHIFT: PAN)",
+                group_letter(snap.group_focus)
+            ),
         );
-        render_pad_mixer_strips(&mut frame, &p, snap, 8);
+        render_pad_mixer_strips(&mut frame, &p, snap, bank_pad);
         let mut active = [false; 8];
         let snd = snap.active_sound as usize;
-        if (8..16).contains(&snd) {
-            active[snd - 8] = true;
+        if snd >= bank_pad && snd < bank_pad + 4 {
+            active[4 + (snd - bank_pad)] = true;
         }
         footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
         return frame;

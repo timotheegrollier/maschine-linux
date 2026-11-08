@@ -121,3 +121,5 @@ Vectors in `crates/maschine-proto/tests/vectors.rs` from real captures (pad pres
 See also `crates/maschine-proto/tests/fuzz.rs` (proptest).
 
 Display regressions: `cargo test -p maschine-proto` checks even windows, the single-pixel diff at the right edge, the pair counter and framebuffer reconstruction. `cargo test -p maschine-app` checks the 2×1 probe and knob routing after GUI navigation. These tests do not replace visual verification on the controller.
+
+For a detailed reverse-engineering guide covering HID reports, pad remapping, LED states and complete button/shift functions, refer to [hardware_reverse_engineering_mk3.md](hardware_reverse_engineering_mk3.md).

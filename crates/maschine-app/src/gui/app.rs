@@ -1844,37 +1844,82 @@ fn render_updater_window(
 }
 
 /// Redémarre proprement l'application (support natif & AppImage).
-/// Attend 0.4s avant de lancer le nouveau processus afin de libérer
-/// les périphériques audio (ALSA/JACK) et USB HID.
+/// Gère le remplacement d'exécutable après mise à jour (strip de ' (deleted)'),
+/// la préservation des variables d'environnement graphiques (DISPLAY, WAYLAND_DISPLAY...),
+/// et le détachement complet dans un nouveau groupe de processus indépendant.
 fn restart_app() -> ! {
-    let target = if let Some(appimage) = std::env::var_os("APPIMAGE") {
+    use std::os::unix::process::CommandExt as _;
+
+    let mut target = if let Some(appimage) = std::env::var_os("APPIMAGE") {
         std::path::PathBuf::from(appimage)
-    } else if let Ok(exe) = std::env::current_exe() {
+    } else if let Ok(mut exe) = std::env::current_exe() {
+        let exe_str = exe.to_string_lossy().to_string();
+        if let Some(clean) = exe_str.strip_suffix(" (deleted)") {
+            exe = std::path::PathBuf::from(clean);
+        }
         exe
     } else {
-        std::process::exit(0);
+        std::path::PathBuf::from("maschine-linux")
     };
 
+    if !target.exists() {
+        if std::path::Path::new("/usr/bin/maschine-linux").exists() {
+            target = std::path::PathBuf::from("/usr/bin/maschine-linux");
+        } else if std::path::Path::new("/usr/local/bin/maschine-linux").exists() {
+            target = std::path::PathBuf::from("/usr/local/bin/maschine-linux");
+        }
+    }
+
     let args: Vec<String> = std::env::args().skip(1).collect();
+
     let quoted_args = args
         .iter()
         .map(|a| format!("'{}'", a.replace('\'', "'\\''")))
         .collect::<Vec<_>>()
         .join(" ");
 
+    // Préserver explicitement l'environnement graphique et audio pour éviter
+    // que le nouveau processus échoue à l'initialisation de l'affichage X11/Wayland.
+    let mut env_exports = String::new();
+    for var in [
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XDG_RUNTIME_DIR",
+        "XDG_SESSION_TYPE",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XAUTHORITY",
+        "PULSE_SERVER",
+        "PIPEWIRE_REMOTE",
+        "ALSA_CARD",
+    ] {
+        if let Ok(val) = std::env::var(var) {
+            env_exports.push_str(&format!(
+                "export {}='{}'; ",
+                var,
+                val.replace('\'', "'\\''")
+            ));
+        }
+    }
+
+    // Le court délai de 0.4s permet au processus père de quitter et de libérer
+    // complètement les périphériques USB HID et audio ALSA/JACK.
     let cmd = format!(
-        "sleep 0.4 && exec '{}' {}",
+        "sleep 0.4 && {}exec '{}' {}",
+        env_exports,
         target.to_string_lossy().replace('\'', "'\\''"),
         quoted_args
     );
 
-    let _ = std::process::Command::new("sh")
+    let mut cmd_builder = std::process::Command::new("sh");
+    cmd_builder
         .arg("-c")
         .arg(cmd)
+        .process_group(0) // détachement de groupe de processus
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+        .stderr(std::process::Stdio::null());
+
+    let _ = cmd_builder.spawn();
 
     std::process::exit(0);
 }

@@ -426,8 +426,11 @@ impl AcidSynth {
             // Avancement de phase
             self.phase = (self.phase + phase_inc).fract();
 
-            // 3. Enveloppe de filtre et d'amplitude
-            self.filter_env *= filter_decay_rate;
+            // 3. Enveloppe de filtre et d'amplitude :
+            // Tant que le gate est maintenu (pad enfoncé), l'enveloppe de filtre converge
+            // vers un seuil de sustain (0.25) pour que la note sonne indéfiniment sans s'étouffer.
+            let filter_target = if self.gate_open { 0.25 } else { 0.0 };
+            self.filter_env = filter_target + (self.filter_env - filter_target) * filter_decay_rate;
             if !self.gate_open {
                 self.amp_env *= amp_release_rate;
             }

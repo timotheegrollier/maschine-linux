@@ -1,5 +1,5 @@
 Name:           maschine-linux
-Version:        0.9.8
+Version:        0.9.9
 Release:        1%{?dist}
 Summary:        Native Instruments Maschine MK3 DAW & Controller integration for Linux
 License:        GPL-3.0-or-later
@@ -98,7 +98,13 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/maschine-linux.deskto
 %{_prefix}/lib/systemd/user/maschine-linux.service
 
 %changelog
-* Sun Nov 08 2026 timotheegrollier <timo@example.com> - 0.9.8-1
+* Sun Nov 08 2026 timotheegrollier <timo@example.com> - 0.9.9-1
+- Fix synth pad sustain holding note indefinitely in Pad Mode (Wavetable & TB-303)
+- Fix Shift labels and actions synchronization across Sampler, Step, Mixer, and Plugin views
+- Add GUI Sampler filter type selectors (OFF, LP, HP, BP) and direct MK3 hardware filter selection
+- Fix application restart mechanism preserving X11/Wayland desktop session environment
+- Fix Nexus synth knob parameter routing in HardwareMapper
+- Add comprehensive MK3 hardware reverse-engineering reference documentation and tests
 - Add pattern toggle-off, multi-pad pattern chaining, dynamic real-time Shift labels with contextual actions, 4D mixer navigation fix (Up to enter, Down to exit), per-pad synth mixer isolation, Nexus synth knobs, latchable Note Repeat, and hardware LED fixes
 
 * Sun Nov 08 2026 timotheegrollier <timo@example.com> - 0.9.7-1

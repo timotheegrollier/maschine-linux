@@ -187,11 +187,11 @@ impl WavetableParams {
             filter_drive: 0.0,
             amp_attack_ms: 2.0,
             amp_decay_ms: 1800.0,
-            amp_sustain: 0.0,
+            amp_sustain: 0.45,
             amp_release_ms: 350.0,
             filter_attack_ms: 1.0,
             filter_decay_ms: 900.0,
-            filter_sustain: 0.1,
+            filter_sustain: 0.35,
             filter_release_ms: 300.0,
             lfo_rate_hz: 4.5,
             lfo_amount: 0.0,
@@ -236,11 +236,11 @@ impl WavetableParams {
             filter_drive: 0.10,
             amp_attack_ms: 1.0,
             amp_decay_ms: 1200.0,
-            amp_sustain: 0.0,
+            amp_sustain: 0.40,
             amp_release_ms: 220.0,
             filter_attack_ms: 0.5,
             filter_decay_ms: 700.0,
-            filter_sustain: 0.2,
+            filter_sustain: 0.35,
             filter_release_ms: 200.0,
             lfo_rate_hz: 5.0,
             lfo_amount: 0.0,
@@ -1720,6 +1720,7 @@ struct Voice {
     velocity: f32,
     active: bool,
     age: u64,
+    gate_held: bool,
     phase1: f32,
     phase2: f32,
     unison_phases: [f32; 7],
@@ -1738,6 +1739,7 @@ impl Voice {
             velocity: 0.0,
             active: false,
             age: 0,
+            gate_held: false,
             phase1: 0.0,
             phase2: 0.0,
             unison_phases: [0.0; 7],
@@ -1763,11 +1765,13 @@ impl Voice {
         self.velocity = (velocity.clamp(1, 127) as f32 / 127.0).powf(0.85);
         self.active = true;
         self.age = age;
+        self.gate_held = true;
         self.amp_env.gate_on();
         self.filter_env.gate_on();
     }
 
     fn release(&mut self) {
+        self.gate_held = false;
         self.amp_env.gate_off();
         self.filter_env.gate_off();
     }
@@ -2007,26 +2011,40 @@ impl WavetableSynth {
                 }
 
                 // Progression d'amplitude ADSR
-                let amp = voice.amp_env.process(
+                let mut amp = voice.amp_env.process(
                     dt,
                     p.amp_attack_ms,
                     p.amp_decay_ms,
                     p.amp_sustain,
                     p.amp_release_ms,
                 );
+                // Si la note est maintenue (pad/touche enfoncée), garantir un niveau de sustain audible
+                // afin que la note ne coupe jamais tant que le doigt reste posé.
+                if voice.gate_held && voice.amp_env.stage == AdsrStage::Sustain {
+                    let min_sus = p.amp_sustain.max(0.35);
+                    if amp < min_sus {
+                        amp = min_sus;
+                    }
+                }
                 if !voice.amp_env.is_active() {
                     voice.active = false;
                     continue;
                 }
 
                 // Progression de filtre ADSR
-                let filt_env = voice.filter_env.process(
+                let mut filt_env = voice.filter_env.process(
                     dt,
                     p.filter_attack_ms,
                     p.filter_decay_ms,
                     p.filter_sustain,
                     p.filter_release_ms,
                 );
+                if voice.gate_held && voice.filter_env.stage == AdsrStage::Sustain {
+                    let min_filt = p.filter_sustain.max(0.30);
+                    if filt_env < min_filt {
+                        filt_env = min_filt;
+                    }
+                }
 
                 // Portamento / Glide de fréquence
                 if p.glide_time_ms > 1.0 && (voice.current_freq - voice.target_freq).abs() > 0.01 {

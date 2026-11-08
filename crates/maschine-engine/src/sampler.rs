@@ -248,6 +248,54 @@ impl Sampler {
         self.sound_polyphony.remove(&sound);
     }
 
+    /// Inverse temporellement les échantillons du son (effet Reverse).
+    pub fn reverse_sound(&mut self, sound: u16) -> bool {
+        let Some(zones) = self.zones.get_mut(&sound) else {
+            return false;
+        };
+        let mut modified = false;
+        for z in zones.iter_mut() {
+            if let Some(ref sample) = z.sample {
+                let mut rev = (**sample).clone();
+                rev.reverse();
+                z.sample = Some(Arc::new(rev));
+                modified = true;
+            }
+        }
+        modified
+    }
+
+    /// Normalise le niveau de crête du sample à 0 dBFS.
+    pub fn normalize_sound(&mut self, sound: u16) -> bool {
+        let Some(zones) = self.zones.get_mut(&sound) else {
+            return false;
+        };
+        let mut modified = false;
+        for z in zones.iter_mut() {
+            if let Some(ref sample) = z.sample {
+                let peak = sample.iter().fold(0.0f32, |acc, &x| acc.max(x.abs()));
+                if peak > 1e-4 {
+                    let factor = 0.999 / peak;
+                    let norm: Vec<f32> = sample.iter().map(|&x| x * factor).collect();
+                    z.sample = Some(Arc::new(norm));
+                    modified = true;
+                }
+            }
+        }
+        modified
+    }
+
+    /// Alterne le mode One-Shot / Gate.
+    pub fn toggle_sound_one_shot(&mut self, sound: u16) -> bool {
+        let Some(zones) = self.zones.get_mut(&sound) else {
+            return false;
+        };
+        for z in zones.iter_mut() {
+            z.is_one_shot = !z.is_one_shot;
+        }
+        true
+    }
+
     /// Supprime tous les sons et leurs enveloppes pré-calculées.
     pub fn clear(&mut self) {
         self.zones.clear();

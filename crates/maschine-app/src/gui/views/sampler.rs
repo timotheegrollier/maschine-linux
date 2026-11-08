@@ -14,7 +14,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
     let gf = snap.group_focus as usize;
     let sound_idx = snap.active_sound as usize;
 
-    let (sound_name, volume_db, pan, cutoff, reso, adsr) = snap
+    let (sound_name, volume_db, pan, cutoff, reso, filter_kind, adsr) = snap
         .project
         .groups
         .get(gf)
@@ -27,6 +27,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                 s.pan,
                 s.filter.cutoff_hz,
                 s.filter.resonance,
+                s.filter.kind,
                 (
                     s.adsr.attack_ms,
                     s.adsr.decay_ms,
@@ -42,6 +43,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                 0.0,
                 20000.0,
                 0.0,
+                maschine_engine::project::FilterKind::Off,
                 (2.0, 100.0, 0.8, 150.0),
             )
         });
@@ -353,6 +355,48 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                                 resonance: v,
                             });
                     }
+
+                    ui.add_space(8.0);
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new("TYPE DE FILTRE")
+                                .small()
+                                .strong()
+                                .color(c.accent),
+                        );
+                        ui.add_space(2.0);
+                        ui.horizontal(|ui| {
+                            use maschine_engine::project::FilterKind;
+                            if chip(ui, "OFF", filter_kind == FilterKind::Off, c.text_dim) {
+                                let _ = app.engine.lock().handle_event(EngineEvent::SetSoundFilterKind {
+                                    group: snap.group_focus,
+                                    sound: snap.active_sound,
+                                    kind: FilterKind::Off,
+                                });
+                            }
+                            if chip(ui, "LP", filter_kind == FilterKind::LowPass, c.accent) {
+                                let _ = app.engine.lock().handle_event(EngineEvent::SetSoundFilterKind {
+                                    group: snap.group_focus,
+                                    sound: snap.active_sound,
+                                    kind: FilterKind::LowPass,
+                                });
+                            }
+                            if chip(ui, "HP", filter_kind == FilterKind::HighPass, c.accent_cyan) {
+                                let _ = app.engine.lock().handle_event(EngineEvent::SetSoundFilterKind {
+                                    group: snap.group_focus,
+                                    sound: snap.active_sound,
+                                    kind: FilterKind::HighPass,
+                                });
+                            }
+                            if chip(ui, "BP", filter_kind == FilterKind::BandPass, c.warning) {
+                                let _ = app.engine.lock().handle_event(EngineEvent::SetSoundFilterKind {
+                                    group: snap.group_focus,
+                                    sound: snap.active_sound,
+                                    kind: FilterKind::BandPass,
+                                });
+                            }
+                        });
+                    });
 
                     ui.add_space(16.0);
                     ui.vertical(|ui| {

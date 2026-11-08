@@ -292,6 +292,7 @@ fn sync_mapper_context(
     mapper.mixer_mode = snap.mixer_mode;
     mapper.has_kick_synth = snap.has_kick_synth;
     mapper.has_acid_synth = snap.has_acid_synth;
+    mapper.has_wavetable_synth = snap.has_wavetable_synth;
     mapper.delete_project_confirm = snap.delete_project_confirm;
     mapper.kbd_root = snap.keyboard.root;
     mapper.kbd_octave = snap.keyboard.octave;

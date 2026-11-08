@@ -1754,7 +1754,11 @@ impl HardwareMapper {
                                 }
                             }
                         } else if self.left_tab == 4 {
-                            if self.plugin_page == 1 {
+                            if self.plugin_page == 1
+                                || self.has_kick_synth
+                                || self.has_wavetable_synth
+                                || self.has_acid_synth
+                            {
                                 if self.has_kick_synth {
                                     // KICK SYNTH : 1 TUNE, 2 DECAY, 3 SNAP/PUNCH, 4 SWEEP, 5 CLICK, 6 DRIVE, 7 SUB, 8 VOL
                                     // Avec Shift : Knob 5 = Disto Type, Knob 6 = Cutoff filtre, Knob 7 = Mode filtre
@@ -3663,5 +3667,134 @@ mod tests {
         m.update_leds(&SequencerLedInfo::default());
         assert_eq!(m.led_state().button_leds[offsets::LOCK - 1], 7);
         assert_eq!(m.led_state().button_leds[offsets::NOTE_REPEAT - 1], 7);
+    }
+
+    #[test]
+    fn test_wavetable_synth_all_knobs_and_shift() {
+        let mut m = HardwareMapper::with_default();
+        m.left_tab = 4; // Plugin tab
+        m.has_wavetable_synth = true;
+
+        // Knobs 1..8 réguliers en vue Wavetable Synth
+        let tests = [
+            (1, MapperAction::WavetableCutoffDelta(1.0)),
+            (2, MapperAction::WavetableResoDelta(1.0)),
+            (3, MapperAction::WavetableEnvAmtDelta(1.0)),
+            (4, MapperAction::WavetableDriveDelta(1.0)),
+            (5, MapperAction::WavetableAttackDelta(1.0)),
+            (6, MapperAction::WavetableDecayDelta(1.0)),
+            (7, MapperAction::WavetableSustainDelta(1.0)),
+            (8, MapperAction::WavetableReleaseDelta(1.0)),
+        ];
+
+        for (knob, expected) in tests {
+            let _ = m.handle_hardware_event(knob_ev(knob, 100, 0));
+            let a = m.handle_hardware_event(knob_ev(knob, 101, 1));
+            assert_eq!(a, vec![expected], "Knob {knob} en vue Wavetable");
+        }
+
+        // Avec Shift : Knobs 1..8
+        m.shift_held = true;
+        let shift_tests = [
+            (1, MapperAction::WavetableFilterModeCycle),
+            (2, MapperAction::WavetableUnisonVoicesDelta(1)),
+            (3, MapperAction::WavetableOsc1WaveCycle),
+            (4, MapperAction::WavetableOsc2WaveCycle),
+            (5, MapperAction::WavetableChorusDelta(1.0)),
+            (6, MapperAction::WavetableDelayDelta(1.0)),
+            (7, MapperAction::WavetableReverbDelta(1.0)),
+            (8, MapperAction::WavetableVolumeDelta(1.0)),
+        ];
+
+        for (knob, expected) in shift_tests {
+            let _ = m.handle_hardware_event(knob_ev(knob, 200, 2));
+            let a = m.handle_hardware_event(knob_ev(knob, 201, 3));
+            assert_eq!(a, vec![expected], "Shift + Knob {knob} en vue Wavetable");
+        }
+    }
+
+    #[test]
+    fn test_display_buttons_shift_context_routing() {
+        let mut m = HardwareMapper::with_default();
+
+        // 1. Boutons d'écran 1..8 émettent SoftKey(1..8)
+        for n in 1..=8 {
+            let a = m.handle_hardware_event(HardwareEvent::Button {
+                id: maschine_proto::ButtonId::DisplayBtn(n),
+                pressed: true,
+                ts_ns: n as u64,
+            });
+            assert_eq!(a, vec![MapperAction::SoftKey(n)]);
+        }
+
+        // 2. Avec Shift, les boutons émettent toujours SoftKey(n) pour
+        // que l'Engine applique le contexte exactement aligné sur les labels
+        m.shift_held = true;
+        for n in 1..=8 {
+            let a = m.handle_hardware_event(HardwareEvent::Button {
+                id: maschine_proto::ButtonId::DisplayBtn(n),
+                pressed: true,
+                ts_ns: 10 + n as u64,
+            });
+            assert_eq!(a, vec![MapperAction::SoftKey(n)]);
+        }
+    }
+
+    #[test]
+    fn test_mixer_knobs_pad_track_isolation() {
+        let mut m = HardwareMapper::with_default();
+        m.left_tab = 1; // Mixer
+        m.mixer_mode = 0; // Pads 1..8 du groupe focus
+        m.group_focus = 2; // Groupe C
+
+        // Knob 1 -> SoundVolumeDeltaFor (Group 2, Sound 0)
+        let _ = m.handle_hardware_event(knob_ev(1, 100, 0));
+        let a = m.handle_hardware_event(knob_ev(1, 102, 1));
+        assert_eq!(
+            a,
+            vec![MapperAction::SoundVolumeDeltaFor {
+                group: 2,
+                sound: 0,
+                delta: 2.0
+            }]
+        );
+
+        // Knob 5 -> SoundVolumeDeltaFor (Group 2, Sound 4)
+        let _ = m.handle_hardware_event(knob_ev(5, 100, 2));
+        let a = m.handle_hardware_event(knob_ev(5, 103, 3));
+        assert_eq!(
+            a,
+            vec![MapperAction::SoundVolumeDeltaFor {
+                group: 2,
+                sound: 4,
+                delta: 3.0
+            }]
+        );
+
+        // Passage en Pads 9..16
+        m.mixer_mode = 1;
+        let _ = m.handle_hardware_event(knob_ev(1, 100, 4));
+        let a = m.handle_hardware_event(knob_ev(1, 101, 5));
+        assert_eq!(
+            a,
+            vec![MapperAction::SoundVolumeDeltaFor {
+                group: 2,
+                sound: 8,
+                delta: 1.0
+            }]
+        );
+
+        // Shift + Knob en mixer mode = Pan de la piste
+        m.shift_held = true;
+        let _ = m.handle_hardware_event(knob_ev(1, 100, 6));
+        let a = m.handle_hardware_event(knob_ev(1, 101, 7));
+        assert_eq!(
+            a,
+            vec![MapperAction::SoundPanDeltaFor {
+                group: 2,
+                sound: 8,
+                delta: 1.0
+            }]
+        );
     }
 }

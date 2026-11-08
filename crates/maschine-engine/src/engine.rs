@@ -3659,6 +3659,123 @@ impl Engine {
     }
 }
 
+fn sanitize_project_filename(name: &str) -> String {
+    let mut out: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    out = out.trim().trim_matches('.').to_string();
+    if out.is_empty() {
+        out = "Untitled".to_string();
+    }
+    if out.len() > 80 {
+        out.truncate(80);
+    }
+    if !out.ends_with(".maschine-linux.json") && !out.ends_with(".json") {
+        out.push_str(".maschine-linux.json");
+    }
+    out
+}
+
+fn default_projects_dir() -> std::path::PathBuf {
+    std::env::var("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            std::path::PathBuf::from(home).join(".local/share")
+        })
+        .join("maschine-linux")
+        .join("projects")
+}
+
+/// Scanne le répertoire local des projets et retourne les entrées triées par date.
+pub fn scan_local_projects() -> Vec<ProjectFileEntry> {
+    let dir = default_projects_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if (name.ends_with(".maschine-linux.json") || name.ends_with(".json"))
+                && !name.starts_with('.')
+            {
+                paths.push(p);
+            }
+        }
+    }
+    paths.sort_by_key(|a| {
+        std::cmp::Reverse(
+            std::fs::metadata(a)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        )
+    });
+    paths
+        .into_iter()
+        .map(|p| {
+            let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("Projet");
+            let stem = stem.strip_suffix(".maschine-linux").unwrap_or(stem);
+            let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            let meta = if size >= 1024 * 1024 {
+                format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
+            } else {
+                format!("{} KB", (size / 1024).max(1))
+            };
+            ProjectFileEntry {
+                name: stem.to_string(),
+                path: p.to_string_lossy().to_string(),
+                meta,
+            }
+        })
+        .collect()
+}
+
+/// Génère un nom et un chemin de projet unique sans écraser l'existant.
+pub fn generate_unique_project_path(base_name: &str) -> (String, std::path::PathBuf) {
+    let dir = default_projects_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let trimmed = base_name.trim();
+    if trimmed.is_empty() || trimmed == "Nouveau" || trimmed == "Untitled" {
+        for i in 1..=9999 {
+            let candidate_name = format!("Projet {}", i);
+            let file_name = format!("{}.maschine-linux.json", candidate_name);
+            let path = dir.join(&file_name);
+            if !path.exists() {
+                return (candidate_name, path);
+            }
+        }
+    }
+    let safe_stem = sanitize_project_filename(trimmed);
+    let stem = safe_stem
+        .strip_suffix(".maschine-linux.json")
+        .unwrap_or(&safe_stem)
+        .strip_suffix(".json")
+        .unwrap_or(&safe_stem)
+        .to_string();
+    let initial_path = dir.join(format!("{}.maschine-linux.json", stem));
+    if !initial_path.exists() {
+        return (stem, initial_path);
+    }
+    for i in 2..=9999 {
+        let candidate_name = format!("{} ({})", stem, i);
+        let path = dir.join(format!("{}.maschine-linux.json", candidate_name));
+        if !path.exists() {
+            return (candidate_name, path);
+        }
+    }
+    (stem.clone(), initial_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4583,121 +4700,4 @@ mod tests {
         // Nettoyage du fichier de test
         let _ = std::fs::remove_file(path);
     }
-}
-
-fn sanitize_project_filename(name: &str) -> String {
-    let mut out: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    out = out.trim().trim_matches('.').to_string();
-    if out.is_empty() {
-        out = "Untitled".to_string();
-    }
-    if out.len() > 80 {
-        out.truncate(80);
-    }
-    if !out.ends_with(".maschine-linux.json") && !out.ends_with(".json") {
-        out.push_str(".maschine-linux.json");
-    }
-    out
-}
-
-fn default_projects_dir() -> std::path::PathBuf {
-    std::env::var("XDG_DATA_HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-            std::path::PathBuf::from(home).join(".local/share")
-        })
-        .join("maschine-linux")
-        .join("projects")
-}
-
-/// Scanne le répertoire local des projets et retourne les entrées triées par date.
-pub fn scan_local_projects() -> Vec<ProjectFileEntry> {
-    let dir = default_projects_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let mut paths: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(&dir) {
-        for e in rd.flatten() {
-            let p = e.path();
-            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            if (name.ends_with(".maschine-linux.json") || name.ends_with(".json"))
-                && !name.starts_with('.')
-            {
-                paths.push(p);
-            }
-        }
-    }
-    paths.sort_by_key(|a| {
-        std::cmp::Reverse(
-            std::fs::metadata(a)
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
-        )
-    });
-    paths
-        .into_iter()
-        .map(|p| {
-            let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("Projet");
-            let stem = stem.strip_suffix(".maschine-linux").unwrap_or(stem);
-            let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
-            let meta = if size >= 1024 * 1024 {
-                format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
-            } else {
-                format!("{} KB", (size / 1024).max(1))
-            };
-            ProjectFileEntry {
-                name: stem.to_string(),
-                path: p.to_string_lossy().to_string(),
-                meta,
-            }
-        })
-        .collect()
-}
-
-/// Génère un nom et un chemin de projet unique sans écraser l'existant.
-pub fn generate_unique_project_path(base_name: &str) -> (String, std::path::PathBuf) {
-    let dir = default_projects_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let trimmed = base_name.trim();
-    if trimmed.is_empty() || trimmed == "Nouveau" || trimmed == "Untitled" {
-        for i in 1..=9999 {
-            let candidate_name = format!("Projet {}", i);
-            let file_name = format!("{}.maschine-linux.json", candidate_name);
-            let path = dir.join(&file_name);
-            if !path.exists() {
-                return (candidate_name, path);
-            }
-        }
-    }
-    let safe_stem = sanitize_project_filename(trimmed);
-    let stem = safe_stem
-        .strip_suffix(".maschine-linux.json")
-        .unwrap_or(&safe_stem)
-        .strip_suffix(".json")
-        .unwrap_or(&safe_stem)
-        .to_string();
-    let initial_path = dir.join(format!("{}.maschine-linux.json", stem));
-    if !initial_path.exists() {
-        return (stem, initial_path);
-    }
-    for i in 2..=9999 {
-        let candidate_name = format!("{} ({})", stem, i);
-        let path = dir.join(format!("{}.maschine-linux.json", candidate_name));
-        if !path.exists() {
-            return (candidate_name, path);
-        }
-    }
-    (stem.clone(), initial_path)
 }

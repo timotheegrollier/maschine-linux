@@ -2859,9 +2859,11 @@ mod tests {
         assert_eq!(m.browser_kind, 1);
         assert!(act_file.contains(&MapperAction::OpenFileBrowser));
 
-        let mut info_file = SequencerLedInfo::default();
-        info_file.left_tab = 3;
-        info_file.browser_kind = 1;
+        let info_file = SequencerLedInfo {
+            left_tab: 3,
+            browser_kind: 1,
+            ..Default::default()
+        };
         m.update_leds(&info_file);
 
         // La LED FILE_SAVE DOIT être allumée (7), et BROWSER DOIT être éteinte/dim (1)
@@ -2883,9 +2885,11 @@ mod tests {
         assert_eq!(m.browser_kind, 0);
         assert!(act_browse.contains(&MapperAction::SetBrowserKind(0)));
 
-        let mut info_browser = SequencerLedInfo::default();
-        info_browser.left_tab = 3;
-        info_browser.browser_kind = 0;
+        let info_browser = SequencerLedInfo {
+            left_tab: 3,
+            browser_kind: 0,
+            ..Default::default()
+        };
         m.update_leds(&info_browser);
 
         // La LED BROWSER DOIT être allumée (7), et FILE_SAVE DOIT être éteinte/dim (1)

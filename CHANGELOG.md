@@ -2,6 +2,20 @@
 
 All notable changes.
 
+## [0.9.5] - 2026-11-08
+
+### Fixes
+
+- **MK3 FILE/SAVE and BROWSER LED mapping**: properly distinguished between project file browsing (`FILE/SAVE`) and sound preset browsing (`BROWSER`). The physical `FILE/SAVE` LED now illuminates brightly (intensity 7) while in FILE mode, while `BROWSER` LED remains dim (and vice versa). `Shift + FILE/SAVE` provides illuminated hint feedback for quick save.
+- **New Project creation workflow**: pressing `NOUVEAU` (soft button 3) on the MK3 now generates a unique project file (`Projet 1`, `Projet 2`, etc.), saves it to disk in `~/.local/share/maschine-linux/projects/`, initializes a playable 808 drum kit on the pads with a fresh sequence, updates `project_entries` with instant on-screen status feedback (`COURANT` badge), and provides a status message.
+- **MK3 displays & soft buttons alignment**: updated both screens in FILE mode (`PROJ <`, `PROJ >`, `NOUVEAU`, `CHARGER`, `SAUVER`, `RAPIDE`, `PRESETS`, `RETOUR`). Fixed right screen softkey offset from 0 to 4 so buttons 5-8 correspond directly to the displayed actions. Knobs and 4D encoder controls are mapped unambiguously.
+
+### Validation
+
+- `cargo fmt --all -- --check`
+- `cargo test -p maschine-hardware -p maschine-engine` (95 passing tests)
+- `cargo test -p maschine-app --no-default-features` (all tests passing)
+
 ## [0.9.4] - 2026-11-08
 
 ### Fixes

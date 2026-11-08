@@ -51,6 +51,8 @@ pub enum EngineEvent {
     Save(std::path::PathBuf),
     /// Sauvegarde le projet courant (rapide=JSON compact, sinon pretty).
     SaveCurrent { quick: bool },
+    /// Crée un nouveau projet (nom) et le sauvegarde (comme un premier Save).
+    NewProject { name: String },
     /// Définit le chemin du projet courant.
     SetProjectPath(Option<String>),
     /// Load
@@ -1456,6 +1458,17 @@ impl Engine {
                 } else {
                     "Projet sauvegardé".to_string()
                 });
+                self.status_expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_secs(2);
+            }
+            EngineEvent::NewProject { name } => {
+                let path = default_new_project_path(&name);
+                let mut proj = Project::default();
+                proj.name = sanitize_project_filename(&name);
+                let proj_name = proj.name.clone();
+                *self.project.write() = std::sync::Arc::new(proj);
+                self.current_project_path = Some(path.to_string_lossy().to_string());
+                self.status_message = Some(format!("Nouveau projet: {}", proj_name));
                 self.status_expires_at =
                     std::time::Instant::now() + std::time::Duration::from_secs(2);
             }
@@ -3076,7 +3089,7 @@ impl Engine {
                 "SND 1", "SND 2", "SND 3", "SND 4", "SND 5", "SND 6", "SND 7", "SND 8",
             ],
             3 if self.browser_kind == 1 => [
-                "PROJ <", "PROJ >", "CHARGER", "SAUVER", "RAPIDE", "PRESETS", "METRO", "LOOP",
+                "PROJ <", "PROJ >", "NEW", "CHARGER", "SAUVER", "RAPIDE", "PRESETS", "METRO",
             ],
             3 => [
                 "PRES <", "PRES >", "SND <", "SND >", "ECOUTE", "CHARGER", "METRO", "LOOP",
@@ -3207,14 +3220,17 @@ impl Engine {
             3 if self.browser_kind == 1 => match idx {
                 0 => self.handle_event(EngineEvent::BrowseBrowserStep(-1)),
                 1 => self.handle_event(EngineEvent::BrowseBrowserStep(1)),
-                2 => self.handle_event(EngineEvent::LoadSelectedBrowserItem {
+                2 => self.handle_event(EngineEvent::NewProject {
+                    name: "Nouveau".to_string(),
+                }),
+                3 => self.handle_event(EngineEvent::LoadSelectedBrowserItem {
                     group: self.group_focus,
                     sound: self.active_sound,
                 }),
-                3 => self.handle_event(EngineEvent::SaveCurrent { quick: false }),
-                4 => self.handle_event(EngineEvent::SaveCurrent { quick: true }),
-                5 => self.handle_event(EngineEvent::SetBrowserKind(0)),
-                6 => self.handle_event(EngineEvent::ToggleMetronome),
+                4 => self.handle_event(EngineEvent::SaveCurrent { quick: false }),
+                5 => self.handle_event(EngineEvent::SaveCurrent { quick: true }),
+                6 => self.handle_event(EngineEvent::SetBrowserKind(0)),
+                7 => self.handle_event(EngineEvent::ToggleMetronome),
                 _ => self.handle_event(EngineEvent::ToggleLoop),
             },
             3 => match idx {
@@ -4503,4 +4519,11 @@ fn default_projects_dir() -> std::path::PathBuf {
         })
         .join("maschine-linux")
         .join("projects")
+}
+
+fn default_new_project_path(name: &str) -> std::path::PathBuf {
+    let safe = sanitize_project_filename(name);
+    let dir = default_projects_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join(safe)
 }

@@ -1793,8 +1793,7 @@ fn render_updater_window(
                     .clicked()
                 {
                     if let Ok(exe) = std::env::current_exe() {
-                        let args: Vec<std::ffi::OsString> =
-                            std::env::args_os().skip(1).collect();
+                        let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
                         let _ = std::process::Command::new(exe).args(args).spawn();
                     }
                     std::process::exit(0);

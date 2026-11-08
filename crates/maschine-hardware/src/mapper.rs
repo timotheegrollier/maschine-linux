@@ -328,6 +328,8 @@ pub enum MapperAction {
     QuickSaveProject,
     /// Ouvre le navigateur FILE/projets sur la MK3.
     OpenFileBrowser,
+    /// Crée un nouveau projet (depuis le navigateur FILE).
+    NewProject,
     /// Type de navigateur BROWSER (0: presets, 1: projets FILE).
     SetBrowserKind(u8),
     /// Miroir écran : mode SCENE

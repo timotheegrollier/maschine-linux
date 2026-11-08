@@ -1461,6 +1461,25 @@ fn cmd_daemon(
                         log::info!("Sauvegarde rapide → {}", path.display());
                     }
                 }
+                MapperAction::NewProject => {
+                    let name = std::env::var("USER")
+                        .map(|u| u.clone())
+                        .unwrap_or_else(|_| "Untitled".to_string());
+                    let name = format!("Projet {}", std::process::id());
+                    let _ = engine.lock().handle_event(EngineEvent::NewProject { name });
+                    let mut settings = settings::AppSettings::load();
+                    let path = projects::resolve_current_save_path(
+                        &settings,
+                        engine.lock().snapshot().current_project_path.as_deref(),
+                        "Untitled",
+                    );
+                    // Sauvegarde effective via le moteur (création du fichier).
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::SaveCurrent { quick: false });
+                    let _ = projects::remember_project(&mut settings, &path);
+                    log::info!("Nouveau projet créé → {}", path.display());
+                }
                 MapperAction::OpenFileBrowser => {
                     let settings = settings::AppSettings::load();
                     let entries = projects::scan_projects(&settings);

@@ -144,9 +144,7 @@ fn render_sound_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine
     let pan = sound.map(|s| s.pan).unwrap_or(0.0);
     let polyphony = sound.map(|s| s.polyphony).unwrap_or(8);
     let choke_group = sound.and_then(|s| s.choke_group);
-    let filter_kind = sound
-        .map(|s| s.filter.kind.clone())
-        .unwrap_or(FilterKind::Off);
+    let filter_kind = sound.map(|s| s.filter.kind).unwrap_or(FilterKind::Off);
     let cutoff = sound.map(|s| s.filter.cutoff_hz).unwrap_or(20000.0);
     let reso = sound.map(|s| s.filter.resonance).unwrap_or(0.0);
     let adsr = sound.map(|s| s.adsr.clone()).unwrap_or_default();
@@ -290,7 +288,7 @@ fn render_sound_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine
         card_frame().show(ui, |ui| {
             ui.set_width(card_w - 18.0);
             section_title(ui, "FILTRE", c.accent_cyan);
-            let mut kind = filter_kind.clone();
+            let mut kind = filter_kind;
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Type").small().color(c.text_dim));
                 egui::ComboBox::from_id_salt("plugin_filter_kind")

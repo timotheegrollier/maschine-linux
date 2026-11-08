@@ -1,5 +1,5 @@
 Name:           maschine-linux
-Version:        0.9.9
+Version:        0.9.10
 Release:        1%{?dist}
 Summary:        Native Instruments Maschine MK3 DAW & Controller integration for Linux
 License:        GPL-3.0-or-later
@@ -98,6 +98,14 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/maschine-linux.deskto
 %{_prefix}/lib/systemd/user/maschine-linux.service
 
 %changelog
+* Sun Nov 08 2026 timotheegrollier <timo@example.com> - 0.9.10-1
+- Refactoring and modularization of HardwareMapper button event handlers
+- Prioritize physically held SOLO modifier over background latched MUTE pad mode
+- Universal filter cycling shortcuts (Shift+4D Push, Shift+Knobs in Arrange/Plugin/Sampler)
+- 8 Groups A..H with 128 independent tracks, sampler zones, and synth channels
+- Clean AppImage process detachment on application restart
+- Extended MK3 reverse engineering documentation and 5 new hardware test suites (167 passing tests)
+
 * Sun Nov 08 2026 timotheegrollier <timo@example.com> - 0.9.9-1
 - Fix synth pad sustain holding note indefinitely in Pad Mode (Wavetable & TB-303)
 - Fix Shift labels and actions synchronization across Sampler, Step, Mixer, and Plugin views

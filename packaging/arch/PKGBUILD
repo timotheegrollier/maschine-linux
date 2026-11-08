@@ -1,6 +1,6 @@
 # Maintainer: Timothée Grollier <timo@example.com>
 pkgname=maschine-linux
-pkgver=0.9.9
+pkgver=0.9.10
 pkgrel=1
 pkgdesc="Native Instruments Maschine MK3 DAW & Controller for Linux"
 arch=('x86_64')

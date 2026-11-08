@@ -3510,27 +3510,47 @@ pub fn render_kick_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
     let s_w = 204usize;
     let s_h = 56usize;
     fill_rect(&mut frame, s_x, s_y, s_w, s_h, p.track);
+    let drv_str = match kp.drive_type {
+        crate::kick_synth::KickDriveType::AnalogTanh => "TANH",
+        crate::kick_synth::KickDriveType::HardClip => "HARD",
+        crate::kick_synth::KickDriveType::Wavefolder => "FOLD",
+        crate::kick_synth::KickDriveType::TubeDrive => "TUBE",
+    };
+    let flt_str = match kp.filter_mode {
+        crate::kick_synth::KickFilterMode::Off => "OFF".to_string(),
+        crate::kick_synth::KickFilterMode::LowPass => format!("LP {:.0}Hz", kp.filter_cutoff_hz),
+        crate::kick_synth::KickFilterMode::HighPass => format!("HP {:.0}Hz", kp.filter_cutoff_hz),
+        crate::kick_synth::KickFilterMode::BandPass => format!("BP {:.0}Hz", kp.filter_cutoff_hz),
+    };
     draw_text(
         &mut frame,
-        s_x + 10,
-        s_y + 10,
-        &format!("SUB BASS : {:.0}%", kp.sub * 100.0),
+        s_x + 6,
+        s_y + 4,
+        &format!("DISTO : {} ({:.0}%)", drv_str, kp.drive * 100.0),
+        p.red,
+        p.track,
+    );
+    draw_text(
+        &mut frame,
+        s_x + 6,
+        s_y + 18,
+        &format!("FILTRE : {}", flt_str),
         p.cyan,
         p.track,
     );
     draw_text(
         &mut frame,
-        s_x + 10,
-        s_y + 26,
-        &format!("NIVEAU : {:.1} dB", kp.volume_db),
+        s_x + 6,
+        s_y + 32,
+        &format!("SUB {:.0}% | VOL {:.1}dB", kp.sub * 100.0, kp.volume_db),
         p.yellow,
         p.track,
     );
     draw_text(
         &mut frame,
-        s_x + 10,
-        s_y + 40,
-        &format!("PRESET : {}", kp.preset_name),
+        s_x + 6,
+        s_y + 44,
+        &format!("PRESET : {}", trunc(&kp.preset_name, 16)),
         p.white,
         p.track,
     );
@@ -3566,6 +3586,282 @@ pub fn render_kick_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
     frame
 }
 
+// ── WAVETABLE / NEXUS SYNTH ──────────────────────────────────────────────
+
+/// Écran gauche — vue NEXUS / SERUM SYNTH : Tables d'ondes, Unison, Filtre SVF.
+#[must_use]
+pub fn render_wavetable_synth_left(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
+    let s_name = sound_name(snap, snap.active_sound as usize);
+    let wp = snap
+        .focus_sound_wavetable
+        .as_ref()
+        .unwrap_or(&snap.wavetable_params);
+    header(
+        &mut frame,
+        &p,
+        snap,
+        "NEXUS / SERUM SYNTH",
+        &format!(
+            "GRP {} | SND {:02} {} | {}",
+            group_letter(snap.group_focus),
+            snap.active_sound + 1,
+            trunc(&s_name, 10),
+            wp.name
+        ),
+    );
+
+    // Panneau Oscillateurs & Unison (226 x 92)
+    panel(&mut frame, &p, 8, 28, 226, 92);
+    draw_text(&mut frame, 14, 32, "OSCILLATEURS & UNISON", p.dim, p.panel);
+    let o_x = 18usize;
+    let o_y = 44usize;
+    let o_w = 204usize;
+    let o_h = 56usize;
+    fill_rect(&mut frame, o_x, o_y, o_w, o_h, p.track);
+    draw_text(
+        &mut frame,
+        o_x + 6,
+        o_y + 6,
+        &format!("OSC1 : {:?} ({:.0}%)", wp.osc1_wave, wp.osc1_level * 100.0),
+        p.cyan,
+        p.track,
+    );
+    draw_text(
+        &mut frame,
+        o_x + 6,
+        o_y + 20,
+        &format!("OSC2 : {:?} ({:.0}%)", wp.osc2_wave, wp.osc2_level * 100.0),
+        p.white,
+        p.track,
+    );
+    draw_text(
+        &mut frame,
+        o_x + 6,
+        o_y + 34,
+        &format!(
+            "UNISON : {}v (detune {:.0}%)",
+            wp.unison_voices,
+            wp.unison_detune * 100.0
+        ),
+        p.yellow,
+        p.track,
+    );
+
+    // Panneau Filtre SVF (226 x 92)
+    panel(&mut frame, &p, 246, 28, 226, 92);
+    draw_text(&mut frame, 252, 32, "FILTRE MULTIMODE SVF", p.dim, p.panel);
+    let f_x = 256usize;
+    let f_y = 44usize;
+    let f_w = 204usize;
+    let f_h = 56usize;
+    fill_rect(&mut frame, f_x, f_y, f_w, f_h, p.track);
+    draw_text(
+        &mut frame,
+        f_x + 6,
+        f_y + 6,
+        &format!("MODE : {:?}", wp.filter_mode),
+        p.accent,
+        p.track,
+    );
+    draw_text(
+        &mut frame,
+        f_x + 6,
+        f_y + 20,
+        &format!("CUTOFF : {:.0} Hz", wp.filter_cutoff),
+        p.white,
+        p.track,
+    );
+    draw_text(
+        &mut frame,
+        f_x + 6,
+        f_y + 34,
+        &format!(
+            "RESO : {:.0}% | ENV : {:.0}%",
+            wp.filter_reso * 100.0,
+            wp.filter_env_amt * 100.0
+        ),
+        p.cyan,
+        p.track,
+    );
+
+    let slots = [
+        Some((
+            "1:CUTOFF",
+            format!("{:.0}Hz", wp.filter_cutoff),
+            (wp.filter_cutoff / 20000.0).clamp(0.0, 1.0),
+            p.accent,
+        )),
+        Some((
+            "2:RESO",
+            format!("{:.0}%", wp.filter_reso * 100.0),
+            wp.filter_reso.clamp(0.0, 1.0),
+            p.yellow,
+        )),
+        Some((
+            "3:ENV AMT",
+            format!("{:.0}%", wp.filter_env_amt * 100.0),
+            wp.filter_env_amt.abs().clamp(0.0, 1.0),
+            p.cyan,
+        )),
+        Some((
+            "4:DRIVE",
+            format!("{:.0}%", wp.filter_drive * 100.0),
+            wp.filter_drive.clamp(0.0, 1.0),
+            p.red,
+        )),
+    ];
+    encoder_row(&mut frame, &p, &slots);
+
+    let active = [false; 8];
+    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    frame
+}
+
+/// Écran droit — vue NEXUS / SERUM SYNTH : Enveloppes ADSR, Effets & Presets.
+#[must_use]
+pub fn render_wavetable_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
+    let wp = snap
+        .focus_sound_wavetable
+        .as_ref()
+        .unwrap_or(&snap.wavetable_params);
+    header(
+        &mut frame,
+        &p,
+        snap,
+        "NEXUS | ENVELOPPES & FX",
+        &format!("CAT : {:?} | {}", wp.category, wp.name),
+    );
+
+    // Panneau Enveloppes (226 x 92)
+    panel(&mut frame, &p, 8, 28, 226, 92);
+    draw_text(
+        &mut frame,
+        14,
+        32,
+        "ENVELOPPE AMPLITUDE (ADSR)",
+        p.dim,
+        p.panel,
+    );
+    let a_x = 18usize;
+    let a_y = 44usize;
+    let a_w = 204usize;
+    let a_h = 56usize;
+    fill_rect(&mut frame, a_x, a_y, a_w, a_h, p.track);
+    draw_text(
+        &mut frame,
+        a_x + 6,
+        a_y + 6,
+        &format!("A: {:.0}ms  D: {:.0}ms", wp.amp_attack_ms, wp.amp_decay_ms),
+        p.accent,
+        p.track,
+    );
+    draw_text(
+        &mut frame,
+        a_x + 6,
+        a_y + 22,
+        &format!(
+            "S: {:.0}%  R: {:.0}ms",
+            wp.amp_sustain * 100.0,
+            wp.amp_release_ms
+        ),
+        p.white,
+        p.track,
+    );
+    draw_text(
+        &mut frame,
+        a_x + 6,
+        a_y + 38,
+        &format!(
+            "LFO : {:.1}Hz ({:.0}%)",
+            wp.lfo_rate_hz,
+            wp.lfo_amount * 100.0
+        ),
+        p.yellow,
+        p.track,
+    );
+
+    // Panneau Rack Effets (226 x 92)
+    panel(&mut frame, &p, 246, 28, 226, 92);
+    draw_text(&mut frame, 252, 32, "RACK D'EFFETS INTÉGRÉ", p.dim, p.panel);
+    let e_x = 256usize;
+    let e_y = 44usize;
+    let e_w = 204usize;
+    let e_h = 56usize;
+    fill_rect(&mut frame, e_x, e_y, e_w, e_h, p.track);
+    draw_text(
+        &mut frame,
+        e_x + 6,
+        e_y + 6,
+        &format!(
+            "CHORUS: {:.0}% | REVERB: {:.0}%",
+            wp.fx_chorus_mix * 100.0,
+            wp.fx_reverb_mix * 100.0
+        ),
+        p.cyan,
+        p.track,
+    );
+    draw_text(
+        &mut frame,
+        e_x + 6,
+        e_y + 22,
+        &format!(
+            "DELAY: {:.0}ms ({:.0}%)",
+            wp.fx_delay_time_ms,
+            wp.fx_delay_mix * 100.0
+        ),
+        p.white,
+        p.track,
+    );
+    draw_text(
+        &mut frame,
+        e_x + 6,
+        e_y + 38,
+        &format!(
+            "DISTO: {:.0}% | VOL: {:.1}dB",
+            wp.fx_distortion * 100.0,
+            wp.master_volume_db
+        ),
+        p.red,
+        p.track,
+    );
+
+    let slots = [
+        Some((
+            "5:ATTACK",
+            format!("{:.0}ms", wp.amp_attack_ms),
+            (wp.amp_attack_ms / 1000.0).clamp(0.0, 1.0),
+            p.accent,
+        )),
+        Some((
+            "6:DECAY",
+            format!("{:.0}ms", wp.amp_decay_ms),
+            (wp.amp_decay_ms / 3000.0).clamp(0.0, 1.0),
+            p.accent,
+        )),
+        Some((
+            "7:SUSTAIN",
+            format!("{:.0}%", wp.amp_sustain * 100.0),
+            wp.amp_sustain.clamp(0.0, 1.0),
+            p.accent,
+        )),
+        Some((
+            "8:RELEASE",
+            format!("{:.0}ms", wp.amp_release_ms),
+            (wp.amp_release_ms / 3000.0).clamp(0.0, 1.0),
+            p.accent,
+        )),
+    ];
+    encoder_row(&mut frame, &p, &slots);
+
+    let active = [false; 8];
+    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    frame
+}
+
 // ── SYNTH (TB-303 ACID) ──────────────────────────────────────────────────
 
 /// Écran gauche — vue SYNTH : Oscillateur, Filtre résonant, Enveloppes.
@@ -3573,6 +3869,9 @@ pub fn render_kick_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
 pub fn render_synth_left(snap: &EngineSnapshot) -> DisplayFrame {
     if snap.focus_sound_kick.is_some() {
         return render_kick_synth_left(snap);
+    }
+    if snap.focus_sound_wavetable.is_some() {
+        return render_wavetable_synth_left(snap);
     }
     if snap.focus_sound_acid.is_none() {
         return render_sampler_left(snap);
@@ -3781,6 +4080,9 @@ pub fn render_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
     if snap.focus_sound_kick.is_some() {
         return render_kick_synth_right(snap);
     }
+    if snap.focus_sound_wavetable.is_some() {
+        return render_wavetable_synth_right(snap);
+    }
     if snap.focus_sound_acid.is_none() {
         return render_sampler_right(snap);
     }
@@ -3962,39 +4264,44 @@ pub fn render_browser_left(snap: &EngineSnapshot) -> DisplayFrame {
                 "ACID",
             ),
             (
-                "3. GUITAR AMP",
+                "3. NEXUS SYNTH",
+                "Synthétiseur polyphonique à tables d'ondes",
+                "SYNTH",
+            ),
+            (
+                "4. GUITAR AMP",
                 "Ampli & rack d'effets guitare / saturation",
                 "AMP",
             ),
             (
-                "4. SAMPLER 808",
+                "5. SAMPLER 808",
                 "Lecteur d'échantillons de batterie Maschine",
                 "SAMPLE",
             ),
         ];
-        let p_idx = (snap.browser_plugin_idx as usize).min(3);
+        let p_idx = (snap.browser_plugin_idx as usize).min(4);
         for (i, (name, desc, tag)) in plugins.iter().enumerate() {
-            let y = 32 + i * 38;
+            let y = 30 + i * 32;
             let selected = i == p_idx;
-            panel(&mut frame, &p, 10, y, 460, 34);
+            panel(&mut frame, &p, 10, y, 460, 28);
             if selected {
-                draw_rect_outline(&mut frame, 9, y - 1, 462, 36, p.accent);
-                fill_rect(&mut frame, 12, y + 2, 4, 30, p.accent);
+                draw_rect_outline(&mut frame, 9, y - 1, 462, 30, p.accent);
+                fill_rect(&mut frame, 12, y + 2, 4, 24, p.accent);
             }
             draw_text(
                 &mut frame,
                 22,
-                y + 4,
+                y + 2,
                 name,
                 if selected { p.white } else { p.dim },
                 p.panel,
             );
-            draw_text(&mut frame, 22, y + 18, desc, p.muted, p.panel);
+            draw_text(&mut frame, 22, y + 14, desc, p.muted, p.panel);
             pill(
                 &mut frame,
                 &p,
                 390,
-                y + 8,
+                y + 4,
                 65,
                 tag,
                 if selected { p.accent } else { p.track },
@@ -4161,14 +4468,14 @@ pub fn render_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
 
     if snap.browser_kind == 2 {
-        let p_idx = (snap.browser_plugin_idx as usize).min(3);
+        let p_idx = (snap.browser_plugin_idx as usize).min(4);
         let plugin_info = match p_idx {
             0 => (
                 "KICK SYNTH TECHNO",
                 "Synthese analogique dediee aux kicks club/techno.",
                 "Pitch env exponentielle, click de transient,",
                 "Drive/saturation analogique et boost sub 50Hz.",
-                "6 presets inclus : Techno Berlin, 909 Punch...",
+                "8 presets inclus : Techno Berlin, 909 Punch...",
             ),
             1 => (
                 "TB-303 ACID BASS",
@@ -4178,6 +4485,13 @@ pub fn render_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
                 "Presets rapides : Acid Squelch, Distort, Dub 303.",
             ),
             2 => (
+                "NEXUS / SERUM SYNTH",
+                "Synthe polyphonique 16 voix a tables d'ondes.",
+                "Multi-oscillateurs, filtre multimode resonant,",
+                "Rack d'effets complet (Chorus, Delay, Reverb).",
+                "16 presets integres : Piano, Bass, Lead, Pad...",
+            ),
+            3 => (
                 "GUITAR AMP STANDALONE",
                 "Simulateur de preampli guitare a lampes & baffle.",
                 "Drive agressif, egalisation 3-bandes active,",

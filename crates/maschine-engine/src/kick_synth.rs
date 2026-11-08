@@ -1,12 +1,13 @@
 //! Synthétiseur de modélisation de grosse caisse (Kick Synth) analogique & techno.
 //!
-//! Architecture DSP :
+//! Architecture DSP étendue :
 //! - Oscillateur à balayage de fréquence exponentiel (Pitch Envelope)
-//! - Transitoire d'attaque (Click generator : impulsion + bruit filtré passe-bande)
-//! - Corps sub-harmonique riche (fondamentale sinusoïdale + 2e harmonique dosée)
-//! - Enveloppe d'amplitude exponentielle à déclin contrôlé
-//! - Étage de saturation non-linéaire analogique / overdrive techno (asymmetric drive / tanh)
-//! - Banques de presets : Techno Berlin, 909 Punch, Hardcore Drive, Sub 808, Minimal Click, Industrial.
+//! - Formes d'onde : Sinusoïde, Triangle, Sinusoïde saturée, Sub-carré rave, Bruit percussif
+//! - Transitoire d'attaque (Click generator + bruit blanc percussif filtré)
+//! - Corps sub-harmonique riche avec ratio harmonique ajustable (sub-octave, fondamentale, 2e harmonique)
+//! - Étage de distorsion multi-types : Tanh analogique, Hard Clip, Wavefolder non-linéaire, Tube Drive
+//! - Filtre résonant multimode intégré (Off, LowPass, HighPass, BandPass) avec cutoff et résonance
+//! - Banques de presets de pointe : Techno Berlin, 909 Punch, Hardcore Wavefolder, Sub 808, Minimal Click, Industrial Tube, Acid Gabber, Deep Dub.
 
 use serde::{Deserialize, Serialize};
 use std::f32::consts::PI;
@@ -21,6 +22,38 @@ pub enum KickWaveform {
     Triangle,
     /// Sinusoïde saturée (techno punch)
     SatSine,
+    /// Sous-oscillateur carré percutant style rave / gabber
+    SquareSub,
+    /// Transitoire avec bruit percussif intégré
+    NoiseTransient,
+}
+
+/// Type de saturation / distorsion non-linéaire pour le kick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum KickDriveType {
+    /// Saturation progressive analogique tanh douce et chaude
+    #[default]
+    AnalogTanh,
+    /// Écrêtage dur (Hard Clip) pour kicks industriels percutants
+    HardClip,
+    /// Repliement d'onde Buchla / Eurorack (Wavefolder) pour kicks métalliques modulaires
+    Wavefolder,
+    /// Saturation asymétrique à lampes (Tube Drive) avec harmoniques paires
+    TubeDrive,
+}
+
+/// Mode de filtre résonant multimode pour le kick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum KickFilterMode {
+    /// Pas de filtre / bypass
+    #[default]
+    Off,
+    /// Passe-bas résonant (pour assombrir ou arrondir les sub-kicks)
+    LowPass,
+    /// Passe-haut résonant (pour top-kicks et rolling basslines)
+    HighPass,
+    /// Passe-bande percutant (sculptage d'impact médium)
+    BandPass,
 }
 
 /// Paramètres de synthèse de la modélisation de Kick.
@@ -44,12 +77,49 @@ pub struct KickParams {
     pub click: f32,
     /// Saturation / overdrive / distorsion analogique (0.0 .. 1.0)
     pub drive: f32,
+    /// Type de saturation non-linéaire
+    #[serde(default)]
+    pub drive_type: KickDriveType,
+    /// Brillance / couleur spectrale post-saturation (0.0 .. 1.0)
+    #[serde(default = "default_drive_tone")]
+    pub drive_tone: f32,
     /// Renfort d'infrabasse / sub (0.0 .. 1.0)
     pub sub: f32,
+    /// Ratio fréquentiel du sub (0.5 = sub-octave, 1.0 = fondamentale, 2.0 = harmonique 2)
+    #[serde(default = "default_sub_ratio")]
+    pub sub_ratio: f32,
+    /// Niveau du bruit de batte percussif (0.0 .. 1.0)
+    #[serde(default)]
+    pub noise_mix: f32,
+    /// Durée du déclin du bruit de batte (ms, 2.0 .. 80.0)
+    #[serde(default = "default_noise_decay")]
+    pub noise_decay_ms: f32,
+    /// Mode du filtre multimode
+    #[serde(default)]
+    pub filter_mode: KickFilterMode,
+    /// Fréquence de coupure du filtre (Hz, 20.0 .. 18000.0)
+    #[serde(default = "default_filter_cutoff")]
+    pub filter_cutoff_hz: f32,
+    /// Résonance du filtre (0.0 .. 0.95)
+    #[serde(default)]
+    pub filter_reso: f32,
     /// Volume de sortie en dB (-60.0 .. +12.0)
     pub volume_db: f32,
     /// Index ou nom de preset courant
     pub preset_name: String,
+}
+
+fn default_drive_tone() -> f32 {
+    0.65
+}
+fn default_sub_ratio() -> f32 {
+    1.0
+}
+fn default_noise_decay() -> f32 {
+    15.0
+}
+fn default_filter_cutoff() -> f32 {
+    12000.0
 }
 
 impl Default for KickParams {
@@ -72,7 +142,15 @@ impl KickParams {
             snap: 0.72,
             click: 0.55,
             drive: 0.42,
+            drive_type: KickDriveType::AnalogTanh,
+            drive_tone: 0.70,
             sub: 0.65,
+            sub_ratio: 1.0,
+            noise_mix: 0.15,
+            noise_decay_ms: 18.0,
+            filter_mode: KickFilterMode::LowPass,
+            filter_cutoff_hz: 8500.0,
+            filter_reso: 0.15,
             volume_db: 0.0,
             preset_name: "Techno Berlin".to_string(),
         }
@@ -91,13 +169,21 @@ impl KickParams {
             snap: 0.82,
             click: 0.68,
             drive: 0.20,
+            drive_type: KickDriveType::AnalogTanh,
+            drive_tone: 0.85,
             sub: 0.40,
+            sub_ratio: 1.0,
+            noise_mix: 0.25,
+            noise_decay_ms: 12.0,
+            filter_mode: KickFilterMode::Off,
+            filter_cutoff_hz: 14000.0,
+            filter_reso: 0.0,
             volume_db: 0.0,
             preset_name: "909 Punch".to_string(),
         }
     }
 
-    /// Preset 3 : Hardcore Drive — distorsion abrasive, drop violent, présence maximale.
+    /// Preset 3 : Hardcore Wavefolder — repliement d'onde agressif et percutant.
     #[must_use]
     pub fn preset_hardcore() -> Self {
         Self {
@@ -110,9 +196,17 @@ impl KickParams {
             snap: 0.88,
             click: 0.80,
             drive: 0.85,
+            drive_type: KickDriveType::Wavefolder,
+            drive_tone: 0.60,
             sub: 0.50,
+            sub_ratio: 1.0,
+            noise_mix: 0.35,
+            noise_decay_ms: 24.0,
+            filter_mode: KickFilterMode::LowPass,
+            filter_cutoff_hz: 6500.0,
+            filter_reso: 0.35,
             volume_db: -1.5,
-            preset_name: "Hardcore Drive".to_string(),
+            preset_name: "Hardcore Wavefolder".to_string(),
         }
     }
 
@@ -129,7 +223,15 @@ impl KickParams {
             snap: 0.45,
             click: 0.25,
             drive: 0.12,
+            drive_type: KickDriveType::TubeDrive,
+            drive_tone: 0.50,
             sub: 0.90,
+            sub_ratio: 0.5,
+            noise_mix: 0.05,
+            noise_decay_ms: 10.0,
+            filter_mode: KickFilterMode::LowPass,
+            filter_cutoff_hz: 1800.0,
+            filter_reso: 0.10,
             volume_db: 0.0,
             preset_name: "Sub 808".to_string(),
         }
@@ -148,13 +250,21 @@ impl KickParams {
             snap: 0.60,
             click: 0.70,
             drive: 0.15,
+            drive_type: KickDriveType::AnalogTanh,
+            drive_tone: 0.80,
             sub: 0.30,
+            sub_ratio: 1.0,
+            noise_mix: 0.20,
+            noise_decay_ms: 8.0,
+            filter_mode: KickFilterMode::BandPass,
+            filter_cutoff_hz: 1200.0,
+            filter_reso: 0.25,
             volume_db: 0.0,
             preset_name: "Minimal Click".to_string(),
         }
     }
 
-    /// Preset 6 : Industrial Rumble — kick sombre, texturé et dense.
+    /// Preset 6 : Industrial Tube — kick sombre, texturé avec saturation à lampes et filtre résonant.
     #[must_use]
     pub fn preset_industrial() -> Self {
         Self {
@@ -167,22 +277,86 @@ impl KickParams {
             snap: 0.75,
             click: 0.60,
             drive: 0.58,
+            drive_type: KickDriveType::TubeDrive,
+            drive_tone: 0.65,
             sub: 0.75,
+            sub_ratio: 1.0,
+            noise_mix: 0.30,
+            noise_decay_ms: 22.0,
+            filter_mode: KickFilterMode::LowPass,
+            filter_cutoff_hz: 4200.0,
+            filter_reso: 0.40,
             volume_db: -0.5,
-            preset_name: "Industrial".to_string(),
+            preset_name: "Industrial Tube".to_string(),
         }
     }
 
-    /// Retourne la liste des presets disponibles.
+    /// Preset 7 : Acid Gabber — distorsion hard clipping extrême et sous-oscillateur carré.
     #[must_use]
-    pub fn all_presets() -> [Self; 6] {
-        [
+    pub fn preset_acid_gabber() -> Self {
+        Self {
+            enabled: true,
+            waveform: KickWaveform::SquareSub,
+            tune_hz: 56.0,
+            tuning_semitones: 0.0,
+            decay_ms: 260.0,
+            sweep_time_ms: 26.0,
+            snap: 0.92,
+            click: 0.75,
+            drive: 0.90,
+            drive_type: KickDriveType::HardClip,
+            drive_tone: 0.80,
+            sub: 0.60,
+            sub_ratio: 1.0,
+            noise_mix: 0.40,
+            noise_decay_ms: 20.0,
+            filter_mode: KickFilterMode::LowPass,
+            filter_cutoff_hz: 7500.0,
+            filter_reso: 0.50,
+            volume_db: -2.0,
+            preset_name: "Acid Gabber".to_string(),
+        }
+    }
+
+    /// Preset 8 : Deep Dub Rumble — kick dub profond avec filtre passe-bas doux et sub 50Hz.
+    #[must_use]
+    pub fn preset_deep_dub() -> Self {
+        Self {
+            enabled: true,
+            waveform: KickWaveform::Sine,
+            tune_hz: 40.0,
+            tuning_semitones: 0.0,
+            decay_ms: 550.0,
+            sweep_time_ms: 38.0,
+            snap: 0.55,
+            click: 0.35,
+            drive: 0.25,
+            drive_type: KickDriveType::AnalogTanh,
+            drive_tone: 0.45,
+            sub: 0.95,
+            sub_ratio: 0.5,
+            noise_mix: 0.10,
+            noise_decay_ms: 14.0,
+            filter_mode: KickFilterMode::LowPass,
+            filter_cutoff_hz: 900.0,
+            filter_reso: 0.20,
+            volume_db: 0.5,
+            preset_name: "Deep Dub Rumble".to_string(),
+        }
+    }
+
+    /// Retourne la liste complète des presets disponibles.
+    #[must_use]
+    pub fn all_presets() -> Vec<Self> {
+        vec![
             Self::preset_techno_berlin(),
             Self::preset_punchy_909(),
             Self::preset_hardcore(),
             Self::preset_sub_808(),
             Self::preset_minimal(),
             Self::preset_industrial(),
+            Self::preset_acid_gabber(),
+            Self::preset_deep_dub(),
         ]
     }
 }
@@ -194,6 +368,8 @@ pub struct KickSynth {
     sample_rate: f32,
     /// Phase de l'oscillateur (0 .. 2*PI)
     phase: f32,
+    /// Phase du sub-oscillateur
+    sub_phase: f32,
     /// Temps écoulé depuis le déclenchement en secondes
     time: f32,
     /// Durée totale active calculée
@@ -204,6 +380,11 @@ pub struct KickSynth {
     is_playing: bool,
     /// Générateur pseudo-aléatoire pour le clic
     noise_seed: u32,
+    /// Filtre résonant SVF
+    filter_ic1: f32,
+    filter_ic2: f32,
+    /// Filtre one-pole de tone
+    tone_state: f32,
 }
 
 impl Default for KickSynth {
@@ -220,11 +401,15 @@ impl KickSynth {
             params: KickParams::default(),
             sample_rate: sample_rate.max(8000) as f32,
             phase: 0.0,
+            sub_phase: 0.0,
             time: 0.0,
             duration: 0.5,
             velocity_gain: 1.0,
             is_playing: false,
             noise_seed: 54321,
+            filter_ic1: 0.0,
+            filter_ic2: 0.0,
+            tone_state: 0.0,
         }
     }
 
@@ -234,11 +419,15 @@ impl KickSynth {
             return;
         }
         self.phase = 0.0;
+        self.sub_phase = 0.0;
         self.time = 0.0;
         let v = (velocity.clamp(1, 127) as f32 / 127.0).powf(0.85);
         self.velocity_gain = v;
         self.duration = (self.params.decay_ms / 1000.0 * 2.2).clamp(0.08, 3.5);
         self.is_playing = true;
+        self.filter_ic1 = 0.0;
+        self.filter_ic2 = 0.0;
+        self.tone_state = 0.0;
     }
 
     /// Rend un bloc audio stéréo entrelacé `[L, R, L, R, ...]`.
@@ -261,7 +450,20 @@ impl KickSynth {
         let drive = p.drive;
         let click_level = p.click;
         let sub = p.sub;
+        let sub_ratio = p.sub_ratio.clamp(0.25, 4.0);
         let vol_linear = 10.0f32.powf(p.volume_db / 20.0) * self.velocity_gain;
+        let noise_mix = p.noise_mix;
+        let noise_tau = (p.noise_decay_ms / 1000.0).max(0.002);
+
+        // Paramètres du filtre SVF
+        let f_mode = p.filter_mode;
+        let f_cut = p.filter_cutoff_hz.clamp(20.0, sr * 0.48);
+        let f_reso = p.filter_reso.clamp(0.0, 0.95);
+        let g = (PI * f_cut / sr).tan();
+        let k = 2.0 * (1.0 - f_reso);
+        let a1 = 1.0 / (1.0 + g * (g + k));
+        let a2 = g * a1;
+        let a3 = g * a2;
 
         let frames = out.len() / 2;
 
@@ -276,61 +478,127 @@ impl KickSynth {
             // Enveloppe de fréquence exponentielle : f(t) = base + snap * exp(-t / tau)
             let cur_freq = base_freq + snap_freq * (-t / sweep_tau).exp();
 
-            // Incrément de phase
+            // Incréments de phase (oscillateur principal et sub)
             let phase_inc = 2.0 * PI * cur_freq / sr;
             self.phase = (self.phase + phase_inc) % (2.0 * PI);
+            let sub_inc = phase_inc * sub_ratio;
+            self.sub_phase = (self.sub_phase + sub_inc) % (2.0 * PI);
 
             // Génération de la forme d'onde principale
             let raw_osc = match p.waveform {
                 KickWaveform::Sine => self.phase.sin(),
-                KickWaveform::Triangle => {
-                    // Triangle bande passante continue
-                    (2.0 / PI) * (self.phase - PI).asin()
-                }
+                KickWaveform::Triangle => (2.0 / PI) * self.phase.sin().asin(),
                 KickWaveform::SatSine => {
                     let s = self.phase.sin();
-                    (s * 1.5).tanh()
+                    (s * 1.6).tanh()
+                }
+                KickWaveform::SquareSub => {
+                    let s = self.phase.sin();
+                    let sq = if self.sub_phase < PI { 0.7 } else { -0.7 };
+                    s * 0.6 + sq * 0.4
+                }
+                KickWaveform::NoiseTransient => {
+                    let s = self.phase.sin();
+                    let click_impulse = (self.phase * 4.0).sin() * 0.3;
+                    s * 0.7 + click_impulse
                 }
             };
 
-            // Renfort de sub / 2e harmonique
-            let body = raw_osc * (1.0 - sub * 0.25)
-                + (2.0 * self.phase).sin() * (sub * 0.22) * (-t / (decay_tau * 1.5)).exp();
+            // Renfort de sub selon sub_ratio
+            let sub_osc = self.sub_phase.sin() * sub * (-t / (decay_tau * 1.5)).exp();
+            let body = raw_osc * (1.0 - sub * 0.25) + sub_osc * 0.4;
 
-            // Enveloppe d'amplitude exponentielle + micro-attaque pour éviter les pops
+            // Enveloppe d'amplitude exponentielle + micro-attaque anti-clic
             let attack = (t / 0.0018).min(1.0);
             let amp_env = (-t / decay_tau).exp() * attack;
+
+            // Générateur de bruit pseudo-aléatoire xorshift32
+            self.noise_seed ^= self.noise_seed << 13;
+            self.noise_seed ^= self.noise_seed >> 17;
+            self.noise_seed ^= self.noise_seed << 5;
+            let rand_val = (self.noise_seed as f32 / u32::MAX as f32) * 2.0 - 1.0;
 
             // Transitoire de clic d'attaque (0..7 ms)
             let click = if t < 0.007 {
                 let env = (1.0 - t / 0.007).powi(2);
-                // Bruit blanc xorshift32 + impulsion haute fréquence
-                self.noise_seed ^= self.noise_seed << 13;
-                self.noise_seed ^= self.noise_seed >> 17;
-                self.noise_seed ^= self.noise_seed << 5;
-                let noise = (self.noise_seed as f32 / u32::MAX as f32) * 2.0 - 1.0;
                 let burst = (2.0 * PI * 2400.0 * t).sin();
-                (burst * 0.65 + noise * 0.35) * env * click_level
+                (burst * 0.65 + rand_val * 0.35) * env * click_level
+            } else {
+                0.0
+            };
+
+            // Couche de bruit de batte (noise transient)
+            let noise_layer = if noise_mix > 0.001 {
+                let n_env = (-t / noise_tau).exp();
+                rand_val * n_env * noise_mix * 0.4
             } else {
                 0.0
             };
 
             // Somme brute
-            let mixed = body * amp_env + click;
+            let mixed = body * amp_env + click + noise_layer;
 
-            // Étage de distorsion / saturation analogique non-linéaire
+            // Étage de saturation non-linéaire selon le type de distorsion
             let saturated = if drive > 0.01 {
-                let gain = 1.0 + drive * 4.5;
+                let gain = 1.0 + drive * 5.0;
                 let pushed = mixed * gain;
-                // Saturation asymétrique typique des préamplis analogiques
-                let shaped = (pushed + 0.1 * pushed * pushed).tanh();
-                shaped * (1.0 / (1.0 + drive * 0.5))
+
+                match p.drive_type {
+                    KickDriveType::AnalogTanh => {
+                        let shaped = (pushed + 0.12 * pushed * pushed).tanh();
+                        shaped * (1.0 / (1.0 + drive * 0.5))
+                    }
+                    KickDriveType::HardClip => {
+                        let clipped = pushed.clamp(-1.0, 1.0);
+                        clipped * (1.0 / (1.0 + drive * 0.4))
+                    }
+                    KickDriveType::Wavefolder => {
+                        // Wavefolding non-linéaire récursif style Buchla
+                        let mut x = pushed;
+                        for _ in 0..2 {
+                            if x > 1.0 {
+                                x = 2.0 - x;
+                            } else if x < -1.0 {
+                                x = -2.0 - x;
+                            }
+                        }
+                        x.clamp(-1.2, 1.2) * 0.85
+                    }
+                    KickDriveType::TubeDrive => {
+                        let x = pushed;
+                        let tube = (x + 0.22 * x * x) / (1.0 + x.abs());
+                        tube * 0.90
+                    }
+                }
             } else {
                 mixed
             };
 
+            // Filtre de brillance / tonalité post-saturation (one-pole)
+            let tone_coeff = (p.drive_tone * 0.85 + 0.1).clamp(0.05, 0.95);
+            self.tone_state += tone_coeff * (saturated - self.tone_state);
+            let post_tone = self.tone_state;
+
+            // Étage de Filtre Résonant Multimode (SVF)
+            let filtered = if f_mode != KickFilterMode::Off {
+                let v3 = post_tone - self.filter_ic2;
+                let v1 = a1 * self.filter_ic1 + a2 * v3;
+                let v2 = self.filter_ic2 + a2 * self.filter_ic1 + a3 * v3;
+                self.filter_ic1 = 2.0 * v1 - self.filter_ic1;
+                self.filter_ic2 = 2.0 * v2 - self.filter_ic2;
+
+                match f_mode {
+                    KickFilterMode::LowPass => v2,
+                    KickFilterMode::HighPass => post_tone - k * v1 - v2,
+                    KickFilterMode::BandPass => v1,
+                    KickFilterMode::Off => post_tone,
+                }
+            } else {
+                post_tone
+            };
+
             // Sortie finale amplifiée
-            let out_sample = saturated * vol_linear;
+            let out_sample = filtered * vol_linear;
 
             out[f * 2] += out_sample;
             out[f * 2 + 1] += out_sample;
@@ -358,9 +626,58 @@ mod tests {
     #[test]
     fn test_kick_presets_valid() {
         let presets = KickParams::all_presets();
+        assert!(presets.len() >= 8, "Doit contenir au moins 8 presets");
         for p in presets {
-            assert!(p.tune_hz >= 30.0 && p.tune_hz <= 90.0);
-            assert!(p.decay_ms >= 40.0);
+            let mut kick = KickSynth::new(48000);
+            kick.params = p;
+            kick.trigger(36, 110);
+            let mut buf = vec![0.0f32; 512];
+            kick.render(&mut buf);
+            let amp = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+            assert!(
+                amp > 0.02,
+                "Preset {} doit générer du son",
+                kick.params.preset_name
+            );
+        }
+    }
+
+    #[test]
+    fn test_kick_all_drive_types() {
+        for drive_type in [
+            KickDriveType::AnalogTanh,
+            KickDriveType::HardClip,
+            KickDriveType::Wavefolder,
+            KickDriveType::TubeDrive,
+        ] {
+            let mut kick = KickSynth::new(48000);
+            kick.params.drive = 0.8;
+            kick.params.drive_type = drive_type;
+            kick.trigger(36, 120);
+            let mut buf = vec![0.0f32; 512];
+            kick.render(&mut buf);
+            let amp = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+            assert!(amp > 0.05);
+        }
+    }
+
+    #[test]
+    fn test_kick_all_filter_modes() {
+        for mode in [
+            KickFilterMode::Off,
+            KickFilterMode::LowPass,
+            KickFilterMode::HighPass,
+            KickFilterMode::BandPass,
+        ] {
+            let mut kick = KickSynth::new(48000);
+            kick.params.filter_mode = mode;
+            kick.params.filter_cutoff_hz = 1500.0;
+            kick.params.filter_reso = 0.5;
+            kick.trigger(36, 120);
+            let mut buf = vec![0.0f32; 512];
+            kick.render(&mut buf);
+            let amp = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+            assert!(amp > 0.01);
         }
     }
 }

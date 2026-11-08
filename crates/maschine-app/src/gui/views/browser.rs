@@ -424,7 +424,7 @@ fn render_plugins(
             0u8,
             "KICK SYNTH MODELER",
             "MODÉLISATION DE KICK TECHNO / CLUB",
-            "Synthèse analogique de kick percussif. Pitch envelope exponentielle ultra-punchy, contrôle du sweep time, transient click réglable, drive / saturation analogique tanh et sub-bass boost dédié 50Hz. 6 presets pros intégrés (Techno Berlin, 909 Punch, Hardcore Drive, Sub 808...).",
+            "Synthèse analogique de kick percussif. Pitch envelope exponentielle ultra-punchy, contrôle du sweep time, transient click réglable, drive / saturation multi-types (Tanh, HardClip, Wavefolder, Tube), filtre résonant multimode et sub-bass boost dédié. 8 presets pros intégrés.",
             "TECHNO / ANALOG",
             c.accent,
         ),
@@ -438,6 +438,14 @@ fn render_plugins(
         ),
         (
             2u8,
+            "NEXUS / SERUM SYNTH",
+            "SYNTHÉTISEUR POLYPHONIQUE WAVETABLE / ROMPLER",
+            "Synthèse polyphonique 16 voix avec tables d'ondes & supersaw 7 voix, filtre multimode SVF (LP12, LP24, HP, BP), 2 enveloppes ADSR complètes, LFO modulable et rack d'effets (Chorus, Ping-pong Delay, Reverb, Distortion). 16 presets intégrés : Pianos de concert & House M1, Basses 808 & Reese, Leads Trance & Cyberpunk, Pads célestes, Plucks...",
+            "WAVETABLE / ROMPLER",
+            c.accent_cyan,
+        ),
+        (
+            3u8,
             "GUITAR AMP STANDALONE",
             "SIMULATEUR DE PRÉAMPLI GUITARE À LAMPES & EFFETS",
             "Saturation à lampes agressive, égalisation 3 bandes active (Bass, Mid, Treble), réverbération à ressort intégrée et noise gate rapide. Conçu pour leads électriques, guitares et basses saturées.",
@@ -445,7 +453,7 @@ fn render_plugins(
             c.error,
         ),
         (
-            3u8,
+            4u8,
             "SAMPLER 808 DRUMS",
             "LECTEUR D'ÉCHANTILLONS MASCHINE",
             "Lecteur de samples percussifs stéréo 24/32-bit avec pitch tuning, enveloppe AHD, filtrage multi-pôles, volume et panoramique stéréophonique.",
@@ -473,7 +481,12 @@ fn render_plugins(
                     let is_active = match idx {
                         0 => snap.focus_sound_kick.is_some(),
                         1 => snap.focus_sound_acid.is_some(),
-                        _ => snap.focus_sound_kick.is_none() && snap.focus_sound_acid.is_none(),
+                        2 => snap.focus_sound_wavetable.is_some(),
+                        _ => {
+                            snap.focus_sound_kick.is_none()
+                                && snap.focus_sound_acid.is_none()
+                                && snap.focus_sound_wavetable.is_none()
+                        }
                     };
                     if is_active {
                         ui.label(egui::RichText::new("✓ ACTIF").strong().color(c.success));

@@ -275,6 +275,7 @@ fn fuzz_full_workflow_no_panic() {
             mixer_mode: snap.mixer_mode,
             has_kick_synth: snap.focus_sound_kick.is_some(),
             has_acid_synth: snap.focus_sound_acid.is_some(),
+            has_wavetable_synth: snap.focus_sound_wavetable.is_some(),
             delete_project_confirm: snap.delete_project_confirm,
         };
         mapper.update_leds(&info);

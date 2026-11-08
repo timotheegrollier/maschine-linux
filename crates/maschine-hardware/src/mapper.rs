@@ -386,6 +386,14 @@ pub enum MapperAction {
     AcidDelayTimeDelta(f32),
     /// Knob 8 : Mix delay acid
     AcidDelayMixDelta(f32),
+    /// Mode mixer (0: Pads 1-8, 1: Pads 9-16, 2: Groupes A-H, 3: Master)
+    SetMixerMode(u8),
+    /// Alterne le type de filtre du son actif
+    CycleSoundFilterKind,
+    /// Kick Synth : coupure filtre
+    KickFilterCutoffDelta(f32),
+    /// Kick Synth : résonance filtre
+    KickFilterResoDelta(f32),
 }
 
 /// Données du séquenceur pour mettre à jour les LEDs du contrôleur physique
@@ -415,6 +423,8 @@ pub struct SequencerLedInfo {
     pub has_kick_synth: bool,
     /// Son actif possède un TB-303
     pub has_acid_synth: bool,
+    /// Son actif possède un Wavetable / Nexus Synth
+    pub has_wavetable_synth: bool,
     /// Confirmation de suppression de projet
     pub delete_project_confirm: bool,
     /// Mode SCENE actif (pads déclenchent les scènes)
@@ -494,6 +504,8 @@ pub struct HardwareMapper {
     pub has_kick_synth: bool,
     /// Son actif possède un TB-303
     pub has_acid_synth: bool,
+    /// Son actif possède un Wavetable / Nexus Synth
+    pub has_wavetable_synth: bool,
     /// Confirmation de suppression de projet
     pub delete_project_confirm: bool,
     /// État musical Keyboard/Chords (miroir moteur).
@@ -592,6 +604,7 @@ impl HardwareMapper {
             mixer_mode: 0,
             has_kick_synth: false,
             has_acid_synth: false,
+            has_wavetable_synth: false,
             delete_project_confirm: false,
             kbd_root: 0,
             kbd_octave: 3,
@@ -647,7 +660,9 @@ impl HardwareMapper {
         actions.push(MapperAction::SetLeftTab(tab));
         // Les anciens overlays (EVENTS/MACRO/SETTINGS) ne doivent pas rester
         // affichés au-dessus de la nouvelle vue.
-        actions.push(MapperAction::SetRightTab(0));
+        if !actions.contains(&MapperAction::SetRightTab(0)) {
+            actions.push(MapperAction::SetRightTab(0));
+        }
     }
 
     /// Change le mode de jeu et reflète l'état sur les LEDs/écrans.
@@ -665,27 +680,51 @@ impl HardwareMapper {
         actions.push(MapperAction::SetControllerMode(code));
     }
 
-    /// Désactive tous les menus « latchés » (PATTERN, SCENE, SELECT, ERASE).
+    /// Désactive tous les menus « latchés » (PATTERN, SCENE, SELECT, ERASE, MUTE)
+    /// et referme les overlays (EVENTS, MACRO, SETTINGS).
     fn clear_menu_modes(&mut self, actions: &mut Vec<MapperAction>) {
         if self.pattern_select_mode {
             self.pattern_select_mode = false;
+            self.led_state
+                .set_button_raw(maschine_proto::hid_output::offsets::PATTERN, 1);
             actions.push(MapperAction::SetPatternMode(false));
         }
         if self.scene_select_mode {
             self.scene_select_mode = false;
+            self.led_state
+                .set_button_raw(maschine_proto::hid_output::offsets::SCENE, 1);
             actions.push(MapperAction::SetSceneMode(false));
         }
         if self.select_mode {
             self.select_mode = false;
             self.select_pinned = false;
             self.select_held = false;
+            self.led_state
+                .set_button_raw(maschine_proto::hid_output::offsets::SELECT, 1);
             actions.push(MapperAction::SetSelectMode(false));
         }
         if self.erase_mode {
             self.erase_mode = false;
             self.erase_pinned = false;
             self.erase_held = false;
+            self.led_state
+                .set_button_raw(maschine_proto::hid_output::offsets::ERASE, 1);
             actions.push(MapperAction::SetEraseMode(false));
+        }
+        if self.mute_pad_mode {
+            self.mute_pad_mode = false;
+            self.led_state
+                .set_button_raw(maschine_proto::hid_output::offsets::MUTE, 1);
+        }
+        if self.right_tab != 0 {
+            self.right_tab = 0;
+            self.led_state
+                .set_button_raw(maschine_proto::hid_output::offsets::EVENTS, 1);
+            self.led_state
+                .set_button_raw(maschine_proto::hid_output::offsets::MACRO, 1);
+            self.led_state
+                .set_button_raw(maschine_proto::hid_output::offsets::SETTINGS, 1);
+            actions.push(MapperAction::SetRightTab(0));
         }
     }
 
@@ -1128,28 +1167,35 @@ impl HardwareMapper {
                             // Bouton FILE/SAVE (physique, sous BROWSER) : menu projets/sauvegarde.
                             if self.shift_held {
                                 actions.push(MapperAction::QuickSaveProject);
-                            } else if self.left_tab == 3 && self.browser_kind == 1 {
-                                // Toggle : referme le menu FILE
-                                self.select_left_tab(0, &mut actions);
                             } else {
-                                self.browser_kind = 1;
-                                self.select_left_tab(3, &mut actions);
-                                actions.push(MapperAction::OpenFileBrowser);
+                                self.clear_menu_modes(&mut actions);
+                                if self.left_tab == 3 && self.browser_kind == 1 {
+                                    // Toggle : referme le menu FILE
+                                    self.select_left_tab(0, &mut actions);
+                                } else {
+                                    self.browser_kind = 1;
+                                    self.select_left_tab(3, &mut actions);
+                                    actions.push(MapperAction::OpenFileBrowser);
+                                }
                             }
                         }
 
                         // Onglets d'écrans dédiés
                         ButtonId::Arranger => {
+                            self.clear_menu_modes(&mut actions);
                             self.select_left_tab(0, &mut actions);
                             actions.push(MapperAction::ToggleSongMode);
                         }
                         ButtonId::Mixer => {
+                            self.clear_menu_modes(&mut actions);
                             self.select_left_tab(1, &mut actions);
                         }
                         ButtonId::Sampling => {
+                            self.clear_menu_modes(&mut actions);
                             self.select_left_tab(2, &mut actions);
                         }
                         ButtonId::Browser => {
+                            self.clear_menu_modes(&mut actions);
                             if self.shift_held {
                                 // Shift+BROWSER : navigateur de projets/fichiers (comme FILE/SAVE)
                                 self.browser_kind = 1;
@@ -1168,6 +1214,10 @@ impl HardwareMapper {
                         ButtonId::Settings => {
                             let tab = if self.right_tab == 3 { 0 } else { 3 };
                             self.right_tab = tab;
+                            self.led_state.set_button_raw(
+                                maschine_proto::hid_output::offsets::SETTINGS,
+                                if tab == 3 { 7 } else { 1 },
+                            );
                             actions.push(MapperAction::SetRightTab(tab));
                         }
 
@@ -1189,7 +1239,16 @@ impl HardwareMapper {
 
                         // Navigation 4D & Flèches < >
                         ButtonId::FourWayLeft | ButtonId::Left => {
-                            if self.pattern_select_mode {
+                            if self.left_tab == 1 {
+                                // Mode MIXER : navigation 4D entre sous-vues
+                                if self.mixer_mode == 1 {
+                                    self.mixer_mode = 0;
+                                    actions.push(MapperAction::SetMixerMode(0));
+                                } else if self.mixer_mode == 0 {
+                                    self.mixer_mode = 2;
+                                    actions.push(MapperAction::SetMixerMode(2));
+                                }
+                            } else if self.pattern_select_mode {
                                 actions.push(MapperAction::PatternStep {
                                     group: self.group_focus,
                                     delta: -1,
@@ -1203,7 +1262,16 @@ impl HardwareMapper {
                             }
                         }
                         ButtonId::FourWayRight | ButtonId::Right => {
-                            if self.pattern_select_mode {
+                            if self.left_tab == 1 {
+                                // Mode MIXER : navigation 4D vers les pads du groupe
+                                if self.mixer_mode == 2 {
+                                    self.mixer_mode = 0;
+                                    actions.push(MapperAction::SetMixerMode(0));
+                                } else if self.mixer_mode == 0 {
+                                    self.mixer_mode = 1;
+                                    actions.push(MapperAction::SetMixerMode(1));
+                                }
+                            } else if self.pattern_select_mode {
                                 actions.push(MapperAction::PatternStep {
                                     group: self.group_focus,
                                     delta: 1,
@@ -1224,6 +1292,9 @@ impl HardwareMapper {
                         ButtonId::FourWayUp => {
                             if self.left_tab == 3 {
                                 actions.push(MapperAction::BrowsePresetStep(-1));
+                            } else if self.left_tab == 1 {
+                                self.active_sound = (self.active_sound + 1) % 16;
+                                actions.push(MapperAction::SelectSound(self.active_sound));
                             } else {
                                 self.active_sound = (self.active_sound + 1) % 16;
                                 actions.push(MapperAction::SelectSound(self.active_sound));
@@ -1237,6 +1308,9 @@ impl HardwareMapper {
                         ButtonId::FourWayDown => {
                             if self.left_tab == 3 {
                                 actions.push(MapperAction::BrowsePresetStep(1));
+                            } else if self.left_tab == 1 {
+                                self.active_sound = (self.active_sound + 15) % 16;
+                                actions.push(MapperAction::SelectSound(self.active_sound));
                             } else {
                                 self.active_sound = (self.active_sound + 15) % 16;
                                 actions.push(MapperAction::SelectSound(self.active_sound));
@@ -1250,6 +1324,15 @@ impl HardwareMapper {
                         ButtonId::EncoderPush => {
                             if self.left_tab == 3 {
                                 actions.push(MapperAction::LoadSelectedPreset);
+                            } else if self.left_tab == 1 {
+                                // Pousser l'encodeur dans le mixer rentre dans le groupe pour afficher
+                                // les VUs des pads (mode 0: pads 1-8 / 9-16), ou remonte au mixeur groupes (mode 2).
+                                let next_mode = if self.mixer_mode == 2 { 0 } else { 2 };
+                                self.mixer_mode = next_mode;
+                                actions.push(MapperAction::SetMixerMode(next_mode));
+                            } else if self.left_tab == 2 && self.shift_held {
+                                // Shift+Push en vue Sampler : alterne le type de filtre rapidement
+                                actions.push(MapperAction::CycleSoundFilterKind);
                             } else {
                                 // One-shot preview du sound sélectionné (ne démarre PAS la boucle transport !)
                                 actions.push(MapperAction::PadTrigger {
@@ -1300,20 +1383,28 @@ impl HardwareMapper {
                         ButtonId::Events => {
                             let tab = if self.right_tab == 1 { 0 } else { 1 };
                             self.right_tab = tab;
+                            self.led_state.set_button_raw(
+                                maschine_proto::hid_output::offsets::EVENTS,
+                                if tab == 1 { 7 } else { 1 },
+                            );
                             actions.push(MapperAction::SetRightTab(tab));
                         }
                         ButtonId::Macro => {
                             let tab = if self.right_tab == 2 { 0 } else { 2 };
                             self.right_tab = tab;
+                            self.led_state.set_button_raw(
+                                maschine_proto::hid_output::offsets::MACRO,
+                                if tab == 2 { 7 } else { 1 },
+                            );
                             actions.push(MapperAction::SetRightTab(tab));
                         }
                         ButtonId::Plugin => {
+                            self.clear_menu_modes(&mut actions);
                             if self.left_tab == 4 {
                                 // Second appui : quitte l'éditeur PLUGIN.
                                 self.select_left_tab(0, &mut actions);
                                 actions.push(MapperAction::NavigateView(nav::PATTERN));
                             } else {
-                                self.clear_menu_modes(&mut actions);
                                 self.select_left_tab(4, &mut actions);
                                 // Le moteur choisit la page selon le Sound actif
                                 // (TB-303 si le pad sélectionné est un synthé, sinon SOUND).
@@ -1321,6 +1412,7 @@ impl HardwareMapper {
                             }
                         }
                         ButtonId::ChannelMidi => {
+                            self.clear_menu_modes(&mut actions);
                             self.select_left_tab(1, &mut actions); // MIXER
                         }
                         // Verrou : sauvegarde instantanée (comme FileSave).
@@ -1512,28 +1604,56 @@ impl HardwareMapper {
                             if self.plugin_page == 1 {
                                 if self.has_kick_synth {
                                     // KICK SYNTH : 1 TUNE, 2 DECAY, 3 SNAP/PUNCH, 4 SWEEP, 5 CLICK, 6 DRIVE, 7 SUB, 8 VOL
+                                    // Avec Shift : Knob 6 = Cutoff filtre, Knob 7 = Résonance filtre
+                                    if self.shift_held && idx == 6 {
+                                        actions.push(MapperAction::KickFilterCutoffDelta(
+                                            delta as f32,
+                                        ));
+                                    } else if self.shift_held && idx == 7 {
+                                        actions
+                                            .push(MapperAction::KickFilterResoDelta(delta as f32));
+                                    } else {
+                                        match idx {
+                                            0 => actions
+                                                .push(MapperAction::KickTuneDelta(delta as f32)),
+                                            1 => actions
+                                                .push(MapperAction::KickDecayDelta(delta as f32)),
+                                            2 => actions
+                                                .push(MapperAction::KickSnapDelta(delta as f32)),
+                                            3 => actions
+                                                .push(MapperAction::KickSweepDelta(delta as f32)),
+                                            4 => actions
+                                                .push(MapperAction::KickClickDelta(delta as f32)),
+                                            5 => actions
+                                                .push(MapperAction::KickDriveDelta(delta as f32)),
+                                            6 => actions
+                                                .push(MapperAction::KickSubDelta(delta as f32)),
+                                            _ => actions
+                                                .push(MapperAction::KickVolumeDelta(delta as f32)),
+                                        }
+                                    }
+                                } else if self.has_wavetable_synth {
+                                    // WAVETABLE / NEXUS SYNTH :
+                                    // 1 CUTOFF, 2 RESO, 3 ATTACK, 4 DECAY, 5 SUSTAIN, 6 RELEASE, 7 PAN, 8 VOLUME
                                     match idx {
-                                        0 => {
-                                            actions.push(MapperAction::KickTuneDelta(delta as f32))
+                                        0 => actions.push(MapperAction::SoundFilterCutoffDelta(
+                                            delta as f32,
+                                        )),
+                                        1 => actions
+                                            .push(MapperAction::SoundFilterResoDelta(delta as f32)),
+                                        2 => actions
+                                            .push(MapperAction::SoundAttackDelta(delta as f32)),
+                                        3 => actions
+                                            .push(MapperAction::SoundDecayDelta(delta as f32)),
+                                        4 => actions
+                                            .push(MapperAction::SoundSustainDelta(delta as f32)),
+                                        5 => actions
+                                            .push(MapperAction::SoundReleaseDelta(delta as f32)),
+                                        6 => {
+                                            actions.push(MapperAction::SoundPanDelta(delta as f32))
                                         }
-                                        1 => {
-                                            actions.push(MapperAction::KickDecayDelta(delta as f32))
-                                        }
-                                        2 => {
-                                            actions.push(MapperAction::KickSnapDelta(delta as f32))
-                                        }
-                                        3 => {
-                                            actions.push(MapperAction::KickSweepDelta(delta as f32))
-                                        }
-                                        4 => {
-                                            actions.push(MapperAction::KickClickDelta(delta as f32))
-                                        }
-                                        5 => {
-                                            actions.push(MapperAction::KickDriveDelta(delta as f32))
-                                        }
-                                        6 => actions.push(MapperAction::KickSubDelta(delta as f32)),
                                         _ => actions
-                                            .push(MapperAction::KickVolumeDelta(delta as f32)),
+                                            .push(MapperAction::SoundVolumeDelta(delta as f32)),
                                     }
                                 } else {
                                     // TB-303 : 1 CUTOFF, 2 RESO, 3 ENVMOD, 4 DECAY,
@@ -1870,6 +1990,7 @@ impl HardwareMapper {
         self.mixer_mode = info.mixer_mode;
         self.has_kick_synth = info.has_kick_synth;
         self.has_acid_synth = info.has_acid_synth;
+        self.has_wavetable_synth = info.has_wavetable_synth;
         self.delete_project_confirm = info.delete_project_confirm;
         let is_file_active = self.left_tab == 3 && info.browser_kind == 1;
         let is_browser_active = self.left_tab == 3 && info.browser_kind != 1;
@@ -1935,6 +2056,10 @@ impl HardwareMapper {
             .set_button_raw(offsets::PLUGIN, if self.left_tab == 4 { 7 } else { 1 });
         self.led_state
             .set_button_raw(offsets::SETTINGS, if self.right_tab == 3 { 7 } else { 1 });
+        self.led_state
+            .set_button_raw(offsets::EVENTS, if self.right_tab == 1 { 7 } else { 1 });
+        self.led_state
+            .set_button_raw(offsets::MACRO, if self.right_tab == 2 { 7 } else { 1 });
 
         // 8. Boutons d'écran 1..8
         if is_file_active {
@@ -3037,6 +3162,7 @@ mod tests {
             mixer_mode: 0,
             has_kick_synth: false,
             has_acid_synth: false,
+            has_wavetable_synth: false,
             delete_project_confirm: false,
             ..Default::default()
         };
@@ -3057,5 +3183,132 @@ mod tests {
 
         let act_quick = press_button(&mut m, maschine_proto::ButtonId::FileSave);
         assert!(act_quick.contains(&MapperAction::QuickSaveProject));
+    }
+
+    #[test]
+    fn mixer_encoder_drills_down_to_pads_and_returns() {
+        let mut m = HardwareMapper::with_default();
+        m.left_tab = 1; // MIXER
+        m.mixer_mode = 2; // Vue groupes
+
+        // 1. EncoderPush rentre dans le groupe -> vue pads 1-8 (mode 0)
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::EncoderPush,
+            pressed: true,
+            ts_ns: 0,
+        });
+        assert_eq!(a, vec![MapperAction::SetMixerMode(0)]);
+        assert_eq!(m.mixer_mode, 0);
+
+        // 2. FourWayRight bascule vers pads 9-16 (mode 1)
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::FourWayRight,
+            pressed: true,
+            ts_ns: 1,
+        });
+        assert_eq!(a, vec![MapperAction::SetMixerMode(1)]);
+        assert_eq!(m.mixer_mode, 1);
+
+        // 3. FourWayLeft revient aux pads 1-8 (mode 0)
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::FourWayLeft,
+            pressed: true,
+            ts_ns: 2,
+        });
+        assert_eq!(a, vec![MapperAction::SetMixerMode(0)]);
+        assert_eq!(m.mixer_mode, 0);
+
+        // 4. Second FourWayLeft remonte au mixeur général des groupes (mode 2)
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::FourWayLeft,
+            pressed: true,
+            ts_ns: 3,
+        });
+        assert_eq!(a, vec![MapperAction::SetMixerMode(2)]);
+        assert_eq!(m.mixer_mode, 2);
+
+        // 5. EncoderPush depuis la vue groupes redescend immédiatement
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::EncoderPush,
+            pressed: true,
+            ts_ns: 4,
+        });
+        assert_eq!(a, vec![MapperAction::SetMixerMode(0)]);
+        assert_eq!(m.mixer_mode, 0);
+    }
+
+    #[test]
+    fn top_row_buttons_exit_latched_pattern_events_mute_modes() {
+        let mut m = HardwareMapper::with_default();
+
+        let tap_mute = |m: &mut HardwareMapper| {
+            m.handle_hardware_event(HardwareEvent::Button {
+                id: maschine_proto::ButtonId::Mute,
+                pressed: true,
+                ts_ns: 0,
+            });
+            m.handle_hardware_event(HardwareEvent::Button {
+                id: maschine_proto::ButtonId::Mute,
+                pressed: false,
+                ts_ns: 1,
+            });
+        };
+
+        // 1. En mode PATTERN, appuyer sur FILE_SAVE désactive PATTERN et ouvre FILE
+        let _ = press_button(&mut m, maschine_proto::ButtonId::Pattern);
+        assert!(m.pattern_select_mode);
+        let a = press_button(&mut m, maschine_proto::ButtonId::FileSave);
+        assert!(!m.pattern_select_mode);
+        assert!(a.contains(&MapperAction::SetPatternMode(false)));
+        assert_eq!(m.left_tab, 3);
+        assert_eq!(m.browser_kind, 1);
+
+        // 2. En mode PATTERN, appuyer sur BROWSER désactive PATTERN et ouvre BROWSER
+        let _ = press_button(&mut m, maschine_proto::ButtonId::Pattern);
+        assert!(m.pattern_select_mode);
+        let a = press_button(&mut m, maschine_proto::ButtonId::Browser);
+        assert!(!m.pattern_select_mode);
+        assert!(a.contains(&MapperAction::SetPatternMode(false)));
+        assert_eq!(m.left_tab, 3);
+        assert_eq!(m.browser_kind, 0);
+
+        // 3. En mode PATTERN, appuyer sur PLUGIN désactive PATTERN et ouvre PLUGIN
+        let _ = press_button(&mut m, maschine_proto::ButtonId::Pattern);
+        assert!(m.pattern_select_mode);
+        let a = press_button(&mut m, maschine_proto::ButtonId::Plugin);
+        assert!(!m.pattern_select_mode);
+        assert!(a.contains(&MapperAction::SetPatternMode(false)));
+        assert_eq!(m.left_tab, 4);
+
+        // 4. En mode EVENTS (overlay écran droit), appuyer sur BROWSER referme EVENTS
+        let _ = press_button(&mut m, maschine_proto::ButtonId::Events);
+        assert_eq!(m.right_tab, 1);
+        let a = press_button(&mut m, maschine_proto::ButtonId::Browser);
+        assert_eq!(m.right_tab, 0);
+        assert!(a.contains(&MapperAction::SetRightTab(0)));
+
+        // 5. En mode MUTE pad, appuyer sur MIXER désactive le mode MUTE
+        tap_mute(&mut m);
+        assert!(m.mute_pad_mode);
+        let _ = press_button(&mut m, maschine_proto::ButtonId::Mixer);
+        assert!(!m.mute_pad_mode);
+        assert_eq!(m.left_tab, 1);
+
+        // 6. En mode combiné PATTERN + EVENTS + MUTE, FILE_SAVE désactive tout d'un coup
+        let _ = press_button(&mut m, maschine_proto::ButtonId::Pattern);
+        let _ = press_button(&mut m, maschine_proto::ButtonId::Events);
+        tap_mute(&mut m);
+        assert!(m.pattern_select_mode);
+        assert_eq!(m.right_tab, 1);
+        assert!(m.mute_pad_mode);
+
+        let a = press_button(&mut m, maschine_proto::ButtonId::FileSave);
+        assert!(!m.pattern_select_mode);
+        assert_eq!(m.right_tab, 0);
+        assert!(!m.mute_pad_mode);
+        assert!(a.contains(&MapperAction::SetPatternMode(false)));
+        assert!(a.contains(&MapperAction::SetRightTab(0)));
+        assert_eq!(m.left_tab, 3);
+        assert_eq!(m.browser_kind, 1);
     }
 }

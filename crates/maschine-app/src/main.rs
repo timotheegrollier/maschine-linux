@@ -1255,6 +1255,28 @@ fn cmd_daemon(
                     p.volume_db = (p.volume_db + delta * knob_rate::VOL_DB).clamp(-60.0, 12.0);
                     let _ = engine.lock().handle_event(EngineEvent::KickSetParams(p));
                 }
+                MapperAction::KickFilterCutoffDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::KickFilterCutoffDelta(delta));
+                }
+                MapperAction::KickFilterResoDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::KickFilterResoDelta(delta));
+                }
+                MapperAction::SetMixerMode(mode) => {
+                    let _ = engine.lock().handle_event(EngineEvent::SetMixerMode(mode));
+                }
+                MapperAction::CycleSoundFilterKind => {
+                    let (g, s) = {
+                        let eng = engine.lock();
+                        (eng.group_focus(), eng.active_sound)
+                    };
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::CycleSoundFilterKind { group: g, sound: s });
+                }
                 MapperAction::BrowseSoundStep(step) => {
                     let cur = mapper.active_sound as i32;
                     let next = cur + step;
@@ -1658,6 +1680,7 @@ fn cmd_daemon(
             mixer_mode: snap.mixer_mode,
             has_kick_synth: snap.has_kick_synth,
             has_acid_synth: snap.has_acid_synth,
+            has_wavetable_synth: snap.has_wavetable_synth,
             delete_project_confirm: snap.delete_project_confirm,
             scene_mode: mapper.scene_select_mode,
             pattern_mode: mapper.pattern_select_mode,
@@ -2621,8 +2644,10 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             revision: 0,
             acid_params: maschine_engine::AcidParams::default(),
             kick_params: maschine_engine::KickParams::default(),
+            wavetable_params: maschine_engine::WavetableParams::default(),
             focus_sound_kick: None,
             focus_sound_acid: None,
+            focus_sound_wavetable: None,
             focus_sound_fx: Vec::new(),
             focus_group_fx: Vec::new(),
             mixer_mode: 0,

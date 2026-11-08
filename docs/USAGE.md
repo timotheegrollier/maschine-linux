@@ -60,7 +60,7 @@ Logs: `RUST_LOG=debug maschine-linux -vv daemon`
     - *ARRANGE*: tempo, swing, volume and global filter.
   - **PLUGIN soft keys**: SOUND page `[1: SND <]`, `[2: SND >]`, `[3: PAGE TB]`, `[4: LISTEN]`, `[5: APPLY]`, `[6: RESET]`, `[7: VOL -]`, `[8: VOL +]`; TB-303 page `[1: SAW/SQR]`, `[2: OCT -]`, `[3: OCT +]`, `[4: SLIDE]`, `[5: CLASSIC]`, `[6: SQUELCH]`, `[7: PAGE SND]`, `[8: DUB]`.
   - **PATTERN soft keys**: `[1: PAT <]`, `[2: PAT >]`, `[3: + PAT]`, `[4: DUPL]`, `[5: VIDER]`, `[6: SUPPR]`, `[7: 1 MES]`, `[8: 2 MES]`. `SUPPR` is ignored when only one pattern remains in the Group.
-  - **Latched workflow menus**: PATTERN, STEP, KEYBOARD, SCENE, EVENTS, MACRO, SETTINGS, and PLUGIN remain active after the first press. Pressing the same button again returns to the default Pad workflow. Only one workflow menu is active at a time.
+  - **Latched workflow menus**: PATTERN, STEP, KEYBOARD, SCENE, EVENTS, MACRO, SETTINGS, and PLUGIN remain active after the first press. Pressing the same button again returns to the default Pad workflow. Only one workflow menu is active at a time. Pressing any top view button (FILE/SAVE, BROWSER, PLUGIN, CHANNEL/MIDI, MIXER, SAMPLING, ARRANGER) automatically exits any active latch (PATTERN, SCENE, SELECT, ERASE, MUTE) and closes overlays (EVENTS, MACRO, SETTINGS) before entering the selected view.
 - **Groups A..H**: instant selection of the active group, combined with **MUTE** and **SOLO** keys for immediate mute / solo.
 - **Transport**: PLAY, REC, STOP, RESTART, TAP (metronome), ERASE (erase notes by pad).
 - **Touchstrip**: modulation / pitch bend with LED ribbon visual feedback.
@@ -92,12 +92,14 @@ The native GUI displays in real time:
   - 16 full instrument rows with `▶` preview buttons and 16 steps per bar.
 - **4×4 pad grid**: layout identical to the MK3 hardware for direct playing with mouse or touchscreen. The pads respect the active PATTERN, SCENE, SELECT, ERASE, STEP, and KEYBOARD workflows.
 - **Keyboard / Performance view (`K`)**: 16-key performance keyboard, Sound auditioning, previous/next Sound selection, and direct pad access.
-- **Unified PLUGIN view (`T` or `P`)**: SOUND page with 808 preset selector, gain, pan, resonant filter, ADSR, per-Sound polyphony and choke, plus a simplified TB-303 page with collapsible advanced controls.
+- **Unified PLUGIN view (`T` or `P`)**: SOUND page with 808 preset selector, gain, pan, resonant filter with quick LP/HP/BP/Off selection, ADSR, per-Sound polyphony and choke.
+- **Nexus / Serum Wavetable Synth (`PLUGINS` -> `NEXUS SYNTH`)**: 16-voice polyphonic instrument with multi-oscillators, 7-voice unison supersaw, acoustic/digital tables (Grand Piano, M1 Piano, Rhodes, Formants), multimode SVF filter (LP12, LP24, HP, BP), dual ADSR envelopes, LFO modulation, and stereo FX rack (Chorus, Ping-Pong Delay, Reverb, Distortion) with 16 factory presets (Piano, Bass, Lead, Pad, Pluck, Organ).
+- **Techno Kick Synth Modeler (`PLUGINS` -> `KICK SYNTH`)**: Analog & techno kick drum modeling with exponential pitch drop, 5 body waveforms (Sine, Triangle, SatSine, SubSquare, NoiseTransient), 4 drive & distortion models (Analog Tanh, Hard Clip, Wavefolder, Tube Drive), multimode resonant filter with cutoff & resonance, transient click layer, sub-bass tuning, and 8 factory presets (Techno Berlin, 909 Punch, Hardcore Wavefolder, Sub 808, Minimal Click, Industrial Tube, Acid Gabber, Deep Dub).
 - **Acid TB-303 page**: PolyBLEP oscillator (Saw/Square, octave, slide), 4-pole resonant low-pass filter with frequency response curve display, tanh distortion waveshaper with dynamic transfer curve, stereo ping-pong delay with graphical echo preview, quick preset selector and 16-key virtual keyboard (C1 to D#2) to play directly with the mouse.
-- **8-group mixer (A..H)**: volume faders, peak indicators, mute and solo.
+- **8-group mixer (A..H) & Pad VU drill-down**: volume faders, peak indicators, mute and solo. On MK3 hardware, pushing the 4D encoder or nudging 4D Right drills down into the focused group's pad mixer view (Pads 1-8 / 9-16) with individual VU meters and volume controls.
 - **Import a sample**: in Sampler, enter the path of a WAV file and start the import. Decoding happens in the background; the GUI remains interactive. The selected Sound is replaced and the path is saved in the project.
 
-Useful shortcuts: `I` Ideas, `S` Sequencer, `K` Keyboard, `M` Mixer, `A` Sampler, `T`/`P` Plugin/TB-303, `B` Browser/File, `Space` Play/Stop, `F1` toggle navigation, `F2` toggle MK3 panel, `Ctrl+S` save, `Ctrl+Shift+S` quick save. On MK3, `FILE` opens the project browser and `Shift + FILE SAVE` performs a quick save.
+Useful shortcuts: `I` Ideas, `S` Sequencer, `K` Keyboard, `M` Mixer, `A` Sampler, `T`/`P` Plugin/Synth, `B` Browser/File, `Space` Play/Stop, `F1` toggle navigation, `F2` toggle MK3 panel, `Ctrl+S` save, `Ctrl+Shift+S` quick save. On MK3, `FILE` opens the project browser, `Shift + FILE SAVE` performs a quick save, pushing the 4D encoder in Mixer enters the group pad meters, and `Shift + EncoderPush` in Sampler cycles filter mode.
 
 The official Sample Editor (recording, playback ranges, slicing and zone editing from the MK3) is not yet implemented. The EVENTS screen currently displays information without editing events.
 

@@ -400,6 +400,9 @@ pub struct Sound {
     /// Modélisation de Kick optionnelle (Techno / Analog)
     #[serde(default)]
     pub kick_synth: Option<crate::kick_synth::KickParams>,
+    /// Synthétiseur Wavetable / Nexus optionnel (ROMpler & Polyphonique)
+    #[serde(default)]
+    pub wavetable_synth: Option<crate::wavetable_synth::WavetableParams>,
     /// Chaîne d'effets du Pad
     #[serde(default)]
     pub fx_chain: Vec<crate::fx::FxSlot>,
@@ -427,6 +430,7 @@ impl Sound {
             filter: Filter::default(),
             synth: None,
             kick_synth: None,
+            wavetable_synth: None,
             fx_chain: Vec::new(),
         }
     }

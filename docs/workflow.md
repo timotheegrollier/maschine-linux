@@ -50,7 +50,7 @@ Exact replica: Pattern = referenced object (editing propagates everywhere) vs Cl
 
 ## Application views
 
-The GUI follows Maschine's workflow separation: a common transport bar, groups and scenes on the left, then a dedicated workspace. View buttons stay synchronized with the MK3 hardware tabs.
+The GUI follows Maschine's workflow separation: a common transport bar, groups and scenes on the left, then a dedicated workspace. View buttons stay synchronized with the MK3 hardware tabs. Pressing any top view button (FILE/SAVE, BROWSER, PLUGIN, CHANNEL/MIDI, MIXER, SAMPLING, ARRANGER) automatically exits latched modes (PATTERN, SCENE, SELECT, ERASE, MUTE) and closes overlays (EVENTS, MACRO, SETTINGS).
 
 - **Ideas**: horizontal scenes and a Group × Pattern matrix with 8–16 slots per Group. Clicking an existing pattern assigns it to the scene and focuses its group; clicking an empty slot creates that pattern and assigns it. The scene can be duplicated/deleted (with automatic re-indexing of Song sections). A scene can be added from this view.
 - **Song**: horizontal timeline of sections, direct selection, previous/next navigation, duplication, deletion and section length (1/2/4/8 bars).
@@ -82,9 +82,12 @@ Both screens are rendered by the same function (`display_render::render_screens`
   - ARRANGE: `BAR 1..4` + pattern length `1/2/4/8 BARS`.
   - PATTERN: `PAT <`, `PAT >`, `+ PAT`, `DUPL`, `VIDER`, `SUPPR`, `1 MES`, `2 MES`.
   - STEP: `STEP <</>>` (cursor by one step), `BAR <</>>` (by one bar), `1/2/4/8 BARS`.
-  - MIXER: `GRP A..H` (group focus). SAMPLER: `SND 1..8` (active Sound).
-  - BROWSER: `PRES <</>>`, `SND <</>>`, `LISTEN`, `LOAD`, `METRO`, `LOOP`.
+  - MIXER: `GRP A..H` (in Group mode) or `PAD 1-8`, `PAD 9-16`, `GROUPES`, `MASTER` (in Pad mode). Pushing the 4D encoder or nudging 4D Right drills into the focused group to show individual pad VU meters; nudging 4D Left returns to Group view.
+  - SAMPLER: `SND <`, `SND >`, `ECOUTE`, `CYC FLT`, `LP`, `HP`, `BP`, `OFF` (instant 1-click filter selection from buttons 5–8 or `Shift + EncoderPush` to cycle).
+  - BROWSER: `PRES <</>>`, `SND <</>>`, `LISTEN`, `LOAD`, `METRO`, `LOOP`, plus `PLUGINS` tab with Kick Synth, TB-303, Nexus Wavetable Synth, Guitar Amp, and Sampler.
   - PLUGIN SOUND: `SND <`, `SND >`, `PAGE TB`, `LISTEN`, `APPLY`, `RESET`, `VOL -`, `VOL +`.
+  - PLUGIN KICK SYNTH: `DRV TYPE`, `FLT MODE`, `TECHNO`, `909`, `HARDCORE`, `808 SUB`, `INDUSTRIAL`, `BROWSER`. Knobs 1..8 control Tune, Decay, Snap, Sweep, Click, Drive (Shift: Filter Cutoff), Sub (Shift: Filter Reso), Volume.
+  - PLUGIN NEXUS SYNTH: `PRES <`, `PRES >`, `PIANO`, `M1 PIANO`, `808 SUB`, `REESE`, `TITANIUM`, `STRINGS`. Knobs 1..8 control Filter Cutoff, Reso, Env Amt, Drive, Attack, Decay, Sustain, Release.
   - PLUGIN TB-303: `SAW/SQR`, `OCT -`, `OCT +`, `SLIDE`, `CLASSIC`, `SQUELCH`, `PAGE SND`, `DUB`.
   - SCENE: `SCN 1..8`. SONG: `SEC <</>>`, `+SEC`, `IDEAS`, scenes and `+SCN`.
 - **Encoders**: each screen displays the 4 parameters actually controlled by its knobs (1–4 on the left, 5–8 on the right) with live values. PLUGIN routes knobs by page: SOUND uses Vol/Pan/Cutoff/Reso + ADSR, TB-303 uses Cutoff/Reso/EnvMod/Decay + Accent/Drive/Time/Mix.

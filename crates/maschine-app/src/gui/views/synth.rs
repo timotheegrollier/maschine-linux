@@ -10,8 +10,11 @@ use crate::gui::theme::{card_frame, MachColors};
 use crate::gui::widgets::{chip, knob, KnobSpec};
 use eframe::egui;
 
-use maschine_engine::kick_synth::KickWaveform;
+use maschine_engine::kick_synth::{KickDriveType, KickFilterMode, KickWaveform};
 use maschine_engine::project::{Adsr, FilterKind};
+use maschine_engine::wavetable_synth::{
+    LfoTarget, WavetableFilterMode, WavetableParams, WavetableWaveform,
+};
 use maschine_engine::{AcidParams, AcidWaveform, EngineEvent};
 
 pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::EngineSnapshot) {
@@ -24,6 +27,8 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                 render_sound_page(ui, app, snap);
             } else if snap.focus_sound_kick.is_some() {
                 render_kick_page(ui, app, snap);
+            } else if snap.focus_sound_wavetable.is_some() {
+                render_wavetable_page(ui, app, snap);
             } else if snap.focus_sound_acid.is_some() {
                 render_acid_page(ui, app, snap);
             } else {
@@ -36,8 +41,11 @@ fn render_header(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::En
     let c = MachColors::dark();
     let is_kick = snap.focus_sound_kick.is_some();
     let is_acid = snap.focus_sound_acid.is_some();
+    let is_wt = snap.focus_sound_wavetable.is_some();
     let plugin_title = if is_kick {
         "PLUGIN | KICK SYNTH MODELER"
+    } else if is_wt {
+        "PLUGIN | NEXUS / SERUM SYNTH"
     } else if is_acid {
         "PLUGIN | TB-303 ACID BASS"
     } else {
@@ -45,7 +53,9 @@ fn render_header(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::En
     };
 
     let subtitle = if is_kick {
-        "Modélisation de kick techno analogique : punch, decay, sub 50Hz, overdrive."
+        "Modélisation de kick techno analogique : punch, decay, sub 50Hz, distorsion multi-types & filtre."
+    } else if is_wt {
+        "Synthétiseur polyphonique à tables d'ondes & ROMpler : 16 presets Piano, Bass, Lead, Pad, Pluck & FX."
     } else if is_acid {
         "TB-303 Acid Bassline : filtre résonant à diode, slide, overdrive, delay."
     } else {
@@ -295,7 +305,23 @@ fn render_sound_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut kind, FilterKind::Off, "Off");
                         ui.selectable_value(&mut kind, FilterKind::LowPass, "Low-pass");
+                        ui.selectable_value(&mut kind, FilterKind::HighPass, "High-pass");
+                        ui.selectable_value(&mut kind, FilterKind::BandPass, "Band-pass");
                     });
+            });
+            ui.horizontal(|ui| {
+                if chip(ui, "OFF", filter_kind == FilterKind::Off, c.text_dim) {
+                    kind = FilterKind::Off;
+                }
+                if chip(ui, "LP", filter_kind == FilterKind::LowPass, c.accent) {
+                    kind = FilterKind::LowPass;
+                }
+                if chip(ui, "HP", filter_kind == FilterKind::HighPass, c.accent_cyan) {
+                    kind = FilterKind::HighPass;
+                }
+                if chip(ui, "BP", filter_kind == FilterKind::BandPass, c.warning) {
+                    kind = FilterKind::BandPass;
+                }
             });
             if kind != filter_kind {
                 let _ = app
@@ -1206,7 +1232,7 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
     card_frame().show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(
-                egui::RichText::new("PRESETS KICK TECHNO")
+                egui::RichText::new("PRESETS KICK TECHNO PRO")
                     .strong()
                     .small()
                     .color(c.accent),
@@ -1224,17 +1250,19 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
             let presets = [
                 (0u8, "1. Techno Berlin"),
                 (1u8, "2. 909 Punch"),
-                (2u8, "3. Hardcore Drive"),
+                (2u8, "3. Hardcore"),
                 (3u8, "4. Sub 808"),
                 (4u8, "5. Minimal Click"),
                 (5u8, "6. Industrial"),
+                (6u8, "7. Acid Gabber"),
+                (7u8, "8. Deep Dub"),
             ];
             for (p_idx, p_name) in presets {
                 let is_sel = params.preset_name.contains(&p_name[3..]);
                 if ui
                     .add(
                         egui::Button::new(egui::RichText::new(p_name).small().strong())
-                            .fill(if is_sel { c.accent } else { c.widget_bg }),
+                            .fill(if is_sel { c.accent } else { c.surface }),
                     )
                     .clicked()
                 {
@@ -1258,7 +1286,11 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
         ui.horizontal_wrapped(|ui| {
             // Forme d'onde
             ui.vertical(|ui| {
-                ui.label(egui::RichText::new("ONDE").small().color(c.text_muted));
+                ui.label(
+                    egui::RichText::new("FORME D'ONDE")
+                        .small()
+                        .color(c.text_muted),
+                );
                 ui.horizontal(|ui| {
                     if chip(ui, "SINE", params.waveform == KickWaveform::Sine, c.accent) {
                         params.waveform = KickWaveform::Sine;
@@ -1280,6 +1312,24 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                         c.accent,
                     ) {
                         params.waveform = KickWaveform::SatSine;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "SUB SQR",
+                        params.waveform == KickWaveform::SquareSub,
+                        c.accent,
+                    ) {
+                        params.waveform = KickWaveform::SquareSub;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "NOISE",
+                        params.waveform == KickWaveform::NoiseTransient,
+                        c.accent,
+                    ) {
+                        params.waveform = KickWaveform::NoiseTransient;
                         changed = true;
                     }
                 });
@@ -1332,13 +1382,164 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
 
     ui.add_space(8.0);
 
-    // 3. Impact, Saturation & Infrabasse
+    // 3. Distorsion multi-types & Filtre résonant
     card_frame().show(ui, |ui| {
         ui.label(
-            egui::RichText::new("TRANSIENT, ANALOG DRIVE & SUB BASS")
+            egui::RichText::new("DISTORSION MULTI-TYPES & FILTRE RÉSONANT")
                 .strong()
                 .small()
                 .color(c.warning),
+        );
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new("DISTO TYPE")
+                        .small()
+                        .color(c.text_muted),
+                );
+                ui.horizontal(|ui| {
+                    if chip(
+                        ui,
+                        "TANH",
+                        params.drive_type == KickDriveType::AnalogTanh,
+                        c.warning,
+                    ) {
+                        params.drive_type = KickDriveType::AnalogTanh;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "HARD CLIP",
+                        params.drive_type == KickDriveType::HardClip,
+                        c.error,
+                    ) {
+                        params.drive_type = KickDriveType::HardClip;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "WAVEFOLDER",
+                        params.drive_type == KickDriveType::Wavefolder,
+                        c.accent_purple,
+                    ) {
+                        params.drive_type = KickDriveType::Wavefolder;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "TUBE",
+                        params.drive_type == KickDriveType::TubeDrive,
+                        c.accent,
+                    ) {
+                        params.drive_type = KickDriveType::TubeDrive;
+                        changed = true;
+                    }
+                });
+            });
+
+            ui.separator();
+
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new("FILTRE MODE")
+                        .small()
+                        .color(c.text_muted),
+                );
+                ui.horizontal(|ui| {
+                    if chip(
+                        ui,
+                        "OFF",
+                        params.filter_mode == KickFilterMode::Off,
+                        c.text_dim,
+                    ) {
+                        params.filter_mode = KickFilterMode::Off;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "LP",
+                        params.filter_mode == KickFilterMode::LowPass,
+                        c.accent,
+                    ) {
+                        params.filter_mode = KickFilterMode::LowPass;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "HP",
+                        params.filter_mode == KickFilterMode::HighPass,
+                        c.accent_cyan,
+                    ) {
+                        params.filter_mode = KickFilterMode::HighPass;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "BP",
+                        params.filter_mode == KickFilterMode::BandPass,
+                        c.warning,
+                    ) {
+                        params.filter_mode = KickFilterMode::BandPass;
+                        changed = true;
+                    }
+                });
+            });
+        });
+
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            if let Some(v) = knob(
+                ui,
+                "kick_drive",
+                params.drive,
+                &KnobSpec::linear("DRIVE", "", 0.0, 1.0, 0.4),
+            ) {
+                params.drive = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "kick_drive_tone",
+                params.drive_tone,
+                &KnobSpec::linear("TONE", "", 0.0, 1.0, 0.6),
+            ) {
+                params.drive_tone = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "kick_flt_cut",
+                params.filter_cutoff_hz,
+                &KnobSpec::log("CUTOFF", " Hz", 40.0, 18000.0, 3500.0),
+            ) {
+                params.filter_cutoff_hz = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "kick_flt_reso",
+                params.filter_reso,
+                &KnobSpec::linear("RESO", "", 0.0, 0.95, 0.2),
+            ) {
+                params.filter_reso = v;
+                changed = true;
+            }
+        });
+    });
+
+    ui.add_space(8.0);
+
+    // 4. Infrabasse & Transitoire de bruit
+    card_frame().show(ui, |ui| {
+        ui.label(
+            egui::RichText::new("INFRABASSE & COUCHE DE BRUIT")
+                .strong()
+                .small()
+                .color(c.accent),
         );
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
@@ -1354,11 +1555,11 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
 
             if let Some(v) = knob(
                 ui,
-                "kick_drive",
-                params.drive,
-                &KnobSpec::linear("ANALOG DRIVE", "", 0.0, 1.0, 0.4),
+                "kick_noise_mix",
+                params.noise_mix,
+                &KnobSpec::linear("NOISE LAYER", "", 0.0, 1.0, 0.15),
             ) {
-                params.drive = v;
+                params.noise_mix = v;
                 changed = true;
             }
 
@@ -1369,6 +1570,16 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                 &KnobSpec::linear("SUB BOOST 50Hz", "", 0.0, 1.0, 0.6),
             ) {
                 params.sub = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "kick_sub_ratio",
+                params.sub_ratio,
+                &KnobSpec::linear("SUB RATIO", "x", 0.5, 2.0, 1.0),
+            ) {
+                params.sub_ratio = v;
                 changed = true;
             }
 
@@ -1386,5 +1597,402 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
 
     if changed {
         app.send(EngineEvent::KickSetParams(params));
+    }
+}
+
+// ── Page NEXUS / SERUM WAVETABLE SYNTH ────────────────────────────────────
+
+fn render_wavetable_page(
+    ui: &mut egui::Ui,
+    app: &mut GuiApp,
+    snap: &maschine_engine::EngineSnapshot,
+) {
+    let c = MachColors::dark();
+    let mut params = snap.focus_sound_wavetable.clone().unwrap_or_default();
+    let mut changed = false;
+
+    // 1. Presets du Wavetable Synth
+    card_frame().show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("PRESETS NEXUS / SERUM")
+                    .strong()
+                    .small()
+                    .color(c.accent_cyan),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Preset : {} [{:?}]",
+                        params.name, params.category
+                    ))
+                    .small()
+                    .color(c.accent),
+                );
+            });
+        });
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            let presets = WavetableParams::all_presets();
+            for (idx, p) in presets.iter().enumerate() {
+                let is_sel = params.name == p.name;
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new(format!("{}. {}", idx + 1, p.name))
+                                .small()
+                                .strong(),
+                        )
+                        .fill(if is_sel {
+                            c.accent_cyan
+                        } else {
+                            c.surface
+                        }),
+                    )
+                    .clicked()
+                {
+                    app.send(EngineEvent::WavetableSetPreset(idx));
+                }
+            }
+        });
+    });
+
+    ui.add_space(8.0);
+
+    // 2. Oscillateurs & Unison
+    card_frame().show(ui, |ui| {
+        ui.label(
+            egui::RichText::new("OSCILLATEURS & TABLES D'ONDES")
+                .strong()
+                .small()
+                .color(c.accent),
+        );
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new("OSC 1 ONDE")
+                        .small()
+                        .color(c.text_muted),
+                );
+                ui.horizontal(|ui| {
+                    if chip(
+                        ui,
+                        "SAW",
+                        params.osc1_wave == WavetableWaveform::Saw,
+                        c.accent,
+                    ) {
+                        params.osc1_wave = WavetableWaveform::Saw;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "SUPERSAW",
+                        params.osc1_wave == WavetableWaveform::Supersaw,
+                        c.accent,
+                    ) {
+                        params.osc1_wave = WavetableWaveform::Supersaw;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "PIANO",
+                        params.osc1_wave == WavetableWaveform::GrandPiano,
+                        c.accent,
+                    ) {
+                        params.osc1_wave = WavetableWaveform::GrandPiano;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "M1",
+                        params.osc1_wave == WavetableWaveform::M1Piano,
+                        c.accent,
+                    ) {
+                        params.osc1_wave = WavetableWaveform::M1Piano;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "RHODES",
+                        params.osc1_wave == WavetableWaveform::RhodesTines,
+                        c.accent,
+                    ) {
+                        params.osc1_wave = WavetableWaveform::RhodesTines;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "SQR",
+                        params.osc1_wave == WavetableWaveform::Square,
+                        c.accent,
+                    ) {
+                        params.osc1_wave = WavetableWaveform::Square;
+                        changed = true;
+                    }
+                });
+            });
+
+            ui.separator();
+
+            if let Some(v) = knob(
+                ui,
+                "wt_osc1_lvl",
+                params.osc1_level,
+                &KnobSpec::linear("OSC 1 VOL", "", 0.0, 1.0, 0.8),
+            ) {
+                params.osc1_level = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "wt_osc2_lvl",
+                params.osc2_level,
+                &KnobSpec::linear("OSC 2 VOL", "", 0.0, 1.0, 0.6),
+            ) {
+                params.osc2_level = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "wt_unison_detune",
+                params.unison_detune,
+                &KnobSpec::linear("DETUNE", "", 0.0, 1.0, 0.2),
+            ) {
+                params.unison_detune = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "wt_unison_spread",
+                params.unison_spread,
+                &KnobSpec::linear("SPREAD", "", 0.0, 1.0, 0.7),
+            ) {
+                params.unison_spread = v;
+                changed = true;
+            }
+        });
+    });
+
+    ui.add_space(8.0);
+
+    // 3. Filtre Multimode & ADSR Enveloppe
+    card_frame().show(ui, |ui| {
+        ui.label(
+            egui::RichText::new("FILTRE MULTIMODE & ENVELOPPE D'AMPLITUDE")
+                .strong()
+                .small()
+                .color(c.warning),
+        );
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new("FILTRE MODE")
+                        .small()
+                        .color(c.text_muted),
+                );
+                ui.horizontal(|ui| {
+                    if chip(
+                        ui,
+                        "LP 24",
+                        params.filter_mode == WavetableFilterMode::LowPass24,
+                        c.warning,
+                    ) {
+                        params.filter_mode = WavetableFilterMode::LowPass24;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "LP 12",
+                        params.filter_mode == WavetableFilterMode::LowPass12,
+                        c.warning,
+                    ) {
+                        params.filter_mode = WavetableFilterMode::LowPass12;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "HP",
+                        params.filter_mode == WavetableFilterMode::HighPass,
+                        c.accent_cyan,
+                    ) {
+                        params.filter_mode = WavetableFilterMode::HighPass;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "BP",
+                        params.filter_mode == WavetableFilterMode::BandPass,
+                        c.accent,
+                    ) {
+                        params.filter_mode = WavetableFilterMode::BandPass;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "OFF",
+                        params.filter_mode == WavetableFilterMode::Off,
+                        c.text_dim,
+                    ) {
+                        params.filter_mode = WavetableFilterMode::Off;
+                        changed = true;
+                    }
+                });
+            });
+
+            ui.separator();
+
+            if let Some(v) = knob(
+                ui,
+                "wt_cutoff",
+                params.filter_cutoff,
+                &KnobSpec::log("CUTOFF", " Hz", 20.0, 20000.0, 4500.0),
+            ) {
+                params.filter_cutoff = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "wt_reso",
+                params.filter_reso,
+                &KnobSpec::linear("RESO", "", 0.0, 0.95, 0.2),
+            ) {
+                params.filter_reso = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "wt_env_amt",
+                params.filter_env_amt,
+                &KnobSpec::linear("ENV AMT", "", -1.0, 1.0, 0.3),
+            ) {
+                params.filter_env_amt = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "wt_amp_att",
+                params.amp_attack_ms,
+                &KnobSpec::linear("ATTACK", " ms", 1.0, 1000.0, 12.0),
+            ) {
+                params.amp_attack_ms = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "wt_amp_dec",
+                params.amp_decay_ms,
+                &KnobSpec::linear("DECAY", " ms", 10.0, 3000.0, 450.0),
+            ) {
+                params.amp_decay_ms = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "wt_amp_sus",
+                params.amp_sustain,
+                &KnobSpec::linear("SUSTAIN", "", 0.0, 1.0, 0.7),
+            ) {
+                params.amp_sustain = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "wt_amp_rel",
+                params.amp_release_ms,
+                &KnobSpec::linear("RELEASE", " ms", 10.0, 3000.0, 350.0),
+            ) {
+                params.amp_release_ms = v;
+                changed = true;
+            }
+        });
+    });
+
+    ui.add_space(8.0);
+
+    // 4. Rack d'effets (Chorus, Ping-Pong Delay, Reverb Spatiale)
+    card_frame().show(ui, |ui| {
+        ui.label(
+            egui::RichText::new("RACK D'EFFETS INTÉGRÉ")
+                .strong()
+                .small()
+                .color(c.accent_purple),
+        );
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            if let Some(v) = knob(
+                ui,
+                "wt_chorus",
+                params.fx_chorus_mix,
+                &KnobSpec::linear("CHORUS", "", 0.0, 1.0, 0.25),
+            ) {
+                params.fx_chorus_mix = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "wt_delay_time",
+                params.fx_delay_time_ms,
+                &KnobSpec::linear("DELAY TIME", " ms", 50.0, 800.0, 350.0),
+            ) {
+                params.fx_delay_time_ms = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "wt_delay_mix",
+                params.fx_delay_mix,
+                &KnobSpec::linear("DELAY MIX", "", 0.0, 1.0, 0.2),
+            ) {
+                params.fx_delay_mix = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "wt_reverb",
+                params.fx_reverb_mix,
+                &KnobSpec::linear("REVERB", "", 0.0, 1.0, 0.3),
+            ) {
+                params.fx_reverb_mix = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "wt_disto",
+                params.fx_distortion,
+                &KnobSpec::linear("DISTORTION", "", 0.0, 1.0, 0.0),
+            ) {
+                params.fx_distortion = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "wt_vol",
+                params.master_volume_db,
+                &KnobSpec::linear("MASTER VOL", " dB", -24.0, 6.0, 0.0),
+            ) {
+                params.master_volume_db = v;
+                changed = true;
+            }
+        });
+    });
+
+    if changed {
+        app.send(EngineEvent::WavetableSetParams(params));
     }
 }

@@ -352,6 +352,30 @@ pub enum EngineEvent {
     AcidSelectPreset(u8),
     /// Remplacement complet des paramètres Acid
     AcidSetParams(crate::acid_synth::AcidParams),
+    /// Alterne le type de filtre d'un Sound (Off -> LowPass -> HighPass -> BandPass -> Off)
+    CycleSoundFilterKind { group: u8, sound: u8 },
+    /// Définit directement le type de filtre d'un Sound
+    SetSoundFilterKind {
+        group: u8,
+        sound: u8,
+        kind: crate::project::FilterKind,
+    },
+    /// Remplacement complet des paramètres Wavetable / Nexus Synth
+    WavetableSetParams(crate::wavetable_synth::WavetableParams),
+    /// Sélection d'un preset Wavetable par index
+    WavetableSetPreset(usize),
+    /// Preset Wavetable suivant
+    WavetableNextPreset,
+    /// Preset Wavetable précédent
+    WavetablePrevPreset,
+    /// Ajuste le type de distorsion du Kick Synth
+    KickDriveTypeDelta(i32),
+    /// Ajuste le mode de filtre du Kick Synth
+    KickFilterModeDelta(i32),
+    /// Ajuste la fréquence de coupure du filtre du Kick Synth
+    KickFilterCutoffDelta(f32),
+    /// Ajuste la résonance du filtre du Kick Synth
+    KickFilterResoDelta(f32),
     /// Supprime définitivement le projet sélectionné dans le navigateur
     DeleteSelectedProject,
     /// Annule la confirmation de suppression de projet
@@ -513,10 +537,14 @@ pub struct EngineSnapshot {
     pub acid_params: crate::acid_synth::AcidParams,
     /// Paramètres actuels de modélisation de Kick.
     pub kick_params: crate::kick_synth::KickParams,
+    /// Paramètres actuels du synthétiseur Wavetable / Nexus.
+    pub wavetable_params: crate::wavetable_synth::WavetableParams,
     /// Le son actif possède-t-il un Kick Synth ?
     pub focus_sound_kick: Option<crate::kick_synth::KickParams>,
     /// Le son actif possède-t-il un TB-303 ?
     pub focus_sound_acid: Option<crate::acid_synth::AcidParams>,
+    /// Le son actif possède-t-il un Wavetable Synth ?
+    pub focus_sound_wavetable: Option<crate::wavetable_synth::WavetableParams>,
     /// Chaîne d'effets du Sound actif.
     pub focus_sound_fx: Vec<crate::fx::FxSlot>,
     /// Chaîne d'effets du Group focus.
@@ -554,6 +582,8 @@ pub struct HardwareSnapshot {
     pub has_kick_synth: bool,
     /// Le son actif a-t-il un TB-303 Acid ?
     pub has_acid_synth: bool,
+    /// Le son actif a-t-il un Wavetable / Nexus Synth ?
+    pub has_wavetable_synth: bool,
     /// Confirmation de suppression de projet active
     pub delete_project_confirm: bool,
     /// Page PLUGIN (0: Sound, 1: TB-303) — routage des knobs hardware.
@@ -644,6 +674,8 @@ pub struct Engine {
     pub browser_fx_idx: u8,
     /// Moteur de modélisation de Kick Techno.
     pub kick_synth: crate::kick_synth::KickSynth,
+    /// Synthétiseur polyphonique Wavetable / Nexus.
+    pub wavetable_synth: crate::wavetable_synth::WavetableSynth,
     /// Processeur d'effets temps réel.
     pub fx_processor: crate::fx::FxChainProcessor,
     /// Entrées du navigateur de projets.
@@ -894,6 +926,7 @@ impl Engine {
             browser_plugin_idx: 0,
             browser_fx_idx: 0,
             kick_synth: crate::kick_synth::KickSynth::new(sample_rate),
+            wavetable_synth: crate::wavetable_synth::WavetableSynth::new(sample_rate),
             fx_processor: crate::fx::FxChainProcessor::new(sample_rate),
             project_entries: Vec::new(),
             project_selected: 0,
@@ -1028,8 +1061,10 @@ impl Engine {
                 .sample_duration_secs(sampler_sound_id(self.group_focus, self.active_sound)),
             acid_params: self.acid_synth.params.clone(),
             kick_params: self.kick_synth.params.clone(),
+            wavetable_params: self.wavetable_synth.params.clone(),
             focus_sound_kick: self.focus_sound_kick_params(),
             focus_sound_acid: self.focus_sound_synth_params(),
+            focus_sound_wavetable: self.focus_sound_wavetable_params(),
             focus_sound_fx: self.focus_sound_fx(),
             focus_group_fx: self.focus_group_fx(),
             mixer_mode: self.mixer_mode,
@@ -1111,6 +1146,7 @@ impl Engine {
             mixer_mode: self.mixer_mode,
             has_kick_synth: self.focus_sound_has_kick(),
             has_acid_synth: self.focus_sound_has_acid(),
+            has_wavetable_synth: self.focus_sound_has_wavetable(),
             delete_project_confirm: self.delete_project_confirm,
             plugin_page: self.plugin_page,
             controller_mode: self.controller_mode,
@@ -1436,8 +1472,10 @@ impl Engine {
                         .and_then(|s| s.as_ref());
                     let synth_params = snd_ref.and_then(|s| s.synth.clone());
                     let kick_params = snd_ref.and_then(|s| s.kick_synth.clone());
+                    let wavetable_params = snd_ref.and_then(|s| s.wavetable_synth.clone());
                     let is_synth_sound = synth_params.is_some();
                     let is_kick_sound = kick_params.is_some();
+                    let is_wavetable_sound = wavetable_params.is_some();
                     let (snd_gain, snd_pan, vparams) = snd_ref
                         .map(|s| {
                             let filter_off = s.filter.kind == crate::project::FilterKind::Off;
@@ -1470,6 +1508,11 @@ impl Engine {
                             self.acid_synth.params = p;
                         }
                         self.acid_synth.note_on(note, velocity);
+                    } else if is_wavetable_sound {
+                        if let Some(p) = wavetable_params {
+                            self.wavetable_synth.params = p;
+                        }
+                        self.wavetable_synth.note_on(note, velocity);
                     } else if let Some(idx) = self.sampler.note_on(sound, note, velocity, note) {
                         self.sampler.set_voice_gain(idx, group_gain * snd_gain);
                         self.sampler.set_voice_pan(idx, snd_pan);
@@ -1484,6 +1527,7 @@ impl Engine {
                 } else {
                     let note = 36 + pad;
                     self.acid_synth.note_off(note);
+                    self.wavetable_synth.note_off(note);
                     self.sampler
                         .note_off(sampler_sound_id(self.group_focus, pad), note);
                 }
@@ -2310,6 +2354,7 @@ impl Engine {
                         .and_then(|s| s.as_ref());
                     let synth_params = snd_ref.and_then(|s| s.synth.clone());
                     let kick_params = snd_ref.and_then(|s| s.kick_synth.clone());
+                    let wavetable_params = snd_ref.and_then(|s| s.wavetable_synth.clone());
                     let (snd_gain, snd_pan, vparams) = snd_ref
                         .map(|s| {
                             let filter_off = s.filter.kind == crate::project::FilterKind::Off;
@@ -2338,6 +2383,9 @@ impl Engine {
                     } else if let Some(p) = synth_params {
                         self.acid_synth.params = p;
                         self.acid_synth.note_on(note, velocity);
+                    } else if let Some(p) = wavetable_params {
+                        self.wavetable_synth.params = p;
+                        self.wavetable_synth.note_on(note, velocity);
                     } else if let Some(idx) = self.sampler.note_on(sound, note, velocity, note) {
                         self.sampler.set_voice_gain(idx, group_gain * snd_gain);
                         self.sampler.set_voice_pan(idx, snd_pan);
@@ -2351,6 +2399,7 @@ impl Engine {
                     }
                 } else {
                     self.acid_synth.note_off(note);
+                    self.wavetable_synth.note_off(note);
                     self.sampler.note_off(sound, note);
                 }
             }
@@ -2436,7 +2485,7 @@ impl Engine {
                 }
                 2 => {
                     self.browser_plugin_idx =
-                        (self.browser_plugin_idx as i32 + step).rem_euclid(4) as u8;
+                        (self.browser_plugin_idx as i32 + step).rem_euclid(5) as u8;
                 }
                 3 => {
                     self.browser_fx_idx = (self.browser_fx_idx as i32 + step).rem_euclid(5) as u8;
@@ -2467,7 +2516,7 @@ impl Engine {
                 }
                 2 => {
                     self.browser_plugin_idx =
-                        (self.browser_plugin_idx as i32 + step).rem_euclid(4) as u8;
+                        (self.browser_plugin_idx as i32 + step).rem_euclid(5) as u8;
                 }
                 3 => {
                     self.browser_fx_idx = (self.browser_fx_idx as i32 + step).rem_euclid(5) as u8;
@@ -2536,6 +2585,181 @@ impl Engine {
                 if let Some(p) = presets.get(idx as usize) {
                     self.handle_event(EngineEvent::KickSetParams(p.clone()))?;
                 }
+            }
+            EngineEvent::KickDriveTypeDelta(delta) => {
+                let mut p = self.kick_synth.params.clone();
+                let next = match p.drive_type {
+                    crate::kick_synth::KickDriveType::AnalogTanh => {
+                        if delta > 0 {
+                            crate::kick_synth::KickDriveType::HardClip
+                        } else {
+                            crate::kick_synth::KickDriveType::TubeDrive
+                        }
+                    }
+                    crate::kick_synth::KickDriveType::HardClip => {
+                        if delta > 0 {
+                            crate::kick_synth::KickDriveType::Wavefolder
+                        } else {
+                            crate::kick_synth::KickDriveType::AnalogTanh
+                        }
+                    }
+                    crate::kick_synth::KickDriveType::Wavefolder => {
+                        if delta > 0 {
+                            crate::kick_synth::KickDriveType::TubeDrive
+                        } else {
+                            crate::kick_synth::KickDriveType::HardClip
+                        }
+                    }
+                    crate::kick_synth::KickDriveType::TubeDrive => {
+                        if delta > 0 {
+                            crate::kick_synth::KickDriveType::AnalogTanh
+                        } else {
+                            crate::kick_synth::KickDriveType::Wavefolder
+                        }
+                    }
+                };
+                p.drive_type = next;
+                let _ = self.handle_event(EngineEvent::KickSetParams(p));
+            }
+            EngineEvent::KickFilterModeDelta(delta) => {
+                let mut p = self.kick_synth.params.clone();
+                let next = match p.filter_mode {
+                    crate::kick_synth::KickFilterMode::Off => {
+                        if delta > 0 {
+                            crate::kick_synth::KickFilterMode::LowPass
+                        } else {
+                            crate::kick_synth::KickFilterMode::BandPass
+                        }
+                    }
+                    crate::kick_synth::KickFilterMode::LowPass => {
+                        if delta > 0 {
+                            crate::kick_synth::KickFilterMode::HighPass
+                        } else {
+                            crate::kick_synth::KickFilterMode::Off
+                        }
+                    }
+                    crate::kick_synth::KickFilterMode::HighPass => {
+                        if delta > 0 {
+                            crate::kick_synth::KickFilterMode::BandPass
+                        } else {
+                            crate::kick_synth::KickFilterMode::LowPass
+                        }
+                    }
+                    crate::kick_synth::KickFilterMode::BandPass => {
+                        if delta > 0 {
+                            crate::kick_synth::KickFilterMode::Off
+                        } else {
+                            crate::kick_synth::KickFilterMode::HighPass
+                        }
+                    }
+                };
+                p.filter_mode = next;
+                let _ = self.handle_event(EngineEvent::KickSetParams(p));
+            }
+            EngineEvent::KickFilterCutoffDelta(delta) => {
+                let mut p = self.kick_synth.params.clone();
+                let factor = 1.05f32.powf(delta * 0.1);
+                p.filter_cutoff_hz = (p.filter_cutoff_hz * factor).clamp(20.0, 18000.0);
+                let _ = self.handle_event(EngineEvent::KickSetParams(p));
+            }
+            EngineEvent::KickFilterResoDelta(delta) => {
+                let mut p = self.kick_synth.params.clone();
+                p.filter_reso = (p.filter_reso + delta * 0.02).clamp(0.0, 0.95);
+                let _ = self.handle_event(EngineEvent::KickSetParams(p));
+            }
+            EngineEvent::CycleSoundFilterKind { group, sound } => {
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
+                if let Some(snd) = proj
+                    .groups
+                    .get_mut(group as usize)
+                    .and_then(|g| g.sounds.get_mut(sound as usize))
+                    .and_then(|s| s.as_mut())
+                {
+                    snd.filter.kind = match snd.filter.kind {
+                        crate::project::FilterKind::Off => crate::project::FilterKind::LowPass,
+                        crate::project::FilterKind::LowPass => crate::project::FilterKind::HighPass,
+                        crate::project::FilterKind::HighPass => {
+                            crate::project::FilterKind::BandPass
+                        }
+                        crate::project::FilterKind::BandPass => crate::project::FilterKind::Off,
+                    };
+                    let kind = snd.filter.kind.clone();
+                    self.status_message =
+                        Some(format!("Sound {:02} Filtre : {:?}", sound + 1, kind));
+                    self.status_expires_at =
+                        std::time::Instant::now() + std::time::Duration::from_millis(2500);
+                    self.revision = self.revision.wrapping_add(1);
+                }
+            }
+            EngineEvent::SetSoundFilterKind { group, sound, kind } => {
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
+                if let Some(snd) = proj
+                    .groups
+                    .get_mut(group as usize)
+                    .and_then(|g| g.sounds.get_mut(sound as usize))
+                    .and_then(|s| s.as_mut())
+                {
+                    snd.filter.kind = kind.clone();
+                    self.status_message =
+                        Some(format!("Sound {:02} Filtre : {:?}", sound + 1, kind));
+                    self.status_expires_at =
+                        std::time::Instant::now() + std::time::Duration::from_millis(2500);
+                    self.revision = self.revision.wrapping_add(1);
+                }
+            }
+            EngineEvent::WavetableSetParams(params) => {
+                self.wavetable_synth.params = params.clone();
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
+                if let Some(s) = proj
+                    .groups
+                    .get_mut(self.group_focus as usize)
+                    .and_then(|g| g.sounds.get_mut(self.active_sound as usize))
+                    .and_then(|s| s.as_mut())
+                {
+                    s.wavetable_synth = Some(params);
+                }
+                self.revision = self.revision.wrapping_add(1);
+            }
+            EngineEvent::WavetableSetPreset(idx) => {
+                let presets = crate::wavetable_synth::WavetableParams::all_presets();
+                if let Some(p) = presets.get(idx).cloned() {
+                    let name = p.name.clone();
+                    self.handle_event(EngineEvent::WavetableSetParams(p))?;
+                    self.status_message = Some(format!("Preset: {name}"));
+                    self.status_expires_at =
+                        std::time::Instant::now() + std::time::Duration::from_millis(2500);
+                }
+            }
+            EngineEvent::WavetableNextPreset => {
+                let presets = crate::wavetable_synth::WavetableParams::all_presets();
+                let cur_idx = presets
+                    .iter()
+                    .position(|p| p.name == self.wavetable_synth.params.name)
+                    .unwrap_or(0);
+                let next = (cur_idx + 1) % presets.len();
+                let p = presets[next].clone();
+                let name = p.name.clone();
+                self.handle_event(EngineEvent::WavetableSetParams(p))?;
+                self.status_message = Some(format!("Preset: {name}"));
+                self.status_expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_millis(2500);
+            }
+            EngineEvent::WavetablePrevPreset => {
+                let presets = crate::wavetable_synth::WavetableParams::all_presets();
+                let cur_idx = presets
+                    .iter()
+                    .position(|p| p.name == self.wavetable_synth.params.name)
+                    .unwrap_or(0);
+                let prev = (cur_idx + presets.len() - 1) % presets.len();
+                let p = presets[prev].clone();
+                let name = p.name.clone();
+                self.handle_event(EngineEvent::WavetableSetParams(p))?;
+                self.status_message = Some(format!("Preset: {name}"));
+                self.status_expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_millis(2500);
             }
             EngineEvent::LoadPluginToSound {
                 group,
@@ -2955,6 +3179,7 @@ impl Engine {
                                 let mut sp = [0.0f32; 16];
                                 let mut is_synth = [false; 16];
                                 let mut is_kick = [false; 16];
+                                let mut is_wavetable = [false; 16];
                                 for s in 0..16 {
                                     if let Some(snd) = group.sounds[s].as_ref() {
                                         vp[s] = crate::sampler::VoiceParams {
@@ -2969,6 +3194,7 @@ impl Engine {
                                         sp[s] = snd.pan;
                                         is_synth[s] = snd.synth.is_some();
                                         is_kick[s] = snd.kick_synth.is_some();
+                                        is_wavetable[s] = snd.wavetable_synth.is_some();
                                     }
                                 }
                                 Self::trigger_pattern_events(
@@ -2978,6 +3204,7 @@ impl Engine {
                                     &mut self.sampler,
                                     &mut self.acid_synth,
                                     &mut self.kick_synth,
+                                    &mut self.wavetable_synth,
                                     gi as u8,
                                     gain,
                                     group.pan,
@@ -2986,6 +3213,7 @@ impl Engine {
                                     &vp,
                                     &is_synth,
                                     &is_kick,
+                                    &is_wavetable,
                                     self.transport.swing,
                                     &mut self.pad_flash_until,
                                     new_tick,
@@ -3032,6 +3260,7 @@ impl Engine {
         sampler: &mut Sampler,
         acid_synth: &mut crate::acid_synth::AcidSynth,
         kick_synth: &mut crate::kick_synth::KickSynth,
+        wavetable_synth: &mut crate::wavetable_synth::WavetableSynth,
         group: u8,
         group_gain: f32,
         group_pan: f32,
@@ -3040,6 +3269,7 @@ impl Engine {
         voice_params: &[crate::sampler::VoiceParams],
         is_synth: &[bool],
         is_kick: &[bool],
+        is_wavetable: &[bool],
         swing: f32,
         flash_until: &mut [u64; 16],
         now_tick: u64,
@@ -3095,10 +3325,13 @@ impl Engine {
                     let start_frame = ctx.offset(rel_ticks);
                     let is_acid = is_synth.get(sound as usize).copied().unwrap_or(false);
                     let is_k = is_kick.get(sound as usize).copied().unwrap_or(false);
+                    let is_wt = is_wavetable.get(sound as usize).copied().unwrap_or(false);
                     if is_k {
                         kick_synth.trigger(note, ev.velocity);
                     } else if is_acid {
                         acid_synth.note_on_at(note, ev.velocity, start_frame);
+                    } else if is_wt {
+                        wavetable_synth.note_on(note, ev.velocity);
                     } else if let Some(idx) = sampler.note_on_at(
                         sampler_sound_id(group, sound),
                         note,
@@ -3136,6 +3369,8 @@ impl Engine {
             if off_triggered && end_tick > tick && tick <= new_tick {
                 if is_synth.get(ev.pad as usize).copied().unwrap_or(false) {
                     acid_synth.note_off(ev.pitch);
+                } else if is_wavetable.get(ev.pad as usize).copied().unwrap_or(false) {
+                    wavetable_synth.note_off(ev.pitch);
                 } else {
                     sampler.note_off(sampler_sound_id(group, ev.pad), ev.pitch);
                 }
@@ -3187,6 +3422,7 @@ impl Engine {
         self.sampler.render(out);
         self.acid_synth.render(out);
         self.kick_synth.render(out);
+        self.wavetable_synth.render(out);
         let group_fx = self.focus_group_fx();
         if !group_fx.is_empty() {
             self.fx_processor.process(out, &group_fx);
@@ -3310,7 +3546,7 @@ impl Engine {
                 "GRP A", "GRP B", "GRP C", "GRP D", "GRP E", "GRP F", "GRP G", "GRP H",
             ],
             2 => [
-                "SND 1", "SND 2", "SND 3", "SND 4", "SND 5", "SND 6", "SND 7", "SND 8",
+                "SND <", "SND >", "ECOUTE", "CYC FLT", "LP", "HP", "BP", "OFF",
             ],
             3 if self.browser_kind == 1 && self.delete_project_confirm => {
                 ["ANNULER", "", "", "", "", "CONFIRMER", "", ""]
@@ -3330,13 +3566,24 @@ impl Engine {
             4 => {
                 if self.focus_sound_has_kick() {
                     [
-                        "PREV", "NEXT", "TECHNO", "909", "HARDCORE", "808 SUB", "MINIMAL",
+                        "DRV TYPE",
+                        "FLT MODE",
+                        "TECHNO",
+                        "909",
+                        "HARDCORE",
+                        "808 SUB",
+                        "INDUSTRIAL",
                         "BROWSER",
                     ]
                 } else if self.focus_sound_has_acid() {
                     [
                         "SAW/SQR", "OCT -", "OCT +", "SLIDE", "CLASSIC", "SQUELCH", "DUB",
                         "BROWSER",
+                    ]
+                } else if self.focus_sound_has_wavetable() {
+                    [
+                        "PRES <", "PRES >", "PIANO", "M1 PIANO", "808 SUB", "REESE", "TITANIUM",
+                        "STRINGS",
                     ]
                 } else {
                     [
@@ -3480,7 +3727,45 @@ impl Engine {
                 }
             },
             1 => self.handle_event(EngineEvent::GroupFocus(idx as u8)),
-            2 => self.handle_event(EngineEvent::SelectSound(idx as u8)),
+            2 => match idx {
+                0 => {
+                    let s = self.active_sound.saturating_sub(1);
+                    self.handle_event(EngineEvent::SelectSound(s))
+                }
+                1 => {
+                    let s = (self.active_sound + 1).min(15);
+                    self.handle_event(EngineEvent::SelectSound(s))
+                }
+                2 => self.handle_event(EngineEvent::Pad {
+                    pad: self.active_sound,
+                    velocity: 110,
+                    pressed: true,
+                }),
+                3 => self.handle_event(EngineEvent::CycleSoundFilterKind {
+                    group: self.group_focus,
+                    sound: self.active_sound,
+                }),
+                4 => self.handle_event(EngineEvent::SetSoundFilterKind {
+                    group: self.group_focus,
+                    sound: self.active_sound,
+                    kind: crate::project::FilterKind::LowPass,
+                }),
+                5 => self.handle_event(EngineEvent::SetSoundFilterKind {
+                    group: self.group_focus,
+                    sound: self.active_sound,
+                    kind: crate::project::FilterKind::HighPass,
+                }),
+                6 => self.handle_event(EngineEvent::SetSoundFilterKind {
+                    group: self.group_focus,
+                    sound: self.active_sound,
+                    kind: crate::project::FilterKind::BandPass,
+                }),
+                _ => self.handle_event(EngineEvent::SetSoundFilterKind {
+                    group: self.group_focus,
+                    sound: self.active_sound,
+                    kind: crate::project::FilterKind::Off,
+                }),
+            },
             3 if self.browser_kind == 1 && self.delete_project_confirm => match idx {
                 0 => self.handle_event(EngineEvent::CancelDeleteProject),
                 5 => self.handle_event(EngineEvent::DeleteSelectedProject),
@@ -3598,23 +3883,13 @@ impl Engine {
             4 => {
                 if self.focus_sound_has_kick() {
                     match idx {
-                        0 => {
-                            let cur = self.kick_synth.params.tuning_semitones;
-                            let mut p = self.kick_synth.params.clone();
-                            p.tuning_semitones = (cur - 1.0).clamp(-12.0, 12.0);
-                            self.handle_event(EngineEvent::KickSetParams(p))
-                        }
-                        1 => {
-                            let cur = self.kick_synth.params.tuning_semitones;
-                            let mut p = self.kick_synth.params.clone();
-                            p.tuning_semitones = (cur + 1.0).clamp(-12.0, 12.0);
-                            self.handle_event(EngineEvent::KickSetParams(p))
-                        }
+                        0 => self.handle_event(EngineEvent::KickDriveTypeDelta(1)),
+                        1 => self.handle_event(EngineEvent::KickFilterModeDelta(1)),
                         2 => self.handle_event(EngineEvent::KickSetPreset(0)),
                         3 => self.handle_event(EngineEvent::KickSetPreset(1)),
                         4 => self.handle_event(EngineEvent::KickSetPreset(2)),
                         5 => self.handle_event(EngineEvent::KickSetPreset(3)),
-                        6 => self.handle_event(EngineEvent::KickSetPreset(4)),
+                        6 => self.handle_event(EngineEvent::KickSetPreset(5)),
                         _ => {
                             self.left_tab = 3;
                             self.browser_kind = 2;
@@ -3642,6 +3917,17 @@ impl Engine {
                             self.browser_kind = 2;
                             Ok(())
                         }
+                    }
+                } else if self.focus_sound_has_wavetable() {
+                    match idx {
+                        0 => self.handle_event(EngineEvent::WavetablePrevPreset),
+                        1 => self.handle_event(EngineEvent::WavetableNextPreset),
+                        2 => self.handle_event(EngineEvent::WavetableSetPreset(0)),
+                        3 => self.handle_event(EngineEvent::WavetableSetPreset(1)),
+                        4 => self.handle_event(EngineEvent::WavetableSetPreset(4)),
+                        5 => self.handle_event(EngineEvent::WavetableSetPreset(5)),
+                        6 => self.handle_event(EngineEvent::WavetableSetPreset(8)),
+                        _ => self.handle_event(EngineEvent::WavetableSetPreset(11)),
                     }
                 } else {
                     match idx {
@@ -3778,9 +4064,11 @@ impl Engine {
             .and_then(|s| s.synth.clone())
     }
 
-    /// Le Sound actif est-il un synthétiseur (TB-303 ou Kick Synth) ?
+    /// Le Sound actif est-il un synthétiseur (TB-303, Kick Synth ou Wavetable) ?
     pub fn focus_sound_has_synth(&self) -> bool {
-        self.focus_sound_synth_params().is_some() || self.focus_sound_kick_params().is_some()
+        self.focus_sound_synth_params().is_some()
+            || self.focus_sound_kick_params().is_some()
+            || self.focus_sound_wavetable_params().is_some()
     }
 
     /// Le Sound actif est-il un synthétiseur TB-303 Acid ?
@@ -3801,6 +4089,21 @@ impl Engine {
     /// Le Sound actif est-il un Kick Synth modélisé ?
     pub fn focus_sound_has_kick(&self) -> bool {
         self.focus_sound_kick_params().is_some()
+    }
+
+    /// Paramètres Wavetable / Nexus Synth du Sound actif.
+    pub fn focus_sound_wavetable_params(&self) -> Option<crate::wavetable_synth::WavetableParams> {
+        let proj = self.project.read();
+        proj.groups
+            .get(self.group_focus as usize)
+            .and_then(|g| g.sounds.get(self.active_sound as usize))
+            .and_then(|s| s.as_ref())
+            .and_then(|s| s.wavetable_synth.clone())
+    }
+
+    /// Le Sound actif est-il un Wavetable / Nexus Synth ?
+    pub fn focus_sound_has_wavetable(&self) -> bool {
+        self.focus_sound_wavetable_params().is_some()
     }
 
     /// Chaîne d'effets du Sound actif.
@@ -3830,6 +4133,13 @@ impl Engine {
         }
     }
 
+    /// Charge les paramètres Wavetable du Sound actif dans le WavetableSynth interne.
+    pub fn sync_wavetable_from_active_sound(&mut self) {
+        if let Some(params) = self.focus_sound_wavetable_params() {
+            self.wavetable_synth.params = params;
+        }
+    }
+
     /// Supprime définitivement le projet sélectionné dans le navigateur.
     pub fn delete_selected_project(&mut self) -> crate::Result<()> {
         self.delete_project_confirm = false;
@@ -3851,7 +4161,7 @@ impl Engine {
         Ok(())
     }
 
-    /// Charge un plugin (0: Kick Synth, 1: TB-303, 2: Guitar Amp, 3: Sampler) sur un pad.
+    /// Charge un plugin (0: Kick Synth, 1: TB-303, 2: Nexus Synth, 3: Guitar Amp, 4: Sampler) sur un pad.
     pub fn load_plugin_to_sound(
         &mut self,
         group: u8,
@@ -3868,6 +4178,7 @@ impl Engine {
                 0 => {
                     target_sound.kick_synth = Some(crate::kick_synth::KickParams::default());
                     target_sound.synth = None;
+                    target_sound.wavetable_synth = None;
                     target_sound.name = "Kick Synth".to_string();
                     self.kick_synth.params = crate::kick_synth::KickParams::default();
                     self.status_message =
@@ -3876,13 +4187,26 @@ impl Engine {
                 1 => {
                     target_sound.synth = Some(crate::acid_synth::AcidParams::preset_classic_acid());
                     target_sound.kick_synth = None;
+                    target_sound.wavetable_synth = None;
                     target_sound.name = "TB-303".to_string();
                     self.acid_synth.params = crate::acid_synth::AcidParams::preset_classic_acid();
                     self.status_message = Some("Plugin chargé : TB-303 Acid Bass".to_string());
                 }
                 2 => {
+                    target_sound.wavetable_synth =
+                        Some(crate::wavetable_synth::WavetableParams::default());
                     target_sound.synth = None;
                     target_sound.kick_synth = None;
+                    target_sound.name = "Nexus Synth".to_string();
+                    self.wavetable_synth.params =
+                        crate::wavetable_synth::WavetableParams::default();
+                    self.status_message =
+                        Some("Plugin chargé : Nexus / Serum Wavetable Synth".to_string());
+                }
+                3 => {
+                    target_sound.synth = None;
+                    target_sound.kick_synth = None;
+                    target_sound.wavetable_synth = None;
                     target_sound.name = "Guitar Amp".to_string();
                     target_sound.fx_chain = vec![
                         crate::fx::FxSlot::default_for(crate::fx::FxType::Distortion),
@@ -3893,6 +4217,7 @@ impl Engine {
                 _ => {
                     target_sound.synth = None;
                     target_sound.kick_synth = None;
+                    target_sound.wavetable_synth = None;
                     target_sound.name = DRUM_PRESET_NAMES
                         .get(sound as usize)
                         .copied()
@@ -5211,5 +5536,134 @@ mod tests {
 
         // Nettoyage du fichier de test
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_filter_selection_and_cycling_via_soft_keys() {
+        let mut eng = Engine::new_demo(48000);
+        eng.left_tab = 2; // Sampler view
+        eng.active_sound = 0;
+
+        // Par défaut le filtre peut être LowPass ou Off
+        eng.handle_event(EngineEvent::SetSoundFilterKind {
+            group: 0,
+            sound: 0,
+            kind: crate::project::FilterKind::Off,
+        })
+        .unwrap();
+
+        // 1. Cycle filtre : Off -> LowPass -> HighPass -> BandPass -> Off
+        eng.handle_event(EngineEvent::SoftKey(4)).unwrap(); // SoftKey 4 = CYC FLT (idx 3)
+        let f1 = eng.project.read().groups[0].sounds[0]
+            .as_ref()
+            .unwrap()
+            .filter
+            .kind
+            .clone();
+        assert_eq!(f1, crate::project::FilterKind::LowPass);
+
+        eng.handle_event(EngineEvent::SoftKey(4)).unwrap();
+        let f2 = eng.project.read().groups[0].sounds[0]
+            .as_ref()
+            .unwrap()
+            .filter
+            .kind
+            .clone();
+        assert_eq!(f2, crate::project::FilterKind::HighPass);
+
+        // 2. Sélection directe via soft keys 5..8 (LP, HP, BP, OFF)
+        eng.handle_event(EngineEvent::SoftKey(7)).unwrap(); // SoftKey 7 = BP (idx 6)
+        let f3 = eng.project.read().groups[0].sounds[0]
+            .as_ref()
+            .unwrap()
+            .filter
+            .kind
+            .clone();
+        assert_eq!(f3, crate::project::FilterKind::BandPass);
+
+        eng.handle_event(EngineEvent::SoftKey(8)).unwrap(); // SoftKey 8 = OFF (idx 7)
+        let f4 = eng.project.read().groups[0].sounds[0]
+            .as_ref()
+            .unwrap()
+            .filter
+            .kind
+            .clone();
+        assert_eq!(f4, crate::project::FilterKind::Off);
+
+        eng.handle_event(EngineEvent::SoftKey(5)).unwrap(); // SoftKey 5 = LP (idx 4)
+        let f5 = eng.project.read().groups[0].sounds[0]
+            .as_ref()
+            .unwrap()
+            .filter
+            .kind
+            .clone();
+        assert_eq!(f5, crate::project::FilterKind::LowPass);
+    }
+
+    #[test]
+    fn test_kick_synth_drive_and_filter_events() {
+        let mut eng = Engine::new_demo(48000);
+        // Charge le Kick Synth sur pad 0
+        eng.load_plugin_to_sound(0, 0, 0).unwrap();
+        assert!(eng.focus_sound_has_kick());
+
+        // Cycle drive type
+        eng.handle_event(EngineEvent::KickDriveTypeDelta(1))
+            .unwrap();
+        assert_eq!(
+            eng.kick_synth.params.drive_type,
+            crate::kick_synth::KickDriveType::HardClip
+        );
+
+        // Cycle filter mode (de LowPass -> HighPass)
+        eng.handle_event(EngineEvent::KickFilterModeDelta(1))
+            .unwrap();
+        assert_eq!(
+            eng.kick_synth.params.filter_mode,
+            crate::kick_synth::KickFilterMode::HighPass
+        );
+
+        // Ajuste filter cutoff & reso
+        eng.handle_event(EngineEvent::KickFilterCutoffDelta(5.0))
+            .unwrap();
+        assert!(eng.kick_synth.params.filter_cutoff_hz > 500.0);
+        eng.handle_event(EngineEvent::KickFilterResoDelta(3.0))
+            .unwrap();
+        assert!(eng.kick_synth.params.filter_reso > 0.0);
+    }
+
+    #[test]
+    fn test_nexus_synth_plugin_and_presets() {
+        let mut eng = Engine::new_demo(48000);
+        // Charge Nexus Wavetable Synth (plugin_idx 2) sur pad 3
+        eng.load_plugin_to_sound(0, 3, 2).unwrap();
+        eng.active_sound = 3;
+        assert!(eng.focus_sound_has_wavetable());
+
+        // Vérifie les presets
+        let p_start = eng.wavetable_synth.params.name.clone();
+        eng.handle_event(EngineEvent::WavetableNextPreset).unwrap();
+        let p_next = eng.wavetable_synth.params.name.clone();
+        assert_ne!(p_start, p_next);
+
+        // Sélection directe preset
+        eng.handle_event(EngineEvent::WavetableSetPreset(0))
+            .unwrap();
+        assert_eq!(eng.wavetable_synth.params.name, "Concert Grand Piano");
+
+        // Rendu audio polyphonique
+        let mut out = vec![0.0f32; 1024];
+        eng.handle_event(EngineEvent::Pad {
+            pad: 3,
+            velocity: 110,
+            pressed: true,
+        })
+        .unwrap();
+        eng.render_audio(&mut out);
+        let max_amp = out.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(
+            max_amp > 0.01,
+            "Le synthé wavetable doit produire du son audible"
+        );
     }
 }

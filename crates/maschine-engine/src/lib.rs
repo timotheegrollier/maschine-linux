@@ -13,17 +13,22 @@ pub mod project;
 pub mod sampler;
 pub mod sequencer;
 pub mod transport;
+pub mod wavetable_synth;
 
 pub use acid_synth::{AcidParams, AcidSynth, AcidWaveform};
 pub use drum_synth::generate_complete_808_kit;
 pub use engine::{Engine, EngineEvent, EngineSnapshot, ProjectFileEntry, DRUM_PRESET_NAMES};
 pub use fx::{FxChainProcessor, FxSlot, FxType};
 pub use keyboard::KeyboardState;
-pub use kick_synth::{KickParams, KickSynth, KickWaveform};
+pub use kick_synth::{KickDriveType, KickFilterMode, KickParams, KickSynth, KickWaveform};
 pub use project::{Group, Pattern, PatternEvent, Project, Scene, Section, Sound, Zone};
 pub use sampler::{sound_id, Sampler, SamplerVoice, SoundId, VoiceParams, ZoneMapping};
 pub use sequencer::{Grid, Sequencer};
 pub use transport::{Transport, TransportState};
+pub use wavetable_synth::{
+    LfoTarget, PresetCategory, WavetableFilterMode, WavetableParams, WavetableSynth,
+    WavetableWaveform,
+};
 
 /// Erreurs engine.
 #[derive(thiserror::Error, Debug)]

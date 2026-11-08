@@ -26,6 +26,10 @@ pub enum KickWaveform {
     SquareSub,
     /// Transitoire avec bruit percussif intégré
     NoiseTransient,
+    /// Onde parabolique chaude avec harmoniques paires style 909 analogique
+    Parabolic,
+    /// Dent de scie inverse / rampe agressive pour kicks industriels & hard techno
+    Ramp,
 }
 
 /// Type de saturation / distorsion non-linéaire pour le kick.
@@ -40,6 +44,12 @@ pub enum KickDriveType {
     Wavefolder,
     /// Saturation asymétrique à lampes (Tube Drive) avec harmoniques paires
     TubeDrive,
+    /// Quantification lo-fi / réduction de bits pour kicks numériques & chiptune
+    Bitcrush,
+    /// Fuzz extrême asymétrique au germanium pour hardcore / frenchcore
+    Fuzz,
+    /// Redressement / repliement d'onde pour gabber & uptempo
+    Rectifier,
 }
 
 /// Mode de filtre résonant multimode pour le kick.
@@ -54,6 +64,10 @@ pub enum KickFilterMode {
     HighPass,
     /// Passe-bande percutant (sculptage d'impact médium)
     BandPass,
+    /// Coupe-bande / Réjecteur (Notch) pour creuser les fréquences boueuses
+    Notch,
+    /// Filtre en cloche résonant (Peak) pour sculpter une bosse d'énergie précise
+    Peak,
 }
 
 /// Paramètres de synthèse de la modélisation de Kick.
@@ -107,6 +121,15 @@ pub struct KickParams {
     pub volume_db: f32,
     /// Index ou nom de preset courant
     pub preset_name: String,
+    /// Modulation de fréquence linéaire (FM) pour claquant métallique (0.0 .. 1.0)
+    #[serde(default = "default_fm_amount")]
+    pub fm_amount: f32,
+    /// Ratio fréquentiel du modulateur FM (0.25 .. 8.0)
+    #[serde(default = "default_fm_ratio")]
+    pub fm_ratio: f32,
+    /// Durée de maintien (hold) avant le déclin en ms (0.0 .. 60.0)
+    #[serde(default = "default_hold_ms")]
+    pub hold_ms: f32,
 }
 
 fn default_drive_tone() -> f32 {
@@ -120,6 +143,15 @@ fn default_noise_decay() -> f32 {
 }
 fn default_filter_cutoff() -> f32 {
     12000.0
+}
+fn default_fm_amount() -> f32 {
+    0.0
+}
+fn default_fm_ratio() -> f32 {
+    1.0
+}
+fn default_hold_ms() -> f32 {
+    0.0
 }
 
 impl Default for KickParams {
@@ -153,6 +185,9 @@ impl KickParams {
             filter_reso: 0.15,
             volume_db: 0.0,
             preset_name: "Techno Berlin".to_string(),
+            fm_amount: 0.0,
+            fm_ratio: 1.0,
+            hold_ms: 0.0,
         }
     }
 
@@ -180,6 +215,9 @@ impl KickParams {
             filter_reso: 0.0,
             volume_db: 0.0,
             preset_name: "909 Punch".to_string(),
+            fm_amount: 0.0,
+            fm_ratio: 1.0,
+            hold_ms: 0.0,
         }
     }
 
@@ -207,6 +245,9 @@ impl KickParams {
             filter_reso: 0.35,
             volume_db: -1.5,
             preset_name: "Hardcore Wavefolder".to_string(),
+            fm_amount: 0.0,
+            fm_ratio: 1.0,
+            hold_ms: 0.0,
         }
     }
 
@@ -234,6 +275,9 @@ impl KickParams {
             filter_reso: 0.10,
             volume_db: 0.0,
             preset_name: "Sub 808".to_string(),
+            fm_amount: 0.0,
+            fm_ratio: 1.0,
+            hold_ms: 0.0,
         }
     }
 
@@ -261,6 +305,9 @@ impl KickParams {
             filter_reso: 0.25,
             volume_db: 0.0,
             preset_name: "Minimal Click".to_string(),
+            fm_amount: 0.0,
+            fm_ratio: 1.0,
+            hold_ms: 0.0,
         }
     }
 
@@ -288,6 +335,9 @@ impl KickParams {
             filter_reso: 0.40,
             volume_db: -0.5,
             preset_name: "Industrial Tube".to_string(),
+            fm_amount: 0.0,
+            fm_ratio: 1.0,
+            hold_ms: 0.0,
         }
     }
 
@@ -315,6 +365,9 @@ impl KickParams {
             filter_reso: 0.50,
             volume_db: -2.0,
             preset_name: "Acid Gabber".to_string(),
+            fm_amount: 0.0,
+            fm_ratio: 1.0,
+            hold_ms: 0.0,
         }
     }
 
@@ -342,6 +395,159 @@ impl KickParams {
             filter_reso: 0.20,
             volume_db: 0.5,
             preset_name: "Deep Dub Rumble".to_string(),
+            fm_amount: 0.0,
+            fm_ratio: 1.0,
+            hold_ms: 0.0,
+        }
+    }
+
+    /// Preset 9 : Frenchcore Fuzz — saturation fuzz destructrice, attaque percutante et sub soutenu.
+    #[must_use]
+    pub fn preset_frenchcore_fuzz() -> Self {
+        Self {
+            enabled: true,
+            waveform: KickWaveform::SatSine,
+            tune_hz: 52.0,
+            tuning_semitones: 0.0,
+            decay_ms: 280.0,
+            sweep_time_ms: 22.0,
+            snap: 0.85,
+            click: 0.70,
+            drive: 0.82,
+            drive_type: KickDriveType::Fuzz,
+            drive_tone: 0.75,
+            sub: 0.80,
+            sub_ratio: 1.0,
+            noise_mix: 0.15,
+            noise_decay_ms: 20.0,
+            filter_mode: KickFilterMode::LowPass,
+            filter_cutoff_hz: 6500.0,
+            filter_reso: 0.35,
+            volume_db: 0.0,
+            preset_name: "Frenchcore Fuzz".to_string(),
+            fm_amount: 0.15,
+            fm_ratio: 2.0,
+            hold_ms: 6.0,
+        }
+    }
+
+    /// Preset 10 : Dark Psy FM Kick — modulation de fréquence percutante, onde parabolique et sweep rapide.
+    #[must_use]
+    pub fn preset_dark_psy_fm() -> Self {
+        Self {
+            enabled: true,
+            waveform: KickWaveform::Parabolic,
+            tune_hz: 56.0,
+            tuning_semitones: 0.0,
+            decay_ms: 210.0,
+            sweep_time_ms: 18.0,
+            snap: 0.90,
+            click: 0.80,
+            drive: 0.35,
+            drive_type: KickDriveType::AnalogTanh,
+            drive_tone: 0.80,
+            sub: 0.60,
+            sub_ratio: 1.0,
+            noise_mix: 0.08,
+            noise_decay_ms: 10.0,
+            filter_mode: KickFilterMode::Peak,
+            filter_cutoff_hz: 4200.0,
+            filter_reso: 0.45,
+            volume_db: 0.5,
+            preset_name: "Dark Psy FM Kick".to_string(),
+            fm_amount: 0.65,
+            fm_ratio: 3.0,
+            hold_ms: 2.0,
+        }
+    }
+
+    /// Preset 11 : Glitch Bitcrush — texture numérique industrielle lo-fi avec transitoire bruitée.
+    #[must_use]
+    pub fn preset_glitch_bitcrush() -> Self {
+        Self {
+            enabled: true,
+            waveform: KickWaveform::NoiseTransient,
+            tune_hz: 48.0,
+            tuning_semitones: 0.0,
+            decay_ms: 310.0,
+            sweep_time_ms: 25.0,
+            snap: 0.75,
+            click: 0.85,
+            drive: 0.70,
+            drive_type: KickDriveType::Bitcrush,
+            drive_tone: 0.60,
+            sub: 0.75,
+            sub_ratio: 0.5,
+            noise_mix: 0.30,
+            noise_decay_ms: 25.0,
+            filter_mode: KickFilterMode::BandPass,
+            filter_cutoff_hz: 2800.0,
+            filter_reso: 0.40,
+            volume_db: -0.5,
+            preset_name: "Glitch Bitcrush".to_string(),
+            fm_amount: 0.0,
+            fm_ratio: 1.0,
+            hold_ms: 0.0,
+        }
+    }
+
+    /// Preset 12 : 909 Parabolic Punch — attaque parabolique punchy, résonance de batte et hold analogique.
+    #[must_use]
+    pub fn preset_909_parabolic_punch() -> Self {
+        Self {
+            enabled: true,
+            waveform: KickWaveform::Parabolic,
+            tune_hz: 50.0,
+            tuning_semitones: 0.0,
+            decay_ms: 360.0,
+            sweep_time_ms: 30.0,
+            snap: 0.80,
+            click: 0.65,
+            drive: 0.40,
+            drive_type: KickDriveType::AnalogTanh,
+            drive_tone: 0.70,
+            sub: 0.85,
+            sub_ratio: 1.0,
+            noise_mix: 0.12,
+            noise_decay_ms: 18.0,
+            filter_mode: KickFilterMode::LowPass,
+            filter_cutoff_hz: 5500.0,
+            filter_reso: 0.25,
+            volume_db: 0.8,
+            preset_name: "909 Parabolic Punch".to_string(),
+            fm_amount: 0.0,
+            fm_ratio: 1.0,
+            hold_ms: 8.0,
+        }
+    }
+
+    /// Preset 13 : Trap 808 Long Boom — onde sub pure avec long sustain, saturation à lampes et coupe-bande anti-boue.
+    #[must_use]
+    pub fn preset_trap_808_long_boom() -> Self {
+        Self {
+            enabled: true,
+            waveform: KickWaveform::Sine,
+            tune_hz: 38.0,
+            tuning_semitones: 0.0,
+            decay_ms: 1400.0,
+            sweep_time_ms: 45.0,
+            snap: 0.45,
+            click: 0.30,
+            drive: 0.45,
+            drive_type: KickDriveType::TubeDrive,
+            drive_tone: 0.50,
+            sub: 1.0,
+            sub_ratio: 0.5,
+            noise_mix: 0.05,
+            noise_decay_ms: 12.0,
+            filter_mode: KickFilterMode::Notch,
+            filter_cutoff_hz: 240.0,
+            filter_reso: 0.30,
+            volume_db: 1.0,
+            preset_name: "Trap 808 Long Boom".to_string(),
+            fm_amount: 0.0,
+            fm_ratio: 1.0,
+            hold_ms: 15.0,
         }
     }
 
@@ -357,6 +563,11 @@ impl KickParams {
             Self::preset_industrial(),
             Self::preset_acid_gabber(),
             Self::preset_deep_dub(),
+            Self::preset_frenchcore_fuzz(),
+            Self::preset_dark_psy_fm(),
+            Self::preset_glitch_bitcrush(),
+            Self::preset_909_parabolic_punch(),
+            Self::preset_trap_808_long_boom(),
         ]
     }
 }
@@ -370,6 +581,8 @@ pub struct KickSynth {
     phase: f32,
     /// Phase du sub-oscillateur
     sub_phase: f32,
+    /// Phase du modulateur FM
+    fm_phase: f32,
     /// Temps écoulé depuis le déclenchement en secondes
     time: f32,
     /// Durée totale active calculée
@@ -402,6 +615,7 @@ impl KickSynth {
             sample_rate: sample_rate.max(8000) as f32,
             phase: 0.0,
             sub_phase: 0.0,
+            fm_phase: 0.0,
             time: 0.0,
             duration: 0.5,
             velocity_gain: 1.0,
@@ -420,10 +634,12 @@ impl KickSynth {
         }
         self.phase = 0.0;
         self.sub_phase = 0.0;
+        self.fm_phase = 0.0;
         self.time = 0.0;
         let v = (velocity.clamp(1, 127) as f32 / 127.0).powf(0.85);
         self.velocity_gain = v;
-        self.duration = (self.params.decay_ms / 1000.0 * 2.2).clamp(0.08, 3.5);
+        let hold_sec = (self.params.hold_ms * 0.001).clamp(0.0, 0.08);
+        self.duration = (hold_sec + self.params.decay_ms / 1000.0 * 2.2).clamp(0.08, 3.5);
         self.is_playing = true;
         self.filter_ic1 = 0.0;
         self.filter_ic2 = 0.0;
@@ -447,6 +663,7 @@ impl KickSynth {
         let snap_freq = p.snap * 580.0;
         let sweep_tau = (p.sweep_time_ms / 1000.0).max(0.003);
         let decay_tau = (p.decay_ms / 1000.0 * 0.45).max(0.015);
+        let hold_sec = (p.hold_ms * 0.001).clamp(0.0, 0.08);
         let drive = p.drive;
         let click_level = p.click;
         let sub = p.sub;
@@ -454,6 +671,8 @@ impl KickSynth {
         let vol_linear = 10.0f32.powf(p.volume_db / 20.0) * self.velocity_gain;
         let noise_mix = p.noise_mix;
         let noise_tau = (p.noise_decay_ms / 1000.0).max(0.002);
+        let fm_amt = p.fm_amount.clamp(0.0, 1.0);
+        let fm_ratio = p.fm_ratio.clamp(0.25, 8.0);
 
         // Paramètres du filtre SVF
         let f_mode = p.filter_mode;
@@ -474,43 +693,54 @@ impl KickSynth {
             }
 
             let t = self.time;
+            let decay_t = (t - hold_sec).max(0.0);
 
-            // Enveloppe de fréquence exponentielle : f(t) = base + snap * exp(-t / tau)
-            let cur_freq = base_freq + snap_freq * (-t / sweep_tau).exp();
+            // Enveloppe de fréquence exponentielle : f(t) = base + snap * exp(-decay_t / tau)
+            let cur_freq = base_freq + snap_freq * (-decay_t / sweep_tau).exp();
 
-            // Incréments de phase (oscillateur principal et sub)
+            // Incréments de phase (oscillateur principal, modulateur FM et sub)
             let phase_inc = 2.0 * PI * cur_freq / sr;
             self.phase = (self.phase + phase_inc) % (2.0 * PI);
             let sub_inc = phase_inc * sub_ratio;
             self.sub_phase = (self.sub_phase + sub_inc) % (2.0 * PI);
 
+            let fm_inc = 2.0 * PI * cur_freq * fm_ratio / sr;
+            self.fm_phase = (self.fm_phase + fm_inc) % (2.0 * PI);
+            let fm_mod = self.fm_phase.sin() * fm_amt * (-decay_t / sweep_tau).exp();
+            let osc_phase = (self.phase + fm_mod * PI).rem_euclid(2.0 * PI);
+
             // Génération de la forme d'onde principale
             let raw_osc = match p.waveform {
-                KickWaveform::Sine => self.phase.sin(),
-                KickWaveform::Triangle => (2.0 / PI) * self.phase.sin().asin(),
+                KickWaveform::Sine => osc_phase.sin(),
+                KickWaveform::Triangle => (2.0 / PI) * osc_phase.sin().asin(),
                 KickWaveform::SatSine => {
-                    let s = self.phase.sin();
+                    let s = osc_phase.sin();
                     (s * 1.6).tanh()
                 }
                 KickWaveform::SquareSub => {
-                    let s = self.phase.sin();
+                    let s = osc_phase.sin();
                     let sq = if self.sub_phase < PI { 0.7 } else { -0.7 };
                     s * 0.6 + sq * 0.4
                 }
                 KickWaveform::NoiseTransient => {
-                    let s = self.phase.sin();
-                    let click_impulse = (self.phase * 4.0).sin() * 0.3;
+                    let s = osc_phase.sin();
+                    let click_impulse = (osc_phase * 4.0).sin() * 0.3;
                     s * 0.7 + click_impulse
                 }
+                KickWaveform::Parabolic => {
+                    let norm = osc_phase / PI - 1.0;
+                    (norm * norm) * 2.0 - 1.0
+                }
+                KickWaveform::Ramp => 1.0 - (osc_phase / PI),
             };
 
             // Renfort de sub selon sub_ratio
-            let sub_osc = self.sub_phase.sin() * sub * (-t / (decay_tau * 1.5)).exp();
+            let sub_osc = self.sub_phase.sin() * sub * (-decay_t / (decay_tau * 1.5)).exp();
             let body = raw_osc * (1.0 - sub * 0.25) + sub_osc * 0.4;
 
             // Enveloppe d'amplitude exponentielle + micro-attaque anti-clic
             let attack = (t / 0.0018).min(1.0);
-            let amp_env = (-t / decay_tau).exp() * attack;
+            let amp_env = (-decay_t / decay_tau).exp() * attack;
 
             // Générateur de bruit pseudo-aléatoire xorshift32
             self.noise_seed ^= self.noise_seed << 13;
@@ -569,6 +799,24 @@ impl KickSynth {
                         let tube = (x + 0.22 * x * x) / (1.0 + x.abs());
                         tube * 0.90
                     }
+                    KickDriveType::Bitcrush => {
+                        let bits = (16.0 - drive * 12.0).clamp(2.0, 16.0);
+                        let steps = 2.0_f32.powf(bits);
+                        (pushed * steps).round() / steps * (1.0 / (1.0 + drive * 0.3))
+                    }
+                    KickDriveType::Fuzz => {
+                        let sign = pushed.signum();
+                        let fuzzed = sign * (1.0 - (-pushed.abs() * (2.0 + drive * 4.0)).exp());
+                        fuzzed * 0.85
+                    }
+                    KickDriveType::Rectifier => {
+                        let rect = if pushed > 0.0 {
+                            pushed
+                        } else {
+                            -pushed * (1.0 - drive * 0.7)
+                        };
+                        (rect - 0.3 * drive).tanh() * 0.90
+                    }
                 }
             } else {
                 mixed
@@ -591,6 +839,8 @@ impl KickSynth {
                     KickFilterMode::LowPass => v2,
                     KickFilterMode::HighPass => post_tone - k * v1 - v2,
                     KickFilterMode::BandPass => v1,
+                    KickFilterMode::Notch => post_tone - k * v1,
+                    KickFilterMode::Peak => (2.0 * v2 + k * v1 - post_tone).clamp(-2.0, 2.0),
                     KickFilterMode::Off => post_tone,
                 }
             } else {
@@ -626,7 +876,7 @@ mod tests {
     #[test]
     fn test_kick_presets_valid() {
         let presets = KickParams::all_presets();
-        assert!(presets.len() >= 8, "Doit contenir au moins 8 presets");
+        assert!(presets.len() >= 13, "Doit contenir au moins 13 presets");
         for p in presets {
             let mut kick = KickSynth::new(48000);
             kick.params = p;
@@ -649,6 +899,9 @@ mod tests {
             KickDriveType::HardClip,
             KickDriveType::Wavefolder,
             KickDriveType::TubeDrive,
+            KickDriveType::Bitcrush,
+            KickDriveType::Fuzz,
+            KickDriveType::Rectifier,
         ] {
             let mut kick = KickSynth::new(48000);
             kick.params.drive = 0.8;
@@ -668,6 +921,8 @@ mod tests {
             KickFilterMode::LowPass,
             KickFilterMode::HighPass,
             KickFilterMode::BandPass,
+            KickFilterMode::Notch,
+            KickFilterMode::Peak,
         ] {
             let mut kick = KickSynth::new(48000);
             kick.params.filter_mode = mode;
@@ -678,6 +933,30 @@ mod tests {
             kick.render(&mut buf);
             let amp = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
             assert!(amp > 0.01);
+        }
+    }
+
+    #[test]
+    fn test_kick_all_waveforms_and_fm_hold() {
+        for wf in [
+            KickWaveform::Sine,
+            KickWaveform::Triangle,
+            KickWaveform::SatSine,
+            KickWaveform::SquareSub,
+            KickWaveform::NoiseTransient,
+            KickWaveform::Parabolic,
+            KickWaveform::Ramp,
+        ] {
+            let mut kick = KickSynth::new(48000);
+            kick.params.waveform = wf;
+            kick.params.fm_amount = 0.5;
+            kick.params.fm_ratio = 2.0;
+            kick.params.hold_ms = 10.0;
+            kick.trigger(36, 120);
+            let mut buf = vec![0.0f32; 512];
+            kick.render(&mut buf);
+            let amp = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+            assert!(amp > 0.05);
         }
     }
 }

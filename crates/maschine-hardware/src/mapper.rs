@@ -394,6 +394,10 @@ pub enum MapperAction {
     KickFilterCutoffDelta(f32),
     /// Kick Synth : résonance filtre
     KickFilterResoDelta(f32),
+    /// Kick Synth : cycle type de distorsion
+    KickDriveTypeDelta(i32),
+    /// Kick Synth : cycle mode de filtre
+    KickFilterModeDelta(i32),
 }
 
 /// Données du séquenceur pour mettre à jour les LEDs du contrôleur physique
@@ -1588,30 +1592,42 @@ impl HardwareMapper {
                             // SAMPLER : son actif. 1-4 = VOL/PAN/CUTOFF/RESO,
                             // 5-8 = ATTACK/DECAY/SUSTAIN/RELEASE. Deltas bruts :
                             // l'app les met à l'échelle (~1 tour = toute la plage).
-                            match idx {
-                                0 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
-                                1 => actions.push(MapperAction::SoundPanDelta(delta as f32)),
-                                2 => {
-                                    actions.push(MapperAction::SoundFilterCutoffDelta(delta as f32))
+                            if self.shift_held && (idx == 2 || idx == 3) {
+                                actions.push(MapperAction::CycleSoundFilterKind);
+                            } else {
+                                match idx {
+                                    0 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
+                                    1 => actions.push(MapperAction::SoundPanDelta(delta as f32)),
+                                    2 => actions
+                                        .push(MapperAction::SoundFilterCutoffDelta(delta as f32)),
+                                    3 => actions
+                                        .push(MapperAction::SoundFilterResoDelta(delta as f32)),
+                                    4 => actions.push(MapperAction::SoundAttackDelta(delta as f32)),
+                                    5 => actions.push(MapperAction::SoundDecayDelta(delta as f32)),
+                                    6 => {
+                                        actions.push(MapperAction::SoundSustainDelta(delta as f32))
+                                    }
+                                    _ => {
+                                        actions.push(MapperAction::SoundReleaseDelta(delta as f32))
+                                    }
                                 }
-                                3 => actions.push(MapperAction::SoundFilterResoDelta(delta as f32)),
-                                4 => actions.push(MapperAction::SoundAttackDelta(delta as f32)),
-                                5 => actions.push(MapperAction::SoundDecayDelta(delta as f32)),
-                                6 => actions.push(MapperAction::SoundSustainDelta(delta as f32)),
-                                _ => actions.push(MapperAction::SoundReleaseDelta(delta as f32)),
                             }
                         } else if self.left_tab == 4 {
                             if self.plugin_page == 1 {
                                 if self.has_kick_synth {
                                     // KICK SYNTH : 1 TUNE, 2 DECAY, 3 SNAP/PUNCH, 4 SWEEP, 5 CLICK, 6 DRIVE, 7 SUB, 8 VOL
-                                    // Avec Shift : Knob 6 = Cutoff filtre, Knob 7 = Résonance filtre
-                                    if self.shift_held && idx == 6 {
+                                    // Avec Shift : Knob 5 = Disto Type, Knob 6 = Cutoff filtre, Knob 7 = Mode filtre
+                                    if self.shift_held && idx == 5 {
+                                        actions
+                                            .push(MapperAction::KickDriveTypeDelta(delta.signum()));
+                                    } else if self.shift_held && idx == 6 {
                                         actions.push(MapperAction::KickFilterCutoffDelta(
                                             delta as f32,
                                         ));
                                     } else if self.shift_held && idx == 7 {
-                                        actions
-                                            .push(MapperAction::KickFilterResoDelta(delta as f32));
+                                        actions.push(MapperAction::KickFilterModeDelta(
+                                            delta.signum(),
+                                        ));
                                     } else {
                                         match idx {
                                             0 => actions
@@ -1635,25 +1651,31 @@ impl HardwareMapper {
                                 } else if self.has_wavetable_synth {
                                     // WAVETABLE / NEXUS SYNTH :
                                     // 1 CUTOFF, 2 RESO, 3 ATTACK, 4 DECAY, 5 SUSTAIN, 6 RELEASE, 7 PAN, 8 VOLUME
-                                    match idx {
-                                        0 => actions.push(MapperAction::SoundFilterCutoffDelta(
-                                            delta as f32,
-                                        )),
-                                        1 => actions
-                                            .push(MapperAction::SoundFilterResoDelta(delta as f32)),
-                                        2 => actions
-                                            .push(MapperAction::SoundAttackDelta(delta as f32)),
-                                        3 => actions
-                                            .push(MapperAction::SoundDecayDelta(delta as f32)),
-                                        4 => actions
-                                            .push(MapperAction::SoundSustainDelta(delta as f32)),
-                                        5 => actions
-                                            .push(MapperAction::SoundReleaseDelta(delta as f32)),
-                                        6 => {
-                                            actions.push(MapperAction::SoundPanDelta(delta as f32))
+                                    if self.shift_held && (idx == 0 || idx == 1) {
+                                        actions.push(MapperAction::CycleSoundFilterKind);
+                                    } else {
+                                        match idx {
+                                            0 => actions.push(
+                                                MapperAction::SoundFilterCutoffDelta(delta as f32),
+                                            ),
+                                            1 => actions.push(MapperAction::SoundFilterResoDelta(
+                                                delta as f32,
+                                            )),
+                                            2 => actions
+                                                .push(MapperAction::SoundAttackDelta(delta as f32)),
+                                            3 => actions
+                                                .push(MapperAction::SoundDecayDelta(delta as f32)),
+                                            4 => actions.push(MapperAction::SoundSustainDelta(
+                                                delta as f32,
+                                            )),
+                                            5 => actions.push(MapperAction::SoundReleaseDelta(
+                                                delta as f32,
+                                            )),
+                                            6 => actions
+                                                .push(MapperAction::SoundPanDelta(delta as f32)),
+                                            _ => actions
+                                                .push(MapperAction::SoundVolumeDelta(delta as f32)),
                                         }
-                                        _ => actions
-                                            .push(MapperAction::SoundVolumeDelta(delta as f32)),
                                     }
                                 } else {
                                     // TB-303 : 1 CUTOFF, 2 RESO, 3 ENVMOD, 4 DECAY,
@@ -3310,5 +3332,43 @@ mod tests {
         assert!(a.contains(&MapperAction::SetRightTab(0)));
         assert_eq!(m.left_tab, 3);
         assert_eq!(m.browser_kind, 1);
+    }
+
+    #[test]
+    fn hardware_filter_and_kick_knobs_cycle_modes() {
+        let mut m = HardwareMapper::with_default();
+
+        // 1. En vue SAMPLER (left_tab = 2), Shift + Knob 3 (index 2) alterne le type de filtre
+        m.left_tab = 2;
+        m.shift_held = true;
+        let _ = m.handle_hardware_event(knob_ev(3, 100, 0));
+        let a = m.handle_hardware_event(knob_ev(3, 101, 1));
+        assert_eq!(a, vec![MapperAction::CycleSoundFilterKind]);
+
+        // 2. En vue KICK SYNTH (left_tab = 4, plugin_page = 1, has_kick_synth = true)
+        m.left_tab = 4;
+        m.plugin_page = 1;
+        m.has_kick_synth = true;
+        m.shift_held = true;
+
+        // Shift + Knob 6 (index 5) = Disto Type
+        let _ = m.handle_hardware_event(knob_ev(6, 200, 2));
+        let a = m.handle_hardware_event(knob_ev(6, 201, 3));
+        assert_eq!(a, vec![MapperAction::KickDriveTypeDelta(1)]);
+
+        // Shift + Knob 8 (index 7) = Filter Mode
+        let _ = m.handle_hardware_event(knob_ev(8, 300, 4));
+        let a = m.handle_hardware_event(knob_ev(8, 301, 5));
+        assert_eq!(a, vec![MapperAction::KickFilterModeDelta(1)]);
+
+        // 3. En vue WAVETABLE SYNTH (left_tab = 4, plugin_page = 1, has_wavetable_synth = true)
+        m.has_kick_synth = false;
+        m.has_wavetable_synth = true;
+        m.shift_held = true;
+
+        // Shift + Knob 1 (index 0) = Cycle filter
+        let _ = m.handle_hardware_event(knob_ev(1, 400, 6));
+        let a = m.handle_hardware_event(knob_ev(1, 401, 7));
+        assert_eq!(a, vec![MapperAction::CycleSoundFilterKind]);
     }
 }

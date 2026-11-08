@@ -2685,29 +2685,68 @@ fn render_pad_mixer_strips(
             p.panel,
         );
 
-        // Vertical level bar / VU
+        // Live audio VU meter & volume fader
         let vu_h = 56usize;
         let vu_y = y + 36;
-        fill_rect(frame, x + 16, vu_y, 14, vu_h, p.track);
-        let norm = db_norm(vol_db).clamp(0.0, 1.0);
-        let bar_h = (norm * vu_h as f32) as usize;
+        let vu_x = x + 10;
+        let vu_w = 14usize;
+
+        // Clip indicator
+        let pad_lvl = snap.pad_levels.get(pad_idx).copied().unwrap_or(0.0);
+        let pad_peak = snap.pad_peaks.get(pad_idx).copied().unwrap_or(0.0);
+        let is_clipped = pad_peak >= 0.99;
+        fill_rect(
+            frame,
+            vu_x,
+            vu_y - 4,
+            vu_w,
+            2,
+            if is_clipped { p.red } else { p.track },
+        );
+
+        // VU meter background
+        fill_rect(frame, vu_x, vu_y, vu_w, vu_h, p.track);
+
+        // Dynamic VU meter bar
+        let lvl_norm = (pad_lvl * 1.25).clamp(0.0, 1.0);
+        let bar_h = (lvl_norm * vu_h as f32) as usize;
         if bar_h > 0 {
             let by = vu_y + vu_h - bar_h;
-            fill_rect(
-                frame,
-                x + 16,
-                by,
-                14,
-                bar_h,
-                if is_muted {
-                    p.muted
-                } else if is_focused {
-                    p.accent
-                } else {
-                    p.cyan
-                },
-            );
+            let bar_col = if is_muted {
+                p.muted
+            } else if lvl_norm > 0.92 {
+                p.red
+            } else if lvl_norm > 0.78 {
+                p.yellow
+            } else if is_focused {
+                p.accent
+            } else {
+                p.cyan
+            };
+            fill_rect(frame, vu_x, by, vu_w, bar_h, bar_col);
         }
+
+        // Peak hold tick
+        let peak_norm = (pad_peak * 1.25).clamp(0.0, 1.0);
+        let peak_h = (peak_norm * vu_h as f32) as usize;
+        if peak_h > 1 && !is_muted {
+            let py = vu_y + vu_h - peak_h;
+            fill_rect(frame, vu_x, py, vu_w, 1, p.white);
+        }
+
+        // Volume fader track and notch
+        let fader_track_x = x + 32;
+        fill_rect(frame, fader_track_x, vu_y, 2, vu_h, p.border);
+        let norm = db_norm(vol_db).clamp(0.0, 1.0);
+        let fader_y = vu_y + vu_h - (norm * (vu_h - 4) as f32) as usize - 4;
+        fill_rect(
+            frame,
+            fader_track_x - 3,
+            fader_y,
+            8,
+            4,
+            if is_focused { p.accent } else { p.white },
+        );
 
         // dB text
         draw_text(frame, x + 4, y + 98, &fmt_db(vol_db), p.dim, p.panel);
@@ -3200,6 +3239,15 @@ pub fn render_sampler_left(snap: &EngineSnapshot) -> DisplayFrame {
         .unwrap_or_else(|| "--".into());
     let cut = snd.map(|s| s.filter.cutoff_hz).unwrap_or(20000.0);
     let reso = snd.map(|s| s.filter.resonance).unwrap_or(0.0);
+    let f_kind = snd
+        .map(|s| s.filter.kind)
+        .unwrap_or(crate::project::FilterKind::LowPass);
+    let f_str = match f_kind {
+        crate::project::FilterKind::LowPass => "LP",
+        crate::project::FilterKind::HighPass => "HP",
+        crate::project::FilterKind::BandPass => "BP",
+        crate::project::FilterKind::Off => "OFF",
+    };
     fill_rect(&mut frame, 242, 124, 230, 62, p.panel);
     draw_rect_outline(&mut frame, 242, 124, 230, 62, p.border);
     draw_text(
@@ -3222,8 +3270,16 @@ pub fn render_sampler_left(snap: &EngineSnapshot) -> DisplayFrame {
         &mut frame,
         248,
         164,
-        &format!("FILTRE {} | RESO {:.0}%", fmt_hz(cut), reso * 100.0),
-        p.muted,
+        &format!(
+            "FILTRE [{f_str}] {} | RESO {:.0}%",
+            fmt_hz(cut),
+            reso * 100.0
+        ),
+        if f_kind == crate::project::FilterKind::Off {
+            p.muted
+        } else {
+            p.accent
+        },
         p.panel,
     );
 
@@ -3233,10 +3289,23 @@ pub fn render_sampler_left(snap: &EngineSnapshot) -> DisplayFrame {
         Some(("1:VOL", fmt_db(s_db), db_norm(s_db), p.cyan)),
         Some(("2:PAN", fmt_pan(s_pan), (s_pan + 1.0) * 0.5, p.cyan)),
         Some((
-            "3:CUTOFF",
+            if f_kind == crate::project::FilterKind::Off {
+                "3:CUT [OFF]"
+            } else {
+                match f_kind {
+                    crate::project::FilterKind::LowPass => "3:CUT [LP]",
+                    crate::project::FilterKind::HighPass => "3:CUT [HP]",
+                    crate::project::FilterKind::BandPass => "3:CUT [BP]",
+                    _ => "3:CUTOFF",
+                }
+            },
             fmt_hz(cut),
             ((cut - 20.0) / 19980.0).clamp(0.0, 1.0),
-            p.cyan,
+            if f_kind == crate::project::FilterKind::Off {
+                p.muted
+            } else {
+                p.accent
+            },
         )),
         Some(("4:RESO", format!("{:.0}%", reso * 100.0), reso, p.cyan)),
     ];
@@ -3295,12 +3364,25 @@ pub fn render_sampler_right(snap: &EngineSnapshot) -> DisplayFrame {
         p.white,
         p.bg,
     );
+    let f_kind = snd
+        .map(|s| s.filter.kind)
+        .unwrap_or(crate::project::FilterKind::LowPass);
+    let f_str = match f_kind {
+        crate::project::FilterKind::LowPass => "LP",
+        crate::project::FilterKind::HighPass => "HP",
+        crate::project::FilterKind::BandPass => "BP",
+        crate::project::FilterKind::Off => "OFF",
+    };
     draw_text(
         &mut frame,
         220,
         152,
-        &format!("CUT {}", fmt_hz(cut)),
-        p.white,
+        &format!("CUT [{f_str}] {}", fmt_hz(cut)),
+        if f_kind == crate::project::FilterKind::Off {
+            p.muted
+        } else {
+            p.accent
+        },
         p.bg,
     );
     draw_text(
@@ -3343,8 +3425,11 @@ pub fn render_sampler_right(snap: &EngineSnapshot) -> DisplayFrame {
     encoder_row(&mut frame, &p, &slots);
 
     let mut active = [false; 8];
-    for (i, a) in active.iter_mut().enumerate() {
-        *a = i == snap.active_sound as usize;
+    match f_kind {
+        crate::project::FilterKind::LowPass => active[4] = true,
+        crate::project::FilterKind::HighPass => active[5] = true,
+        crate::project::FilterKind::BandPass => active[6] = true,
+        crate::project::FilterKind::Off => active[7] = true,
     }
     footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
     frame
@@ -3515,12 +3600,17 @@ pub fn render_kick_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
         crate::kick_synth::KickDriveType::HardClip => "HARD",
         crate::kick_synth::KickDriveType::Wavefolder => "FOLD",
         crate::kick_synth::KickDriveType::TubeDrive => "TUBE",
+        crate::kick_synth::KickDriveType::Bitcrush => "CRUSH",
+        crate::kick_synth::KickDriveType::Fuzz => "FUZZ",
+        crate::kick_synth::KickDriveType::Rectifier => "RECT",
     };
     let flt_str = match kp.filter_mode {
         crate::kick_synth::KickFilterMode::Off => "OFF".to_string(),
         crate::kick_synth::KickFilterMode::LowPass => format!("LP {:.0}Hz", kp.filter_cutoff_hz),
         crate::kick_synth::KickFilterMode::HighPass => format!("HP {:.0}Hz", kp.filter_cutoff_hz),
         crate::kick_synth::KickFilterMode::BandPass => format!("BP {:.0}Hz", kp.filter_cutoff_hz),
+        crate::kick_synth::KickFilterMode::Notch => format!("NOTCH {:.0}Hz", kp.filter_cutoff_hz),
+        crate::kick_synth::KickFilterMode::Peak => format!("PEAK {:.0}Hz", kp.filter_cutoff_hz),
     };
     draw_text(
         &mut frame,

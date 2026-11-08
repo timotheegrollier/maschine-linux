@@ -242,7 +242,7 @@ fn sound_strip(
         frame = frame.stroke(egui::Stroke::new(2.0_f32, c.accent));
     }
     frame.show(ui, |ui| {
-        ui.set_width(68.0);
+        ui.set_width(80.0);
         ui.vertical_centered(|ui| {
             if ui
                 .add(
@@ -271,13 +271,18 @@ fn sound_strip(
                     .small()
                     .color(if is_selected { c.text } else { c.text_dim }),
             );
-            if let Some(v) = fader_db(ui, ("snd_fader", group, sound), volume_db, 120.0, 28.0) {
-                let _ = app.engine.lock().handle_event(EngineEvent::SoundVolume {
-                    group: group as u8,
-                    sound: sound as u8,
-                    volume_db: v,
-                });
-            }
+            ui.horizontal(|ui| {
+                let lvl = snap.pad_levels.get(sound).copied().unwrap_or(0.0);
+                let peak = snap.pad_peaks.get(sound).copied().unwrap_or(0.0);
+                vu_meter(ui, [lvl, lvl], [peak, peak], 12.0, 120.0);
+                if let Some(v) = fader_db(ui, ("snd_fader", group, sound), volume_db, 120.0, 26.0) {
+                    let _ = app.engine.lock().handle_event(EngineEvent::SoundVolume {
+                        group: group as u8,
+                        sound: sound as u8,
+                        volume_db: v,
+                    });
+                }
+            });
             ui.label(
                 egui::RichText::new(format!("{volume_db:>5.1}"))
                     .monospace()

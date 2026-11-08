@@ -523,6 +523,10 @@ pub struct EngineSnapshot {
     pub group_levels: [f32; 8],
     /// Peak hold par groupe
     pub group_peaks: [f32; 8],
+    /// VU-mètres lissés par pad (0..15) pour le groupe actif
+    pub pad_levels: [f32; 16],
+    /// Peak hold par pad (0..15) pour le groupe actif
+    pub pad_peaks: [f32; 16],
     /// VU master lissé (post volume master)
     pub master_level: f32,
     /// Peak hold master
@@ -712,6 +716,10 @@ pub struct Engine {
     group_meter: [f32; 8],
     /// Peak hold par groupe
     group_peak_hold: [f32; 8],
+    /// VU-mètres : niveau lissé par pad (0..15) par groupe (0..8)
+    pad_meter: [[f32; 16]; 8],
+    /// Peak hold par pad (0..15) par groupe (0..8)
+    pad_peak_hold: [[f32; 16]; 8],
     /// VU master lissé + peak hold (post volume master)
     master_meter: f32,
     /// Peak hold master
@@ -947,6 +955,8 @@ impl Engine {
             click_normal: Self::metronome_click(sample_rate, 880.0),
             group_meter: [0.0; 8],
             group_peak_hold: [0.0; 8],
+            pad_meter: [[0.0; 16]; 8],
+            pad_peak_hold: [[0.0; 16]; 8],
             master_meter: 0.0,
             master_peak_hold: 0.0,
             revision: 0,
@@ -1050,6 +1060,8 @@ impl Engine {
             pattern_bars,
             group_levels: self.group_meter,
             group_peaks: self.group_peak_hold,
+            pad_levels: self.pad_meter[self.group_focus as usize % 8],
+            pad_peaks: self.pad_peak_hold[self.group_focus as usize % 8],
             master_level: self.master_meter,
             master_peak: self.master_peak_hold,
             soft_labels: self.soft_key_labels(),
@@ -2593,7 +2605,7 @@ impl Engine {
                         if delta > 0 {
                             crate::kick_synth::KickDriveType::HardClip
                         } else {
-                            crate::kick_synth::KickDriveType::TubeDrive
+                            crate::kick_synth::KickDriveType::Rectifier
                         }
                     }
                     crate::kick_synth::KickDriveType::HardClip => {
@@ -2612,9 +2624,30 @@ impl Engine {
                     }
                     crate::kick_synth::KickDriveType::TubeDrive => {
                         if delta > 0 {
-                            crate::kick_synth::KickDriveType::AnalogTanh
+                            crate::kick_synth::KickDriveType::Bitcrush
                         } else {
                             crate::kick_synth::KickDriveType::Wavefolder
+                        }
+                    }
+                    crate::kick_synth::KickDriveType::Bitcrush => {
+                        if delta > 0 {
+                            crate::kick_synth::KickDriveType::Fuzz
+                        } else {
+                            crate::kick_synth::KickDriveType::TubeDrive
+                        }
+                    }
+                    crate::kick_synth::KickDriveType::Fuzz => {
+                        if delta > 0 {
+                            crate::kick_synth::KickDriveType::Rectifier
+                        } else {
+                            crate::kick_synth::KickDriveType::Bitcrush
+                        }
+                    }
+                    crate::kick_synth::KickDriveType::Rectifier => {
+                        if delta > 0 {
+                            crate::kick_synth::KickDriveType::AnalogTanh
+                        } else {
+                            crate::kick_synth::KickDriveType::Fuzz
                         }
                     }
                 };
@@ -2628,7 +2661,7 @@ impl Engine {
                         if delta > 0 {
                             crate::kick_synth::KickFilterMode::LowPass
                         } else {
-                            crate::kick_synth::KickFilterMode::BandPass
+                            crate::kick_synth::KickFilterMode::Peak
                         }
                     }
                     crate::kick_synth::KickFilterMode::LowPass => {
@@ -2647,9 +2680,23 @@ impl Engine {
                     }
                     crate::kick_synth::KickFilterMode::BandPass => {
                         if delta > 0 {
-                            crate::kick_synth::KickFilterMode::Off
+                            crate::kick_synth::KickFilterMode::Notch
                         } else {
                             crate::kick_synth::KickFilterMode::HighPass
+                        }
+                    }
+                    crate::kick_synth::KickFilterMode::Notch => {
+                        if delta > 0 {
+                            crate::kick_synth::KickFilterMode::Peak
+                        } else {
+                            crate::kick_synth::KickFilterMode::BandPass
+                        }
+                    }
+                    crate::kick_synth::KickFilterMode::Peak => {
+                        if delta > 0 {
+                            crate::kick_synth::KickFilterMode::Off
+                        } else {
+                            crate::kick_synth::KickFilterMode::Notch
                         }
                     }
                 };
@@ -2684,7 +2731,7 @@ impl Engine {
                         }
                         crate::project::FilterKind::BandPass => crate::project::FilterKind::Off,
                     };
-                    let kind = snd.filter.kind.clone();
+                    let kind = snd.filter.kind;
                     self.status_message =
                         Some(format!("Sound {:02} Filtre : {:?}", sound + 1, kind));
                     self.status_expires_at =
@@ -2701,7 +2748,7 @@ impl Engine {
                     .and_then(|g| g.sounds.get_mut(sound as usize))
                     .and_then(|s| s.as_mut())
                 {
-                    snd.filter.kind = kind.clone();
+                    snd.filter.kind = kind;
                     self.status_message =
                         Some(format!("Sound {:02} Filtre : {:?}", sound + 1, kind));
                     self.status_expires_at =
@@ -3442,6 +3489,30 @@ impl Engine {
             } else {
                 self.group_peak_hold[g] * 0.996
             };
+        }
+        // VU-mètres par pad : mesure les crêtes réelles pour chaque tranche de pad
+        for g in 0..8 {
+            let s_peaks = self.sampler.sound_peaks(g);
+            for (s, &peak_val) in s_peaks.iter().enumerate() {
+                let mut p = peak_val;
+                if g == self.group_focus as usize && s == self.active_sound as usize {
+                    let act = self.pad_activity[s];
+                    if act > p {
+                        p = act;
+                    }
+                }
+                let p = p.clamp(0.0, 4.0);
+                self.pad_meter[g][s] = if p > self.pad_meter[g][s] {
+                    p
+                } else {
+                    self.pad_meter[g][s] * 0.96
+                };
+                self.pad_peak_hold[g][s] = if p > self.pad_peak_hold[g][s] {
+                    p
+                } else {
+                    self.pad_peak_hold[g][s] * 0.995
+                };
+            }
         }
         // Bus master : volume + limiteur doux (tanh). Avant, la sortie était
         // écrêtée durement (clamp ±1) : kick + snare + clap (~1,7) distordaient.
@@ -5558,8 +5629,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .filter
-            .kind
-            .clone();
+            .kind;
         assert_eq!(f1, crate::project::FilterKind::LowPass);
 
         eng.handle_event(EngineEvent::SoftKey(4)).unwrap();
@@ -5567,8 +5637,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .filter
-            .kind
-            .clone();
+            .kind;
         assert_eq!(f2, crate::project::FilterKind::HighPass);
 
         // 2. Sélection directe via soft keys 5..8 (LP, HP, BP, OFF)
@@ -5577,8 +5646,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .filter
-            .kind
-            .clone();
+            .kind;
         assert_eq!(f3, crate::project::FilterKind::BandPass);
 
         eng.handle_event(EngineEvent::SoftKey(8)).unwrap(); // SoftKey 8 = OFF (idx 7)
@@ -5586,8 +5654,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .filter
-            .kind
-            .clone();
+            .kind;
         assert_eq!(f4, crate::project::FilterKind::Off);
 
         eng.handle_event(EngineEvent::SoftKey(5)).unwrap(); // SoftKey 5 = LP (idx 4)
@@ -5595,8 +5662,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .filter
-            .kind
-            .clone();
+            .kind;
         assert_eq!(f5, crate::project::FilterKind::LowPass);
     }
 

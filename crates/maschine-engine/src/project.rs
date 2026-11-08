@@ -482,7 +482,7 @@ impl Default for Filter {
 }
 
 /// Type filtre.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum FilterKind {
     /// Off
     #[default]

@@ -212,6 +212,8 @@ pub struct Sampler {
     pub sample_rate: u32,
     /// Crête par groupe mixer (0..8) mise à jour à chaque `render` (avant release).
     pub group_peak: [f32; 8],
+    /// Crête par pad/sound (0..15) et par groupe (0..8) mise à jour à chaque `render`.
+    pub sound_peak: [[f32; 16]; 8],
 }
 
 impl Sampler {
@@ -538,6 +540,11 @@ impl Sampler {
         for p in self.group_peak.iter_mut() {
             *p = 0.0;
         }
+        for grp in self.sound_peak.iter_mut() {
+            for sp in grp.iter_mut() {
+                *sp = 0.0;
+            }
+        }
         // Suppression en place : pas de Vec temporaire ni de tri dans le
         // callback audio. `swap_remove` est sûr ici, l'ordre des voix n'est pas
         // un invariant (le voice stealing compare explicitement leur âge).
@@ -652,13 +659,20 @@ impl Sampler {
                         pos += inc;
                     }
                     voice.pos = pos;
-                    let peak = (voice.group < 8).then_some((voice.group as usize, voice_peak));
+                    let peak = (voice.group < 8 && voice.sound < 16).then_some((
+                        voice.group as usize,
+                        voice.sound as usize,
+                        voice_peak,
+                    ));
                     (finished || voice.adsr_phase == AdsrPhase::Off, peak)
                 }
             };
-            if let Some((group, peak)) = group_peak {
+            if let Some((group, sound, peak)) = group_peak {
                 if peak > self.group_peak[group] {
                     self.group_peak[group] = peak;
+                }
+                if peak > self.sound_peak[group][sound] {
+                    self.sound_peak[group][sound] = peak;
                 }
             }
             if remove_voice {
@@ -768,6 +782,16 @@ impl Sampler {
     #[must_use]
     pub fn group_peaks(&self) -> [f32; 8] {
         self.group_peak
+    }
+
+    /// Crêtes par pad/sound (0..15) pour un groupe donné du dernier `render`.
+    #[must_use]
+    pub fn sound_peaks(&self, group: usize) -> [f32; 16] {
+        if group < 8 {
+            self.sound_peak[group]
+        } else {
+            [0.0; 16]
+        }
     }
 
     /// Enveloppe (min,max) par bucket du premier sample du Sound — pour la

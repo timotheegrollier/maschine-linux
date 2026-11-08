@@ -1265,6 +1265,16 @@ fn cmd_daemon(
                         .lock()
                         .handle_event(EngineEvent::KickFilterResoDelta(delta));
                 }
+                MapperAction::KickDriveTypeDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::KickDriveTypeDelta(delta));
+                }
+                MapperAction::KickFilterModeDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::KickFilterModeDelta(delta));
+                }
                 MapperAction::SetMixerMode(mode) => {
                     let _ = engine.lock().handle_event(EngineEvent::SetMixerMode(mode));
                 }
@@ -2636,6 +2646,8 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             pattern_bars: 2,
             group_levels: [0.0; 8],
             group_peaks: [0.0; 8],
+            pad_levels: [0.0; 16],
+            pad_peaks: [0.0; 16],
             master_level: 0.0,
             master_peak: 0.0,
             soft_labels: ["1", "2", "3", "4", "5", "6", "7", "8"],

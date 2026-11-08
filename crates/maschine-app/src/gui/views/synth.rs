@@ -1332,12 +1332,25 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                         params.waveform = KickWaveform::NoiseTransient;
                         changed = true;
                     }
+                    if chip(
+                        ui,
+                        "PARABOLIC",
+                        params.waveform == KickWaveform::Parabolic,
+                        c.accent,
+                    ) {
+                        params.waveform = KickWaveform::Parabolic;
+                        changed = true;
+                    }
+                    if chip(ui, "RAMP", params.waveform == KickWaveform::Ramp, c.accent) {
+                        params.waveform = KickWaveform::Ramp;
+                        changed = true;
+                    }
                 });
             });
 
             ui.separator();
 
-            // Knobs : Tune, Decay, Snap, Sweep
+            // Knobs : Tune, Decay, Hold, Snap, Sweep, FM
             if let Some(v) = knob(
                 ui,
                 "kick_tune",
@@ -1360,6 +1373,16 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
 
             if let Some(v) = knob(
                 ui,
+                "kick_hold",
+                params.hold_ms,
+                &KnobSpec::linear("HOLD", " ms", 0.0, 60.0, 0.0),
+            ) {
+                params.hold_ms = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
                 "kick_snap",
                 params.snap,
                 &KnobSpec::linear("SNAP / PUNCH", "", 0.0, 1.0, 0.7),
@@ -1375,6 +1398,26 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                 &KnobSpec::linear("SWEEP TIME", " ms", 5.0, 120.0, 28.0),
             ) {
                 params.sweep_time_ms = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "kick_fm_amt",
+                params.fm_amount,
+                &KnobSpec::linear("FM AMT", "", 0.0, 1.0, 0.0),
+            ) {
+                params.fm_amount = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "kick_fm_ratio",
+                params.fm_ratio,
+                &KnobSpec::linear("FM RATIO", "x", 0.25, 8.0, 1.0),
+            ) {
+                params.fm_ratio = v;
                 changed = true;
             }
         });
@@ -1435,6 +1478,33 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                         params.drive_type = KickDriveType::TubeDrive;
                         changed = true;
                     }
+                    if chip(
+                        ui,
+                        "CRUSH",
+                        params.drive_type == KickDriveType::Bitcrush,
+                        c.accent_cyan,
+                    ) {
+                        params.drive_type = KickDriveType::Bitcrush;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "FUZZ",
+                        params.drive_type == KickDriveType::Fuzz,
+                        c.error,
+                    ) {
+                        params.drive_type = KickDriveType::Fuzz;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "RECT",
+                        params.drive_type == KickDriveType::Rectifier,
+                        c.warning,
+                    ) {
+                        params.drive_type = KickDriveType::Rectifier;
+                        changed = true;
+                    }
                 });
             });
 
@@ -1481,6 +1551,24 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                         c.warning,
                     ) {
                         params.filter_mode = KickFilterMode::BandPass;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "NOTCH",
+                        params.filter_mode == KickFilterMode::Notch,
+                        c.accent_purple,
+                    ) {
+                        params.filter_mode = KickFilterMode::Notch;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "PEAK",
+                        params.filter_mode == KickFilterMode::Peak,
+                        c.accent,
+                    ) {
+                        params.filter_mode = KickFilterMode::Peak;
                         changed = true;
                     }
                 });

@@ -72,3 +72,5 @@ USB does not provide acknowledgement of displayed pixels here. After launching `
 10. Hide the centre workspace with `F3`/`CENTRE` and the MK3 panel with `F2`; `TOUT` must show or hide all panels. Close the window and confirm that both MK3 screens return to the default Maschine logo and the pad LEDs turn off.
 
 The complete official SAMPLING feature (RECORD, EDIT, SLICE and ZONE editing) and event editing are not covered as implemented: they remain outside the current scope. See [workflow.md](workflow.md) for details on the gaps and available controls.
+
+For continuous integration, release building, and auto-updater diagnostics, see [CI_CD_RELEASE.md](CI_CD_RELEASE.md).

@@ -1340,8 +1340,7 @@ impl HardwareMapper {
                         self.mixer_mode = 2;
                         actions.push(MapperAction::SetMixerMode(2));
                     } else if self.mixer_mode >= 2 {
-                        self.group_focus =
-                            (self.group_focus as i32 - 1).rem_euclid(8) as u8;
+                        self.group_focus = (self.group_focus as i32 - 1).rem_euclid(8) as u8;
                         actions.push(MapperAction::GroupFocus(self.group_focus));
                     }
                 } else if self.pattern_select_mode {
@@ -1381,8 +1380,8 @@ impl HardwareMapper {
                     // Mode STEP : défile la grille d'un pas.
                     actions.push(MapperAction::StepScroll(1));
                 } else {
-                    self.selected_bar = (self.selected_bar + 1)
-                        .min(self.pattern_bars.saturating_sub(1));
+                    self.selected_bar =
+                        (self.selected_bar + 1).min(self.pattern_bars.saturating_sub(1));
                     actions.push(MapperAction::SelectBar(self.selected_bar));
                 }
                 true
@@ -3926,13 +3925,14 @@ mod tests {
 
             // Vérifier que chaque pad (0..15) dans ce groupe émet bien son PadTrigger distinct
             for pad in 0..16u8 {
-                let pad_down = m.handle_hardware_event(HardwareEvent::Pad(crate::events::PadState {
-                    pad,
-                    pressed: true,
-                    velocity: 100,
-                    pressure: 0x4500,
-                    ts_ns: pad as u64,
-                }));
+                let pad_down =
+                    m.handle_hardware_event(HardwareEvent::Pad(crate::events::PadState {
+                        pad,
+                        pressed: true,
+                        velocity: 100,
+                        pressure: 0x4500,
+                        ts_ns: pad as u64,
+                    }));
                 assert!(pad_down.contains(&MapperAction::SelectSound(pad)));
                 assert!(pad_down.contains(&MapperAction::PadTrigger {
                     pad,
@@ -4114,14 +4114,23 @@ mod tests {
             pressed: true,
             ts_ns: 4,
         });
-        assert_eq!(a_left, vec![MapperAction::PatternStep { group: 2, delta: -1 }]);
+        assert_eq!(
+            a_left,
+            vec![MapperAction::PatternStep {
+                group: 2,
+                delta: -1
+            }]
+        );
 
         let a_right = m.handle_hardware_event(HardwareEvent::Button {
             id: maschine_proto::ButtonId::FourWayRight,
             pressed: true,
             ts_ns: 5,
         });
-        assert_eq!(a_right, vec![MapperAction::PatternStep { group: 2, delta: 1 }]);
+        assert_eq!(
+            a_right,
+            vec![MapperAction::PatternStep { group: 2, delta: 1 }]
+        );
         m.pattern_select_mode = false;
 
         // 3. FourWayLeft / FourWayRight en mode Step

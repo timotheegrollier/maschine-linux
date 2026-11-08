@@ -62,21 +62,35 @@ impl PackageKind {
             return Self::AppImage;
         }
 
-        // Vérification /etc/os-release pour Fedora/Nobara
-        if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
-            let lower = content.to_lowercase();
-            if lower.contains("id=fedora")
-                || lower.contains("id=nobara")
-                || lower.contains("id_like=\"fedora\"")
-                || lower.contains("id_like=fedora")
-            {
-                return Self::Rpm;
-            }
-            if lower.contains("id=debian")
-                || lower.contains("id=ubuntu")
-                || lower.contains("id_like=debian")
-            {
-                return Self::Deb;
+        let exe_path = std::env::current_exe().unwrap_or_default();
+        let exe_str = exe_path.to_string_lossy();
+
+        if exe_str.ends_with(".AppImage") {
+            return Self::AppImage;
+        }
+
+        // Si l'exécutable est explicitement un paquet système dans /usr/bin (et non /usr/local/bin ou ~/.local)
+        let is_system_bin = (exe_str.starts_with("/usr/bin/")
+            || exe_str == "/usr/bin/maschine-linux")
+            && !exe_str.starts_with("/usr/local/bin/");
+
+        if is_system_bin {
+            // Vérification /etc/os-release pour Fedora/Nobara
+            if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
+                let lower = content.to_lowercase();
+                if lower.contains("id=fedora")
+                    || lower.contains("id=nobara")
+                    || lower.contains("id_like=\"fedora\"")
+                    || lower.contains("id_like=fedora")
+                {
+                    return Self::Rpm;
+                }
+                if lower.contains("id=debian")
+                    || lower.contains("id=ubuntu")
+                    || lower.contains("id_like=debian")
+                {
+                    return Self::Deb;
+                }
             }
         }
 
@@ -184,32 +198,47 @@ pub fn check_for_updates() -> Result<Option<UpdateCheck>> {
     }
 }
 
-/// Sélectionne l'asset idéal selon le type de paquet et l'architecture.
+/// Sélectionne l'asset idéal selon le type de paquet et l'architecture, avec repli automatique.
 fn find_best_asset(assets: &[ReleaseAsset], kind: PackageKind) -> Option<ReleaseAsset> {
-    match kind {
+    // 1. Choix prioritaire selon le type d'environnement détecté
+    let primary = match kind {
         PackageKind::Rpm => assets
             .iter()
             .find(|a| a.name.ends_with(".rpm") && a.name.contains("x86_64"))
-            .or_else(|| assets.iter().find(|a| a.name.ends_with(".rpm")))
-            .cloned(),
+            .or_else(|| assets.iter().find(|a| a.name.ends_with(".rpm"))),
         PackageKind::AppImage => assets
             .iter()
             .find(|a| a.name.ends_with(".AppImage") && a.name.contains("x86_64"))
-            .or_else(|| assets.iter().find(|a| a.name.ends_with(".AppImage")))
-            .cloned(),
+            .or_else(|| assets.iter().find(|a| a.name.ends_with(".AppImage"))),
         PackageKind::Deb => assets
             .iter()
             .find(|a| {
                 a.name.ends_with(".deb") && (a.name.contains("amd64") || a.name.contains("x86_64"))
             })
-            .or_else(|| assets.iter().find(|a| a.name.ends_with(".deb")))
-            .cloned(),
+            .or_else(|| assets.iter().find(|a| a.name.ends_with(".deb"))),
         PackageKind::Binary => assets
             .iter()
             .find(|a| a.name.contains("linux-x86_64.tar.gz") || a.name.contains("x86_64.tar.gz"))
-            .or_else(|| assets.iter().find(|a| a.name.ends_with(".tar.gz")))
-            .cloned(),
+            .or_else(|| assets.iter().find(|a| a.name.ends_with(".tar.gz"))),
+    };
+
+    if let Some(asset) = primary {
+        return Some(asset.clone());
     }
+
+    // 2. Repli universel : si le paquet natif (.rpm/.deb) n'est pas dans la release,
+    // on propose l'AppImage ou l'archive binaire tar.gz universelle
+    assets
+        .iter()
+        .find(|a| a.name.ends_with(".AppImage") && a.name.contains("x86_64"))
+        .or_else(|| assets.iter().find(|a| a.name.ends_with(".AppImage")))
+        .or_else(|| {
+            assets.iter().find(|a| {
+                a.name.contains("linux-x86_64.tar.gz") || a.name.contains("x86_64.tar.gz")
+            })
+        })
+        .or_else(|| assets.iter().find(|a| a.name.ends_with(".tar.gz")))
+        .cloned()
 }
 
 /// Télécharge un asset avec rapport de progression.
@@ -257,160 +286,194 @@ where
     Ok(())
 }
 
-/// Applique la mise à jour téléchargée selon l'environnement.
-pub fn apply_update(check: &UpdateCheck, downloaded_file: &Path) -> Result<String> {
-    match check.package_kind {
-        PackageKind::AppImage => {
-            let appimage_path = std::env::var("APPIMAGE")
-                .map(PathBuf::from)
-                .context("Variable APPIMAGE non définie")?;
+/// Applique la mise à jour téléchargée selon l'environnement et le format de fichier.
+pub fn apply_update(_check: &UpdateCheck, downloaded_file: &Path) -> Result<String> {
+    let file_str = downloaded_file.to_string_lossy();
 
-            // Rendre le fichier téléchargé exécutable
+    // 1. Paquet RPM (.rpm)
+    if file_str.ends_with(".rpm") {
+        info!("Installation du paquet RPM via pkexec...");
+        let dnf_status = std::process::Command::new("pkexec")
+            .args(["dnf", "install", "-y", "--nogpgcheck"])
+            .arg(downloaded_file)
+            .status();
+
+        match dnf_status {
+            Ok(s) if s.success() => Ok(
+                "✓ Paquet RPM installé avec succès via DNF ! Redémarrez l'application.".to_string(),
+            ),
+            _ => {
+                let rpm_status = std::process::Command::new("pkexec")
+                    .args(["rpm", "-Uvh", "--replacepkgs"])
+                    .arg(downloaded_file)
+                    .status()
+                    .context("Échec d'exécution de pkexec rpm")?;
+
+                if rpm_status.success() {
+                    Ok(
+                        "✓ Paquet RPM mis à niveau avec succès ! Redémarrez l'application."
+                            .to_string(),
+                    )
+                } else {
+                    Err(anyhow!(
+                        "Échec de l'installation RPM. Vous pouvez installer manuellement : sudo dnf install {}",
+                        downloaded_file.display()
+                    ))
+                }
+            }
+        }
+    }
+    // 2. Paquet DEB (.deb)
+    else if file_str.ends_with(".deb") {
+        info!("Installation du paquet DEB via pkexec...");
+        let status = std::process::Command::new("pkexec")
+            .args(["dpkg", "-i"])
+            .arg(downloaded_file)
+            .status()
+            .context("Échec d'exécution de pkexec dpkg")?;
+
+        if status.success() {
+            Ok("✓ Paquet DEB installé avec succès ! Redémarrez l'application.".to_string())
+        } else {
+            Err(anyhow!(
+                "Échec de l'installation DEB. Vous pouvez installer manuellement : sudo dpkg -i {}",
+                downloaded_file.display()
+            ))
+        }
+    }
+    // 3. Paquet AppImage (.AppImage)
+    else if file_str.ends_with(".AppImage") {
+        let appimage_path = if let Ok(app_env) = std::env::var("APPIMAGE") {
+            PathBuf::from(app_env)
+        } else {
+            let current_exe =
+                std::env::current_exe().context("Impossible de déterminer le binaire courant")?;
+            if current_exe.to_string_lossy().ends_with(".AppImage") {
+                current_exe
+            } else {
+                current_exe.with_extension("AppImage")
+            }
+        };
+
+        let mut perms = std::fs::metadata(downloaded_file)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(downloaded_file, perms)?;
+
+        std::fs::rename(downloaded_file, &appimage_path)
+            .or_else(|_| {
+                std::fs::copy(downloaded_file, &appimage_path)?;
+                let _ = std::fs::remove_file(downloaded_file);
+                Ok::<(), std::io::Error>(())
+            })
+            .context("Impossible de remplacer l'AppImage courante")?;
+
+        Ok(format!(
+            "✓ AppImage mise à jour ({}) ! Veuillez redémarrer l'application.",
+            appimage_path.display()
+        ))
+    }
+    // 4. Archive universelle tar.gz ou binaire autonome
+    else {
+        let current_exe =
+            std::env::current_exe().context("Impossible de déterminer le binaire courant")?;
+
+        if file_str.ends_with(".tar.gz") {
+            let temp_dir =
+                std::env::temp_dir().join(format!("maschine_update_{}", std::process::id()));
+            std::fs::create_dir_all(&temp_dir)?;
+
+            let tar_status = std::process::Command::new("tar")
+                .args([
+                    "-xzf",
+                    downloaded_file.to_str().unwrap(),
+                    "-C",
+                    temp_dir.to_str().unwrap(),
+                ])
+                .status()
+                .context("Échec de décompression de l'archive tar.gz")?;
+
+            if !tar_status.success() {
+                return Err(anyhow!("Erreur lors de l'extraction de l'archive"));
+            }
+
+            let mut found_bin = None;
+            for entry in walkdir_simple(&temp_dir)? {
+                if entry.file_name() == Some(std::ffi::OsStr::new("maschine-linux")) {
+                    found_bin = Some(entry);
+                    break;
+                }
+            }
+
+            let bin_src = found_bin
+                .ok_or_else(|| anyhow!("Binaire 'maschine-linux' introuvable dans l'archive"))?;
+
+            let mut perms = std::fs::metadata(&bin_src)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&bin_src, perms)?;
+
+            let temp_dest = current_exe.with_extension("tmp_update");
+            std::fs::copy(&bin_src, &temp_dest)?;
+            if let Err(e) = std::fs::rename(&temp_dest, &current_exe) {
+                if std::fs::copy(&bin_src, &current_exe).is_err() {
+                    let status = std::process::Command::new("pkexec")
+                        .args([
+                            "cp",
+                            bin_src.to_str().unwrap(),
+                            current_exe.to_str().unwrap(),
+                        ])
+                        .status();
+                    if let Ok(s) = status {
+                        if !s.success() {
+                            return Err(anyhow!(
+                                "Permission refusée pour écrire dans {}. Exécutez avec sudo ou pkexec.",
+                                current_exe.display()
+                            ));
+                        }
+                    } else {
+                        return Err(anyhow!(
+                            "Impossible d'écrire dans {} : {e}",
+                            current_exe.display()
+                        ));
+                    }
+                }
+            }
+            let _ = std::fs::remove_file(&temp_dest);
+            let _ = std::fs::remove_dir_all(&temp_dir);
+        } else {
             let mut perms = std::fs::metadata(downloaded_file)?.permissions();
             perms.set_mode(0o755);
             std::fs::set_permissions(downloaded_file, perms)?;
 
-            // Remplacement atomique de l'AppImage
-            std::fs::rename(downloaded_file, &appimage_path)
-                .or_else(|_| {
-                    // Si rename direct échoue (ex. cross-device), copie puis suppression
-                    std::fs::copy(downloaded_file, &appimage_path)?;
-                    let _ = std::fs::remove_file(downloaded_file);
-                    Ok::<(), std::io::Error>(())
-                })
-                .context("Impossible de remplacer l'AppImage courante")?;
-
-            Ok(format!(
-                "✓ AppImage mise à jour ({}) ! Veuillez redémarrer l'application.",
-                appimage_path.display()
-            ))
-        }
-
-        PackageKind::Rpm => {
-            info!("Installation du paquet RPM via pkexec...");
-            // Commande privilégiée polkit
-            let dnf_status = std::process::Command::new("pkexec")
-                .args(["dnf", "install", "-y", "--nogpgcheck"])
-                .arg(downloaded_file)
-                .status();
-
-            match dnf_status {
-                Ok(s) if s.success() => Ok(
-                    "✓ Paquet RPM installé avec succès via DNF ! Redémarrez l'application."
-                        .to_string(),
-                ),
-                _ => {
-                    // Repli sur rpm -Uvh
-                    let rpm_status = std::process::Command::new("pkexec")
-                        .args(["rpm", "-Uvh", "--replacepkgs"])
-                        .arg(downloaded_file)
-                        .status()
-                        .context("Échec d'exécution de pkexec rpm")?;
-
-                    if rpm_status.success() {
-                        Ok(
-                            "✓ Paquet RPM mis à niveau avec succès ! Redémarrez l'application."
-                                .to_string(),
-                        )
+            if let Err(e) = std::fs::rename(downloaded_file, &current_exe) {
+                if std::fs::copy(downloaded_file, &current_exe).is_err() {
+                    let status = std::process::Command::new("pkexec")
+                        .args([
+                            "cp",
+                            downloaded_file.to_str().unwrap(),
+                            current_exe.to_str().unwrap(),
+                        ])
+                        .status();
+                    if let Ok(s) = status {
+                        if !s.success() {
+                            return Err(anyhow!(
+                                "Permission refusée pour écrire dans {}. Exécutez avec sudo ou pkexec.",
+                                current_exe.display()
+                            ));
+                        }
                     } else {
-                        Err(anyhow!(
-                            "Échec de l'installation RPM. Vous pouvez installer manuellement : sudo dnf install {}",
-                            downloaded_file.display()
-                        ))
+                        return Err(anyhow!(
+                            "Impossible d'écrire dans {} : {e}",
+                            current_exe.display()
+                        ));
                     }
                 }
             }
         }
 
-        PackageKind::Deb => {
-            info!("Installation du paquet DEB via pkexec...");
-            let status = std::process::Command::new("pkexec")
-                .args(["dpkg", "-i"])
-                .arg(downloaded_file)
-                .status()
-                .context("Échec d'exécution de pkexec dpkg")?;
-
-            if status.success() {
-                Ok("✓ Paquet DEB installé avec succès ! Redémarrez l'application.".to_string())
-            } else {
-                Err(anyhow!(
-                    "Échec de l'installation DEB. Vous pouvez installer manuellement : sudo dpkg -i {}",
-                    downloaded_file.display()
-                ))
-            }
-        }
-
-        PackageKind::Binary => {
-            let current_exe =
-                std::env::current_exe().context("Impossible de déterminer le binaire courant")?;
-
-            // Si c'est une archive tar.gz, on extrait le binaire
-            if downloaded_file.to_string_lossy().ends_with(".tar.gz") {
-                let temp_dir =
-                    std::env::temp_dir().join(format!("maschine_update_{}", std::process::id()));
-                std::fs::create_dir_all(&temp_dir)?;
-
-                let tar_status = std::process::Command::new("tar")
-                    .args([
-                        "-xzf",
-                        downloaded_file.to_str().unwrap(),
-                        "-C",
-                        temp_dir.to_str().unwrap(),
-                    ])
-                    .status()
-                    .context("Échec de décompression de l'archive tar.gz")?;
-
-                if !tar_status.success() {
-                    return Err(anyhow!("Erreur lors de l'extraction de l'archive"));
-                }
-
-                // Trouve le binaire maschine-linux dans l'archive extraite
-                let mut found_bin = None;
-                for entry in walkdir_simple(&temp_dir)? {
-                    if entry.file_name() == Some(std::ffi::OsStr::new("maschine-linux")) {
-                        found_bin = Some(entry);
-                        break;
-                    }
-                }
-
-                let bin_src = found_bin.ok_or_else(|| {
-                    anyhow!("Binaire 'maschine-linux' introuvable dans l'archive")
-                })?;
-
-                let mut perms = std::fs::metadata(&bin_src)?.permissions();
-                perms.set_mode(0o755);
-                std::fs::set_permissions(&bin_src, perms)?;
-
-                // Remplacement atomique de l'exécutable
-                let temp_dest = current_exe.with_extension("tmp_update");
-                std::fs::copy(&bin_src, &temp_dest)?;
-                std::fs::rename(&temp_dest, &current_exe)
-                    .or_else(|_| {
-                        std::fs::copy(&bin_src, &current_exe)?;
-                        Ok::<(), std::io::Error>(())
-                    })
-                    .context("Impossible de remplacer le binaire courant")?;
-
-                let _ = std::fs::remove_dir_all(&temp_dir);
-            } else {
-                // Remplacement direct
-                let mut perms = std::fs::metadata(downloaded_file)?.permissions();
-                perms.set_mode(0o755);
-                std::fs::set_permissions(downloaded_file, perms)?;
-
-                std::fs::rename(downloaded_file, &current_exe)
-                    .or_else(|_| {
-                        std::fs::copy(downloaded_file, &current_exe)?;
-                        Ok::<(), std::io::Error>(())
-                    })
-                    .context("Impossible de remplacer le binaire courant")?;
-            }
-
-            Ok(format!(
-                "✓ Binaire mis à jour avec succès dans {} ! Redémarrez l'application.",
-                current_exe.display()
-            ))
-        }
+        Ok(format!(
+            "✓ Binaire mis à jour avec succès dans {} ! Redémarrez l'application.",
+            current_exe.display()
+        ))
     }
 }
 

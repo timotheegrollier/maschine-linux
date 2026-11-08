@@ -2,6 +2,43 @@
 
 All notable changes.
 
+## [0.9.10] - 2026-11-08
+
+### Added
+
+- **Modular Hardware Mapping Architecture**: decomposed the monolithic `handle_button_event` in `HardwareMapper` into specialized, isolated handler methods (`handle_modifier_button`, `handle_transport_button`, `handle_view_menu_button`, `handle_4way_button`, `handle_display_button`).
+- **Priority Resolution for MUTE & SOLO**: holding physical `SOLO` now takes immediate priority over background latched `MUTE` pad mode when targeting Groups A..H.
+- **8 Groups (A..H) & 128 Independent Tracks**: `Project::new_demo()` and `load_default_808_kit()` now initialize a full 8-group matrix (Kit 808, Kit 909, Nexus Synth, Bass & Acid, Percussion, Keys & Chords, Vocal & SFX, Hits & Stabs) with 128 dedicated sound tracks, independent polyphony, sampler zones, synth routing, ADSR envelopes, filters, volume, and pan.
+- **Universal Multimode Filter Shortcuts**: `Shift + Push 4D Encoder` instantly cycles the multimode filter type (`LP` -> `HP` -> `BP` -> `OFF`) on the focused sound across all views without changing display pages. `Shift + Knobs 6/7` (Arrange) and `Shift + Knobs 3/4` (Plugin/Sampler) also cycle filter mode.
+- **Sustained Pad Notes**: physically held pad presses on synth instruments (TB-303, Wavetable, Kick) sustain indefinitely without cutting out, isolating resting sensor baseline noise (< `0x4280`) from intentional holds (> `0x4280`).
+- **Clean AppImage Process Restart**: `restart_app()` uses detached process execution via `nohup`, strips AppImage-specific environment variables (`APPDIR`, `ARGV0`), and restores the working directory (`OWD`) for reliable restarts.
+- **Comprehensive Hardware Reverse-Engineering Docs & Tests**: added 5 dedicated hardware mapping test suites in `mapper.rs` (167 passing tests workspace-wide) and extended reverse-engineering documentation covering 4D navigation hierarchy, Smart Strip modes, USB lifecycle, and contribution guidelines.
+
+### Fixes
+
+- **Gain Conversion Optimization**: replaced direct `powf` volume calculations with `db_to_linear()` across engine and synth render loops.
+
+### Validation
+
+- `cargo fmt --all -- --check` (clean)
+- `cargo clippy --workspace --all-targets -- -D warnings` (clean, 0 warnings)
+- `cargo test --workspace --no-default-features` (167 passing tests)
+
+## [0.9.9] - 2026-11-08
+
+### Added
+
+- **Filter Selector Display Buttons**: direct soft buttons for `LP`, `HP`, `BP`, and `OFF` filter modes on Sampler and Kick synth screens.
+- **Reverse Engineering Guide**: initial hardware reverse-engineering documentation for Maschine MK3 USB/HID and bulk displays.
+
+### Fixes
+
+- **Shift Soft Key Synchronization**: aligned soft key labels with actual hardware dispatch when holding Shift across all modes.
+
+### Validation
+
+- `cargo test --workspace --no-default-features` (163 passing tests)
+
 ## [0.9.8] - 2026-11-08
 
 ### Added

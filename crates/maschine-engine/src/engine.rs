@@ -3910,7 +3910,11 @@ impl Engine {
             .and_then(|s| s.as_ref())
             .map(|s| s.pan)
             .unwrap_or(0.0);
-        let grp_pan = proj.groups.get(group as usize).map(|g| g.pan).unwrap_or(0.0);
+        let grp_pan = proj
+            .groups
+            .get(group as usize)
+            .map(|g| g.pan)
+            .unwrap_or(0.0);
         let total_pan = (snd_pan + grp_pan).clamp(-1.0, 1.0);
         let pan_l = (1.0 - total_pan).min(1.0) * total_gain;
         let pan_r = (1.0 + total_pan).min(1.0) * total_gain;
@@ -3951,9 +3955,9 @@ impl Engine {
         let proj = Arc::clone(&*self.project.read());
 
         // 1. Kick Synth
-        if let Some((kg, ks)) =
-            self.find_synth_location(self.kick_sound_target, &proj, |snd| snd.kick_synth.is_some())
-        {
+        if let Some((kg, ks)) = self.find_synth_location(self.kick_sound_target, &proj, |snd| {
+            snd.kick_synth.is_some()
+        }) {
             self.synth_buf[..out_len].fill(0.0);
             self.kick_synth.render(&mut self.synth_buf[..out_len]);
             self.mix_synth_buffer(out, out_len, kg, ks, &proj);
@@ -3969,11 +3973,11 @@ impl Engine {
         }
 
         // 3. Wavetable / Nexus Synth
-        if let Some((wg, ws)) = self.find_synth_location(
-            self.wavetable_sound_target,
-            &proj,
-            |snd| snd.wavetable_synth.is_some(),
-        ) {
+        if let Some((wg, ws)) =
+            self.find_synth_location(self.wavetable_sound_target, &proj, |snd| {
+                snd.wavetable_synth.is_some()
+            })
+        {
             self.synth_buf[..out_len].fill(0.0);
             self.wavetable_synth.render(&mut self.synth_buf[..out_len]);
             self.mix_synth_buffer(out, out_len, wg, ws, &proj);
@@ -4492,12 +4496,14 @@ impl Engine {
                     Ok(())
                 }
                 3 => {
-                    self.kick_synth.params.filter_mode = crate::kick_synth::KickFilterMode::HighPass;
+                    self.kick_synth.params.filter_mode =
+                        crate::kick_synth::KickFilterMode::HighPass;
                     self.status_message = Some("Kick Filter: HighPass".to_string());
                     Ok(())
                 }
                 4 => {
-                    self.kick_synth.params.filter_mode = crate::kick_synth::KickFilterMode::BandPass;
+                    self.kick_synth.params.filter_mode =
+                        crate::kick_synth::KickFilterMode::BandPass;
                     self.status_message = Some("Kick Filter: BandPass".to_string());
                     Ok(())
                 }
@@ -4577,8 +4583,7 @@ impl Engine {
             }
             5 => {
                 let n_scenes = self.project.read().scenes.len();
-                let scene =
-                    (self.active_scene.unwrap_or(0) + 1).min(n_scenes.saturating_sub(1));
+                let scene = (self.active_scene.unwrap_or(0) + 1).min(n_scenes.saturating_sub(1));
                 self.handle_event(EngineEvent::Scene(scene))
             }
             6 => self.handle_event(EngineEvent::AddScene),
@@ -4600,15 +4605,11 @@ impl Engine {
                 None => Ok(()),
             },
             4 => match active {
-                Some(pattern) => {
-                    self.handle_event(EngineEvent::ClearPattern { group, pattern })
-                }
+                Some(pattern) => self.handle_event(EngineEvent::ClearPattern { group, pattern }),
                 None => Ok(()),
             },
             5 => match active {
-                Some(pattern) => {
-                    self.handle_event(EngineEvent::DeletePattern { group, pattern })
-                }
+                Some(pattern) => self.handle_event(EngineEvent::DeletePattern { group, pattern }),
                 None => Ok(()),
             },
             6 => self.handle_event(EngineEvent::SetPatternBars(1)),

@@ -32,6 +32,24 @@ NOTES="$(
 )"
 
 if [[ -z "${NOTES}" ]]; then
+    if [[ -f "${ROOT_DIR}/dist/RELEASE_NOTES.md" ]] && [[ -s "${ROOT_DIR}/dist/RELEASE_NOTES.md" ]]; then
+        cat "${ROOT_DIR}/dist/RELEASE_NOTES.md"
+        exit 0
+    fi
+
+    # Repli automatique sur les commits Git si le CHANGELOG n'a pas encore été mis à jour
+    PREV_TAG="$(git describe --tags --abbrev=0 "v${VERSION}^" 2>/dev/null || git describe --tags --abbrev=0 2>/dev/null || true)"
+    if [[ -n "${PREV_TAG}" ]]; then
+        GIT_COMMITS="$(git log --oneline "${PREV_TAG}..HEAD" 2>/dev/null || true)"
+    else
+        GIT_COMMITS="$(git log -n 10 --oneline 2>/dev/null || true)"
+    fi
+
+    if [[ -n "${GIT_COMMITS}" ]]; then
+        printf '# Maschine Linux %s\n\n### Commits\n\n%s\n' "${VERSION}" "${GIT_COMMITS}"
+        exit 0
+    fi
+
     echo "error: no release notes found for ${VERSION} in ${CHANGELOG}" >&2
     exit 1
 fi

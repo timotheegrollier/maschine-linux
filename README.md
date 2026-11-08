@@ -144,7 +144,7 @@ Project (*.maschine-linux.json)
 ```
 
 See [the workflow and current scope](docs/workflow.md),
-[the test matrix](docs/TESTING.md), and [usage](docs/USAGE.md).
+[the test matrix](docs/TESTING.md), [usage](docs/USAGE.md), and [CI/CD & release guide](docs/CI_CD_RELEASE.md).
 
 ## License
 

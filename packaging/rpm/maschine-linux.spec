@@ -121,7 +121,7 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/maschine-linux.deskto
 * Sun Nov 08 2026 timotheegrollier <timo@example.com> - 0.9.6-1
 - Add Kick Synth modeler plugin, MK3 per-pad mixer controls, realtime DSP effects chains, Browser plugins/effects selection, project deletion from MK3, and restart improvements
 
-* Sat Nov 08 2026 timotheegrollier <timo@example.com> - 0.9.5-1
+* Sun Nov 08 2026 timotheegrollier <timo@example.com> - 0.9.5-1
 - Fix MK3 FILE/SAVE and BROWSER LED mapping, restore New Project creation workflow, and correct MK3 screen softkeys
 
 * Sun Nov 08 2026 timotheegrollier <timo@example.com> - 0.9.4-1

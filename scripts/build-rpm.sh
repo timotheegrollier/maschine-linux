@@ -11,8 +11,10 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${ROOT_DIR}"
 
 VERSION="$(grep -m1 '^version =' Cargo.toml | cut -d '"' -f2)"
-echo "==> Compilation du binaire release (v${VERSION})..."
-cargo build --release --locked -p maschine-app
+if [ ! -f "target/release/maschine-linux" ]; then
+    echo "==> Compilation du binaire release (v${VERSION})..."
+    cargo build --release -p maschine-app --no-default-features || cargo build --release --locked -p maschine-app
+fi
 
 OUT_DIR="${ROOT_DIR}/dist"
 mkdir -p "${OUT_DIR}"

@@ -2,6 +2,19 @@
 
 All notable changes.
 
+## [0.9.2] - 2026-11-08
+
+### Fixes
+
+- **MK3 project browser access**: `BROWSER` now opens the project/FILE browser (with project scan) so projects can be loaded/saved from hardware again; `Shift + BROWSER` opens the preset browser; pressing `BROWSER` again exits to Sampler.
+- **Mute LED feedback**: while MUTE pad mode is active, muted pads stay visibly dimmed (instead of nearly off) to make the selected muted pads easier to identify, closer to Maschine workflow.
+- **Auto-update UX**: added a **Restart now** button in the GUI updater after an update is installed.
+
+### Validation
+
+- `cargo fmt --all -- --check`
+- `cargo test -p maschine-engine -p maschine-hardware -p maschine-app --lib` (workspace libs touched by this patch)
+
 ## [0.9.1] - 2026-11-08
 
 ### Fixes

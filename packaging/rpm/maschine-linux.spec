@@ -1,5 +1,5 @@
 Name:           maschine-linux
-Version:        0.9.1
+Version:        0.9.2
 Release:        1%{?dist}
 Summary:        Native Instruments Maschine MK3 DAW & Controller integration for Linux
 License:        GPL-3.0-or-later
@@ -98,6 +98,9 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/maschine-linux.deskto
 %{_prefix}/lib/systemd/user/maschine-linux.service
 
 %changelog
+* Sun Nov 08 2026 timotheegrollier <timo@example.com> - 0.9.2-1
+- Restore MK3 project browser access, improve mute pad LED visibility, and add restart button after auto-update
+
 * Sun Nov 08 2026 timotheegrollier <timo@example.com> - 0.9.1-1
 - Fix MK3 FILE SAVE workflow and project browser feedback, add Maschine-style per-pad mute with dimmed LEDs, and record Keyboard/Chords with actual MIDI pitch during REC
 

@@ -501,6 +501,8 @@ pub struct HardwareSnapshot {
     pub active_sound: u8,
     pub left_tab: u8,
     pub right_tab: u8,
+    /// Type de navigateur (0: presets 808, 1: projets FILE)
+    pub browser_kind: u8,
     /// Page PLUGIN (0: Sound, 1: TB-303) — routage des knobs hardware.
     pub plugin_page: u8,
     pub controller_mode: u8,
@@ -797,7 +799,7 @@ impl Engine {
     #[must_use]
     pub fn new(project: Project, sample_rate: u32) -> Self {
         let bpm = project.bpm;
-        Self {
+        let mut eng = Self {
             project: Arc::new(RwLock::new(Arc::new(project))),
             transport: Transport::new(bpm, sample_rate),
             sampler: Sampler::new(sample_rate),
@@ -844,6 +846,22 @@ impl Engine {
             master_meter: 0.0,
             master_peak_hold: 0.0,
             revision: 0,
+        };
+        eng.rescan_local_projects();
+        eng
+    }
+
+    /// Rescanne les projets locaux et ajuste la sélection pour l'écran FILE.
+    pub fn rescan_local_projects(&mut self) {
+        self.project_entries = scan_local_projects();
+        if let Some(curr) = self.current_project_path.as_ref() {
+            if let Some(pos) = self.project_entries.iter().position(|e| &e.path == curr) {
+                self.project_selected = pos;
+                return;
+            }
+        }
+        if self.project_selected >= self.project_entries.len() {
+            self.project_selected = self.project_entries.len().saturating_sub(1);
         }
     }
 
@@ -1009,6 +1027,7 @@ impl Engine {
             active_sound: self.active_sound,
             left_tab: self.left_tab,
             right_tab: self.right_tab,
+            browser_kind: self.browser_kind,
             plugin_page: self.plugin_page,
             controller_mode: self.controller_mode,
             keyboard: self.keyboard,
@@ -1435,6 +1454,7 @@ impl Engine {
                 self.status_message = Some("Projet sauvegardé".to_string());
                 self.status_expires_at =
                     std::time::Instant::now() + std::time::Duration::from_secs(2);
+                self.rescan_local_projects();
             }
             EngineEvent::SaveCurrent { quick } => {
                 let path = if let Some(p) = self
@@ -1460,20 +1480,33 @@ impl Engine {
                 });
                 self.status_expires_at =
                     std::time::Instant::now() + std::time::Duration::from_secs(2);
+                self.rescan_local_projects();
             }
             EngineEvent::NewProject { name } => {
-                let path = default_new_project_path(&name);
-                let mut proj = Project::default();
-                proj.name = sanitize_project_filename(&name);
-                let proj_name = proj.name.clone();
+                let (proj_name, path) = generate_unique_project_path(&name);
+                let mut proj = Project::new_demo();
+                proj.name = proj_name.clone();
+                if let Some(g) = proj.groups.first_mut() {
+                    if let Some(pat) = g.patterns.first_mut() {
+                        pat.name = "Pattern 1".to_string();
+                        pat.events.clear();
+                    }
+                }
+                self.load_default_808_kit();
+                proj.save_json_with(&path, false)?;
                 *self.project.write() = std::sync::Arc::new(proj);
                 self.current_project_path = Some(path.to_string_lossy().to_string());
+                self.transport.tick = 0;
+                self.selected_bar = 0;
+                self.step_cursor = 0;
                 self.status_message = Some(format!("Nouveau projet: {}", proj_name));
                 self.status_expires_at =
-                    std::time::Instant::now() + std::time::Duration::from_secs(2);
+                    std::time::Instant::now() + std::time::Duration::from_secs(3);
+                self.rescan_local_projects();
             }
             EngineEvent::SetProjectPath(path) => {
                 self.current_project_path = path;
+                self.rescan_local_projects();
             }
             EngineEvent::Load(path) => {
                 let p = Project::load_json(&path)?;
@@ -1487,12 +1520,17 @@ impl Engine {
                 }
                 self.sampler = sampler;
                 self.transport.bpm = p.bpm;
+                let proj_name = p.name.clone();
                 *self.project.write() = Arc::new(p);
                 self.current_project_path = Some(path.to_string_lossy().to_string());
                 self.sync_acid_from_active_sound();
                 if self.left_tab == 4 {
                     self.sync_plugin_for_active_sound();
                 }
+                self.status_message = Some(format!("Projet chargé: {}", proj_name));
+                self.status_expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_secs(2);
+                self.rescan_local_projects();
             }
             EngineEvent::MasterVolume(v) => {
                 self.master_volume = v.clamp(0.0, 1.0);
@@ -3089,7 +3127,7 @@ impl Engine {
                 "SND 1", "SND 2", "SND 3", "SND 4", "SND 5", "SND 6", "SND 7", "SND 8",
             ],
             3 if self.browser_kind == 1 => [
-                "PROJ <", "PROJ >", "NEW", "CHARGER", "SAUVER", "RAPIDE", "PRESETS", "METRO",
+                "PROJ <", "PROJ >", "NOUVEAU", "CHARGER", "SAUVER", "RAPIDE", "PRESETS", "RETOUR",
             ],
             3 => [
                 "PRES <", "PRES >", "SND <", "SND >", "ECOUTE", "CHARGER", "METRO", "LOOP",
@@ -3221,7 +3259,7 @@ impl Engine {
                 0 => self.handle_event(EngineEvent::BrowseBrowserStep(-1)),
                 1 => self.handle_event(EngineEvent::BrowseBrowserStep(1)),
                 2 => self.handle_event(EngineEvent::NewProject {
-                    name: "Nouveau".to_string(),
+                    name: String::new(),
                 }),
                 3 => self.handle_event(EngineEvent::LoadSelectedBrowserItem {
                     group: self.group_focus,
@@ -3230,8 +3268,11 @@ impl Engine {
                 4 => self.handle_event(EngineEvent::SaveCurrent { quick: false }),
                 5 => self.handle_event(EngineEvent::SaveCurrent { quick: true }),
                 6 => self.handle_event(EngineEvent::SetBrowserKind(0)),
-                7 => self.handle_event(EngineEvent::ToggleMetronome),
-                _ => self.handle_event(EngineEvent::ToggleLoop),
+                7 => {
+                    self.left_tab = 0;
+                    Ok(())
+                }
+                _ => Ok(()),
             },
             3 => match idx {
                 0 => self.handle_event(EngineEvent::BrowsePresetStep(-1)),
@@ -4484,6 +4525,64 @@ mod tests {
         }
         assert_eq!(snap.active_scene, Some(0));
     }
+
+    #[test]
+    fn file_mode_soft_keys_and_new_project_creation() {
+        let mut eng = Engine::new_demo(48000);
+        eng.left_tab = 3;
+        eng.browser_kind = 1; // FILE mode
+
+        // 1. Softkey labels en mode FILE
+        assert_eq!(
+            eng.soft_key_labels(),
+            ["PROJ <", "PROJ >", "NOUVEAU", "CHARGER", "SAUVER", "RAPIDE", "PRESETS", "RETOUR"]
+        );
+
+        // 2. SoftKey 3 = NOUVEAU projet
+        eng.handle_event(EngineEvent::SoftKey(3)).unwrap();
+        let snap = eng.snapshot();
+        assert!(snap.current_project_path.is_some());
+        let path = std::path::PathBuf::from(snap.current_project_path.as_ref().unwrap());
+        assert!(path.exists(), "Le fichier projet doit être créé sur disque");
+
+        // Le projet doit avoir un kit jouable (16 sons) et Pattern 1 vide
+        assert_eq!(snap.project.groups.len(), 1);
+        let g = &snap.project.groups[0];
+        assert_eq!(g.name, "Kit 808");
+        assert_eq!(g.sounds.iter().filter(|s| s.is_some()).count(), 16);
+        assert_eq!(g.patterns[0].name, "Pattern 1");
+        assert!(
+            g.patterns[0].events.is_empty(),
+            "Pattern 1 doit être vierge pour l'utilisateur"
+        );
+
+        // Message toast affiché
+        assert!(snap.status_message.is_some());
+        assert!(snap
+            .status_message
+            .as_ref()
+            .unwrap()
+            .starts_with("Nouveau projet:"));
+
+        // Liste des projets mise à jour
+        assert!(!eng.project_entries.is_empty());
+        assert_eq!(
+            eng.project_entries[eng.project_selected].path,
+            path.to_string_lossy()
+        );
+
+        // 3. SoftKey 7 = PRESETS (bascule vers BROWSER sons)
+        eng.handle_event(EngineEvent::SoftKey(7)).unwrap();
+        assert_eq!(eng.browser_kind, 0);
+
+        // 4. SoftKey 8 en FILE = RETOUR (referme vers vue principale tab 0)
+        eng.browser_kind = 1;
+        eng.handle_event(EngineEvent::SoftKey(8)).unwrap();
+        assert_eq!(eng.left_tab, 0);
+
+        // Nettoyage du fichier de test
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 fn sanitize_project_filename(name: &str) -> String {
@@ -4521,9 +4620,84 @@ fn default_projects_dir() -> std::path::PathBuf {
         .join("projects")
 }
 
-fn default_new_project_path(name: &str) -> std::path::PathBuf {
-    let safe = sanitize_project_filename(name);
+/// Scanne le répertoire local des projets et retourne les entrées triées par date.
+pub fn scan_local_projects() -> Vec<ProjectFileEntry> {
     let dir = default_projects_dir();
     let _ = std::fs::create_dir_all(&dir);
-    dir.join(safe)
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if (name.ends_with(".maschine-linux.json") || name.ends_with(".json"))
+                && !name.starts_with('.')
+            {
+                paths.push(p);
+            }
+        }
+    }
+    paths.sort_by_key(|a| {
+        std::cmp::Reverse(
+            std::fs::metadata(a)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        )
+    });
+    paths
+        .into_iter()
+        .map(|p| {
+            let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("Projet");
+            let stem = stem.strip_suffix(".maschine-linux").unwrap_or(stem);
+            let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            let meta = if size >= 1024 * 1024 {
+                format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
+            } else {
+                format!("{} KB", (size / 1024).max(1))
+            };
+            ProjectFileEntry {
+                name: stem.to_string(),
+                path: p.to_string_lossy().to_string(),
+                meta,
+            }
+        })
+        .collect()
+}
+
+/// Génère un nom et un chemin de projet unique sans écraser l'existant.
+pub fn generate_unique_project_path(base_name: &str) -> (String, std::path::PathBuf) {
+    let dir = default_projects_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let trimmed = base_name.trim();
+    if trimmed.is_empty() || trimmed == "Nouveau" || trimmed == "Untitled" {
+        for i in 1..=9999 {
+            let candidate_name = format!("Projet {}", i);
+            let file_name = format!("{}.maschine-linux.json", candidate_name);
+            let path = dir.join(&file_name);
+            if !path.exists() {
+                return (candidate_name, path);
+            }
+        }
+    }
+    let safe_stem = sanitize_project_filename(trimmed);
+    let stem = safe_stem
+        .strip_suffix(".maschine-linux.json")
+        .unwrap_or(&safe_stem)
+        .strip_suffix(".json")
+        .unwrap_or(&safe_stem)
+        .to_string();
+    let initial_path = dir.join(format!("{}.maschine-linux.json", stem));
+    if !initial_path.exists() {
+        return (stem, initial_path);
+    }
+    for i in 2..=9999 {
+        let candidate_name = format!("{} ({})", stem, i);
+        let path = dir.join(format!("{}.maschine-linux.json", candidate_name));
+        if !path.exists() {
+            return (candidate_name, path);
+        }
+    }
+    (stem.clone(), initial_path)
 }

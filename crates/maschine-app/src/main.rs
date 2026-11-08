@@ -287,6 +287,7 @@ fn sync_mapper_context(
     mapper.active_sound = snap.active_sound;
     mapper.left_tab = snap.left_tab;
     mapper.right_tab = snap.right_tab;
+    mapper.browser_kind = snap.browser_kind;
     mapper.plugin_page = snap.plugin_page;
     mapper.kbd_root = snap.keyboard.root;
     mapper.kbd_octave = snap.keyboard.octave;
@@ -1429,9 +1430,12 @@ fn cmd_daemon(
                         log::error!("SaveProject failed {}: {e}", path.display());
                     } else {
                         projects::remember_project(&mut settings, &path);
-                        let _ = engine.lock().handle_event(EngineEvent::SetProjectPath(Some(
+                        let mut eng = engine.lock();
+                        let _ = eng.handle_event(EngineEvent::SetProjectPath(Some(
                             path.to_string_lossy().to_string(),
                         )));
+                        let entries = projects::scan_projects(&settings);
+                        let _ = eng.handle_event(EngineEvent::SetProjectEntries(entries));
                         log::info!("Projet sauvegardé → {}", path.display());
                     }
                 }
@@ -1455,30 +1459,28 @@ fn cmd_daemon(
                         log::error!("QuickSave failed {}: {e}", path.display());
                     } else {
                         projects::remember_project(&mut settings, &path);
-                        let _ = engine.lock().handle_event(EngineEvent::SetProjectPath(Some(
+                        let mut eng = engine.lock();
+                        let _ = eng.handle_event(EngineEvent::SetProjectPath(Some(
                             path.to_string_lossy().to_string(),
                         )));
+                        let entries = projects::scan_projects(&settings);
+                        let _ = eng.handle_event(EngineEvent::SetProjectEntries(entries));
                         log::info!("Sauvegarde rapide → {}", path.display());
                     }
                 }
                 MapperAction::NewProject => {
-                    let name = std::env::var("USER")
-                        .map(|u| u.clone())
-                        .unwrap_or_else(|_| "Untitled".to_string());
-                    let name = format!("Projet {}", std::process::id());
-                    let _ = engine.lock().handle_event(EngineEvent::NewProject { name });
                     let mut settings = settings::AppSettings::load();
-                    let path = projects::resolve_current_save_path(
-                        &settings,
-                        engine.lock().snapshot().current_project_path.as_deref(),
-                        "Untitled",
-                    );
-                    // Sauvegarde effective via le moteur (création du fichier).
+                    let _ = engine.lock().handle_event(EngineEvent::NewProject {
+                        name: String::new(),
+                    });
+                    if let Some(path) = engine.lock().snapshot().current_project_path.clone() {
+                        projects::remember_project(&mut settings, std::path::Path::new(&path));
+                        log::info!("Nouveau projet créé → {}", path);
+                    }
+                    let entries = projects::scan_projects(&settings);
                     let _ = engine
                         .lock()
-                        .handle_event(EngineEvent::SaveCurrent { quick: false });
-                    let _ = projects::remember_project(&mut settings, &path);
-                    log::info!("Nouveau projet créé → {}", path.display());
+                        .handle_event(EngineEvent::SetProjectEntries(entries));
                 }
                 MapperAction::OpenFileBrowser => {
                     let settings = settings::AppSettings::load();
@@ -1568,6 +1570,7 @@ fn cmd_daemon(
             soloed_groups: snap.soloed_groups,
             left_tab: snap.left_tab,
             right_tab: snap.right_tab,
+            browser_kind: snap.browser_kind,
             scene_mode: mapper.scene_select_mode,
             pattern_mode: mapper.pattern_select_mode,
             select_mode: mapper.select_mode,

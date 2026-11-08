@@ -3766,15 +3766,15 @@ pub fn render_project_browser_left(snap: &EngineSnapshot) -> DisplayFrame {
         draw_text(
             &mut frame,
             10,
-            64,
-            "FILE SAVE: ouvrir | SHIFT+FILE SAVE: rapide",
-            p.dim,
+            68,
+            "Appuyez sur [NOUVEAU] (Bouton 3) pour creer un projet !",
+            p.cyan,
             p.bg,
         );
         draw_text(
             &mut frame,
             10,
-            82,
+            96,
             "Dossier: ~/.local/share/maschine-linux/projects",
             p.muted,
             p.bg,
@@ -3834,7 +3834,7 @@ pub fn render_project_browser_left(snap: &EngineSnapshot) -> DisplayFrame {
         &mut frame,
         8,
         206,
-        "4D/POTAR: naviguer | ENCODER: charger | SHIFT+FILE: rapide",
+        "4D/KNOB 1: Choisir | PUSH/BTN 4: Charger | BTN 3: Nouveau",
         p.muted,
         p.bg,
     );
@@ -3867,7 +3867,7 @@ pub fn render_project_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
     let p = Pal::new();
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     let entry = snap.project_entries.get(snap.project_selected);
-    header(&mut frame, &p, snap, "FILE | PROJET", "CHARGER / SAUVER");
+    header(&mut frame, &p, snap, "FILE | ACTIONS", "PROJET SELECTIONNE");
 
     if let Some(entry) = entry {
         draw_text_scaled(
@@ -3899,14 +3899,23 @@ pub fn render_project_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
                 &mut frame,
                 &p,
                 10,
-                138,
+                134,
                 120,
                 "PROJET COURANT",
                 p.green,
                 true,
             );
         } else {
-            pill(&mut frame, &p, 10, 138, 120, "CHARGER", p.accent, true);
+            pill(
+                &mut frame,
+                &p,
+                10,
+                134,
+                120,
+                "CHARGER (BTN 4)",
+                p.accent,
+                true,
+            );
         }
     } else {
         draw_text(
@@ -3921,7 +3930,7 @@ pub fn render_project_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
             &mut frame,
             10,
             66,
-            "SAVE cree un projet dans le dossier FILE.",
+            "Appuyez sur [NOUVEAU] (BTN 3) pour creer un projet.",
             p.dim,
             p.bg,
         );
@@ -3930,28 +3939,41 @@ pub fn render_project_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
     draw_text(
         &mut frame,
         10,
-        154,
-        "FILE/SAVE (sous BROWSER) = menu projets | SHIFT = rapide",
+        156,
+        "BTN 3: Nouveau (Kit 808 vierge) | BTN 4/PUSH: Charger",
         p.dim,
         p.bg,
     );
     draw_text(
         &mut frame,
         10,
-        170,
-        "BROWSER = presets | SHIFT+BROWSER = projets | 4:SAUVER 5:RAPIDE",
+        172,
+        "BTN 5: Sauver | BTN 6: Rapide | BTN 8: Retour",
         p.dim,
         p.bg,
     );
+    draw_text(
+        &mut frame,
+        10,
+        188,
+        "Raccourci: SHIFT+FILE = Sauvegarde rapide instantanee",
+        p.muted,
+        p.bg,
+    );
     let slots = [
-        Some(("1:NAV", "< >".to_string(), 0.5, p.cyan)),
-        Some(("3:CHARGER", "PROJET".to_string(), 1.0, p.green)),
-        Some(("4:SAUVER", "PRETTY".to_string(), 1.0, p.accent)),
-        Some(("5:RAPIDE", "COMPACT".to_string(), 1.0, p.cyan)),
+        Some(("5:--", String::new(), 0.0, p.border)),
+        Some(("6:--", String::new(), 0.0, p.border)),
+        Some(("7:--", String::new(), 0.0, p.border)),
+        Some((
+            "8:MASTER",
+            format!("{:.0}%", snap.master_volume * 100.0),
+            snap.master_volume,
+            p.accent,
+        )),
     ];
     encoder_row(&mut frame, &p, &slots);
     let active = [false; 8];
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
     frame
 }
 

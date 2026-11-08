@@ -387,6 +387,8 @@ pub struct SequencerLedInfo {
     pub soloed_groups: u8,
     pub left_tab: u8,
     pub right_tab: u8,
+    /// Type de navigateur (0: presets 808, 1: projets FILE)
+    pub browser_kind: u8,
     /// Mode SCENE actif (pads déclenchent les scènes)
     pub scene_mode: bool,
     /// Mode PATTERN actif (pads sélectionnent le pattern)
@@ -456,6 +458,8 @@ pub struct HardwareMapper {
     pub active_sound: u8,
     /// Preset sélectionné dans le Browser (0..15)
     pub browser_preset_idx: u8,
+    /// Type de navigateur (0: presets 808, 1: projets FILE)
+    pub browser_kind: u8,
     /// État musical Keyboard/Chords (miroir moteur).
     pub kbd_root: u8,
     pub kbd_octave: i8,
@@ -548,6 +552,7 @@ impl HardwareMapper {
             plugin_page: 0,
             active_sound: 0,
             browser_preset_idx: 0,
+            browser_kind: 0,
             kbd_root: 0,
             kbd_octave: 3,
             kbd_scale: 2,
@@ -1075,10 +1080,14 @@ impl HardwareMapper {
                             actions.push(MapperAction::Quantize);
                         }
                         ButtonId::FileSave => {
-                            // Bouton FILE/SAVE (physique, sous BROWSER) : menu/projets + sauvegarde.
+                            // Bouton FILE/SAVE (physique, sous BROWSER) : menu projets/sauvegarde.
                             if self.shift_held {
                                 actions.push(MapperAction::QuickSaveProject);
+                            } else if self.left_tab == 3 && self.browser_kind == 1 {
+                                // Toggle : referme le menu FILE
+                                self.select_left_tab(0, &mut actions);
                             } else {
+                                self.browser_kind = 1;
                                 self.select_left_tab(3, &mut actions);
                                 actions.push(MapperAction::OpenFileBrowser);
                             }
@@ -1096,14 +1105,17 @@ impl HardwareMapper {
                             self.select_left_tab(2, &mut actions);
                         }
                         ButtonId::Browser => {
-                            if self.left_tab == 3 && !self.shift_held {
-                                self.select_left_tab(2, &mut actions); // Retour SAMPLER
-                            } else if self.shift_held {
-                                // Shift+BROWSER : navigateur de projets/fichiers
+                            if self.shift_held {
+                                // Shift+BROWSER : navigateur de projets/fichiers (comme FILE/SAVE)
+                                self.browser_kind = 1;
                                 self.select_left_tab(3, &mut actions);
                                 actions.push(MapperAction::OpenFileBrowser);
+                            } else if self.left_tab == 3 && self.browser_kind == 0 {
+                                // Déjà dans BROWSER presets : toggle pour fermer
+                                self.select_left_tab(0, &mut actions);
                             } else {
                                 // BROWSER : navigateur de presets/samples
+                                self.browser_kind = 0;
                                 self.select_left_tab(3, &mut actions);
                                 actions.push(MapperAction::SetBrowserKind(0));
                             }
@@ -1449,28 +1461,52 @@ impl HardwareMapper {
                                 _ => actions.push(MapperAction::AcidDelayMixDelta(delta as f32)),
                             }
                         } else if self.left_tab == 3 {
-                            // BROWSER :
-                            // Knob 1 (idx 0) : cible Sound (pads), par cran.
-                            // Knob 2 (idx 1) : presets 808, par cran + pré-écoute.
-                            // Knob 8 (idx 7) : master.
-                            match idx {
-                                0 => {
-                                    let d = self.knob_steps(idx, delta, 0.03125);
-                                    if d != 0 {
-                                        actions.push(MapperAction::BrowseSoundStep(d.clamp(-1, 1)));
+                            if self.browser_kind == 1 {
+                                // FILE (Projets) :
+                                // Knob 1 (idx 0) : navigation projets
+                                // Knob 8 (idx 7) : master volume
+                                match idx {
+                                    0 => {
+                                        let d = self.knob_steps(idx, delta, 0.03125);
+                                        if d != 0 {
+                                            actions.push(MapperAction::BrowsePresetStep(
+                                                d.clamp(-1, 1),
+                                            ));
+                                        }
                                     }
-                                }
-                                1 => {
-                                    let d = self.knob_steps(idx, delta, 0.03125).clamp(-1, 1);
-                                    if d != 0 {
-                                        self.browser_preset_idx =
-                                            (self.browser_preset_idx as i32 + d).rem_euclid(16)
-                                                as u8;
-                                        actions.push(MapperAction::BrowsePresetStep(d));
+                                    7 => {
+                                        actions.push(MapperAction::MasterVolumeDelta(delta as f32))
                                     }
+                                    _ => {}
                                 }
-                                7 => actions.push(MapperAction::MasterVolumeDelta(delta as f32)),
-                                _ => {}
+                            } else {
+                                // BROWSER (Presets) :
+                                // Knob 1 (idx 0) : cible Sound (pads), par cran.
+                                // Knob 2 (idx 1) : presets 808, par cran + pré-écoute.
+                                // Knob 8 (idx 7) : master.
+                                match idx {
+                                    0 => {
+                                        let d = self.knob_steps(idx, delta, 0.03125);
+                                        if d != 0 {
+                                            actions.push(MapperAction::BrowseSoundStep(
+                                                d.clamp(-1, 1),
+                                            ));
+                                        }
+                                    }
+                                    1 => {
+                                        let d = self.knob_steps(idx, delta, 0.03125).clamp(-1, 1);
+                                        if d != 0 {
+                                            self.browser_preset_idx =
+                                                (self.browser_preset_idx as i32 + d).rem_euclid(16)
+                                                    as u8;
+                                            actions.push(MapperAction::BrowsePresetStep(d));
+                                        }
+                                    }
+                                    7 => {
+                                        actions.push(MapperAction::MasterVolumeDelta(delta as f32))
+                                    }
+                                    _ => {}
+                                }
                             }
                         } else {
                             // ARRANGE (tab 0) : 1 TEMPO, 2 SWING, 3 VOL GRP, 4 PAN GRP,
@@ -1712,7 +1748,18 @@ impl HardwareMapper {
             .set_button_raw(offsets::NOTE_REPEAT, if self.note_repeat { 7 } else { 1 });
         self.led_state.set_button_raw(offsets::VARIATION, 2);
         self.led_state.set_button_raw(offsets::AUTO, 2);
-        self.led_state.set_button_raw(offsets::FILE_SAVE, 2);
+        let is_file_active = self.left_tab == 3 && info.browser_kind == 1;
+        let is_browser_active = self.left_tab == 3 && info.browser_kind == 0;
+        self.led_state.set_button_raw(
+            offsets::FILE_SAVE,
+            if is_file_active {
+                7
+            } else if self.shift_held {
+                4
+            } else {
+                1
+            },
+        );
         // Modes workflow (latch) : SCENE / PATTERN / SELECT / ERASE
         self.led_state
             .set_button_raw(offsets::SCENE, if self.scene_select_mode { 7 } else { 1 });
@@ -1760,61 +1807,72 @@ impl HardwareMapper {
         self.led_state
             .set_button_raw(offsets::SAMPLING, if self.left_tab == 2 { 7 } else { 1 });
         self.led_state
-            .set_button_raw(offsets::BROWSER, if self.left_tab == 3 { 7 } else { 1 });
+            .set_button_raw(offsets::BROWSER, if is_browser_active { 7 } else { 1 });
         self.led_state
             .set_button_raw(offsets::PLUGIN, if self.left_tab == 4 { 7 } else { 1 });
         self.led_state
             .set_button_raw(offsets::SETTINGS, if self.right_tab == 3 { 7 } else { 1 });
 
         // 8. Boutons d'écran 1..8
-        self.led_state.set_button_raw(
-            offsets::DISPLAY_BTN_1,
-            if self.left_tab == 0 { 7 } else { 2 },
-        );
-        self.led_state.set_button_raw(
-            offsets::DISPLAY_BTN_2,
-            if self.left_tab == 1 { 7 } else { 2 },
-        );
-        self.led_state.set_button_raw(
-            offsets::DISPLAY_BTN_3,
-            if self.left_tab == 2 { 7 } else { 2 },
-        );
-        self.led_state.set_button_raw(
-            offsets::DISPLAY_BTN_4,
-            if self.left_tab == 3 { 7 } else { 2 },
-        );
-        self.led_state.set_button_raw(
-            offsets::DISPLAY_BTN_5,
-            if self.right_tab == 0 && self.selected_bar == 0 {
-                7
-            } else {
-                2
-            },
-        );
-        self.led_state.set_button_raw(
-            offsets::DISPLAY_BTN_6,
-            if self.right_tab == 0 && self.selected_bar == 1 {
-                7
-            } else {
-                2
-            },
-        );
-        self.led_state.set_button_raw(
-            offsets::DISPLAY_BTN_7,
-            if self.right_tab == 0 && self.selected_bar == 2 {
-                7
-            } else {
-                2
-            },
-        );
-        self.led_state.set_button_raw(
-            offsets::DISPLAY_BTN_8,
-            if self.right_tab == 0 && self.selected_bar == 3 {
-                7
-            } else {
-                2
-            },
-        );
+        if is_file_active {
+            self.led_state.set_button_raw(offsets::DISPLAY_BTN_1, 3);
+            self.led_state.set_button_raw(offsets::DISPLAY_BTN_2, 3);
+            self.led_state.set_button_raw(offsets::DISPLAY_BTN_3, 6);
+            self.led_state.set_button_raw(offsets::DISPLAY_BTN_4, 6);
+            self.led_state.set_button_raw(offsets::DISPLAY_BTN_5, 5);
+            self.led_state.set_button_raw(offsets::DISPLAY_BTN_6, 4);
+            self.led_state.set_button_raw(offsets::DISPLAY_BTN_7, 3);
+            self.led_state.set_button_raw(offsets::DISPLAY_BTN_8, 4);
+        } else {
+            self.led_state.set_button_raw(
+                offsets::DISPLAY_BTN_1,
+                if self.left_tab == 0 { 7 } else { 2 },
+            );
+            self.led_state.set_button_raw(
+                offsets::DISPLAY_BTN_2,
+                if self.left_tab == 1 { 7 } else { 2 },
+            );
+            self.led_state.set_button_raw(
+                offsets::DISPLAY_BTN_3,
+                if self.left_tab == 2 { 7 } else { 2 },
+            );
+            self.led_state.set_button_raw(
+                offsets::DISPLAY_BTN_4,
+                if self.left_tab == 3 { 7 } else { 2 },
+            );
+            self.led_state.set_button_raw(
+                offsets::DISPLAY_BTN_5,
+                if self.right_tab == 0 && self.selected_bar == 0 {
+                    7
+                } else {
+                    2
+                },
+            );
+            self.led_state.set_button_raw(
+                offsets::DISPLAY_BTN_6,
+                if self.right_tab == 0 && self.selected_bar == 1 {
+                    7
+                } else {
+                    2
+                },
+            );
+            self.led_state.set_button_raw(
+                offsets::DISPLAY_BTN_7,
+                if self.right_tab == 0 && self.selected_bar == 2 {
+                    7
+                } else {
+                    2
+                },
+            );
+            self.led_state.set_button_raw(
+                offsets::DISPLAY_BTN_8,
+                if self.right_tab == 0 && self.selected_bar == 3 {
+                    7
+                } else {
+                    2
+                },
+            );
+        }
 
         // 9. Groupes A..H — focus en blanc, les autres en demi-teinte.
         for g in 0usize..8 {
@@ -2787,5 +2845,63 @@ mod tests {
         assert_eq!(m.left_tab, 0);
         assert!(off.contains(&MapperAction::SetLeftTab(0)));
         assert!(off.contains(&MapperAction::NavigateView(nav::PATTERN)));
+    }
+
+    #[test]
+    fn file_save_and_browser_distinction_and_leds() {
+        use maschine_proto::hid_output::offsets;
+
+        let mut m = HardwareMapper::with_default();
+
+        // 1. Appui FILE_SAVE -> tab 3, browser_kind 1, action OpenFileBrowser
+        let act_file = press_button(&mut m, maschine_proto::ButtonId::FileSave);
+        assert_eq!(m.left_tab, 3);
+        assert_eq!(m.browser_kind, 1);
+        assert!(act_file.contains(&MapperAction::OpenFileBrowser));
+
+        let mut info_file = SequencerLedInfo::default();
+        info_file.left_tab = 3;
+        info_file.browser_kind = 1;
+        m.update_leds(&info_file);
+
+        // La LED FILE_SAVE DOIT être allumée (7), et BROWSER DOIT être éteinte/dim (1)
+        assert_eq!(m.led_state().button_leds[offsets::FILE_SAVE - 1], 7);
+        assert_eq!(m.led_state().button_leds[offsets::BROWSER - 1], 1);
+
+        // Bouton 3 (NOUVEAU) et 4 (CHARGER) mis en valeur
+        assert_eq!(m.led_state().button_leds[offsets::DISPLAY_BTN_3 - 1], 6);
+        assert_eq!(m.led_state().button_leds[offsets::DISPLAY_BTN_4 - 1], 6);
+
+        // 2. Second appui FILE_SAVE -> toggle vers tab 0 (referme le menu)
+        let act_close = press_button(&mut m, maschine_proto::ButtonId::FileSave);
+        assert_eq!(m.left_tab, 0);
+        assert!(act_close.contains(&MapperAction::SetLeftTab(0)));
+
+        // 3. Appui BROWSER -> tab 3, browser_kind 0, action SetBrowserKind(0)
+        let act_browse = press_button(&mut m, maschine_proto::ButtonId::Browser);
+        assert_eq!(m.left_tab, 3);
+        assert_eq!(m.browser_kind, 0);
+        assert!(act_browse.contains(&MapperAction::SetBrowserKind(0)));
+
+        let mut info_browser = SequencerLedInfo::default();
+        info_browser.left_tab = 3;
+        info_browser.browser_kind = 0;
+        m.update_leds(&info_browser);
+
+        // La LED BROWSER DOIT être allumée (7), et FILE_SAVE DOIT être éteinte/dim (1)
+        assert_eq!(m.led_state().button_leds[offsets::BROWSER - 1], 7);
+        assert_eq!(m.led_state().button_leds[offsets::FILE_SAVE - 1], 1);
+
+        // 4. Shift enfoncé : FILE_SAVE brille en hint (4) et déclenche QuickSaveProject
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Shift,
+            pressed: true,
+            ts_ns: 10,
+        });
+        m.update_leds(&info_browser);
+        assert_eq!(m.led_state().button_leds[offsets::FILE_SAVE - 1], 4);
+
+        let act_quick = press_button(&mut m, maschine_proto::ButtonId::FileSave);
+        assert!(act_quick.contains(&MapperAction::QuickSaveProject));
     }
 }

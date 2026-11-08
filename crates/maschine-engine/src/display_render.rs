@@ -3931,7 +3931,7 @@ pub fn render_project_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
         &mut frame,
         10,
         154,
-        "FILE SAVE = sauvegarder (nouveau si besoin)",
+        "FILE/SAVE (sous BROWSER) = menu projets | SHIFT = rapide",
         p.dim,
         p.bg,
     );
@@ -3939,7 +3939,7 @@ pub fn render_project_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
         &mut frame,
         10,
         170,
-        "SHIFT+FILE SAVE = rapide | BROWSER = liste projets",
+        "BROWSER = presets | SHIFT+BROWSER = projets | 4:SAUVER 5:RAPIDE",
         p.dim,
         p.bg,
     );

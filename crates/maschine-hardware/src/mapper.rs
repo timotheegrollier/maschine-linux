@@ -1073,12 +1073,12 @@ impl HardwareMapper {
                             actions.push(MapperAction::Quantize);
                         }
                         ButtonId::FileSave => {
+                            // Bouton FILE/SAVE (physique, sous BROWSER) : menu/projets + sauvegarde.
                             if self.shift_held {
                                 actions.push(MapperAction::QuickSaveProject);
                             } else {
-                                // Sauvegarde normale (crée le projet si besoin). Le navigateur
-                                // de projets reste accessible via BROWSER (onglet FILE).
-                                actions.push(MapperAction::SaveProject);
+                                self.select_left_tab(3, &mut actions);
+                                actions.push(MapperAction::OpenFileBrowser);
                             }
                         }
 
@@ -1097,13 +1097,13 @@ impl HardwareMapper {
                             if self.left_tab == 3 && !self.shift_held {
                                 self.select_left_tab(2, &mut actions); // Retour SAMPLER
                             } else if self.shift_held {
-                                // Shift+BROWSER : navigateur de presets
-                                self.select_left_tab(3, &mut actions);
-                                actions.push(MapperAction::SetBrowserKind(0));
-                            } else {
-                                // BROWSER : ouvre le navigateur de projets (FILE/save/load)
+                                // Shift+BROWSER : navigateur de projets/fichiers
                                 self.select_left_tab(3, &mut actions);
                                 actions.push(MapperAction::OpenFileBrowser);
+                            } else {
+                                // BROWSER : navigateur de presets/samples
+                                self.select_left_tab(3, &mut actions);
+                                actions.push(MapperAction::SetBrowserKind(0));
                             }
                         }
                         ButtonId::Settings => {

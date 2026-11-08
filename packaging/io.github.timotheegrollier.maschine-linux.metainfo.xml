@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.9.6" date="2026-11-08">
+      <description>
+        <p>Release 0.9.6 adds Kick Synth modeler plugin, MK3 per-pad mixer controls, realtime DSP effects chains, Browser plugins/effects selection, project deletion from MK3, and restart improvements.</p>
+      </description>
+    </release>
     <release version="0.9.5" date="2026-11-08">
       <description>
         <p>Release 0.9.5 fixes MK3 FILE/SAVE and BROWSER LED mapping, restores full New Project creation workflow, and corrects MK3 screen softkeys.</p>

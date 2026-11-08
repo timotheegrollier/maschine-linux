@@ -2,7 +2,27 @@
 
 All notable changes.
 
-## [0.9.5] - 2026-11-08
+## [0.9.6] - 2026-11-08
+
+### Added
+
+- **Kick Synth Modeler plugin**: complete DSP modeled kick synthesizer for techno, club and analog beats. Features exponential pitch drop envelope, punch snap, transient attack click, resonant 50 Hz sub bass boost, analog tanh overdrive, and 6 built-in presets (Techno Berlin, 909 Punch, Hardcore Drive, Sub 808, Minimal Click, Industrial).
+- **MK3 Pad Mixer mode**: dedicated mixer modes allowing encoders 1..8 on the MK3 hardware to directly adjust the volume (and pan with Shift) of individual pads (Pads 1-8 or 9-16) for the active group, with dual-screen VU meters, faders, and dB readout.
+- **Effects Chains on Pads and Groups**: real-time zero-allocation DSP effect processors supporting Reverb (space & diffusion), Delay (ping-pong echo), Distortion (tanh saturation), Filter (LP/HP/BP multimode), and Compressor (dynamics punch).
+- **Browser Plugins & Effects tabs**: dedicated tabs in the MK3 screens and Desktop GUI to browse, preview, and load instruments (Kick Synth, TB-303, Sampler 808, Guitar Amp) or add effect slots directly to pads or groups.
+- **MK3 Project deletion**: direct project deletion from the MK3 FILE/SAVE browser with safe confirmation dialog (soft keys and physical ERASE button) and automatic disk cleanup.
+
+### Fixes
+
+- **Restart button**: update modal "Redémarrer maintenant" button now reliably spawns detached processes for both native binary and AppImage packaging, with delay to ensure audio and USB HID devices are completely released by the Linux kernel before restart.
+- **Unified PLUGIN navigation**: replaced fixed hardcoded "PAGE TB" with dynamic PLUGIN navigation following whichever instrument is loaded on the active pad.
+
+### Validation
+
+- `cargo fmt --all -- --check`
+- `cargo test -p maschine-hardware -p maschine-engine` (97 passing tests)
+- `cargo test -p maschine-app --no-default-features` (all tests passing)
+- `cargo clippy -p maschine-engine -p maschine-hardware -p maschine-dsp -p maschine-proto -- -D warnings` (clean)
 
 ### Fixes
 

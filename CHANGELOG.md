@@ -2,6 +2,19 @@
 
 All notable changes.
 
+## [0.9.11] - 2026-11-08
+
+### Fixes
+
+- **Multimode Sampler Filter**: the sampler voice filter now honors the active filter kind (`Off`, `LowPass`, `HighPass`, `BandPass`) instead of being hard-wired to a single low-pass biquad, making `HP` and `BP` selections audible and controllable through the cutoff/resonance knobs exactly like the low-pass (kick, 303, wavetable and sampler/pads paths unified on the multimode design).
+- **Last Project Restore**: at startup without explicit project argument, the last opened project (persisted settings) is loaded first; the current project is persisted in the recent projects on last close.
+
+### Validation
+
+- `cargo fmt --all -- --check` (clean)
+- `cargo clippy -p maschine-engine -p maschine-dsp -p maschine-hardware -p maschine-proto --all-targets` (clean, 0 warnings)
+- `cargo test -p maschine-engine` (77 passing tests, incl. filter audibility regression test)
+
 ## [0.9.10] - 2026-11-08
 
 ### Added

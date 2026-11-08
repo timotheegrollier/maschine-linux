@@ -2,6 +2,26 @@
 
 All notable changes.
 
+## [0.9.7] - 2026-11-08
+
+### Added
+
+- **Wavetable / Nexus Synth plugin**: 16-voice polyphonic synthesizer modeled with dual oscillators, 7-voice unison supersaw, acoustic and digital wavetables (Grand Piano, M1 Piano, Rhodes, Formants, Digital Waves), multimode SVF filter (LP12, LP24, HP, BP), dual ADSR envelopes, LFO modulation, stereo FX rack (Chorus, Ping-Pong Delay, Reverb, Distortion), and 16 factory presets (Piano, Bass, Lead, Pad, Pluck, Organ). Fully integrated in the Desktop GUI, Browser plugin selector, MK3 dual LCD screens, and hardware knob controls.
+- **Kick Synth Modeler enhancements**: extended body waveforms (Sine, Triangle, SatSine, SubSquare, NoiseTransient), selectable distortion drive types (Analog Tanh, Hard Clip, Wavefolder, Tube Drive), multimode resonant filter (LowPass, HighPass, BandPass, Off) with cutoff & resonance controls on MK3 and GUI, updated presets, and dedicated MK3 LCD screens.
+- **Mixer 4D Navigation & Drill-Down**: 4D Left/Right navigates between Pads 1-8, Pads 9-16, and Group mixer views. EncoderPush toggles between Group overview and pad drill-down with pad VU meters. 4D Up/Down selects sound without triggering audio.
+- **Instant Filter Selection**: instant filter kind selection chips and cycling (LP, HP, BP, Off) in Sampler and Kick synth via GUI and MK3 soft keys (`CYC FLT`, `LP`, `HP`, `BP`, `OFF`).
+
+### Fixes
+
+- **Latched Mode Auto-Exit**: pressing any top-row view button (`FILE/SAVE`, `BROWSER`, `PLUGIN`, `CHANNEL/MIDI`, `MIXER`, `SAMPLING`, `ARRANGER`) automatically clears all latched modes (`PATTERN`, `SCENE`, `SELECT`, `ERASE`, `MUTE`) and closes overlays (`EVENTS`, `MACRO`, `SETTINGS`) to return the hardware and pads to standard operational state.
+- **Hardware LED synchronization**: synced `EVENTS` and `MACRO` LEDs on the MK3 controller with active screen overlays.
+
+### Validation
+
+- `cargo fmt --all -- --check`
+- `cargo test --workspace --no-default-features` (144 passing tests)
+- `cargo clippy --workspace --all-targets --no-default-features -- -D warnings` (clean, 0 warnings)
+
 ## [0.9.6] - 2026-11-08
 
 ### Added

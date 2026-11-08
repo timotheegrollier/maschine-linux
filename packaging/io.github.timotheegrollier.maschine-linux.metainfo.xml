@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.9.4" date="2026-11-08">
+      <description>
+        <p>Release 0.9.4 adds a NEW project soft key to the MK3 FILE project browser.</p>
+      </description>
+    </release>
     <release version="0.9.3" date="2026-11-08">
       <description>
         <p>Release 0.9.3 corrects the MK3 FILE/SAVE and BROWSER physical button mapping and updates on-screen guidance.</p>

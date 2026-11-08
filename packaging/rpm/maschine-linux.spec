@@ -1,5 +1,5 @@
 Name:           maschine-linux
-Version:        0.9.3
+Version:        0.9.4
 Release:        1%{?dist}
 Summary:        Native Instruments Maschine MK3 DAW & Controller integration for Linux
 License:        GPL-3.0-or-later
@@ -98,6 +98,9 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/maschine-linux.deskto
 %{_prefix}/lib/systemd/user/maschine-linux.service
 
 %changelog
+* Sun Nov 08 2026 timotheegrollier <timo@example.com> - 0.9.4-1
+- Add NEW soft key in MK3 FILE project browser for direct new-project creation
+
 * Sun Nov 08 2026 timotheegrollier <timo@example.com> - 0.9.3-1
 - Correct MK3 FILE/SAVE and BROWSER physical button mapping and update on-screen guidance
 

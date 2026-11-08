@@ -2,6 +2,17 @@
 
 All notable changes.
 
+## [0.9.4] - 2026-11-08
+
+### Fixes
+
+- **MK3 FILE browser workflow**: added `NEW` soft key in the project browser (`browser_kind == 1`) to create a new project directly from the MK3, alongside `CHARGER` / `SAUVER` / `RAPIDE` / presets navigation.
+
+### Validation
+
+- `cargo fmt --all -- --check`
+- `cargo test -p maschine-engine -p maschine-hardware -p maschine-app --lib` (all passing)
+
 ## [0.9.3] - 2026-11-08
 
 ### Fixes

@@ -10,7 +10,7 @@ use crate::gui::theme::{card_frame, MachColors};
 use crate::gui::widgets::{chip, knob, KnobSpec};
 use eframe::egui;
 
-use maschine_engine::kick_synth::{KickParams, KickWaveform};
+use maschine_engine::kick_synth::KickWaveform;
 use maschine_engine::project::{Adsr, FilterKind};
 use maschine_engine::{AcidParams, AcidWaveform, EngineEvent};
 

@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+#[cfg(feature = "usb")]
+use log::warn;
 use log::{error, info};
 use parking_lot::Mutex;
 

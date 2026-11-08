@@ -276,7 +276,6 @@ fn fuzz_full_workflow_no_panic() {
             has_kick_synth: snap.focus_sound_kick.is_some(),
             has_acid_synth: snap.focus_sound_acid.is_some(),
             delete_project_confirm: snap.delete_project_confirm,
-            ..Default::default()
         };
         mapper.update_leds(&info);
         let ls = mapper.led_state().clone();

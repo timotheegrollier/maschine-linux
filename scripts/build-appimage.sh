@@ -13,7 +13,7 @@ cd "${ROOT_DIR}"
 VERSION="$(grep -m1 '^version =' Cargo.toml | cut -d '"' -f2)"
 echo "==> Préparation du paquet universel AppImage (v${VERSION})..."
 
-cargo build --release --locked -p maschine-app
+cargo build --release -p maschine-app --no-default-features
 
 APP_DIR="${ROOT_DIR}/target/AppDir"
 OUT_DIR="${ROOT_DIR}/dist"

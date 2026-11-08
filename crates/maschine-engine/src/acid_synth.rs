@@ -386,7 +386,7 @@ impl AcidSynth {
         let delay_fb = self.params.delay_feedback.clamp(0.0, 0.95);
         let delay_mix = self.params.delay_mix.clamp(0.0, 1.0);
 
-        let master_gain = 10.0f32.powf(self.params.volume_db / 20.0);
+        let master_gain = crate::engine::db_to_linear(self.params.volume_db);
 
         for frame in 0..num_frames {
             if self.sample_offset > 0 {
@@ -428,8 +428,8 @@ impl AcidSynth {
 
             // 3. Enveloppe de filtre et d'amplitude :
             // Tant que le gate est maintenu (pad enfoncé), l'enveloppe de filtre converge
-            // vers un seuil de sustain (0.25) pour que la note sonne indéfiniment sans s'étouffer.
-            let filter_target = if self.gate_open { 0.25 } else { 0.0 };
+            // vers un seuil de sustain (0.40) pour que la note sonne indéfiniment sans s'étouffer.
+            let filter_target = if self.gate_open { 0.40 } else { 0.0 };
             self.filter_env = filter_target + (self.filter_env - filter_target) * filter_decay_rate;
             if !self.gate_open {
                 self.amp_env *= amp_release_rate;

@@ -6,7 +6,10 @@ use std::time::{Duration, Instant};
 use maschine_proto::color::{Color, PaletteIndex};
 use maschine_proto::hid_output::LedState;
 
-use crate::events::HardwareEvent;
+use maschine_proto::hid_input::{EncoderEvent, TouchStripEvent};
+use maschine_proto::ButtonId;
+
+use crate::events::{HardwareEvent, PadState};
 
 /// Durée du flash blanc de frappe sur un pad (feedback tactile garanti même
 /// pour un tap plus court qu'une frame LED 33ms), façon Maschine.
@@ -874,1147 +877,1192 @@ impl HardwareMapper {
         let mut actions = Vec::new();
         match ev {
             HardwareEvent::Pad(p) => {
-                let note = self.cfg.pad_base_note + p.pad;
-                let ch = self.cfg.pad_channel;
-                // Fronts uniquement : le thread HID réémet `pressed=true` à chaque
-                // report tant que le doigt reste posé (pression/aftertouch). Sans
-                // ce garde, un appui maintenu re-déclenchait le son en boucle
-                // (mitraillette) et basculait le pas du step-sequencer plusieurs fois.
-                let prev = if (p.pad as usize) < 16 {
-                    let was = self.pad_pressed[p.pad as usize];
-                    self.pad_pressed[p.pad as usize] = p.pressed;
-                    was
-                } else {
-                    false
-                };
-                let vel = if self.fixed_velocity {
-                    127
-                } else {
-                    self.apply_curve(p.velocity).max(1)
-                };
-
-                if p.pressed {
-                    // Répétition d'un appui maintenu : ignorée (pic de vélocité
-                    // géré côté HID : un seul événement press est émis).
-                    if prev {
-                        return actions;
-                    }
-                    // Flash tactile : horodate la frappe pour un feedback LED
-                    // garanti même si le release suit aussitôt (tap éclair).
-                    if (p.pad as usize) < 16 {
-                        self.pad_hit_at[p.pad as usize] = Some(Instant::now());
-                    }
-
-                    // Modes workflow prioritaires (façon Maschine) — avant les modes de jeu.
-                    if self.scene_select_mode {
-                        actions.push(MapperAction::SceneTrigger(p.pad as usize));
-                        return actions;
-                    }
-                    if self.pattern_select_mode {
-                        let other_held = self
-                            .pad_pressed
-                            .iter()
-                            .enumerate()
-                            .any(|(i, &held)| held && i != p.pad as usize);
-                        if other_held {
-                            let mut held_indices: Vec<usize> = self
-                                .pad_pressed
-                                .iter()
-                                .enumerate()
-                                .filter_map(|(i, &held)| if held { Some(i) } else { None })
-                                .collect();
-                            held_indices.push(p.pad as usize);
-                            let min = *held_indices.iter().min().unwrap_or(&(p.pad as usize));
-                            let max = *held_indices.iter().max().unwrap_or(&(p.pad as usize));
-                            actions.push(MapperAction::PatternChain {
-                                group: self.group_focus,
-                                patterns: (min..=max).collect(),
-                            });
-                        } else {
-                            actions.push(MapperAction::PatternTrigger {
-                                group: self.group_focus,
-                                pattern: p.pad as usize,
-                            });
-                        }
-                        return actions;
-                    }
-                    if self.mute_pad_mode {
-                        actions.push(MapperAction::TogglePadMute {
-                            group: self.group_focus,
-                            pad: p.pad,
-                        });
-                        return actions;
-                    }
-                    if self.erase_mode {
-                        self.erase_used = true;
-                        self.active_sound = p.pad;
-                        actions.push(MapperAction::SelectSound(p.pad));
-                        actions.push(MapperAction::EraseSound {
-                            group: self.group_focus,
-                            sound: p.pad,
-                        });
-                        return actions;
-                    }
-                    if self.select_mode {
-                        self.select_used = true;
-                        self.active_sound = p.pad;
-                        actions.push(MapperAction::SelectSound(p.pad));
-                        return actions;
-                    }
-
-                    match self.mode {
-                        ControllerMode::Step => {
-                            // Façon Maschine : en mode Step, le pad bascule le pas
-                            // dans la mesure courante pour le son actif, SANS
-                            // produire de son (pas d'aperçu, pas de one-shot).
-                            actions.push(MapperAction::ToggleStep {
-                                sound: self.active_sound,
-                                bar: self.selected_bar,
-                                step: p.pad as usize,
-                            });
-                        }
-                        ControllerMode::Keyboard => {
-                            let mel_note = self.keyboard_note_for_pad(p.pad);
-                            self.pad_played.insert(p.pad, vec![mel_note]);
-                            actions.push(MapperAction::KeyboardTrigger {
-                                note: mel_note,
-                                velocity: vel,
-                                pressed: true,
-                            });
-                        }
-                        ControllerMode::Chords => {
-                            let notes = self.chord_notes_for_pad(p.pad);
-                            for &n in &notes {
-                                actions.push(MapperAction::KeyboardTrigger {
-                                    note: n,
-                                    velocity: vel,
-                                    pressed: true,
-                                });
-                            }
-                            self.pad_played.insert(p.pad, notes);
-                        }
-                        ControllerMode::Pad => {
-                            self.pad_note.insert(p.pad, note);
-                            actions.push(MapperAction::Midi(MidiEvent::NoteOn {
-                                channel: ch,
-                                note,
-                                velocity: vel,
-                            }));
-                            self.active_sound = p.pad;
-                            actions.push(MapperAction::SelectSound(p.pad));
-                            actions.push(MapperAction::PadTrigger {
-                                pad: p.pad,
-                                velocity: vel,
-                                pressed: true,
-                            });
-                        }
-                    }
-                } else {
-                    // Release dupliqué (déjà relâché) : ignoré.
-                    if !prev {
-                        return actions;
-                    }
-                    // NoteOff uniquement si un NoteOn a réellement été émis pour
-                    // cet appui (modes de jeu). Les modes Step/workflow restent
-                    // totalement silencieux, façon Maschine.
-                    if let Some(notes) = self.pad_played.remove(&p.pad) {
-                        for note in notes {
-                            actions.push(MapperAction::KeyboardTrigger {
-                                note,
-                                velocity: 0,
-                                pressed: false,
-                            });
-                        }
-                        return actions;
-                    }
-                    let Some(note) = self.pad_note.remove(&p.pad) else {
-                        return actions;
-                    };
-                    actions.push(MapperAction::Midi(MidiEvent::NoteOff {
-                        channel: ch,
-                        note,
-                        velocity: 0,
-                    }));
-                    if self.mode == ControllerMode::Pad {
-                        actions.push(MapperAction::PadTrigger {
-                            pad: p.pad,
-                            velocity: 0,
-                            pressed: false,
-                        });
-                    }
-                }
+                actions.extend(self.handle_pad_event(p));
             }
             HardwareEvent::Button { id, pressed, .. } => {
-                use maschine_proto::ButtonId;
-                match id {
-                    ButtonId::Shift => {
-                        self.shift_held = pressed;
-                        self.led_state.set_button_raw(
-                            maschine_proto::hid_output::offsets::SHIFT,
-                            if pressed { 7 } else { 0 },
-                        );
-                        actions.push(MapperAction::SetShiftHeld(pressed));
-                    }
-                    ButtonId::Duplicate => {
-                        self.duplicate_held = pressed;
-                    }
-                    ButtonId::Tempo => {
-                        self.tempo_button_held = pressed;
-                    }
-                    ButtonId::Mute => {
-                        self.mute_held = pressed;
-                        if pressed {
-                            self.mute_solo_group_used = false;
-                        } else if !self.mute_solo_group_used {
-                            // Appui simple : bascule le mode MUTE pads (pads sélectionnés = muted, LED dim).
-                            self.mute_pad_mode = !self.mute_pad_mode;
-                            self.led_state.set_button_raw(
-                                maschine_proto::hid_output::offsets::MUTE,
-                                if self.mute_pad_mode { 7 } else { 1 },
-                            );
-                        }
-                    }
-                    ButtonId::Solo => {
-                        self.solo_held = pressed;
-                        if pressed {
-                            self.mute_solo_group_used = false;
-                        } else if !self.mute_solo_group_used {
-                            actions.push(MapperAction::ToggleSolo(self.group_focus));
-                        }
-                    }
-                    ButtonId::Select => {
-                        self.select_held = pressed;
-                        if pressed {
-                            self.select_used = false;
-                            self.select_mode = true;
-                            actions.push(MapperAction::SetSelectMode(true));
-                        } else if self.select_mode {
-                            // `select_mode` a pu être désactivé par un autre
-                            // menu (PATTERN, SCENE…) : ne pas le rallumer au
-                            // relâchement du bouton.
-                            if self.select_used {
-                                self.select_pinned = false;
-                                self.select_mode = false;
-                                actions.push(MapperAction::SetSelectMode(false));
-                            } else {
-                                self.select_pinned = !self.select_pinned;
-                                self.select_mode = self.select_pinned;
-                                actions.push(MapperAction::SetSelectMode(self.select_mode));
-                            }
-                        }
-                    }
-                    ButtonId::Erase => {
-                        self.erase_held = pressed;
-                        if pressed && self.left_tab == 3 && self.browser_kind == 1 {
-                            // En mode FILE, ERASE déclenche / confirme la suppression de projet
-                            actions.push(MapperAction::SoftKey(6));
-                            return actions;
-                        }
-                        if pressed {
-                            if self.shift_held {
-                                if self.pattern_select_mode {
-                                    actions.push(MapperAction::ClearPattern {
-                                        group: self.group_focus,
-                                    });
-                                } else {
-                                    actions.push(MapperAction::ClearBar(self.selected_bar));
-                                }
-                            } else {
-                                self.erase_used = false;
-                                self.erase_mode = true;
-                                actions.push(MapperAction::SetEraseMode(true));
-                            }
-                        } else if !self.shift_held && self.erase_mode {
-                            if self.erase_used {
-                                self.erase_pinned = false;
-                                self.erase_mode = false;
-                                actions.push(MapperAction::SetEraseMode(false));
-                            } else {
-                                self.erase_pinned = !self.erase_pinned;
-                                self.erase_mode = self.erase_pinned;
-                                actions.push(MapperAction::SetEraseMode(self.erase_mode));
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-
-                if pressed {
-                    match id {
-                        // Transport
-                        ButtonId::Play => actions.push(MapperAction::PlayPauseToggle),
-                        ButtonId::Stop => actions.push(MapperAction::Stop),
-                        ButtonId::Rec => actions.push(MapperAction::RecordToggle),
-                        ButtonId::Restart => {
-                            if self.shift_held {
-                                actions.push(MapperAction::ToggleLoop);
-                            } else {
-                                actions.push(MapperAction::Restart);
-                            }
-                        }
-                        ButtonId::Tap => {
-                            if self.shift_held {
-                                actions.push(MapperAction::ToggleMetronome);
-                                return actions;
-                            }
-                            let now = std::time::Instant::now();
-                            self.tap_timestamps
-                                .retain(|t| now.duration_since(*t).as_secs_f32() < 2.0);
-                            self.tap_timestamps.push(now);
-                            if self.tap_timestamps.len() >= 2 {
-                                let diffs: Vec<f32> = self
-                                    .tap_timestamps
-                                    .windows(2)
-                                    .map(|w| w[1].duration_since(w[0]).as_secs_f32())
-                                    .collect();
-                                let avg = diffs.iter().sum::<f32>() / diffs.len() as f32;
-                                if avg > 0.15 && avg < 2.0 {
-                                    let bpm = (60.0 / avg).clamp(40.0, 300.0);
-                                    actions.push(MapperAction::BpmSet(bpm));
-                                }
-                            }
-                        }
-
-                        // Modes de contrôle — comportement Maschine : le bouton
-                        // active le menu, un second appui sur le même bouton
-                        // revient au mode Pad par défaut.
-                        ButtonId::PadMode => {
-                            self.exit_to_default(&mut actions);
-                        }
-                        ButtonId::Keyboard => {
-                            if self.mode == ControllerMode::Keyboard {
-                                self.exit_to_default(&mut actions);
-                            } else {
-                                self.clear_menu_modes(&mut actions);
-                                self.select_left_tab(0, &mut actions);
-                                self.set_controller_mode(ControllerMode::Keyboard, &mut actions);
-                                actions.push(MapperAction::NavigateView(nav::KEYBOARD));
-                            }
-                        }
-                        ButtonId::Chords => {
-                            if self.mode == ControllerMode::Chords {
-                                self.exit_to_default(&mut actions);
-                            } else {
-                                self.clear_menu_modes(&mut actions);
-                                self.select_left_tab(0, &mut actions);
-                                self.set_controller_mode(ControllerMode::Chords, &mut actions);
-                                actions.push(MapperAction::NavigateView(nav::KEYBOARD));
-                            }
-                        }
-                        ButtonId::Step => {
-                            if self.mode == ControllerMode::Step {
-                                self.exit_to_default(&mut actions);
-                            } else {
-                                self.clear_menu_modes(&mut actions);
-                                self.select_left_tab(0, &mut actions);
-                                self.set_controller_mode(ControllerMode::Step, &mut actions);
-                                actions.push(MapperAction::NavigateView(nav::STEP));
-                            }
-                        }
-
-                        // Focus Encodeur 4D
-                        ButtonId::Tempo => {
-                            self.encoder_focus = EncoderFocus::Tempo;
-                        }
-                        ButtonId::Volume => {
-                            self.encoder_focus = EncoderFocus::Volume;
-                        }
-                        ButtonId::Swing => {
-                            self.encoder_focus = EncoderFocus::Swing;
-                        }
-
-                        // Modes Smart Strip
-                        ButtonId::Pitch => {
-                            self.touchstrip_mode = TouchStripMode::Pitch;
-                        }
-                        ButtonId::Mod => {
-                            self.touchstrip_mode = TouchStripMode::Mod;
-                        }
-                        ButtonId::Perform => {
-                            self.touchstrip_mode = TouchStripMode::Perform;
-                        }
-                        ButtonId::Notes => {
-                            self.touchstrip_mode = TouchStripMode::Notes;
-                        }
-
-                        // Features & Vues
-                        ButtonId::FixedVel => {
-                            self.fixed_velocity = !self.fixed_velocity;
-                        }
-                        ButtonId::Follow => {
-                            self.follow_mode = !self.follow_mode;
-                        }
-                        ButtonId::NoteRepeat => {
-                            self.note_repeat = !self.note_repeat;
-                            actions.push(MapperAction::SetNoteRepeat(self.note_repeat));
-                        }
-                        ButtonId::Variation => {
-                            actions.push(MapperAction::Variation);
-                        }
-                        ButtonId::Auto => {
-                            actions.push(MapperAction::Quantize);
-                        }
-                        ButtonId::FileSave => {
-                            // Bouton FILE/SAVE (physique, sous BROWSER) : menu projets/sauvegarde.
-                            if self.shift_held {
-                                actions.push(MapperAction::QuickSaveProject);
-                            } else {
-                                self.clear_menu_modes(&mut actions);
-                                if self.left_tab == 3 && self.browser_kind == 1 {
-                                    // Toggle : referme le menu FILE
-                                    self.select_left_tab(0, &mut actions);
-                                } else {
-                                    self.browser_kind = 1;
-                                    self.select_left_tab(3, &mut actions);
-                                    actions.push(MapperAction::OpenFileBrowser);
-                                }
-                            }
-                        }
-
-                        // Onglets d'écrans dédiés
-                        ButtonId::Arranger => {
-                            self.clear_menu_modes(&mut actions);
-                            self.select_left_tab(0, &mut actions);
-                            actions.push(MapperAction::ToggleSongMode);
-                        }
-                        ButtonId::Mixer => {
-                            self.clear_menu_modes(&mut actions);
-                            self.select_left_tab(1, &mut actions);
-                        }
-                        ButtonId::Sampling => {
-                            self.clear_menu_modes(&mut actions);
-                            self.select_left_tab(2, &mut actions);
-                        }
-                        ButtonId::Browser => {
-                            self.clear_menu_modes(&mut actions);
-                            if self.shift_held {
-                                // Shift+BROWSER : navigateur de projets/fichiers (comme FILE/SAVE)
-                                self.browser_kind = 1;
-                                self.select_left_tab(3, &mut actions);
-                                actions.push(MapperAction::OpenFileBrowser);
-                            } else if self.left_tab == 3 && self.browser_kind == 0 {
-                                // Déjà dans BROWSER presets : toggle pour fermer
-                                self.select_left_tab(0, &mut actions);
-                            } else {
-                                // BROWSER : navigateur de presets/samples
-                                self.browser_kind = 0;
-                                self.select_left_tab(3, &mut actions);
-                                actions.push(MapperAction::SetBrowserKind(0));
-                            }
-                        }
-                        ButtonId::Settings => {
-                            let tab = if self.right_tab == 3 { 0 } else { 3 };
-                            self.right_tab = tab;
-                            self.led_state.set_button_raw(
-                                maschine_proto::hid_output::offsets::SETTINGS,
-                                if tab == 3 { 7 } else { 1 },
-                            );
-                            actions.push(MapperAction::SetRightTab(tab));
-                        }
-
-                        // Groupes A..H (avec MUTE/SOLO + Group façon Maschine)
-                        ButtonId::Group(g) if g < 8 => {
-                            // MUTE/SOLO + Group : cible le groupe sans changer le focus.
-                            // mute_pad_mode (latched) permet aussi Group pour muter un groupe entier.
-                            if self.mute_held || self.mute_pad_mode {
-                                actions.push(MapperAction::ToggleMute(g));
-                                self.mute_solo_group_used = true;
-                            } else if self.solo_held {
-                                actions.push(MapperAction::ToggleSolo(g));
-                                self.mute_solo_group_used = true;
-                            } else {
-                                self.group_focus = g;
-                                actions.push(MapperAction::GroupFocus(g));
-                            }
-                        }
-
-                        // Navigation 4D & Flèches < >
-                        ButtonId::FourWayLeft | ButtonId::Left => {
-                            if self.left_tab == 1 {
-                                // Mode MIXER : navigation 4D entre sous-vues
-                                if self.mixer_mode == 1 {
-                                    self.mixer_mode = 0;
-                                    actions.push(MapperAction::SetMixerMode(0));
-                                } else if self.mixer_mode == 0 {
-                                    self.mixer_mode = 2;
-                                    actions.push(MapperAction::SetMixerMode(2));
-                                } else if self.mixer_mode >= 2 {
-                                    self.group_focus =
-                                        (self.group_focus as i32 - 1).rem_euclid(8) as u8;
-                                    actions.push(MapperAction::GroupFocus(self.group_focus));
-                                }
-                            } else if self.pattern_select_mode {
-                                actions.push(MapperAction::PatternStep {
-                                    group: self.group_focus,
-                                    delta: -1,
-                                });
-                            } else if self.mode == ControllerMode::Step && self.left_tab == 0 {
-                                // Mode STEP : défile la grille d'un pas.
-                                actions.push(MapperAction::StepScroll(-1));
-                            } else {
-                                self.selected_bar = self.selected_bar.saturating_sub(1);
-                                actions.push(MapperAction::SelectBar(self.selected_bar));
-                            }
-                        }
-                        ButtonId::FourWayRight | ButtonId::Right => {
-                            if self.left_tab == 1 {
-                                // Mode MIXER : navigation 4D vers les pads du groupe
-                                if self.mixer_mode >= 2 {
-                                    self.mixer_mode = 0;
-                                    actions.push(MapperAction::SetMixerMode(0));
-                                } else if self.mixer_mode == 0 {
-                                    self.mixer_mode = 1;
-                                    actions.push(MapperAction::SetMixerMode(1));
-                                }
-                            } else if self.pattern_select_mode {
-                                actions.push(MapperAction::PatternStep {
-                                    group: self.group_focus,
-                                    delta: 1,
-                                });
-                            } else if self.shift_held {
-                                let new_len = if self.pattern_bars < 4 { 4 } else { 8 };
-                                self.pattern_bars = new_len;
-                                actions.push(MapperAction::SetPatternBars(new_len));
-                            } else if self.mode == ControllerMode::Step && self.left_tab == 0 {
-                                // Mode STEP : défile la grille d'un pas.
-                                actions.push(MapperAction::StepScroll(1));
-                            } else {
-                                self.selected_bar = (self.selected_bar + 1)
-                                    .min(self.pattern_bars.saturating_sub(1));
-                                actions.push(MapperAction::SelectBar(self.selected_bar));
-                            }
-                        }
-                        ButtonId::FourWayUp => {
-                            if self.left_tab == 3 {
-                                actions.push(MapperAction::BrowsePresetStep(-1));
-                            } else if self.left_tab == 1 {
-                                if self.mixer_mode >= 2 {
-                                    // Pousser vers le haut rentre dans le groupe pour afficher les pads
-                                    self.mixer_mode = 0;
-                                    actions.push(MapperAction::SetMixerMode(0));
-                                } else {
-                                    self.active_sound = (self.active_sound + 1) % 16;
-                                    actions.push(MapperAction::SelectSound(self.active_sound));
-                                }
-                            } else {
-                                self.active_sound = (self.active_sound + 1) % 16;
-                                actions.push(MapperAction::SelectSound(self.active_sound));
-                                actions.push(MapperAction::PadTrigger {
-                                    pad: self.active_sound,
-                                    velocity: 110,
-                                    pressed: true,
-                                });
-                            }
-                        }
-                        ButtonId::FourWayDown => {
-                            if self.left_tab == 3 {
-                                actions.push(MapperAction::BrowsePresetStep(1));
-                            } else if self.left_tab == 1 {
-                                if self.mixer_mode < 2 {
-                                    // Pousser vers le bas sort du groupe vers la vue Groupes / Master
-                                    self.mixer_mode = 2;
-                                    actions.push(MapperAction::SetMixerMode(2));
-                                } else {
-                                    self.active_sound = (self.active_sound + 15) % 16;
-                                    actions.push(MapperAction::SelectSound(self.active_sound));
-                                }
-                            } else {
-                                self.active_sound = (self.active_sound + 15) % 16;
-                                actions.push(MapperAction::SelectSound(self.active_sound));
-                                actions.push(MapperAction::PadTrigger {
-                                    pad: self.active_sound,
-                                    velocity: 110,
-                                    pressed: true,
-                                });
-                            }
-                        }
-                        ButtonId::EncoderPush => {
-                            if self.left_tab == 3 {
-                                actions.push(MapperAction::LoadSelectedPreset);
-                            } else if self.left_tab == 1 {
-                                // Pousser l'encodeur dans le mixer rentre dans le groupe pour afficher
-                                // les VUs des pads (mode 0: pads 1-8 / 9-16), ou remonte au mixeur groupes (mode 2).
-                                let next_mode = if self.mixer_mode >= 2 { 0 } else { 2 };
-                                self.mixer_mode = next_mode;
-                                actions.push(MapperAction::SetMixerMode(next_mode));
-                            } else if self.left_tab == 2 && self.shift_held {
-                                // Shift+Push en vue Sampler : alterne le type de filtre rapidement
-                                actions.push(MapperAction::CycleSoundFilterKind);
-                            } else {
-                                // One-shot preview du sound sélectionné (ne démarre PAS la boucle transport !)
-                                actions.push(MapperAction::PadTrigger {
-                                    pad: self.active_sound,
-                                    velocity: 115,
-                                    pressed: true,
-                                });
-                            }
-                        }
-
-                        // Actions d'édition
-                        ButtonId::Duplicate => {
-                            if self.pattern_select_mode {
-                                actions.push(MapperAction::DuplicatePattern {
-                                    group: self.group_focus,
-                                });
-                            } else {
-                                actions.push(MapperAction::DuplicateBar);
-                            }
-                        }
-                        // Workflow officiel : SCENE / PATTERN / SELECT / EVENTS / MACRO / PLUGIN
-                        // Chaque menu reste actif (latch) et un second appui sur
-                        // le même bouton le désactive, comme sur Maschine Windows.
-                        ButtonId::Scene => {
-                            if self.scene_select_mode {
-                                self.exit_to_default(&mut actions);
-                            } else {
-                                self.clear_menu_modes(&mut actions);
-                                self.scene_select_mode = true;
-                                self.select_left_tab(0, &mut actions);
-                                self.set_controller_mode(ControllerMode::Pad, &mut actions);
-                                actions.push(MapperAction::SetSceneMode(true));
-                                actions.push(MapperAction::NavigateView(nav::SCENE));
-                            }
-                        }
-                        ButtonId::Pattern => {
-                            if self.pattern_select_mode {
-                                self.exit_to_default(&mut actions);
-                            } else {
-                                self.clear_menu_modes(&mut actions);
-                                self.pattern_select_mode = true;
-                                self.select_left_tab(0, &mut actions);
-                                self.set_controller_mode(ControllerMode::Pad, &mut actions);
-                                actions.push(MapperAction::SetPatternMode(true));
-                                actions.push(MapperAction::NavigateView(nav::PATTERN));
-                            }
-                        }
-                        ButtonId::Events => {
-                            let tab = if self.right_tab == 1 { 0 } else { 1 };
-                            self.right_tab = tab;
-                            self.led_state.set_button_raw(
-                                maschine_proto::hid_output::offsets::EVENTS,
-                                if tab == 1 { 7 } else { 1 },
-                            );
-                            actions.push(MapperAction::SetRightTab(tab));
-                        }
-                        ButtonId::Macro => {
-                            let tab = if self.right_tab == 2 { 0 } else { 2 };
-                            self.right_tab = tab;
-                            self.led_state.set_button_raw(
-                                maschine_proto::hid_output::offsets::MACRO,
-                                if tab == 2 { 7 } else { 1 },
-                            );
-                            actions.push(MapperAction::SetRightTab(tab));
-                        }
-                        ButtonId::Plugin => {
-                            self.clear_menu_modes(&mut actions);
-                            if self.left_tab == 4 {
-                                // Second appui : quitte l'éditeur PLUGIN.
-                                self.select_left_tab(0, &mut actions);
-                                actions.push(MapperAction::NavigateView(nav::PATTERN));
-                            } else {
-                                self.select_left_tab(4, &mut actions);
-                                // Le moteur choisit la page selon le Sound actif
-                                // (TB-303 si le pad sélectionné est un synthé, sinon SOUND).
-                                actions.push(MapperAction::NavigateView(nav::PLUGIN));
-                            }
-                        }
-                        ButtonId::ChannelMidi => {
-                            self.clear_menu_modes(&mut actions);
-                            self.select_left_tab(1, &mut actions); // MIXER
-                        }
-                        ButtonId::Lock => {
-                            self.lock_active = !self.lock_active;
-                            self.led_state.set_button_raw(
-                                maschine_proto::hid_output::offsets::LOCK,
-                                if self.lock_active || self.note_repeat {
-                                    7
-                                } else {
-                                    1
-                                },
-                            );
-                            actions.push(MapperAction::ToggleLock(self.lock_active));
-                        }
-                        // Pédale footswitch : lecture/pause (comme EncoderPush).
-                        ButtonId::Pedal => {
-                            actions.push(MapperAction::PlayPauseToggle);
-                        }
-
-                        // Soft Buttons Écrans 1..8 — actions contextuelles :
-                        // c'est l'Engine qui décide (labels = actions réelles
-                        // affichées en bas des écrans), le hardware ne fait que
-                        // transmettre.
-                        ButtonId::DisplayBtn(n @ 1..=8) => {
-                            if self.note_repeat {
-                                if n <= 7 {
-                                    self.note_repeat_rate = n - 1;
-                                    actions.push(MapperAction::SetNoteRepeatRate(n - 1));
-                                } else {
-                                    self.note_repeat = !self.note_repeat;
-                                    actions.push(MapperAction::SetNoteRepeat(self.note_repeat));
-                                }
-                            } else {
-                                actions.push(MapperAction::SoftKey(n));
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+                actions.extend(self.handle_button_event(id, pressed));
             }
             HardwareEvent::Encoder(enc) => {
-                if enc.id == 0 {
-                    // Encodeur 4D principal : différence relative 4-bit SANS DÉRIVE
-                    let new_val = (enc.value & 0x0F) as u8;
-                    let delta = match self.prev_main_encoder {
-                        Some(prev) if prev != new_val => wrap_16_delta(new_val, prev),
-                        _ => 0,
-                    };
-                    self.prev_main_encoder = Some(new_val);
-                    if delta != 0 {
-                        if self.left_tab == 1 {
-                            // Mode MIXER : l'encodeur 4D scrolle les pistes (banques 1-8 / 9-16 ou groupes)
-                            if self.mixer_mode == 0 && delta > 0 {
-                                self.mixer_mode = 1;
-                                actions.push(MapperAction::SetMixerMode(1));
-                            } else if self.mixer_mode == 1 && delta < 0 {
-                                self.mixer_mode = 0;
-                                actions.push(MapperAction::SetMixerMode(0));
-                            } else if self.mixer_mode == 2 {
-                                self.group_focus =
-                                    (self.group_focus as i32 + delta as i32).rem_euclid(8) as u8;
-                                actions.push(MapperAction::GroupFocus(self.group_focus));
-                            }
-                        } else if self.left_tab == 4 && self.has_wavetable_synth {
-                            // Vue WAVETABLE / NEXUS SYNTH : encodeur 4D défile les presets
-                            if delta > 0 {
-                                actions.push(MapperAction::WavetableNextPreset);
-                            } else {
-                                actions.push(MapperAction::WavetablePrevPreset);
-                            }
-                        } else if self.left_tab == 3 {
-                            self.browser_preset_idx =
-                                (self.browser_preset_idx as i32 + delta as i32).rem_euclid(16)
-                                    as u8;
-                            actions.push(MapperAction::BrowsePresetStep(delta as i32));
-                        } else {
-                            match self.encoder_focus {
-                                EncoderFocus::Tempo => {
-                                    // Valeurs en « ticks bruts » (l'app applique 0.05 BPM/tick) :
-                                    // 0.5 BPM par cran, 0.25 avec Shift.
-                                    let step = if self.shift_held { 5.0 } else { 10.0 };
-                                    actions.push(MapperAction::BpmDelta(delta as f32 * step));
-                                }
-                                EncoderFocus::Volume => {
-                                    // 10 ticks = 0.01 de volume master par cran.
-                                    let step = if self.shift_held { 5.0 } else { 10.0 };
-                                    actions
-                                        .push(MapperAction::MasterVolumeDelta(delta as f32 * step));
-                                }
-                                EncoderFocus::Swing => {
-                                    // 10 ticks = 0.01 de swing par cran.
-                                    let step = if self.shift_held { 5.0 } else { 10.0 };
-                                    actions.push(MapperAction::SwingDelta(delta as f32 * step));
-                                }
-                            }
-                        }
-                    }
-                } else if enc.id >= 1 && enc.id <= 8 {
-                    let idx = (enc.id - 1) as usize;
-                    let new_val = enc.value & 0x3FF;
-                    let delta = match self.prev_knobs[idx] {
-                        Some(prev) if prev != new_val => wrap_1024_delta(new_val, prev),
-                        _ => 0,
-                    };
-                    self.prev_knobs[idx] = Some(new_val);
-                    // Les grands deltas (tours rapides) sont limités, pas jetés :
-                    // le knob reste toujours réactif.
-                    let delta = delta.clamp(-128, 128);
-                    if delta != 0 {
-                        if self.mode == ControllerMode::Step && self.left_tab == 0 {
-                            // STEP : 1 VEL, 2 POSITION, 3 LONGUEUR, 4 PITCH,
-                            // 5 SCROLL (grille complète), 6 VOL SND, 7 CUTOFF, 8 RESO.
-                            // Les valeurs entières (pas, demi-tons, vélocité) passent
-                            // par un accumulateur : ~1 cran de knob = ~32 ticks bruts.
-                            match idx {
-                                0 => {
-                                    let d = self.knob_steps(idx, delta, 0.1);
-                                    if d != 0 {
-                                        actions.push(MapperAction::StepVelocityDelta(d));
-                                    }
-                                }
-                                1 => {
-                                    let d = self.knob_steps(idx, delta, 0.25);
-                                    if d != 0 {
-                                        actions.push(MapperAction::StepNudgeTicks(d));
-                                    }
-                                }
-                                2 => {
-                                    let d = self.knob_steps(idx, delta, 0.01);
-                                    if d != 0 {
-                                        actions.push(MapperAction::StepLengthDelta(d));
-                                    }
-                                }
-                                3 => {
-                                    let d = self.knob_steps(idx, delta, 0.025);
-                                    if d != 0 {
-                                        actions.push(MapperAction::StepPitchDelta(d));
-                                    }
-                                }
-                                4 => {
-                                    let d = self.knob_steps(idx, delta, 0.03125);
-                                    if d != 0 {
-                                        actions.push(MapperAction::StepScroll(d.clamp(-4, 4)));
-                                    }
-                                }
-                                5 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
-                                6 => {
-                                    actions.push(MapperAction::SoundFilterCutoffDelta(delta as f32))
-                                }
-                                7 => actions.push(MapperAction::SoundFilterResoDelta(delta as f32)),
-                                _ => {}
-                            }
-                        } else if self.left_tab == 1 {
-                            // Mode MIXER :
-                            // Si mixer_mode == 0 : Knobs 1..8 = Pads 1..8 du groupe focus (Volume ou Pan si shift)
-                            // Si mixer_mode == 1 : Knobs 1..8 = Pads 9..16 du groupe focus (Volume ou Pan si shift)
-                            // Si mixer_mode == 2 : Knobs 1..8 = Groupes A..H
-                            if self.mixer_mode == 0 && idx < 8 {
-                                let pad = idx as u8;
-                                if self.shift_held {
-                                    actions.push(MapperAction::SoundPanDeltaFor {
-                                        group: self.group_focus,
-                                        sound: pad,
-                                        delta: delta as f32,
-                                    });
-                                } else {
-                                    actions.push(MapperAction::SoundVolumeDeltaFor {
-                                        group: self.group_focus,
-                                        sound: pad,
-                                        delta: delta as f32,
-                                    });
-                                }
-                            } else if self.mixer_mode == 1 && idx < 8 {
-                                let pad = (idx + 8) as u8;
-                                if self.shift_held {
-                                    actions.push(MapperAction::SoundPanDeltaFor {
-                                        group: self.group_focus,
-                                        sound: pad,
-                                        delta: delta as f32,
-                                    });
-                                } else {
-                                    actions.push(MapperAction::SoundVolumeDeltaFor {
-                                        group: self.group_focus,
-                                        sound: pad,
-                                        delta: delta as f32,
-                                    });
-                                }
-                            } else if self.shift_held || self.mixer_mode == 2 {
-                                actions.push(MapperAction::GroupVolumeDeltaFor {
-                                    group: idx as u8,
-                                    delta: delta as f32,
-                                });
-                            } else {
-                                match idx {
-                                    0 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
-                                    1 => actions.push(MapperAction::SoundPanDelta(delta as f32)),
-                                    2 => actions.push(MapperAction::GroupVolumeDelta(delta as f32)),
-                                    3 => actions.push(MapperAction::GroupPanDelta(delta as f32)),
-                                    4 => actions
-                                        .push(MapperAction::SoundFilterCutoffDelta(delta as f32)),
-                                    5 => actions
-                                        .push(MapperAction::SoundFilterResoDelta(delta as f32)),
-                                    6 => {
-                                        actions.push(MapperAction::MasterVolumeDelta(delta as f32))
-                                    }
-                                    _ => actions
-                                        .push(MapperAction::HeadphoneVolumeDelta(delta as f32)),
-                                }
-                            }
-                        } else if self.left_tab == 2 {
-                            // SAMPLER : son actif. 1-4 = VOL/PAN/CUTOFF/RESO,
-                            // 5-8 = ATTACK/DECAY/SUSTAIN/RELEASE. Deltas bruts :
-                            // l'app les met à l'échelle (~1 tour = toute la plage).
-                            if self.shift_held && (idx == 2 || idx == 3) {
-                                actions.push(MapperAction::CycleSoundFilterKind);
-                            } else {
-                                match idx {
-                                    0 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
-                                    1 => actions.push(MapperAction::SoundPanDelta(delta as f32)),
-                                    2 => actions
-                                        .push(MapperAction::SoundFilterCutoffDelta(delta as f32)),
-                                    3 => actions
-                                        .push(MapperAction::SoundFilterResoDelta(delta as f32)),
-                                    4 => actions.push(MapperAction::SoundAttackDelta(delta as f32)),
-                                    5 => actions.push(MapperAction::SoundDecayDelta(delta as f32)),
-                                    6 => {
-                                        actions.push(MapperAction::SoundSustainDelta(delta as f32))
-                                    }
-                                    _ => {
-                                        actions.push(MapperAction::SoundReleaseDelta(delta as f32))
-                                    }
-                                }
-                            }
-                        } else if self.left_tab == 4 {
-                            if self.plugin_page == 1
-                                || self.has_kick_synth
-                                || self.has_wavetable_synth
-                                || self.has_acid_synth
-                            {
-                                if self.has_kick_synth {
-                                    // KICK SYNTH : 1 TUNE, 2 DECAY, 3 SNAP/PUNCH, 4 SWEEP, 5 CLICK, 6 DRIVE, 7 SUB, 8 VOL
-                                    // Avec Shift : Knob 5 = Disto Type, Knob 6 = Cutoff filtre, Knob 7 = Mode filtre
-                                    if self.shift_held && idx == 5 {
-                                        actions
-                                            .push(MapperAction::KickDriveTypeDelta(delta.signum()));
-                                    } else if self.shift_held && idx == 6 {
-                                        actions.push(MapperAction::KickFilterCutoffDelta(
-                                            delta as f32,
-                                        ));
-                                    } else if self.shift_held && idx == 7 {
-                                        actions.push(MapperAction::KickFilterModeDelta(
-                                            delta.signum(),
-                                        ));
-                                    } else {
-                                        match idx {
-                                            0 => actions
-                                                .push(MapperAction::KickTuneDelta(delta as f32)),
-                                            1 => actions
-                                                .push(MapperAction::KickDecayDelta(delta as f32)),
-                                            2 => actions
-                                                .push(MapperAction::KickSnapDelta(delta as f32)),
-                                            3 => actions
-                                                .push(MapperAction::KickSweepDelta(delta as f32)),
-                                            4 => actions
-                                                .push(MapperAction::KickClickDelta(delta as f32)),
-                                            5 => actions
-                                                .push(MapperAction::KickDriveDelta(delta as f32)),
-                                            6 => actions
-                                                .push(MapperAction::KickSubDelta(delta as f32)),
-                                            _ => actions
-                                                .push(MapperAction::KickVolumeDelta(delta as f32)),
-                                        }
-                                    }
-                                } else if self.has_wavetable_synth {
-                                    // WAVETABLE / NEXUS SYNTH :
-                                    // 1 CUTOFF, 2 RESO, 3 ENV AMT, 4 DRIVE, 5 ATTACK, 6 DECAY, 7 SUSTAIN, 8 RELEASE
-                                    // Avec Shift :
-                                    // 1 Filter Mode, 2 Unison, 3 Osc1 Wave, 4 Osc2 Wave, 5 Chorus, 6 Delay, 7 Reverb, 8 Volume
-                                    if self.shift_held {
-                                        match idx {
-                                            0 => {
-                                                actions.push(MapperAction::WavetableFilterModeCycle)
-                                            }
-                                            1 => actions.push(
-                                                MapperAction::WavetableUnisonVoicesDelta(
-                                                    delta.signum(),
-                                                ),
-                                            ),
-                                            2 => actions.push(MapperAction::WavetableOsc1WaveCycle),
-                                            3 => actions.push(MapperAction::WavetableOsc2WaveCycle),
-                                            4 => actions.push(MapperAction::WavetableChorusDelta(
-                                                delta as f32,
-                                            )),
-                                            5 => actions.push(MapperAction::WavetableDelayDelta(
-                                                delta as f32,
-                                            )),
-                                            6 => actions.push(MapperAction::WavetableReverbDelta(
-                                                delta as f32,
-                                            )),
-                                            _ => actions.push(MapperAction::WavetableVolumeDelta(
-                                                delta as f32,
-                                            )),
-                                        }
-                                    } else {
-                                        match idx {
-                                            0 => actions.push(MapperAction::WavetableCutoffDelta(
-                                                delta as f32,
-                                            )),
-                                            1 => actions.push(MapperAction::WavetableResoDelta(
-                                                delta as f32,
-                                            )),
-                                            2 => actions.push(MapperAction::WavetableEnvAmtDelta(
-                                                delta as f32,
-                                            )),
-                                            3 => actions.push(MapperAction::WavetableDriveDelta(
-                                                delta as f32,
-                                            )),
-                                            4 => actions.push(MapperAction::WavetableAttackDelta(
-                                                delta as f32,
-                                            )),
-                                            5 => actions.push(MapperAction::WavetableDecayDelta(
-                                                delta as f32,
-                                            )),
-                                            6 => actions.push(MapperAction::WavetableSustainDelta(
-                                                delta as f32,
-                                            )),
-                                            _ => actions.push(MapperAction::WavetableReleaseDelta(
-                                                delta as f32,
-                                            )),
-                                        }
-                                    }
-                                } else {
-                                    // TB-303 : 1 CUTOFF, 2 RESO, 3 ENVMOD, 4 DECAY,
-                                    // 5 ACCENT, 6 DRIVE, 7 DELAY TIME, 8 DELAY MIX.
-                                    match idx {
-                                        0 => actions
-                                            .push(MapperAction::AcidCutoffDelta(delta as f32)),
-                                        1 => {
-                                            actions.push(MapperAction::AcidResoDelta(delta as f32))
-                                        }
-                                        2 => actions
-                                            .push(MapperAction::AcidEnvModDelta(delta as f32)),
-                                        3 => {
-                                            actions.push(MapperAction::AcidDecayDelta(delta as f32))
-                                        }
-                                        4 => actions
-                                            .push(MapperAction::AcidAccentDelta(delta as f32)),
-                                        5 => {
-                                            actions.push(MapperAction::AcidDriveDelta(delta as f32))
-                                        }
-                                        6 => actions
-                                            .push(MapperAction::AcidDelayTimeDelta(delta as f32)),
-                                        _ => actions
-                                            .push(MapperAction::AcidDelayMixDelta(delta as f32)),
-                                    }
-                                }
-                            } else {
-                                // PLUGIN / SOUND : édition du Sound actif (page 0).
-                                match idx {
-                                    0 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
-                                    1 => actions.push(MapperAction::SoundPanDelta(delta as f32)),
-                                    2 => actions
-                                        .push(MapperAction::SoundFilterCutoffDelta(delta as f32)),
-                                    3 => actions
-                                        .push(MapperAction::SoundFilterResoDelta(delta as f32)),
-                                    4 => actions.push(MapperAction::SoundAttackDelta(delta as f32)),
-                                    5 => actions.push(MapperAction::SoundDecayDelta(delta as f32)),
-                                    6 => {
-                                        actions.push(MapperAction::SoundSustainDelta(delta as f32))
-                                    }
-                                    _ => {
-                                        actions.push(MapperAction::SoundReleaseDelta(delta as f32))
-                                    }
-                                }
-                            }
-                        } else if self.left_tab == 3 {
-                            if self.browser_kind == 1 {
-                                // FILE (Projets) :
-                                // Knob 1 (idx 0) : navigation projets
-                                // Knob 8 (idx 7) : master volume
-                                match idx {
-                                    0 => {
-                                        let d = self.knob_steps(idx, delta, 0.03125);
-                                        if d != 0 {
-                                            actions.push(MapperAction::BrowsePresetStep(
-                                                d.clamp(-1, 1),
-                                            ));
-                                        }
-                                    }
-                                    7 => {
-                                        actions.push(MapperAction::MasterVolumeDelta(delta as f32))
-                                    }
-                                    _ => {}
-                                }
-                            } else {
-                                // BROWSER (Presets) :
-                                // Knob 1 (idx 0) : cible Sound (pads), par cran.
-                                // Knob 2 (idx 1) : presets 808, par cran + pré-écoute.
-                                // Knob 8 (idx 7) : master.
-                                match idx {
-                                    0 => {
-                                        let d = self.knob_steps(idx, delta, 0.03125);
-                                        if d != 0 {
-                                            actions.push(MapperAction::BrowseSoundStep(
-                                                d.clamp(-1, 1),
-                                            ));
-                                        }
-                                    }
-                                    1 => {
-                                        let d = self.knob_steps(idx, delta, 0.03125).clamp(-1, 1);
-                                        if d != 0 {
-                                            self.browser_preset_idx =
-                                                (self.browser_preset_idx as i32 + d).rem_euclid(16)
-                                                    as u8;
-                                            actions.push(MapperAction::BrowsePresetStep(d));
-                                        }
-                                    }
-                                    7 => {
-                                        actions.push(MapperAction::MasterVolumeDelta(delta as f32))
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        } else {
-                            // ARRANGE (tab 0) : 1 TEMPO, 2 SWING, 3 VOL GRP, 4 PAN GRP,
-                            // 5 VOL SND, 6 CUTOFF, 7 RESO, 8 MASTER.
-                            match idx {
-                                0 => {
-                                    let fine = if self.shift_held { 0.1 } else { 1.0 };
-                                    actions.push(MapperAction::BpmDelta(delta as f32 * fine));
-                                }
-                                1 => actions.push(MapperAction::SwingDelta(delta as f32)),
-                                2 => actions.push(MapperAction::GroupVolumeDelta(delta as f32)),
-                                3 => actions.push(MapperAction::GroupPanDelta(delta as f32)),
-                                4 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
-                                5 => {
-                                    actions.push(MapperAction::SoundFilterCutoffDelta(delta as f32))
-                                }
-                                6 => actions.push(MapperAction::SoundFilterResoDelta(delta as f32)),
-                                _ => actions.push(MapperAction::MasterVolumeDelta(delta as f32)),
-                            }
-                        }
-                    }
-                }
+                actions.extend(self.handle_encoder_event(enc));
             }
             HardwareEvent::TouchStrip(ts) => {
-                self.strip_touched = ts.touched;
-                self.strip_pos = ts.position;
-                if ts.touched {
-                    match self.touchstrip_mode {
-                        TouchStripMode::Pitch => {
-                            // Position 0..1023 -> Pitch bend -8192..+8191 (centre 512)
-                            let pb = ((ts.position as i32 - 512) * 16).clamp(-8192, 8191) as i16;
-                            // Envoi CC 128 (placeholder pitch bend dans notre abstraction)
-                            actions.push(MapperAction::Midi(MidiEvent::Cc {
-                                channel: 0,
-                                cc: 128,
-                                value: ((pb + 8192) / 128).clamp(0, 127) as u8,
-                            }));
-                        }
-                        TouchStripMode::Mod => {
-                            let val = (ts.position / 8).min(127) as u8;
-                            actions.push(MapperAction::Midi(MidiEvent::Cc {
-                                channel: 0,
-                                cc: 1, // Modulation CC
-                                value: val,
-                            }));
-                        }
-                        TouchStripMode::Perform => {
-                            let val = (ts.position / 8).min(127) as u8;
-                            actions.push(MapperAction::Midi(MidiEvent::Cc {
-                                channel: 0,
-                                cc: 74, // Filter Cutoff
-                                value: val,
-                            }));
-                        }
-                        TouchStripMode::Notes => {
-                            let val = (ts.position / 8).min(127) as u8;
-                            actions.push(MapperAction::Midi(MidiEvent::Cc {
-                                channel: 0,
-                                cc: 71, // Resonance
-                                value: val,
-                            }));
-                        }
+                actions.extend(self.handle_touch_strip_event(ts));
+            }
+            _ => {}
+        }
+        actions
+    }
+
+    fn handle_modifier_button(
+        &mut self,
+        id: ButtonId,
+        pressed: bool,
+        actions: &mut Vec<MapperAction>,
+    ) -> bool {
+        match id {
+            ButtonId::Shift => {
+                self.shift_held = pressed;
+                self.led_state.set_button_raw(
+                    maschine_proto::hid_output::offsets::SHIFT,
+                    if pressed { 7 } else { 0 },
+                );
+                actions.push(MapperAction::SetShiftHeld(pressed));
+                true
+            }
+            ButtonId::Duplicate => {
+                self.duplicate_held = pressed;
+                false
+            }
+            ButtonId::Tempo => {
+                self.tempo_button_held = pressed;
+                false
+            }
+            ButtonId::Mute => {
+                self.mute_held = pressed;
+                if pressed {
+                    self.mute_solo_group_used = false;
+                } else if !self.mute_solo_group_used {
+                    // Appui simple : bascule le mode MUTE pads (pads sélectionnés = muted, LED dim).
+                    self.mute_pad_mode = !self.mute_pad_mode;
+                    self.led_state.set_button_raw(
+                        maschine_proto::hid_output::offsets::MUTE,
+                        if self.mute_pad_mode { 7 } else { 1 },
+                    );
+                }
+                true
+            }
+            ButtonId::Solo => {
+                self.solo_held = pressed;
+                if pressed {
+                    self.mute_solo_group_used = false;
+                } else if !self.mute_solo_group_used {
+                    actions.push(MapperAction::ToggleSolo(self.group_focus));
+                }
+                true
+            }
+            ButtonId::Select => {
+                self.select_held = pressed;
+                if pressed {
+                    self.select_used = false;
+                    self.select_mode = true;
+                    actions.push(MapperAction::SetSelectMode(true));
+                } else if self.select_mode {
+                    // `select_mode` a pu être désactivé par un autre
+                    // menu (PATTERN, SCENE…) : ne pas le rallumer au
+                    // relâchement du bouton.
+                    if self.select_used {
+                        self.select_pinned = false;
+                        self.select_mode = false;
+                        actions.push(MapperAction::SetSelectMode(false));
+                    } else {
+                        self.select_pinned = !self.select_pinned;
+                        self.select_mode = self.select_pinned;
+                        actions.push(MapperAction::SetSelectMode(self.select_mode));
                     }
-                } else if self.touchstrip_mode == TouchStripMode::Pitch {
-                    // Relâchement : retour pitch bend à zéro au centre
+                }
+                true
+            }
+            ButtonId::Erase => {
+                self.erase_held = pressed;
+                if pressed && self.left_tab == 3 && self.browser_kind == 1 {
+                    // En mode FILE, ERASE déclenche / confirme la suppression de projet
+                    actions.push(MapperAction::SoftKey(6));
+                    return true;
+                }
+                if pressed {
+                    if self.shift_held {
+                        if self.pattern_select_mode {
+                            actions.push(MapperAction::ClearPattern {
+                                group: self.group_focus,
+                            });
+                        } else {
+                            actions.push(MapperAction::ClearBar(self.selected_bar));
+                        }
+                    } else {
+                        self.erase_used = false;
+                        self.erase_mode = true;
+                        actions.push(MapperAction::SetEraseMode(true));
+                    }
+                } else if !self.shift_held && self.erase_mode {
+                    if self.erase_used {
+                        self.erase_pinned = false;
+                        self.erase_mode = false;
+                        actions.push(MapperAction::SetEraseMode(false));
+                    } else {
+                        self.erase_pinned = !self.erase_pinned;
+                        self.erase_mode = self.erase_pinned;
+                        actions.push(MapperAction::SetEraseMode(self.erase_mode));
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_transport_button(&mut self, id: ButtonId, actions: &mut Vec<MapperAction>) -> bool {
+        match id {
+            ButtonId::Play => {
+                actions.push(MapperAction::PlayPauseToggle);
+                true
+            }
+            ButtonId::Stop => {
+                actions.push(MapperAction::Stop);
+                true
+            }
+            ButtonId::Rec => {
+                actions.push(MapperAction::RecordToggle);
+                true
+            }
+            ButtonId::Restart => {
+                if self.shift_held {
+                    actions.push(MapperAction::ToggleLoop);
+                } else {
+                    actions.push(MapperAction::Restart);
+                }
+                true
+            }
+            ButtonId::Tap => {
+                if self.shift_held {
+                    actions.push(MapperAction::ToggleMetronome);
+                    return true;
+                }
+                let now = std::time::Instant::now();
+                self.tap_timestamps
+                    .retain(|t| now.duration_since(*t).as_secs_f32() < 2.0);
+                self.tap_timestamps.push(now);
+                if self.tap_timestamps.len() >= 2 {
+                    let diffs: Vec<f32> = self
+                        .tap_timestamps
+                        .windows(2)
+                        .map(|w| w[1].duration_since(w[0]).as_secs_f32())
+                        .collect();
+                    let avg = diffs.iter().sum::<f32>() / diffs.len() as f32;
+                    if avg > 0.15 && avg < 2.0 {
+                        let bpm = (60.0 / avg).clamp(40.0, 300.0);
+                        actions.push(MapperAction::BpmSet(bpm));
+                    }
+                }
+                true
+            }
+            ButtonId::Pedal => {
+                actions.push(MapperAction::PlayPauseToggle);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_view_menu_button(&mut self, id: ButtonId, actions: &mut Vec<MapperAction>) -> bool {
+        match id {
+            // Modes de contrôle — comportement Maschine : le bouton
+            // active le menu, un second appui sur le même bouton
+            // revient au mode Pad par défaut.
+            ButtonId::PadMode => {
+                self.exit_to_default(actions);
+                true
+            }
+            ButtonId::Keyboard => {
+                if self.mode == ControllerMode::Keyboard {
+                    self.exit_to_default(actions);
+                } else {
+                    self.clear_menu_modes(actions);
+                    self.select_left_tab(0, actions);
+                    self.set_controller_mode(ControllerMode::Keyboard, actions);
+                    actions.push(MapperAction::NavigateView(nav::KEYBOARD));
+                }
+                true
+            }
+            ButtonId::Chords => {
+                if self.mode == ControllerMode::Chords {
+                    self.exit_to_default(actions);
+                } else {
+                    self.clear_menu_modes(actions);
+                    self.select_left_tab(0, actions);
+                    self.set_controller_mode(ControllerMode::Chords, actions);
+                    actions.push(MapperAction::NavigateView(nav::KEYBOARD));
+                }
+                true
+            }
+            ButtonId::Step => {
+                if self.mode == ControllerMode::Step {
+                    self.exit_to_default(actions);
+                } else {
+                    self.clear_menu_modes(actions);
+                    self.select_left_tab(0, actions);
+                    self.set_controller_mode(ControllerMode::Step, actions);
+                    actions.push(MapperAction::NavigateView(nav::STEP));
+                }
+                true
+            }
+
+            // Focus Encodeur 4D
+            ButtonId::Tempo => {
+                self.encoder_focus = EncoderFocus::Tempo;
+                true
+            }
+            ButtonId::Volume => {
+                self.encoder_focus = EncoderFocus::Volume;
+                true
+            }
+            ButtonId::Swing => {
+                self.encoder_focus = EncoderFocus::Swing;
+                true
+            }
+
+            // Modes Smart Strip
+            ButtonId::Pitch => {
+                self.touchstrip_mode = TouchStripMode::Pitch;
+                true
+            }
+            ButtonId::Mod => {
+                self.touchstrip_mode = TouchStripMode::Mod;
+                true
+            }
+            ButtonId::Perform => {
+                self.touchstrip_mode = TouchStripMode::Perform;
+                true
+            }
+            ButtonId::Notes => {
+                self.touchstrip_mode = TouchStripMode::Notes;
+                true
+            }
+
+            // Features & Vues
+            ButtonId::FixedVel => {
+                self.fixed_velocity = !self.fixed_velocity;
+                true
+            }
+            ButtonId::Follow => {
+                self.follow_mode = !self.follow_mode;
+                true
+            }
+            ButtonId::NoteRepeat => {
+                self.note_repeat = !self.note_repeat;
+                actions.push(MapperAction::SetNoteRepeat(self.note_repeat));
+                true
+            }
+            ButtonId::Variation => {
+                actions.push(MapperAction::Variation);
+                true
+            }
+            ButtonId::Auto => {
+                actions.push(MapperAction::Quantize);
+                true
+            }
+            ButtonId::FileSave => {
+                // Bouton FILE/SAVE (physique, sous BROWSER) : menu projets/sauvegarde.
+                if self.shift_held {
+                    actions.push(MapperAction::QuickSaveProject);
+                } else {
+                    self.clear_menu_modes(actions);
+                    if self.left_tab == 3 && self.browser_kind == 1 {
+                        // Toggle : referme le menu FILE
+                        self.select_left_tab(0, actions);
+                    } else {
+                        self.browser_kind = 1;
+                        self.select_left_tab(3, actions);
+                        actions.push(MapperAction::OpenFileBrowser);
+                    }
+                }
+                true
+            }
+
+            // Onglets d'écrans dédiés
+            ButtonId::Arranger => {
+                self.clear_menu_modes(actions);
+                self.select_left_tab(0, actions);
+                actions.push(MapperAction::ToggleSongMode);
+                true
+            }
+            ButtonId::Mixer => {
+                self.clear_menu_modes(actions);
+                self.select_left_tab(1, actions);
+                true
+            }
+            ButtonId::Sampling => {
+                self.clear_menu_modes(actions);
+                self.select_left_tab(2, actions);
+                true
+            }
+            ButtonId::Browser => {
+                self.clear_menu_modes(actions);
+                if self.shift_held {
+                    // Shift+BROWSER : navigateur de projets/fichiers (comme FILE/SAVE)
+                    self.browser_kind = 1;
+                    self.select_left_tab(3, actions);
+                    actions.push(MapperAction::OpenFileBrowser);
+                } else if self.left_tab == 3 && self.browser_kind == 0 {
+                    // Déjà dans BROWSER presets : toggle pour fermer
+                    self.select_left_tab(0, actions);
+                } else {
+                    // BROWSER : navigateur de presets/samples
+                    self.browser_kind = 0;
+                    self.select_left_tab(3, actions);
+                    actions.push(MapperAction::SetBrowserKind(0));
+                }
+                true
+            }
+            ButtonId::Settings => {
+                let tab = if self.right_tab == 3 { 0 } else { 3 };
+                self.right_tab = tab;
+                self.led_state.set_button_raw(
+                    maschine_proto::hid_output::offsets::SETTINGS,
+                    if tab == 3 { 7 } else { 1 },
+                );
+                actions.push(MapperAction::SetRightTab(tab));
+                true
+            }
+
+            // Groupes A..H (avec MUTE/SOLO + Group façon Maschine)
+            ButtonId::Group(g) if g < 8 => {
+                // MUTE/SOLO + Group : cible le groupe sans changer le focus.
+                // SOLO maintenu physiquement a la priorité sur le mode MUTE latched.
+                if self.solo_held {
+                    actions.push(MapperAction::ToggleSolo(g));
+                    self.mute_solo_group_used = true;
+                } else if self.mute_held || self.mute_pad_mode {
+                    actions.push(MapperAction::ToggleMute(g));
+                    self.mute_solo_group_used = true;
+                } else {
+                    self.group_focus = g;
+                    actions.push(MapperAction::GroupFocus(g));
+                }
+                true
+            }
+
+            // Actions d'édition
+            ButtonId::Duplicate => {
+                if self.pattern_select_mode {
+                    actions.push(MapperAction::DuplicatePattern {
+                        group: self.group_focus,
+                    });
+                } else {
+                    actions.push(MapperAction::DuplicateBar);
+                }
+                true
+            }
+            // Workflow officiel : SCENE / PATTERN / SELECT / EVENTS / MACRO / PLUGIN
+            // Chaque menu reste actif (latch) et un second appui sur
+            // le même bouton le désactive, comme sur Maschine Windows.
+            ButtonId::Scene => {
+                if self.scene_select_mode {
+                    self.exit_to_default(actions);
+                } else {
+                    self.clear_menu_modes(actions);
+                    self.scene_select_mode = true;
+                    self.select_left_tab(0, actions);
+                    self.set_controller_mode(ControllerMode::Pad, actions);
+                    actions.push(MapperAction::SetSceneMode(true));
+                    actions.push(MapperAction::NavigateView(nav::SCENE));
+                }
+                true
+            }
+            ButtonId::Pattern => {
+                if self.pattern_select_mode {
+                    self.exit_to_default(actions);
+                } else {
+                    self.clear_menu_modes(actions);
+                    self.pattern_select_mode = true;
+                    self.select_left_tab(0, actions);
+                    self.set_controller_mode(ControllerMode::Pad, actions);
+                    actions.push(MapperAction::SetPatternMode(true));
+                    actions.push(MapperAction::NavigateView(nav::PATTERN));
+                }
+                true
+            }
+            ButtonId::Events => {
+                let tab = if self.right_tab == 1 { 0 } else { 1 };
+                self.right_tab = tab;
+                self.led_state.set_button_raw(
+                    maschine_proto::hid_output::offsets::EVENTS,
+                    if tab == 1 { 7 } else { 1 },
+                );
+                actions.push(MapperAction::SetRightTab(tab));
+                true
+            }
+            ButtonId::Macro => {
+                let tab = if self.right_tab == 2 { 0 } else { 2 };
+                self.right_tab = tab;
+                self.led_state.set_button_raw(
+                    maschine_proto::hid_output::offsets::MACRO,
+                    if tab == 2 { 7 } else { 1 },
+                );
+                actions.push(MapperAction::SetRightTab(tab));
+                true
+            }
+            ButtonId::Plugin => {
+                self.clear_menu_modes(actions);
+                if self.left_tab == 4 {
+                    // Second appui : quitte l'éditeur PLUGIN.
+                    self.select_left_tab(0, actions);
+                    actions.push(MapperAction::NavigateView(nav::PATTERN));
+                } else {
+                    self.select_left_tab(4, actions);
+                    // Le moteur choisit la page selon le Sound actif
+                    // (TB-303 si le pad sélectionné est un synthé, sinon SOUND).
+                    actions.push(MapperAction::NavigateView(nav::PLUGIN));
+                }
+                true
+            }
+            ButtonId::ChannelMidi => {
+                self.clear_menu_modes(actions);
+                self.select_left_tab(1, actions); // MIXER
+                true
+            }
+            ButtonId::Lock => {
+                self.lock_active = !self.lock_active;
+                self.led_state.set_button_raw(
+                    maschine_proto::hid_output::offsets::LOCK,
+                    if self.lock_active || self.note_repeat {
+                        7
+                    } else {
+                        1
+                    },
+                );
+                actions.push(MapperAction::ToggleLock(self.lock_active));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_4way_button(&mut self, id: ButtonId, actions: &mut Vec<MapperAction>) -> bool {
+        match id {
+            // Navigation 4D & Flèches < >
+            ButtonId::FourWayLeft | ButtonId::Left => {
+                if self.left_tab == 1 {
+                    // Mode MIXER : navigation 4D entre sous-vues
+                    if self.mixer_mode == 1 {
+                        self.mixer_mode = 0;
+                        actions.push(MapperAction::SetMixerMode(0));
+                    } else if self.mixer_mode == 0 {
+                        self.mixer_mode = 2;
+                        actions.push(MapperAction::SetMixerMode(2));
+                    } else if self.mixer_mode >= 2 {
+                        self.group_focus =
+                            (self.group_focus as i32 - 1).rem_euclid(8) as u8;
+                        actions.push(MapperAction::GroupFocus(self.group_focus));
+                    }
+                } else if self.pattern_select_mode {
+                    actions.push(MapperAction::PatternStep {
+                        group: self.group_focus,
+                        delta: -1,
+                    });
+                } else if self.mode == ControllerMode::Step && self.left_tab == 0 {
+                    // Mode STEP : défile la grille d'un pas.
+                    actions.push(MapperAction::StepScroll(-1));
+                } else {
+                    self.selected_bar = self.selected_bar.saturating_sub(1);
+                    actions.push(MapperAction::SelectBar(self.selected_bar));
+                }
+                true
+            }
+            ButtonId::FourWayRight | ButtonId::Right => {
+                if self.left_tab == 1 {
+                    // Mode MIXER : navigation 4D vers les pads du groupe
+                    if self.mixer_mode >= 2 {
+                        self.mixer_mode = 0;
+                        actions.push(MapperAction::SetMixerMode(0));
+                    } else if self.mixer_mode == 0 {
+                        self.mixer_mode = 1;
+                        actions.push(MapperAction::SetMixerMode(1));
+                    }
+                } else if self.pattern_select_mode {
+                    actions.push(MapperAction::PatternStep {
+                        group: self.group_focus,
+                        delta: 1,
+                    });
+                } else if self.shift_held {
+                    let new_len = if self.pattern_bars < 4 { 4 } else { 8 };
+                    self.pattern_bars = new_len;
+                    actions.push(MapperAction::SetPatternBars(new_len));
+                } else if self.mode == ControllerMode::Step && self.left_tab == 0 {
+                    // Mode STEP : défile la grille d'un pas.
+                    actions.push(MapperAction::StepScroll(1));
+                } else {
+                    self.selected_bar = (self.selected_bar + 1)
+                        .min(self.pattern_bars.saturating_sub(1));
+                    actions.push(MapperAction::SelectBar(self.selected_bar));
+                }
+                true
+            }
+            ButtonId::FourWayUp => {
+                if self.left_tab == 3 {
+                    actions.push(MapperAction::BrowsePresetStep(-1));
+                } else if self.left_tab == 1 {
+                    if self.mixer_mode >= 2 {
+                        // Pousser vers le haut rentre dans le groupe pour afficher les pads
+                        self.mixer_mode = 0;
+                        actions.push(MapperAction::SetMixerMode(0));
+                    } else {
+                        self.active_sound = (self.active_sound + 1) % 16;
+                        actions.push(MapperAction::SelectSound(self.active_sound));
+                    }
+                } else {
+                    self.active_sound = (self.active_sound + 1) % 16;
+                    actions.push(MapperAction::SelectSound(self.active_sound));
+                    actions.push(MapperAction::PadTrigger {
+                        pad: self.active_sound,
+                        velocity: 110,
+                        pressed: true,
+                    });
+                }
+                true
+            }
+            ButtonId::FourWayDown => {
+                if self.left_tab == 3 {
+                    actions.push(MapperAction::BrowsePresetStep(1));
+                } else if self.left_tab == 1 {
+                    if self.mixer_mode < 2 {
+                        // Pousser vers le bas sort du groupe vers la vue Groupes / Master
+                        self.mixer_mode = 2;
+                        actions.push(MapperAction::SetMixerMode(2));
+                    } else {
+                        self.active_sound = (self.active_sound + 15) % 16;
+                        actions.push(MapperAction::SelectSound(self.active_sound));
+                    }
+                } else {
+                    self.active_sound = (self.active_sound + 15) % 16;
+                    actions.push(MapperAction::SelectSound(self.active_sound));
+                    actions.push(MapperAction::PadTrigger {
+                        pad: self.active_sound,
+                        velocity: 110,
+                        pressed: true,
+                    });
+                }
+                true
+            }
+            ButtonId::EncoderPush => {
+                if self.shift_held {
+                    // Shift+Push sur encodeur 4D : cycle rapidement le type de filtre (LP/HP/BP/OFF)
+                    actions.push(MapperAction::CycleSoundFilterKind);
+                } else if self.left_tab == 3 {
+                    actions.push(MapperAction::LoadSelectedPreset);
+                } else if self.left_tab == 1 {
+                    // Pousser l'encodeur dans le mixer rentre dans le groupe pour afficher
+                    // les VUs des pads (mode 0: pads 1-8 / 9-16), ou remonte au mixeur groupes (mode 2).
+                    let next_mode = if self.mixer_mode >= 2 { 0 } else { 2 };
+                    self.mixer_mode = next_mode;
+                    actions.push(MapperAction::SetMixerMode(next_mode));
+                } else {
+                    // One-shot preview du sound sélectionné (ne démarre PAS la boucle transport !)
+                    actions.push(MapperAction::PadTrigger {
+                        pad: self.active_sound,
+                        velocity: 115,
+                        pressed: true,
+                    });
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_display_button(&mut self, id: ButtonId, actions: &mut Vec<MapperAction>) -> bool {
+        match id {
+            // Soft Buttons Écrans 1..8 — actions contextuelles :
+            // c'est l'Engine qui décide (labels = actions réelles
+            // affichées en bas des écrans), le hardware ne fait que
+            // transmettre.
+            ButtonId::DisplayBtn(n @ 1..=8) => {
+                if self.note_repeat {
+                    if n <= 7 {
+                        self.note_repeat_rate = n - 1;
+                        actions.push(MapperAction::SetNoteRepeatRate(n - 1));
+                    } else {
+                        self.note_repeat = !self.note_repeat;
+                        actions.push(MapperAction::SetNoteRepeat(self.note_repeat));
+                    }
+                } else {
+                    actions.push(MapperAction::SoftKey(n));
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_button_event(&mut self, id: ButtonId, pressed: bool) -> Vec<MapperAction> {
+        let mut actions = Vec::new();
+        if self.handle_modifier_button(id, pressed, &mut actions) {
+            return actions;
+        }
+
+        if pressed {
+            let _ = self.handle_transport_button(id, &mut actions)
+                || self.handle_view_menu_button(id, &mut actions)
+                || self.handle_4way_button(id, &mut actions)
+                || self.handle_display_button(id, &mut actions);
+        }
+        actions
+    }
+
+    fn handle_main_4d_encoder(&mut self, delta: i8) -> Vec<MapperAction> {
+        let mut actions = Vec::new();
+        if self.left_tab == 1 {
+            // Mode MIXER : l'encodeur 4D scrolle les pistes (banques 1-8 / 9-16 ou groupes)
+            if self.mixer_mode == 0 && delta > 0 {
+                self.mixer_mode = 1;
+                actions.push(MapperAction::SetMixerMode(1));
+            } else if self.mixer_mode == 1 && delta < 0 {
+                self.mixer_mode = 0;
+                actions.push(MapperAction::SetMixerMode(0));
+            } else if self.mixer_mode == 2 {
+                self.group_focus = (self.group_focus as i32 + delta as i32).rem_euclid(8) as u8;
+                actions.push(MapperAction::GroupFocus(self.group_focus));
+            }
+        } else if self.left_tab == 4 && self.has_wavetable_synth {
+            // Vue WAVETABLE / NEXUS SYNTH : encodeur 4D défile les presets
+            if delta > 0 {
+                actions.push(MapperAction::WavetableNextPreset);
+            } else {
+                actions.push(MapperAction::WavetablePrevPreset);
+            }
+        } else if self.left_tab == 3 {
+            self.browser_preset_idx =
+                (self.browser_preset_idx as i32 + delta as i32).rem_euclid(16) as u8;
+            actions.push(MapperAction::BrowsePresetStep(delta as i32));
+        } else {
+            match self.encoder_focus {
+                EncoderFocus::Tempo => {
+                    let step = if self.shift_held { 5.0 } else { 10.0 };
+                    actions.push(MapperAction::BpmDelta(delta as f32 * step));
+                }
+                EncoderFocus::Volume => {
+                    let step = if self.shift_held { 5.0 } else { 10.0 };
+                    actions.push(MapperAction::MasterVolumeDelta(delta as f32 * step));
+                }
+                EncoderFocus::Swing => {
+                    let step = if self.shift_held { 5.0 } else { 10.0 };
+                    actions.push(MapperAction::SwingDelta(delta as f32 * step));
+                }
+            }
+        }
+        actions
+    }
+
+    fn handle_step_knobs(&mut self, idx: usize, delta: i32) -> Vec<MapperAction> {
+        let mut actions = Vec::new();
+        match idx {
+            0 => {
+                let d = self.knob_steps(idx, delta, 0.1);
+                if d != 0 {
+                    actions.push(MapperAction::StepVelocityDelta(d));
+                }
+            }
+            1 => {
+                let d = self.knob_steps(idx, delta, 0.25);
+                if d != 0 {
+                    actions.push(MapperAction::StepNudgeTicks(d));
+                }
+            }
+            2 => {
+                let d = self.knob_steps(idx, delta, 0.01);
+                if d != 0 {
+                    actions.push(MapperAction::StepLengthDelta(d));
+                }
+            }
+            3 => {
+                let d = self.knob_steps(idx, delta, 0.025);
+                if d != 0 {
+                    actions.push(MapperAction::StepPitchDelta(d));
+                }
+            }
+            4 => {
+                let d = self.knob_steps(idx, delta, 0.03125);
+                if d != 0 {
+                    actions.push(MapperAction::StepScroll(d.clamp(-4, 4)));
+                }
+            }
+            5 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
+            6 => actions.push(MapperAction::SoundFilterCutoffDelta(delta as f32)),
+            7 => actions.push(MapperAction::SoundFilterResoDelta(delta as f32)),
+            _ => {}
+        }
+        actions
+    }
+
+    fn handle_mixer_knobs(&mut self, idx: usize, delta: i32) -> Vec<MapperAction> {
+        let mut actions = Vec::new();
+        if self.mixer_mode == 0 && idx < 8 {
+            let pad = idx as u8;
+            if self.shift_held {
+                actions.push(MapperAction::SoundPanDeltaFor {
+                    group: self.group_focus,
+                    sound: pad,
+                    delta: delta as f32,
+                });
+            } else {
+                actions.push(MapperAction::SoundVolumeDeltaFor {
+                    group: self.group_focus,
+                    sound: pad,
+                    delta: delta as f32,
+                });
+            }
+        } else if self.mixer_mode == 1 && idx < 8 {
+            let pad = (idx + 8) as u8;
+            if self.shift_held {
+                actions.push(MapperAction::SoundPanDeltaFor {
+                    group: self.group_focus,
+                    sound: pad,
+                    delta: delta as f32,
+                });
+            } else {
+                actions.push(MapperAction::SoundVolumeDeltaFor {
+                    group: self.group_focus,
+                    sound: pad,
+                    delta: delta as f32,
+                });
+            }
+        } else if self.shift_held || self.mixer_mode == 2 {
+            actions.push(MapperAction::GroupVolumeDeltaFor {
+                group: idx as u8,
+                delta: delta as f32,
+            });
+        } else {
+            match idx {
+                0 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
+                1 => actions.push(MapperAction::SoundPanDelta(delta as f32)),
+                2 => actions.push(MapperAction::GroupVolumeDelta(delta as f32)),
+                3 => actions.push(MapperAction::GroupPanDelta(delta as f32)),
+                4 => actions.push(MapperAction::SoundFilterCutoffDelta(delta as f32)),
+                5 => actions.push(MapperAction::SoundFilterResoDelta(delta as f32)),
+                6 => actions.push(MapperAction::MasterVolumeDelta(delta as f32)),
+                _ => actions.push(MapperAction::HeadphoneVolumeDelta(delta as f32)),
+            }
+        }
+        actions
+    }
+
+    fn handle_sampler_knobs(&mut self, idx: usize, delta: i32) -> Vec<MapperAction> {
+        let mut actions = Vec::new();
+        if self.shift_held && (idx == 2 || idx == 3) {
+            actions.push(MapperAction::CycleSoundFilterKind);
+        } else {
+            if self.shift_held && (idx == 2 || idx == 3) {
+                actions.push(MapperAction::CycleSoundFilterKind);
+            } else {
+                match idx {
+                    0 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
+                    1 => actions.push(MapperAction::SoundPanDelta(delta as f32)),
+                    2 => actions.push(MapperAction::SoundFilterCutoffDelta(delta as f32)),
+                    3 => actions.push(MapperAction::SoundFilterResoDelta(delta as f32)),
+                    4 => actions.push(MapperAction::SoundAttackDelta(delta as f32)),
+                    5 => actions.push(MapperAction::SoundDecayDelta(delta as f32)),
+                    6 => actions.push(MapperAction::SoundSustainDelta(delta as f32)),
+                    _ => actions.push(MapperAction::SoundReleaseDelta(delta as f32)),
+                }
+            }
+        }
+        actions
+    }
+
+    fn handle_plugin_knobs(&mut self, idx: usize, delta: i32) -> Vec<MapperAction> {
+        let mut actions = Vec::new();
+        if self.plugin_page == 1
+            || self.has_kick_synth
+            || self.has_wavetable_synth
+            || self.has_acid_synth
+        {
+            if self.has_kick_synth {
+                if self.shift_held && idx == 5 {
+                    actions.push(MapperAction::KickDriveTypeDelta(delta.signum()));
+                } else if self.shift_held && idx == 6 {
+                    actions.push(MapperAction::KickFilterCutoffDelta(delta as f32));
+                } else if self.shift_held && idx == 7 {
+                    actions.push(MapperAction::KickFilterModeDelta(delta.signum()));
+                } else {
+                    match idx {
+                        0 => actions.push(MapperAction::KickTuneDelta(delta as f32)),
+                        1 => actions.push(MapperAction::KickDecayDelta(delta as f32)),
+                        2 => actions.push(MapperAction::KickSnapDelta(delta as f32)),
+                        3 => actions.push(MapperAction::KickSweepDelta(delta as f32)),
+                        4 => actions.push(MapperAction::KickClickDelta(delta as f32)),
+                        5 => actions.push(MapperAction::KickDriveDelta(delta as f32)),
+                        6 => actions.push(MapperAction::KickSubDelta(delta as f32)),
+                        _ => actions.push(MapperAction::KickVolumeDelta(delta as f32)),
+                    }
+                }
+            } else if self.has_wavetable_synth {
+                if self.shift_held {
+                    match idx {
+                        0 => actions.push(MapperAction::WavetableFilterModeCycle),
+                        1 => actions.push(MapperAction::WavetableUnisonVoicesDelta(delta.signum())),
+                        2 => actions.push(MapperAction::WavetableOsc1WaveCycle),
+                        3 => actions.push(MapperAction::WavetableOsc2WaveCycle),
+                        4 => actions.push(MapperAction::WavetableChorusDelta(delta as f32)),
+                        5 => actions.push(MapperAction::WavetableDelayDelta(delta as f32)),
+                        6 => actions.push(MapperAction::WavetableReverbDelta(delta as f32)),
+                        _ => actions.push(MapperAction::WavetableVolumeDelta(delta as f32)),
+                    }
+                } else {
+                    match idx {
+                        0 => actions.push(MapperAction::WavetableCutoffDelta(delta as f32)),
+                        1 => actions.push(MapperAction::WavetableResoDelta(delta as f32)),
+                        2 => actions.push(MapperAction::WavetableEnvAmtDelta(delta as f32)),
+                        3 => actions.push(MapperAction::WavetableDriveDelta(delta as f32)),
+                        4 => actions.push(MapperAction::WavetableAttackDelta(delta as f32)),
+                        5 => actions.push(MapperAction::WavetableDecayDelta(delta as f32)),
+                        6 => actions.push(MapperAction::WavetableSustainDelta(delta as f32)),
+                        _ => actions.push(MapperAction::WavetableReleaseDelta(delta as f32)),
+                    }
+                }
+            } else {
+                match idx {
+                    0 => actions.push(MapperAction::AcidCutoffDelta(delta as f32)),
+                    1 => actions.push(MapperAction::AcidResoDelta(delta as f32)),
+                    2 => actions.push(MapperAction::AcidEnvModDelta(delta as f32)),
+                    3 => actions.push(MapperAction::AcidDecayDelta(delta as f32)),
+                    4 => actions.push(MapperAction::AcidAccentDelta(delta as f32)),
+                    5 => actions.push(MapperAction::AcidDriveDelta(delta as f32)),
+                    6 => actions.push(MapperAction::AcidDelayTimeDelta(delta as f32)),
+                    _ => actions.push(MapperAction::AcidDelayMixDelta(delta as f32)),
+                }
+            }
+        } else {
+            if self.shift_held && (idx == 2 || idx == 3) {
+                actions.push(MapperAction::CycleSoundFilterKind);
+            } else {
+                match idx {
+                    0 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
+                    1 => actions.push(MapperAction::SoundPanDelta(delta as f32)),
+                    2 => actions.push(MapperAction::SoundFilterCutoffDelta(delta as f32)),
+                    3 => actions.push(MapperAction::SoundFilterResoDelta(delta as f32)),
+                    4 => actions.push(MapperAction::SoundAttackDelta(delta as f32)),
+                    5 => actions.push(MapperAction::SoundDecayDelta(delta as f32)),
+                    6 => actions.push(MapperAction::SoundSustainDelta(delta as f32)),
+                    _ => actions.push(MapperAction::SoundReleaseDelta(delta as f32)),
+                }
+            }
+        }
+        actions
+    }
+
+    fn handle_browser_knobs(&mut self, idx: usize, delta: i32) -> Vec<MapperAction> {
+        let mut actions = Vec::new();
+        if self.browser_kind == 1 {
+            match idx {
+                0 => {
+                    let d = self.knob_steps(idx, delta, 0.03125);
+                    if d != 0 {
+                        actions.push(MapperAction::BrowsePresetStep(d.clamp(-1, 1)));
+                    }
+                }
+                7 => actions.push(MapperAction::MasterVolumeDelta(delta as f32)),
+                _ => {}
+            }
+        } else {
+            match idx {
+                0 => {
+                    let d = self.knob_steps(idx, delta, 0.03125);
+                    if d != 0 {
+                        actions.push(MapperAction::BrowseSoundStep(d.clamp(-1, 1)));
+                    }
+                }
+                1 => {
+                    let d = self.knob_steps(idx, delta, 0.03125).clamp(-1, 1);
+                    if d != 0 {
+                        self.browser_preset_idx =
+                            (self.browser_preset_idx as i32 + d).rem_euclid(16) as u8;
+                        actions.push(MapperAction::BrowsePresetStep(d));
+                    }
+                }
+                7 => actions.push(MapperAction::MasterVolumeDelta(delta as f32)),
+                _ => {}
+            }
+        }
+        actions
+    }
+
+    fn handle_arrange_knobs(&mut self, idx: usize, delta: i32) -> Vec<MapperAction> {
+        let mut actions = Vec::new();
+        if self.shift_held && (idx == 5 || idx == 6) {
+            actions.push(MapperAction::CycleSoundFilterKind);
+        } else {
+            match idx {
+                0 => {
+                    let fine = if self.shift_held { 0.1 } else { 1.0 };
+                    actions.push(MapperAction::BpmDelta(delta as f32 * fine));
+                }
+                1 => actions.push(MapperAction::SwingDelta(delta as f32)),
+                2 => actions.push(MapperAction::GroupVolumeDelta(delta as f32)),
+                3 => actions.push(MapperAction::GroupPanDelta(delta as f32)),
+                4 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
+                5 => actions.push(MapperAction::SoundFilterCutoffDelta(delta as f32)),
+                6 => actions.push(MapperAction::SoundFilterResoDelta(delta as f32)),
+                _ => actions.push(MapperAction::MasterVolumeDelta(delta as f32)),
+            }
+        }
+        actions
+    }
+
+    fn handle_display_knob(&mut self, idx: usize, delta: i32) -> Vec<MapperAction> {
+        if self.mode == ControllerMode::Step && self.left_tab == 0 {
+            self.handle_step_knobs(idx, delta)
+        } else if self.left_tab == 1 {
+            self.handle_mixer_knobs(idx, delta)
+        } else if self.left_tab == 2 {
+            self.handle_sampler_knobs(idx, delta)
+        } else if self.left_tab == 4 {
+            self.handle_plugin_knobs(idx, delta)
+        } else if self.left_tab == 3 {
+            self.handle_browser_knobs(idx, delta)
+        } else {
+            self.handle_arrange_knobs(idx, delta)
+        }
+    }
+
+    fn handle_encoder_event(&mut self, enc: EncoderEvent) -> Vec<MapperAction> {
+        let mut actions = Vec::new();
+        if enc.id == 0 {
+            let new_val = (enc.value & 0x0F) as u8;
+            let delta = match self.prev_main_encoder {
+                Some(prev) if prev != new_val => wrap_16_delta(new_val, prev),
+                _ => 0,
+            };
+            self.prev_main_encoder = Some(new_val);
+            if delta != 0 {
+                actions.extend(self.handle_main_4d_encoder(delta));
+            }
+        } else if (1..=8).contains(&enc.id) {
+            let idx = (enc.id - 1) as usize;
+            let new_val = enc.value & 0x3FF;
+            let delta = match self.prev_knobs[idx] {
+                Some(prev) if prev != new_val => wrap_1024_delta(new_val, prev),
+                _ => 0,
+            };
+            self.prev_knobs[idx] = Some(new_val);
+            let delta = delta.clamp(-128, 128);
+            if delta != 0 {
+                actions.extend(self.handle_display_knob(idx, delta));
+            }
+        }
+        actions
+    }
+
+    fn handle_touch_strip_event(&mut self, ts: TouchStripEvent) -> Vec<MapperAction> {
+        let mut actions = Vec::new();
+        self.strip_touched = ts.touched;
+        self.strip_pos = ts.position;
+        if ts.touched {
+            match self.touchstrip_mode {
+                TouchStripMode::Pitch => {
+                    // Position 0..1023 -> Pitch bend -8192..+8191 (centre 512)
+                    let pb = ((ts.position as i32 - 512) * 16).clamp(-8192, 8191) as i16;
+                    // Envoi CC 128 (placeholder pitch bend dans notre abstraction)
                     actions.push(MapperAction::Midi(MidiEvent::Cc {
                         channel: 0,
                         cc: 128,
-                        value: 64, // Centre
+                        value: ((pb + 8192) / 128).clamp(0, 127) as u8,
+                    }));
+                }
+                TouchStripMode::Mod => {
+                    let val = (ts.position / 8).min(127) as u8;
+                    actions.push(MapperAction::Midi(MidiEvent::Cc {
+                        channel: 0,
+                        cc: 1, // Modulation CC
+                        value: val,
+                    }));
+                }
+                TouchStripMode::Perform => {
+                    let val = (ts.position / 8).min(127) as u8;
+                    actions.push(MapperAction::Midi(MidiEvent::Cc {
+                        channel: 0,
+                        cc: 74, // Filter Cutoff
+                        value: val,
+                    }));
+                }
+                TouchStripMode::Notes => {
+                    let val = (ts.position / 8).min(127) as u8;
+                    actions.push(MapperAction::Midi(MidiEvent::Cc {
+                        channel: 0,
+                        cc: 71, // Resonance
+                        value: val,
                     }));
                 }
             }
-            _ => {}
+        } else if self.touchstrip_mode == TouchStripMode::Pitch {
+            // Relâchement : retour pitch bend à zéro au centre
+            actions.push(MapperAction::Midi(MidiEvent::Cc {
+                channel: 0,
+                cc: 128,
+                value: 64, // Centre
+            }));
+        }
+        actions
+    }
+
+    fn handle_pad_event(&mut self, p: PadState) -> Vec<MapperAction> {
+        let mut actions = Vec::new();
+        let note = self.cfg.pad_base_note + p.pad;
+        let ch = self.cfg.pad_channel;
+        // Fronts uniquement : le thread HID réémet `pressed=true` à chaque
+        // report tant que le doigt reste posé (pression/aftertouch). Sans
+        // ce garde, un appui maintenu re-déclenchait le son en boucle
+        // (mitraillette) et basculait le pas du step-sequencer plusieurs fois.
+        let prev = if (p.pad as usize) < 16 {
+            let was = self.pad_pressed[p.pad as usize];
+            self.pad_pressed[p.pad as usize] = p.pressed;
+            was
+        } else {
+            false
+        };
+        let vel = if self.fixed_velocity {
+            127
+        } else {
+            self.apply_curve(p.velocity).max(1)
+        };
+
+        if p.pressed {
+            // Répétition d'un appui maintenu : ignorée (pic de vélocité
+            // géré côté HID : un seul événement press est émis).
+            if prev {
+                return actions;
+            }
+            // Flash tactile : horodate la frappe pour un feedback LED
+            // garanti même si le release suit aussitôt (tap éclair).
+            if (p.pad as usize) < 16 {
+                self.pad_hit_at[p.pad as usize] = Some(Instant::now());
+            }
+
+            // Modes workflow prioritaires (façon Maschine) — avant les modes de jeu.
+            if self.scene_select_mode {
+                actions.push(MapperAction::SceneTrigger(p.pad as usize));
+                return actions;
+            }
+            if self.pattern_select_mode {
+                let other_held = self
+                    .pad_pressed
+                    .iter()
+                    .enumerate()
+                    .any(|(i, &held)| held && i != p.pad as usize);
+                if other_held {
+                    let mut held_indices: Vec<usize> = self
+                        .pad_pressed
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, &held)| if held { Some(i) } else { None })
+                        .collect();
+                    held_indices.push(p.pad as usize);
+                    let min = *held_indices.iter().min().unwrap_or(&(p.pad as usize));
+                    let max = *held_indices.iter().max().unwrap_or(&(p.pad as usize));
+                    actions.push(MapperAction::PatternChain {
+                        group: self.group_focus,
+                        patterns: (min..=max).collect(),
+                    });
+                } else {
+                    actions.push(MapperAction::PatternTrigger {
+                        group: self.group_focus,
+                        pattern: p.pad as usize,
+                    });
+                }
+                return actions;
+            }
+            if self.mute_pad_mode {
+                actions.push(MapperAction::TogglePadMute {
+                    group: self.group_focus,
+                    pad: p.pad,
+                });
+                return actions;
+            }
+            if self.erase_mode {
+                self.erase_used = true;
+                self.active_sound = p.pad;
+                actions.push(MapperAction::SelectSound(p.pad));
+                actions.push(MapperAction::EraseSound {
+                    group: self.group_focus,
+                    sound: p.pad,
+                });
+                return actions;
+            }
+            if self.select_mode {
+                self.select_used = true;
+                self.active_sound = p.pad;
+                actions.push(MapperAction::SelectSound(p.pad));
+                return actions;
+            }
+
+            match self.mode {
+                ControllerMode::Step => {
+                    // Façon Maschine : en mode Step, le pad bascule le pas
+                    // dans la mesure courante pour le son actif, SANS
+                    // produire de son (pas d'aperçu, pas de one-shot).
+                    actions.push(MapperAction::ToggleStep {
+                        sound: self.active_sound,
+                        bar: self.selected_bar,
+                        step: p.pad as usize,
+                    });
+                }
+                ControllerMode::Keyboard => {
+                    let mel_note = self.keyboard_note_for_pad(p.pad);
+                    self.pad_played.insert(p.pad, vec![mel_note]);
+                    actions.push(MapperAction::KeyboardTrigger {
+                        note: mel_note,
+                        velocity: vel,
+                        pressed: true,
+                    });
+                }
+                ControllerMode::Chords => {
+                    let notes = self.chord_notes_for_pad(p.pad);
+                    for &n in &notes {
+                        actions.push(MapperAction::KeyboardTrigger {
+                            note: n,
+                            velocity: vel,
+                            pressed: true,
+                        });
+                    }
+                    self.pad_played.insert(p.pad, notes);
+                }
+                ControllerMode::Pad => {
+                    self.pad_note.insert(p.pad, note);
+                    actions.push(MapperAction::Midi(MidiEvent::NoteOn {
+                        channel: ch,
+                        note,
+                        velocity: vel,
+                    }));
+                    self.active_sound = p.pad;
+                    actions.push(MapperAction::SelectSound(p.pad));
+                    actions.push(MapperAction::PadTrigger {
+                        pad: p.pad,
+                        velocity: vel,
+                        pressed: true,
+                    });
+                }
+            }
+        } else {
+            // Release dupliqué (déjà relâché) : ignoré.
+            if !prev {
+                return actions;
+            }
+            // NoteOff uniquement si un NoteOn a réellement été émis pour
+            // cet appui (modes de jeu). Les modes Step/workflow restent
+            // totalement silencieux, façon Maschine.
+            if let Some(notes) = self.pad_played.remove(&p.pad) {
+                for note in notes {
+                    actions.push(MapperAction::KeyboardTrigger {
+                        note,
+                        velocity: 0,
+                        pressed: false,
+                    });
+                }
+                return actions;
+            }
+            let Some(note) = self.pad_note.remove(&p.pad) else {
+                return actions;
+            };
+            actions.push(MapperAction::Midi(MidiEvent::NoteOff {
+                channel: ch,
+                note,
+                velocity: 0,
+            }));
+            if self.mode == ControllerMode::Pad {
+                actions.push(MapperAction::PadTrigger {
+                    pad: p.pad,
+                    velocity: 0,
+                    pressed: false,
+                });
+            }
         }
         actions
     }
@@ -3796,5 +3844,387 @@ mod tests {
                 delta: 1.0
             }]
         );
+    }
+
+    #[test]
+    fn test_4d_encoder_shift_push_cycles_filter_in_all_views() {
+        let mut m = HardwareMapper::with_default();
+        m.shift_held = true;
+
+        // Vue par défaut (tab 0)
+        m.left_tab = 0;
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::EncoderPush,
+            pressed: true,
+            ts_ns: 1,
+        });
+        assert_eq!(a, vec![MapperAction::CycleSoundFilterKind]);
+
+        // Vue Plugin (tab 4)
+        m.left_tab = 4;
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::EncoderPush,
+            pressed: true,
+            ts_ns: 2,
+        });
+        assert_eq!(a, vec![MapperAction::CycleSoundFilterKind]);
+
+        // Vue Mixer (tab 1)
+        m.left_tab = 1;
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::EncoderPush,
+            pressed: true,
+            ts_ns: 3,
+        });
+        assert_eq!(a, vec![MapperAction::CycleSoundFilterKind]);
+    }
+
+    #[test]
+    fn test_knobs_shift_filter_cycle_in_plugin_and_arrange() {
+        let mut m = HardwareMapper::with_default();
+        m.shift_held = true;
+
+        // 1. En vue arrangeur (tab 0) : knob 6 (cutoff) et knob 7 (reso) avec shift cyclent le filtre
+        m.left_tab = 0;
+        let _ = m.handle_hardware_event(knob_ev(6, 100, 0));
+        let a = m.handle_hardware_event(knob_ev(6, 101, 1));
+        assert_eq!(a, vec![MapperAction::CycleSoundFilterKind]);
+
+        let _ = m.handle_hardware_event(knob_ev(7, 100, 2));
+        let a = m.handle_hardware_event(knob_ev(7, 101, 3));
+        assert_eq!(a, vec![MapperAction::CycleSoundFilterKind]);
+
+        // 2. En vue plugin standard (tab 4) : knob 3 (cutoff) et knob 4 (reso) avec shift cyclent le filtre
+        m.left_tab = 4;
+        m.plugin_page = 0;
+        m.has_kick_synth = false;
+        m.has_wavetable_synth = false;
+        m.has_acid_synth = false;
+
+        let _ = m.handle_hardware_event(knob_ev(3, 100, 4));
+        let a = m.handle_hardware_event(knob_ev(3, 101, 5));
+        assert_eq!(a, vec![MapperAction::CycleSoundFilterKind]);
+
+        let _ = m.handle_hardware_event(knob_ev(4, 100, 6));
+        let a = m.handle_hardware_event(knob_ev(4, 101, 7));
+        assert_eq!(a, vec![MapperAction::CycleSoundFilterKind]);
+    }
+
+    #[test]
+    fn test_all_eight_groups_and_pads_routing() {
+        let mut m = HardwareMapper::with_default();
+
+        // Vérification de la sélection des 8 groupes A..H via boutons hardware
+        for expected_group in 0..8u8 {
+            let a = m.handle_hardware_event(HardwareEvent::Button {
+                id: maschine_proto::ButtonId::Group(expected_group),
+                pressed: true,
+                ts_ns: expected_group as u64,
+            });
+            assert_eq!(a, vec![MapperAction::GroupFocus(expected_group)]);
+            assert_eq!(m.group_focus, expected_group);
+
+            // Vérifier que chaque pad (0..15) dans ce groupe émet bien son PadTrigger distinct
+            for pad in 0..16u8 {
+                let pad_down = m.handle_hardware_event(HardwareEvent::Pad(crate::events::PadState {
+                    pad,
+                    pressed: true,
+                    velocity: 100,
+                    pressure: 0x4500,
+                    ts_ns: pad as u64,
+                }));
+                assert!(pad_down.contains(&MapperAction::SelectSound(pad)));
+                assert!(pad_down.contains(&MapperAction::PadTrigger {
+                    pad,
+                    velocity: 100,
+                    pressed: true,
+                }));
+
+                let pad_up = m.handle_hardware_event(HardwareEvent::Pad(crate::events::PadState {
+                    pad,
+                    pressed: false,
+                    velocity: 0,
+                    pressure: 0x4000,
+                    ts_ns: pad as u64 + 10,
+                }));
+                assert!(pad_up.contains(&MapperAction::PadTrigger {
+                    pad,
+                    velocity: 0,
+                    pressed: false,
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn test_mute_and_solo_with_groups() {
+        let mut m = HardwareMapper::with_default();
+        m.group_focus = 0;
+
+        // 1. Appui Mute + Group B(1) : ToggleMute(1) sans changer le focus (focus reste 0)
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Mute,
+            pressed: true,
+            ts_ns: 1,
+        });
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Group(1),
+            pressed: true,
+            ts_ns: 2,
+        });
+        assert_eq!(a, vec![MapperAction::ToggleMute(1)]);
+        assert_eq!(m.group_focus, 0);
+
+        // Relâchement Mute après avoir utilisé un groupe : ne bascule pas le mute_pad_mode
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Mute,
+            pressed: false,
+            ts_ns: 3,
+        });
+        assert!(a.is_empty());
+        assert!(!m.mute_pad_mode);
+
+        // 2. Appui simple Mute (sans groupe) : active le mute_pad_mode latched
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Mute,
+            pressed: true,
+            ts_ns: 4,
+        });
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Mute,
+            pressed: false,
+            ts_ns: 5,
+        });
+        assert!(m.mute_pad_mode);
+
+        // En mute_pad_mode, Group C(2) mute le groupe directement
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Group(2),
+            pressed: true,
+            ts_ns: 6,
+        });
+        assert_eq!(a, vec![MapperAction::ToggleMute(2)]);
+        assert_eq!(m.group_focus, 0);
+
+        // 3. Solo + Group D(3) : ToggleSolo(3) sans changer focus
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Solo,
+            pressed: true,
+            ts_ns: 7,
+        });
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Group(3),
+            pressed: true,
+            ts_ns: 8,
+        });
+        assert_eq!(a, vec![MapperAction::ToggleSolo(3)]);
+        assert_eq!(m.group_focus, 0);
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Solo,
+            pressed: false,
+            ts_ns: 9,
+        });
+
+        // 4. Solo simple (sans groupe) : bascule le solo sur le group_focus (0)
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Solo,
+            pressed: true,
+            ts_ns: 10,
+        });
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Solo,
+            pressed: false,
+            ts_ns: 11,
+        });
+        assert_eq!(a, vec![MapperAction::ToggleSolo(0)]);
+    }
+
+    #[test]
+    fn test_erase_mode_combinations() {
+        let mut m = HardwareMapper::with_default();
+        m.group_focus = 1;
+        m.selected_bar = 2;
+
+        // 1. Shift + Erase en mode pattern : ClearPattern sur group_focus
+        m.pattern_select_mode = true;
+        m.shift_held = true;
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Erase,
+            pressed: true,
+            ts_ns: 1,
+        });
+        assert_eq!(a, vec![MapperAction::ClearPattern { group: 1 }]);
+        m.pattern_select_mode = false;
+        m.shift_held = false;
+
+        // 2. Shift + Erase en mode normal : ClearBar sur selected_bar
+        m.shift_held = true;
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Erase,
+            pressed: true,
+            ts_ns: 2,
+        });
+        assert_eq!(a, vec![MapperAction::ClearBar(2)]);
+        m.shift_held = false;
+
+        // 3. Erase en mode FILE (left_tab = 3, browser_kind = 1) déclenche SoftKey(6) (Suppression projet)
+        m.left_tab = 3;
+        m.browser_kind = 1;
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Erase,
+            pressed: true,
+            ts_ns: 3,
+        });
+        assert_eq!(a, vec![MapperAction::SoftKey(6)]);
+    }
+
+    #[test]
+    fn test_4d_encoder_navigation_and_transport_shortcuts() {
+        let mut m = HardwareMapper::with_default();
+
+        // 1. FourWayUp / FourWayDown en vue Browser (tab 3)
+        m.left_tab = 3;
+        let a_up = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::FourWayUp,
+            pressed: true,
+            ts_ns: 1,
+        });
+        assert_eq!(a_up, vec![MapperAction::BrowsePresetStep(-1)]);
+
+        let a_down = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::FourWayDown,
+            pressed: true,
+            ts_ns: 2,
+        });
+        assert_eq!(a_down, vec![MapperAction::BrowsePresetStep(1)]);
+
+        let a_push = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::EncoderPush,
+            pressed: true,
+            ts_ns: 3,
+        });
+        assert_eq!(a_push, vec![MapperAction::LoadSelectedPreset]);
+
+        // 2. FourWayLeft / FourWayRight en mode Pattern
+        m.left_tab = 0;
+        m.pattern_select_mode = true;
+        m.group_focus = 2;
+        let a_left = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::FourWayLeft,
+            pressed: true,
+            ts_ns: 4,
+        });
+        assert_eq!(a_left, vec![MapperAction::PatternStep { group: 2, delta: -1 }]);
+
+        let a_right = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::FourWayRight,
+            pressed: true,
+            ts_ns: 5,
+        });
+        assert_eq!(a_right, vec![MapperAction::PatternStep { group: 2, delta: 1 }]);
+        m.pattern_select_mode = false;
+
+        // 3. FourWayLeft / FourWayRight en mode Step
+        m.mode = ControllerMode::Step;
+        let a_sleft = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Left,
+            pressed: true,
+            ts_ns: 6,
+        });
+        assert_eq!(a_sleft, vec![MapperAction::StepScroll(-1)]);
+
+        let a_sright = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Right,
+            pressed: true,
+            ts_ns: 7,
+        });
+        assert_eq!(a_sright, vec![MapperAction::StepScroll(1)]);
+
+        // 4. Footswitch Pedal déclenche PlayPauseToggle
+        let a_pedal = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Pedal,
+            pressed: true,
+            ts_ns: 8,
+        });
+        assert_eq!(a_pedal, vec![MapperAction::PlayPauseToggle]);
+
+        // 5. Restart normal vs Shift+Restart (ToggleLoop)
+        let a_restart = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Restart,
+            pressed: true,
+            ts_ns: 9,
+        });
+        assert_eq!(a_restart, vec![MapperAction::Restart]);
+
+        m.shift_held = true;
+        let a_loop = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Restart,
+            pressed: true,
+            ts_ns: 10,
+        });
+        assert_eq!(a_loop, vec![MapperAction::ToggleLoop]);
+    }
+
+    #[test]
+    fn test_note_repeat_and_touchstrip_modes() {
+        let mut m = HardwareMapper::with_default();
+
+        // 1. Bouton NoteRepeat active le mode
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::NoteRepeat,
+            pressed: true,
+            ts_ns: 1,
+        });
+        assert_eq!(a, vec![MapperAction::SetNoteRepeat(true)]);
+        assert!(m.note_repeat);
+
+        // Quand note_repeat est actif, DisplayBtn 1..7 changent le débit (rates 0..6)
+        for btn in 1..=7u8 {
+            let a = m.handle_hardware_event(HardwareEvent::Button {
+                id: maschine_proto::ButtonId::DisplayBtn(btn),
+                pressed: true,
+                ts_ns: btn as u64 + 10,
+            });
+            assert_eq!(a, vec![MapperAction::SetNoteRepeatRate(btn - 1)]);
+            assert_eq!(m.note_repeat_rate, btn - 1);
+        }
+
+        // DisplayBtn 8 désactive note_repeat
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::DisplayBtn(8),
+            pressed: true,
+            ts_ns: 20,
+        });
+        assert_eq!(a, vec![MapperAction::SetNoteRepeat(false)]);
+        assert!(!m.note_repeat);
+
+        // 2. Modes Touchstrip
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Pitch,
+            pressed: true,
+            ts_ns: 21,
+        });
+        assert_eq!(m.touchstrip_mode, TouchStripMode::Pitch);
+
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Mod,
+            pressed: true,
+            ts_ns: 22,
+        });
+        assert_eq!(m.touchstrip_mode, TouchStripMode::Mod);
+
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Perform,
+            pressed: true,
+            ts_ns: 23,
+        });
+        assert_eq!(m.touchstrip_mode, TouchStripMode::Perform);
+
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Notes,
+            pressed: true,
+            ts_ns: 24,
+        });
+        assert_eq!(m.touchstrip_mode, TouchStripMode::Notes);
     }
 }

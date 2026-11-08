@@ -290,7 +290,10 @@ impl PadTracker {
             self.last_raw[idx] = raw;
         }
         let stuck_n = stuck_run_threshold();
-        if stuck_n > 0 && self.same_run[idx] >= stuck_n && self.base[idx] != raw {
+        // Un capteur bloqué au repos a une lecture constante proche du seuil (bruit fantôme < 0x4280).
+        // Un appui franc et maintenu par un musicien (raw >= 0x4280) ne doit JAMAIS être considéré comme
+        // un capteur bloqué afin de permettre les tenues longues sans coupure intempestive.
+        if stuck_n > 0 && self.same_run[idx] >= stuck_n && self.base[idx] != raw && raw < 0x4280 {
             log::warn!(
                 "pad {idx} capteur bloqué suspecté (0x{raw:04X} constant) — baseline adaptée"
             );

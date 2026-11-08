@@ -157,13 +157,34 @@ Un moteur différentiel (`display_differ`) calcule en temps réel les rectangles
 7. `OCT +` : Transpose les notes d'une octave vers le haut (+12 demi-tons).
 8. `FILL` : Remplit les 16 pas de la mesure pour le son sélectionné.
 
-#### En mode SAMPLER (Tab 2) :
-- **Sans SHIFT** : `SND <` (Son précédent), `SND >` (Son suivant), `ECOUTE` (Prévisualisation), `CYC FLT` (Cycle mode filtre), `LP` (Passe-bas), `HP` (Passe-haut), `BP` (Passe-bande), `OFF` (Filtre désactivé).
+#### En mode SAMPLER (Tab 2) & PLUGIN (Tab 4 pour sons Sampler) :
+- **Sans SHIFT** : `SND <` (Son précédent), `SND >` (Son suivant), `ECOUTE` (Prévisualisation), `CYC FLT` (Cycle mode filtre : LP -> HP -> BP -> OFF), `LP` (Passe-bas direct), `HP` (Passe-haut direct), `BP` (Passe-bande direct), `OFF` (Filtre désactivé).
 - **Avec SHIFT** : `REVERSE` (Inversion temporelle du sample), `LOOP` (Bascule One-Shot / Boucle), `NORMLZ` (Normalisation crête à 0 dBFS), `CYC FLT` (Cycle filtre), `LP`, `HP`, `BP`, `OFF` (Sélection directe du type de filtre).
+
+#### Raccourcis Universels de Filtrage & Encodeur 4D :
+- **SHIFT + Push Encodeur 4D** : Bascule instantanément le type de filtre (Cycle LP -> HP -> BP -> OFF) du son actif dans TOUTES les vues sans changer d'écran.
+- **SHIFT + Tourne Encodeurs Cutoff/Reso** : Tourner l'encodeur de coupure ou résonance avec SHIFT enfoncé alterne immédiatement le mode de filtrage (en vue Arranger knobs 6/7, en vue Sampler/Plugin knobs 3/4).
+
+#### En mode KICK SYNTH (Tab 4) :
+- **Sans SHIFT** : `DRV TYP` (Type de saturation analogique), `FLT MOD` (Cycle mode filtre multimode), `TECHNO`, `909`, `HARDCORE`, `808 SUB`, `INDUSTRIAL` (Presets de kick directs), `BROWSER` (Explorateur).
+- **Avec SHIFT** : `DRV TYP`, `FLT MOD`, `LP`, `HP`, `BP`, `OFF` (Sélection directe du mode de filtre), `PRESETS`, `BROWSER`.
 
 #### En mode SYNTH WAVETABLE / NEXUS (Tab 4) :
 - **Knobs 1 à 8** : Cutoff, Résonance, Modulation Enveloppe, Drive, Attaque, Déclin, Maintien (Sustain), Relâchement (Release).
 - **Avec SHIFT (Boutons 1 à 8)** : Mode de filtre (LP12/LP24/HP/BP), Nombre de voix d'unisson, Forme d'onde Osc 1, Forme d'onde Osc 2, Mix Chorus, Mix Delay, Mix Reverb, Volume principal du synthétiseur.
+
+#### Structure des 8 Groupes (A à H) et 128 Pistes :
+Le projet initialise nativement 8 groupes indépendants (`Groupes A..H`), chacun doté de 16 pads/sons distincts (128 pistes au total) :
+- **Groupe A** : `Kit 808` complet (Kick, Snare, HiHats, Clap, Toms, Percs, Acid 303 sur Pad 15).
+- **Groupe B** : `Kit 909` (909 Drums analogiques, Kick Modeler sur Pad 15).
+- **Groupe C** : `Nexus Synth` (Wavetable Synth sur Pad 1, leads, plucks, pads, strings).
+- **Groupe D** : `Bass & Acid` (Presets Acid TB-303 multiples sur Pads 1..3, sub bass, basslines).
+- **Groupe E** : `Percussion` (Congas, bongos, timbales, claves, shakers, tambourines).
+- **Groupe F** : `Keys & Chords` (Pianos acoustiques/électriques, Rhodes, orgues, stabs harmoniques).
+- **Groupe G** : `Vocal & SFX` (Chants, risers, sub drops, reverse cymbals, bleeps).
+- **Groupe H** : `Hits & Stabs` (Rave stabs, disco hits, dub chords, cuivres).
+
+Chaque pad dispose d'une piste dédiée avec son propre canal dans le sampler, son enveloppe ADSR, son filtre multimode, son panoramique et son volume indépendants.
 
 ---
 
@@ -178,10 +199,66 @@ maschine-linux/
 │   ├── maschine-hardware/   # Gestion bas-niveau des périphériques : hidraw, mapper matériel, gestion LED et filtrage anti-rebond
 │   ├── maschine-dsp/        # Algorithmes audio temps réel : filtres SVF biquad, enveloppes ADSR, générateurs d'ondes
 │   ├── maschine-engine/     # Cœur métier : séquenceur, échantillonneur, synthétiseurs (Kick, Acid, Wavetable), transport, projet
-│   └── maschine-app/        # Binaire principal : interface graphique egui/eframe, threads audio ALSA/JACK, boucle d'événements
+│   └── maschine-app/        # Binaire principal : interface graphique egui/eframe, threads audio ALSA/JACK, updater, boucle d'événements
 ```
 
 ### Règles d'Or du Développement :
 1. **Zéro allocation dans la boucle audio** : Tout rendu dans `render_audio()` ou `render()` doit être lock-free et pré-alloué.
 2. **Synchronisation d'affichage par événement** : Toute action utilisateur incrémente un numéro de `revision` qui déclenche le repaint minimal nécessaire.
 3. **Tests Hardware Découplés** : Le module `maschine-hardware` possède des tests unitaires complets émulant les trames HID brutes sans nécessiter le contrôleur physique branché.
+4. **Tenue de note pad (Sustain)** : Le suivi de pression dans `hidraw.rs` isole les défauts de capteurs au repos (bruit fantôme < 0x4280) des appuis intentionnels (> 0x4280), garantissant que les synthétiseurs jouent en continu tant que le pad reste enfoncé.
+5. **Redémarrage Propre de l'Application** : La routine `restart_app()` nettoie automatiquement les variables d'environnement héritées d'AppImage (`APPDIR`, `ARGV0`), restaure le répertoire de travail d'origine `OWD` et détache le nouveau processus via `nohup` pour une réouverture garantie.
+
+---
+
+## 7. Navigation 4D, Hiérarchie de Vues et Interactions Spéciales
+
+L'encodeur 4D réunit un joystick 4 axes (`Haut`, `Bas`, `Gauche`, `Droite`), un encodeur rotatif sans fin et un bouton poussoir (`Encoder Push`), créant une ergonomie contextuelle sans quitter les mains du contrôleur :
+
+### Hiérarchie de Navigation par Vue :
+
+| Contexte / Vue | Pousser Haut | Pousser Bas | Pousser Gauche | Pousser Droite | Appui (Push) | SHIFT + Push |
+|---|---|---|---|---|---|---|
+| **ARRANGER / PATTERN** | Son suivant (preview) | Son précédent (preview) | Mesure précédente (`SelectBar`) | Mesure suivante (`SelectBar`) | Preview du pad actif | Cycle filtre multimode |
+| **PATTERN SELECT** | - | - | Pattern précédent | Pattern suivant | Valide la sélection | Cycle filtre multimode |
+| **STEP SEQUENCER** | Son suivant | Son précédent | Défilement pas à gauche | Défilement pas à droite | Preview du pad actif | Cycle filtre multimode |
+| **MIXER (Vue Groupes)** | Entre dans le groupe (pads 1..8) | - | Groupe précédent | Groupe suivant | Alterne vue pads / vue groupes | Cycle filtre multimode |
+| **MIXER (Vue Pads)** | - | Sort vers vue Groupes | Banque Pads 1..8 | Banque Pads 9..16 | Alterne vue pads / vue groupes | Cycle filtre multimode |
+| **BROWSER (Presets)** | Preset précédent (`-1`) | Preset suivant (`+1`) | Catégorie précédente | Catégorie suivante | Charge le preset sélectionné | Cycle filtre multimode |
+| **FILE BROWSER** | Projet précédent | Projet suivant | - | - | Charge le projet sélectionné | Cycle filtre multimode |
+
+### Priorité MUTE / SOLO :
+- **SOLO actif / maintenu** : La combinaison `SOLO + Group(A..H)` est prioritaire sur tout état `MUTE` latched en arrière-plan. Elle isole le groupe ciblé sans basculer l'écran ni perdre le pad en cours d'édition.
+- **MUTE latched (`mute_pad_mode`)** : L'appui court sur le bouton physique `MUTE` active le mode pad mute. Enfoncer `Group(A..H)` dans cet état bascule le mute complet du groupe.
+
+### Bande Tactile Smart Strip :
+Quatre modes physiques commutables par les boutons dédiés au-dessus du ruban :
+1. **PITCH** : Pitch-bend avec retour automatique au centre (centre = pas de transposition).
+2. **MOD** : Molette de modulation MIDI CC 1 absolue.
+3. **PERFORM** : Macro-contrôle d'effets temps réel (sweep de filtre, écho, distorsion).
+4. **NOTES** : Strumming / arpégiateur de pads ou accords par glissement de doigt.
+
+---
+
+## 8. Gestion USB, Cycle de Vie Hardware et Déconnexion
+
+Pour garantir la stabilité sur les noyaux Linux et éviter les resets USB intempestifs :
+1. **Découverte automatique** : L'application balaie `/sys/class/hidraw` pour repérer le couple `VID=0x17CC` et `PID=0x1600` sans exiger de permissions root via une règle `udev` standard (`60-maschine.rules`).
+2. **Initialisation progressive** :
+   - Émission des trames LED `0x80` et `0x81` éteintes.
+   - Test de transmission d'un rectangle $2 \times 1$ RGB565 pour purger le pipeline de l'interface Bulk IF 5.
+   - Démarrage du thread de lecture d'interruption HID avec lecture non-bloquante via `poll` / timeout 15 ms.
+3. **Arrêt Propre (Graceful Release)** :
+   - À la fermeture, un écran splash avec le logo Maschine natif est envoyé.
+   - L'interface Bulk USB est libérée via `libusb_release_interface` sans émettre d'appel `USBDEVFS_RESET` qui déconnecterait la carte son USB audio intégrée.
+
+---
+
+## 9. Guide de Contribution : Ajouter et Tester un Nouveau Contrôle
+
+Pour ajouter une nouvelle interaction matérielle :
+1. **Définition dans le codec** : Ajouter ou valider le `ButtonId` dans `crates/maschine-proto/src/hid_input.rs`.
+2. **Action Mapper** : Déclarer la variante d'action dans `MapperAction` (`crates/maschine-hardware/src/mapper.rs`).
+3. **Routage modulaire** : Dans `mapper.rs`, brancher l'événement dans la fonction dédiée (`handle_transport_button`, `handle_view_menu_button`, `handle_4way_button`, ou `handle_display_button`).
+4. **Consommation Engine** : Traiter l'événement correspondant dans `Engine::handle_event()` (`crates/maschine-engine/src/engine.rs`).
+5. **Test Unitaire Hardware** : Écrire un test dans `mapper::tests` simulant l'envoi de `HardwareEvent::Button` ou `HardwareEvent::Pad` et vérifiant que le vecteur de `MapperAction` généré correspond exactement à l'attente.

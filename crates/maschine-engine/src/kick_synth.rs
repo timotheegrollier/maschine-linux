@@ -668,7 +668,7 @@ impl KickSynth {
         let click_level = p.click;
         let sub = p.sub;
         let sub_ratio = p.sub_ratio.clamp(0.25, 4.0);
-        let vol_linear = 10.0f32.powf(p.volume_db / 20.0) * self.velocity_gain;
+        let vol_linear = crate::engine::db_to_linear(p.volume_db) * self.velocity_gain;
         let noise_mix = p.noise_mix;
         let noise_tau = (p.noise_decay_ms / 1000.0).max(0.002);
         let fm_amt = p.fm_amount.clamp(0.0, 1.0);

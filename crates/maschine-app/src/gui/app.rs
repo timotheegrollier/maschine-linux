@@ -1901,25 +1901,46 @@ fn restart_app() -> ! {
         }
     }
 
-    // Le court délai de 0.4s permet au processus père de quitter et de libérer
+    // Le court délai de 0.5s permet au processus père de quitter et de libérer
     // complètement les périphériques USB HID et audio ALSA/JACK.
+    let appimage_cleanup = if std::env::var_os("APPIMAGE").is_some() {
+        "unset APPDIR; unset ARGV0; "
+    } else {
+        ""
+    };
+    let cd_owd = "if [ -n \"${OWD:-}\" ] && [ -d \"$OWD\" ]; then cd \"$OWD\"; fi; ";
+
     let cmd = format!(
-        "sleep 0.4 && {}exec '{}' {}",
+        "sleep 0.5; {} {}{}'{}' {}",
+        cd_owd,
+        appimage_cleanup,
         env_exports,
         target.to_string_lossy().replace('\'', "'\\''"),
         quoted_args
     );
 
-    let mut cmd_builder = std::process::Command::new("sh");
+    let mut cmd_builder = std::process::Command::new("nohup");
     cmd_builder
+        .arg("sh")
         .arg("-c")
-        .arg(cmd)
+        .arg(&cmd)
         .process_group(0) // détachement de groupe de processus
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
 
-    let _ = cmd_builder.spawn();
+    if cmd_builder.spawn().is_err() {
+        // Repli direct sur sh si nohup n'est pas présent sur le système
+        let mut fallback = std::process::Command::new("sh");
+        let _ = fallback
+            .arg("-c")
+            .arg(&cmd)
+            .process_group(0)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
 
     std::process::exit(0);
 }

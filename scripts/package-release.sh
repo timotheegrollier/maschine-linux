@@ -13,7 +13,8 @@ cd "${ROOT_DIR}"
 VERSION="$(grep -m1 '^version =' Cargo.toml | cut -d '"' -f2)"
 echo "==> Création de l'archive autonome universelle v${VERSION}..."
 
-cargo build --release --locked -p maschine-app
+# Construction du binaire autonome (--no-default-features pour compatibilité universelle sans dépendances Alsa de dev)
+cargo build --release -p maschine-app --no-default-features
 
 OUT_DIR="${ROOT_DIR}/dist"
 STAGE_DIR="${ROOT_DIR}/target/release-stage/maschine-linux-${VERSION}"

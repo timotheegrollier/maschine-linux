@@ -51,9 +51,11 @@ Logs: `RUST_LOG=debug maschine-linux -vv daemon`
   - **Left / Right** or `<` / `>` keys: step-by-step navigation between pattern bars (Bar 1, Bar 2, Bar 3, Bar 4...); in PATTERN mode, previous/next pattern; in MIXER pad view, switches between Pads 1-8 and Pads 9-16 banks.
   - **Shift + Right**: dynamic extension of the pattern to 4 or 8 bars.
   - **Pressure (Push)**: one-shot preview of the active sound (or loading the selected preset in Browser mode) — does not accidentally start loop playback.
+  - **Shift + Push**: instantly cycles the filter type of the focused sound (`LP` -> `HP` -> `BP` -> `OFF`) across all views without switching pages.
   - **Rotation**: fine adjustment according to the active focus (Tempo, Master Volume, Swing).
 - **Shift & Contextual Real-Time Display Labels**:
-  - Holding the physical `SHIFT` button dynamically repaints the 8 display button labels across all views in real time, exposing immediate shortcuts directly above each button: `DOUBLE` (double pattern length), `HALF` (halve pattern length), `QUANT` (50% grid quantize), `HUMAN` (humanize timing), `SAV PROJ` (instant quick save), and `COUNT-IN` (toggle recording count-in).
+  - Holding the physical `SHIFT` button dynamically repaints the 8 display button labels across all views in real time, exposing immediate shortcuts directly above each button: `DOUBLE` (double pattern length), `HALF` (halve pattern length), `QUANT` (50% grid quantize), `HUMAN` (humanize timing), `SAV PROJ` (instant quick save), `COUNT-IN` (toggle recording count-in), and direct filter mode selection (`LP`, `HP`, `BP`, `OFF`) for drums, sampler sounds, and Kick/Wavetable synths.
+  - Turning filter Cutoff/Resonance encoders while holding `SHIFT` immediately cycles the filter mode (knobs 6/7 in Arranger, knobs 3/4 in Plugin/Sampler).
 - **Pattern editing buttons**: `DUPLICATE` copies the active pattern and inserts the copy after it. `SHIFT + ERASE` clears the active pattern events without deleting the pattern or changing its length.
 - **Color LCD screens (2 × 480×272)**:
   - **Display Buttons 1..4 (Left screen) & PLUGIN button**: tab selection (ARRANGE, MIXER, SAMPLER, BROWSER, and the unified **PLUGIN** page). The physical PLUGIN button opens the SOUND page and a second press closes it.
@@ -63,14 +65,23 @@ Logs: `RUST_LOG=debug maschine-linux -vv daemon`
     - *SAMPLER*: buttons 1..4 = Vol, Pan, filter Cutoff, Resonance; 5..8 = Attack, Decay, Sustain, Release ADSR.
     - *PLUGIN / SOUND*: buttons 1..4 = Vol, Pan, Cutoff, Resonance; 5..8 = Attack, Decay, Sustain, Release ADSR.
     - *PLUGIN / TB-303*: buttons 1..4 = Cutoff, Resonance, Envelope Modulation, Decay; 5..8 = Accent, distortion Drive, Delay Time, Delay Mix.
+    - *PLUGIN / KICK*: buttons 1..4 = Tune, Decay, Pitch Bend, Drive; 5..8 = Sub Bass, FM Amount, Click, Filter Cutoff.
+    - *PLUGIN / WAVETABLE*: buttons 1..4 = Cutoff, Resonance, Env Mod, Drive; 5..8 = Attack, Decay, Sustain, Release.
     - *BROWSER*: knob selects pads and scrolls 808 presets.
     - *ARRANGE*: tempo, swing, volume and global filter.
-  - **PLUGIN soft keys**: SOUND page `[1: SND <]`, `[2: SND >]`, `[3: PAGE TB]`, `[4: LISTEN]`, `[5: APPLY]`, `[6: RESET]`, `[7: VOL -]`, `[8: VOL +]`; TB-303 page `[1: SAW/SQR]`, `[2: OCT -]`, `[3: OCT +]`, `[4: SLIDE]`, `[5: CLASSIC]`, `[6: SQUELCH]`, `[7: PAGE SND]`, `[8: DUB]`.
+  - **PLUGIN soft keys**: SOUND page `[1: SND <]`, `[2: SND >]`, `[3: PAGE TB]`, `[4: LISTEN]`, `[5: APPLY]`, `[6: RESET]`, `[7: VOL -]`, `[8: VOL +]`; TB-303 page `[1: SAW/SQR]`, `[2: OCT -]`, `[3: OCT +]`, `[4: SLIDE]`, `[5: CLASSIC]`, `[6: SQUELCH]`, `[7: PAGE SND]`, `[8: DUB]`; Kick page `[1: DRV TYP]`, `[2: FLT MOD]`, presets and direct filter selectors.
   - **PATTERN soft keys**: `[1: PAT <]`, `[2: PAT >]`, `[3: + PAT]`, `[4: DUPL]`, `[5: VIDER]`, `[6: SUPPR]`, `[7: 1 MES]`, `[8: 2 MES]`. `SUPPR` is ignored when only one pattern remains in the Group.
   - **Latched workflow menus**: PATTERN, STEP, KEYBOARD, SCENE, EVENTS, MACRO, SETTINGS, and PLUGIN remain active after the first press. Pressing the same button again returns to the default Pad workflow. Only one workflow menu is active at a time. Pressing any top view button (FILE/SAVE, BROWSER, PLUGIN, CHANNEL/MIDI, MIXER, SAMPLING, ARRANGER) automatically exits any active latch (PATTERN, SCENE, SELECT, ERASE, MUTE) and closes overlays (EVENTS, MACRO, SETTINGS) before entering the selected view.
-- **Groups A..H**: instant selection of the active group, combined with **MUTE** and **SOLO** keys for immediate mute / solo.
-- **Transport**: PLAY, REC, STOP, RESTART, TAP (metronome), ERASE (erase notes by pad).
-- **Touchstrip**: modulation / pitch bend with LED ribbon visual feedback.
+- **8 Groups A..H & 128 Independent Tracks**:
+  - Full matrix of 8 groups × 16 pads = 128 distinct sound tracks with independent polyphony, sampler zones, synth engines, ADSR envelopes, filters, volumes, and pans.
+  - **Group A**: Kit 808 with TB-303 Acid synth on pad 15.
+  - **Group B**: Kit 909 with Kick Modeler synth on pad 15.
+  - **Group C**: Nexus Wavetable synth on pad 1.
+  - **Group D**: Bass & Acid bank (pads 1..3).
+  - **Groups E..H**: Percussion, Keys & Chords, Vocal & SFX, Hits & Stabs.
+  - **MUTE / SOLO + Group**: holding MUTE or SOLO and pressing a group button instantly mutes or solos that group without losing track/pad focus. An actively held SOLO button takes priority over latched MUTE pad mode.
+- **Transport**: PLAY, REC, STOP, RESTART (clean restart or loop toggle with Shift), TAP (metronome), ERASE (erase notes by pad or clear pattern with Shift).
+- **Touchstrip**: modulation / pitch bend / perform / notes with LED ribbon visual feedback.
 
 ### Project workflow
 

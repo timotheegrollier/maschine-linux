@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::engine::db_to_linear;
+
 use serde::{Deserialize, Serialize};
 
 /// Identifiant d'un Sound runtime, encodé par [`sound_id`].
@@ -1145,10 +1147,6 @@ fn resample_envelope(source: &[(f32, f32)], buckets: usize) -> Vec<(f32, f32)> {
                 })
         })
         .collect()
-}
-
-fn db_to_linear(db: f32) -> f32 {
-    10_f32.powf(db / 20.0)
 }
 
 fn pan_gains(pan: f32, gain: f32) -> (f32, f32) {

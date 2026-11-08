@@ -195,10 +195,115 @@ impl Project {
 
         g.patterns.push(pat);
         p.groups.push(g);
+
+        // Groupes B à H — chaque pad de chaque groupe dispose d'une piste et d'un son distincts
+        let extra_groups: [(&str, u8, [&str; 16]); 7] = [
+            (
+                "Kit 909",
+                10,
+                [
+                    "909 Kick", "909 Snare", "909 Clsd HH", "909 Open HH", "909 Clap",
+                    "909 Low Tom", "909 Mid Tom", "909 Hi Tom", "909 Crash", "909 Ride",
+                    "909 Rimshot", "909 Shaker", "909 Perc 1", "909 Perc 2", "Kick Modeler",
+                    "909 Sub",
+                ],
+            ),
+            (
+                "Nexus Synth",
+                50,
+                [
+                    "Wavetable Synth", "Saw Lead", "Square Lead", "Pluck Synth", "Warm Pad",
+                    "Poly Brass", "Strings", "Sub Bass", "Acid Lead", "Bell Synth",
+                    "Organ", "Choir", "Sweep FX", "Arp Synth", "Deep Sub", "White Noise",
+                ],
+            ),
+            (
+                "Bass & Acid",
+                6,
+                [
+                    "303 Classic", "303 Squelch", "303 Disto", "303 Dub", "Sub 808",
+                    "Reese Bass", "FM Bass", "Slap Bass", "Moog Bass", "Wobble",
+                    "Acid Slide", "Saw Bass", "Deep Sub 1", "Deep Sub 2", "Punch Bass",
+                    "Acid Lead",
+                ],
+            ),
+            (
+                "Percussion",
+                34,
+                [
+                    "Bongo Low", "Bongo High", "Conga Low", "Conga Mid", "Conga High",
+                    "Timbale", "Claves", "Woodblock", "Tambourine", "Maracas",
+                    "Shaker Fast", "Cabasa", "Agogo", "Triangle", "Guiro", "Cowbell Muted",
+                ],
+            ),
+            (
+                "Keys & Chords",
+                42,
+                [
+                    "Grand Piano", "Rhodes", "Wurlitzer", "Clavinet", "Hammond B3",
+                    "FM Electric", "Vibraphone", "Marimba", "Celesta", "Harpsichord",
+                    "Accordion", "Toy Piano", "Bell Keys", "Synth Keys", "Vinyl Piano",
+                    "Lo-Fi Keys",
+                ],
+            ),
+            (
+                "Vocal & SFX",
+                78,
+                [
+                    "Vox Chant", "Vox Ahh", "Vox Ohh", "Vox Hit", "Riser 1",
+                    "Riser 2", "Fall 1", "Fall 2", "Laser", "Scratch",
+                    "Noise Sweep", "Impact", "Sub Drop", "Reverse Cymbal", "Glitch 1",
+                    "Glitch 2",
+                ],
+            ),
+            (
+                "Hits & Stabs",
+                58,
+                [
+                    "Rave Stab 1", "Rave Stab 2", "Horn Hit", "Orchestra Hit", "Brass Stab",
+                    "Disco Hit", "Dub Chord", "Minor Stab", "90s Organ", "Tech Stab",
+                    "House Chord", "Chord 7th", "Chord 9th", "Chord Min7", "Suspended",
+                    "Power Chord",
+                ],
+            ),
+        ];
+
+        for (grp_idx, (grp_name, grp_color, sound_names)) in extra_groups.into_iter().enumerate() {
+            let mut grp = Group::new(grp_name, grp_color);
+            for (i, &sname) in sound_names.iter().enumerate() {
+                let mut snd = Sound::new(sname, grp_color);
+                snd.zones.push(Zone {
+                    sample_path: None,
+                    root_key: 36 + i as u8,
+                    lokey: 0,
+                    hikey: 127,
+                    lovel: 0,
+                    hivel: 127,
+                    ..Default::default()
+                });
+                if grp_idx == 0 && i == 14 {
+                    snd.kick_synth = Some(crate::kick_synth::KickParams::default());
+                } else if grp_idx == 1 && i == 0 {
+                    snd.wavetable_synth = Some(crate::wavetable_synth::WavetableParams::default());
+                } else if grp_idx == 2 {
+                    if i == 0 {
+                        snd.synth = Some(crate::acid_synth::AcidParams::preset_classic_acid());
+                    } else if i == 1 {
+                        snd.synth = Some(crate::acid_synth::AcidParams::preset_squelch_lead());
+                    } else if i == 2 {
+                        snd.synth = Some(crate::acid_synth::AcidParams::preset_distorted());
+                    }
+                }
+                grp.sounds[i] = Some(snd);
+            }
+            grp.patterns.push(Pattern::new("Pattern 1", BarsBeatsTicks::new(2, 0, 0)));
+            p.groups.push(grp);
+        }
+
         p.scenes.push(Scene {
             name: "Scene 1".to_string(),
             color: 22,
-            patterns: vec![Some(0)],
+            patterns: vec![Some(0); 8],
         });
         p.song.push(Section {
             scene: 0,

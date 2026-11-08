@@ -22,7 +22,13 @@ This guide pairs each documented promise with a concrete check. Cargo tests cove
 | Mixer per pad | manual / integration coverage | Selecting pads changes the editable Sound; per-pad volume/pan edits apply and persist per Group. |
 | Keyboard/Chords | manual / integration coverage | Root/scale/octave/chord controls change musical state; pads play pitched notes/chords; MK3/GUI screens reflect the state. |
 | GUI/HID integration | `cargo test -p maschine-app` | Event routing, context transitions and the 2×1 RGB565 recovery probe. |
-| General regressions | `cargo test --workspace` | All unit and integration tests in the workspace. |
+| General regressions | `cargo test --workspace` | All unit and integration tests in the workspace (167 automated tests). |
+| Universal filter shortcuts | `cargo test -p maschine-hardware test_4d_encoder_shift_push_cycles_filter_in_all_views test_knobs_shift_filter_cycle_in_plugin_and_arrange` | Shift+Push on 4D encoder and Shift+Knobs cycle sound filter modes across all views without switching screens. |
+| 8 Groups & 128 Tracks | `cargo test -p maschine-hardware test_all_eight_groups_and_pads_routing`; `cargo test -p maschine-engine test_synth_pad_mixer_volume_and_mute` | All 8 groups (A..H) and 16 pads per group route actions independently to distinct voices, synth models, and mix parameters. |
+| Mute/Solo with Groups | `cargo test -p maschine-hardware test_mute_and_solo_with_groups` | Mute/Solo modifiers combined with Group buttons target groups without losing track focus; actively held Solo takes precedence over latched Mute pad mode. |
+| 4D Navigation & Editing | `cargo test -p maschine-hardware test_4d_encoder_navigation_and_transport_shortcuts test_erase_mode_combinations test_note_repeat_and_touchstrip_modes` | 4D directional controls (browser, mixer, step scroll, pattern step), Note Repeat soft keys, Touchstrip mode select, and transport shortcuts. |
+| Sustained Synth Notes | `cargo test -p maschine-engine test_acid_synth_pad_hold_sustains_indefinitely test_wavetable_synth_pad_hold_sustains_indefinitely` | Long pad presses hold notes indefinitely; stuck sensor detection isolates resting noise (< 0x4280) from intentional holds. |
+| Clean App Restart | `cargo test -p maschine-app` | Detached restart via nohup/sh restores original working directory and strips AppImage environment variables. |
 | Optimized binary | `cargo build --workspace --release` | Compilation of the binary and crates in release mode. |
 
 GitHub CI runs formatting, Clippy, engine build without Sampler, workspace tests and release build on every push/PR to `master` or `main`.
@@ -42,7 +48,7 @@ Expected results: `probe` reports `17cc:1600`, the `hidraw` device and an openab
 
 Validation performed for 0.8.0 on a connected MK3 (`serial=1B64AB9B`, `/dev/hidraw2`):
 
-- `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` (133 tests) pass.
+- `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` (167 tests) pass.
 - `probe`: device detected, `hidraw open: OK`, ALSA card `MK3` present.
 - GUI hardware startup: LED writer, display thread, first frame OK, serial logged, updater reported up to date.
 - GUI hardware close: the HID loop and display/LED writers are joined, the final splash is sent, the display interface is released without a USB reset, and the log reports `Écrans libérés — logo MK3 par défaut`.

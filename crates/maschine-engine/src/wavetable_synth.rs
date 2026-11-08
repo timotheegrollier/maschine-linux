@@ -1989,7 +1989,7 @@ impl WavetableSynth {
         let sr = self.sample_rate;
         let dt = 1.0 / sr;
         let frames = out.len() / 2;
-        let vol_linear = 10.0f32.powf(p.master_volume_db / 20.0);
+        let vol_linear = crate::engine::db_to_linear(p.master_volume_db);
 
         // Paramètres LFO
         let lfo_inc = 2.0 * PI * p.lfo_rate_hz / sr;

@@ -12,9 +12,7 @@ use eframe::egui;
 
 use maschine_engine::kick_synth::{KickDriveType, KickFilterMode, KickWaveform};
 use maschine_engine::project::{Adsr, FilterKind};
-use maschine_engine::wavetable_synth::{
-    LfoTarget, WavetableFilterMode, WavetableParams, WavetableWaveform,
-};
+use maschine_engine::wavetable_synth::{WavetableFilterMode, WavetableParams, WavetableWaveform};
 use maschine_engine::{AcidParams, AcidWaveform, EngineEvent};
 
 pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::EngineSnapshot) {
@@ -1464,7 +1462,7 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                         ui,
                         "WAVEFOLDER",
                         params.drive_type == KickDriveType::Wavefolder,
-                        c.accent_purple,
+                        c.accent_cyan,
                     ) {
                         params.drive_type = KickDriveType::Wavefolder;
                         changed = true;
@@ -1557,7 +1555,7 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                         ui,
                         "NOTCH",
                         params.filter_mode == KickFilterMode::Notch,
-                        c.accent_purple,
+                        c.accent_cyan,
                     ) {
                         params.filter_mode = KickFilterMode::Notch;
                         changed = true;
@@ -2014,7 +2012,7 @@ fn render_wavetable_page(
             egui::RichText::new("RACK D'EFFETS INTÉGRÉ")
                 .strong()
                 .small()
-                .color(c.accent_purple),
+                .color(c.accent),
         );
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {

@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.9.1" date="2026-11-08">
+      <description>
+        <p>Release 0.9.1 fixes MK3 FILE SAVE/project browser workflow with visible save feedback, adds Maschine-style per-pad mute with dimmed LEDs, and records Keyboard/Chords performances with actual MIDI pitch during REC.</p>
+      </description>
+    </release>
     <release version="0.9.0" date="2026-11-08">
       <description>
         <p>Release 0.9.0 adds a Maschine-style FILE/project workflow on MK3 and GUI, per-pad volume and pan editing for every Sound in each Group, and repaired Keyboard/Chords modes with scale, root, octave, chord controls and dedicated screens.</p>

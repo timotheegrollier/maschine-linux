@@ -2,6 +2,22 @@
 
 All notable changes.
 
+## [0.9.1] - 2026-11-08
+
+### Fixes
+
+- **MK3 FILE / save workflow**: The physical `FILE SAVE` button now performs a normal project save and creates a project file when no current path exists. `Shift + FILE SAVE` keeps the compact quick-save behavior. The FILE/project browser on MK3 now shows accurate soft-key labels and guidance (`PROJ </>`, `CHARGER`, `SAUVER`, `RAPIDE`, `PRESETS`) and project soft-key save actions work even for unsaved projects.
+- **Save feedback**: MK3 and GUI snapshots now expose a transient status message; the MK3 header shows a visible save confirmation (`Projet sauvegardé` / `Sauvegarde rapide OK`) after save actions.
+- **Maschine-style per-pad mute**: `MUTE` now latches a pad-mute mode. While active, tapping pads toggles mute for individual Sounds in the focused Group without triggering playback, and muted pads are rendered dimmed on MK3 LEDs. `MUTE + GROUP` (or Group selection while mute mode is active) still targets Group mute. Engine playback filters muted Sounds in live triggers and sequenced events.
+- **Keyboard / Chords recording**: Keyboard and Chords triggers now record the actual MIDI pitch during `REC`. Chord pads record each triggered note as a melodic event, preserving pitched/chord performance in patterns.
+
+### Validation
+
+- `cargo fmt --all -- --check`
+- `cargo test -p maschine-engine -p maschine-hardware` (93 tests passing in this environment)
+- `cargo check -p maschine-app` (validated with the Nobara ALSA/JACK `PKG_CONFIG` sysroot)
+- Interactive MK3 hardware validation is still recommended for FILE navigation/load/save, mute pad LEDs, and Keyboard/Chords recording/playback.
+
 ## [0.9.0] - 2026-11-08
 
 ### Highlights

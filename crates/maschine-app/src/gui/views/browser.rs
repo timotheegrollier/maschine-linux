@@ -678,10 +678,7 @@ fn render_effects(
                         )
                         .clicked()
                     {
-                        app.send(EngineEvent::AddFxToGroup {
-                            group: gf,
-                            fx_type: fx_type.clone(),
-                        });
+                        app.send(EngineEvent::AddFxToGroup { group: gf, fx_type });
                     }
                     if ui
                         .add(

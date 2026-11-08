@@ -120,6 +120,7 @@ pub struct GuiApp {
     /// Signal de repaint (le thread HID réveille l'UI).
     pub repaint: crate::gui::RepaintSignal,
     /// Fenêtre réglages audio ouverte.
+    #[allow(dead_code)]
     pub show_settings: bool,
     /// Fenêtre de mise à jour ouverte.
     pub show_updater: bool,

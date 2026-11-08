@@ -1782,8 +1782,23 @@ fn render_updater_window(
             if s.restart_required {
                 ui.colored_label(
                     c.accent_cyan,
-                    "Veuillez redémarrer Maschine Linux pour appliquer les changements.",
+                    "Mise à jour prête. Redémarre l'application pour appliquer les changements.",
                 );
+                if ui
+                    .button(
+                        egui::RichText::new("Redémarrer maintenant")
+                            .strong()
+                            .size(13.0),
+                    )
+                    .clicked()
+                {
+                    if let Ok(exe) = std::env::current_exe() {
+                        let args: Vec<std::ffi::OsString> =
+                            std::env::args_os().skip(1).collect();
+                        let _ = std::process::Command::new(exe).args(args).spawn();
+                    }
+                    std::process::exit(0);
+                }
             }
         } else if check.matched_asset.is_some()
             && ui

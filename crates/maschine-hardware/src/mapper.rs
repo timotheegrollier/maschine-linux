@@ -1094,11 +1094,16 @@ impl HardwareMapper {
                             self.select_left_tab(2, &mut actions);
                         }
                         ButtonId::Browser => {
-                            if self.left_tab == 3 {
+                            if self.left_tab == 3 && !self.shift_held {
                                 self.select_left_tab(2, &mut actions); // Retour SAMPLER
-                            } else {
+                            } else if self.shift_held {
+                                // Shift+BROWSER : navigateur de presets
                                 self.select_left_tab(3, &mut actions);
                                 actions.push(MapperAction::SetBrowserKind(0));
+                            } else {
+                                // BROWSER : ouvre le navigateur de projets (FILE/save/load)
+                                self.select_left_tab(3, &mut actions);
+                                actions.push(MapperAction::OpenFileBrowser);
                             }
                         }
                         ButtonId::Settings => {
@@ -1898,9 +1903,14 @@ impl HardwareMapper {
                         if self.pad_flash(i, now) && !is_muted {
                             self.led_state.set_pad(i, white);
                         } else if is_muted {
-                            // Pads mutés : très atténués, comme Maschine.
-                            self.led_state
-                                .set_pad(i, dim_pad_color(dim_pad_color(self.pad_colors[i])));
+                            // Pads mutés : atténués (visibles, distincts des pads actifs).
+                            // En mode MUTE, léger contraste pour identifier la sélection.
+                            let base = if self.mute_pad_mode {
+                                dim_pad_color(self.pad_colors[i])
+                            } else {
+                                dim_pad_color(dim_pad_color(self.pad_colors[i]))
+                            };
+                            self.led_state.set_pad(i, base);
                         } else if info.triggered_pads[i] {
                             // Joué par le séquenceur : couleur pleine du son.
                             self.led_state.set_pad(i, self.pad_colors[i]);

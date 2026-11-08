@@ -905,6 +905,16 @@ fn header(frame: &mut DisplayFrame, p: &Pal, snap: &EngineSnapshot, title: &str,
     fill_rect(frame, 0, 0, 4, H, p.accent);
     draw_text(frame, 10, 5, title, p.white, p.panel);
 
+    // Feedback temporaire (sauvegarde/chargement) — prioritaire et visible.
+    if let Some(msg) = snap.status_message.as_deref() {
+        let msg = trunc(msg, 22);
+        let mw = msg.len() * 8 + 10;
+        let mx = SCR_W.saturating_sub(mw + 6);
+        fill_rect(frame, mx, 2, mw, H - 4, p.accent);
+        draw_text(frame, mx + 4, 5, &msg, p.bg, p.accent);
+        return;
+    }
+
     // Ruban d'activité 16 pads (segments 2 px) — la « vie » du morceau.
     let seg_w = 2usize;
     let gap = 1usize;
@@ -3920,25 +3930,28 @@ pub fn render_project_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
     draw_text(
         &mut frame,
         10,
+        154,
+        "FILE SAVE = sauvegarder (nouveau si besoin)",
+        p.dim,
+        p.bg,
+    );
+    draw_text(
+        &mut frame,
+        10,
         170,
-        "SOFT: CHARGER | SAVE | QUICK | RAFRAICHIR",
+        "SHIFT+FILE SAVE = rapide | BROWSER = liste projets",
         p.dim,
         p.bg,
     );
     let slots = [
-        Some(("5:ACTION", "CHARGER".to_string(), 0.0, p.green)),
-        Some(("6:SAVE", "PRETTY".to_string(), 1.0, p.accent)),
-        Some(("7:QUICK", "COMPACT".to_string(), 1.0, p.cyan)),
-        Some((
-            "8:MASTER",
-            format!("{:.0}%", snap.master_volume * 100.0),
-            snap.master_volume,
-            p.accent,
-        )),
+        Some(("1:NAV", "< >".to_string(), 0.5, p.cyan)),
+        Some(("3:CHARGER", "PROJET".to_string(), 1.0, p.green)),
+        Some(("4:SAUVER", "PRETTY".to_string(), 1.0, p.accent)),
+        Some(("5:RAPIDE", "COMPACT".to_string(), 1.0, p.cyan)),
     ];
     encoder_row(&mut frame, &p, &slots);
     let active = [false; 8];
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
     frame
 }
 

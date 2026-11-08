@@ -296,6 +296,8 @@ pub enum MapperAction {
     SelectSound(u8),
     /// Bascule Mute sur groupe actif
     ToggleMute(u8),
+    /// Bascule mute d'un pad/son (groupe focus).
+    TogglePadMute { group: u8, pad: u8 },
     /// Bascule Solo sur groupe actif
     ToggleSolo(u8),
     /// Effacer la mesure courante
@@ -379,6 +381,7 @@ pub struct SequencerLedInfo {
     pub triggered_pads: [bool; 16],
     pub master_vol: f32,
     pub muted_groups: u8,
+    pub muted_sounds: [u16; 8],
     pub soloed_groups: u8,
     pub left_tab: u8,
     pub right_tab: u8,
@@ -473,8 +476,10 @@ pub struct HardwareMapper {
     tap_timestamps: Vec<std::time::Instant>,
     /// Bouton Shift enfoncé
     pub shift_held: bool,
-    /// Bouton Mute tenu (MUTE + Group = mute ce groupe, façon Maschine)
+    /// Bouton Mute tenu (MUTE + Group = mute groupe)
     pub mute_held: bool,
+    /// Mode MUTE latched : les pads togglent le mute du son (façon Maschine).
+    pub mute_pad_mode: bool,
     /// Bouton Solo tenu
     pub solo_held: bool,
     /// Un Group a été touché pendant Mute/Solo tenu (pour éviter le double toggle au relâchement)
@@ -555,6 +560,7 @@ impl HardwareMapper {
             tap_timestamps: Vec::new(),
             shift_held: false,
             mute_held: false,
+            mute_pad_mode: false,
             solo_held: false,
             mute_solo_group_used: false,
             tempo_button_held: false,
@@ -760,6 +766,13 @@ impl HardwareMapper {
                         });
                         return actions;
                     }
+                    if self.mute_pad_mode {
+                        actions.push(MapperAction::TogglePadMute {
+                            group: self.group_focus,
+                            pad: p.pad,
+                        });
+                        return actions;
+                    }
                     if self.erase_mode {
                         self.erase_used = true;
                         self.active_sound = p.pad;
@@ -877,8 +890,12 @@ impl HardwareMapper {
                         if pressed {
                             self.mute_solo_group_used = false;
                         } else if !self.mute_solo_group_used {
-                            // Appui simple (sans Group) : mute le groupe focus.
-                            actions.push(MapperAction::ToggleMute(self.group_focus));
+                            // Appui simple : bascule le mode MUTE pads (pads sélectionnés = muted, LED dim).
+                            self.mute_pad_mode = !self.mute_pad_mode;
+                            self.led_state.set_button_raw(
+                                maschine_proto::hid_output::offsets::MUTE,
+                                if self.mute_pad_mode { 7 } else { 1 },
+                            );
                         }
                     }
                     ButtonId::Solo => {
@@ -1059,7 +1076,9 @@ impl HardwareMapper {
                             if self.shift_held {
                                 actions.push(MapperAction::QuickSaveProject);
                             } else {
-                                actions.push(MapperAction::OpenFileBrowser);
+                                // Sauvegarde normale (crée le projet si besoin). Le navigateur
+                                // de projets reste accessible via BROWSER (onglet FILE).
+                                actions.push(MapperAction::SaveProject);
                             }
                         }
 
@@ -1090,7 +1109,9 @@ impl HardwareMapper {
 
                         // Groupes A..H (avec MUTE/SOLO + Group façon Maschine)
                         ButtonId::Group(g) if g < 8 => {
-                            if self.mute_held {
+                            // MUTE/SOLO + Group : cible le groupe sans changer le focus.
+                            // mute_pad_mode (latched) permet aussi Group pour muter un groupe entier.
+                            if self.mute_held || self.mute_pad_mode {
                                 actions.push(MapperAction::ToggleMute(g));
                                 self.mute_solo_group_used = true;
                             } else if self.solo_held {
@@ -1706,7 +1727,10 @@ impl HardwareMapper {
         );
         self.led_state.set_button_raw(
             offsets::MUTE,
-            if self.mute_held || (info.muted_groups & (1 << self.group_focus)) != 0 {
+            if self.mute_pad_mode
+                || self.mute_held
+                || (info.muted_groups & (1 << self.group_focus)) != 0
+            {
                 7
             } else {
                 1
@@ -1868,9 +1892,15 @@ impl HardwareMapper {
         } else {
             match self.mode {
                 ControllerMode::Pad => {
+                    let muted_mask = info.muted_sounds[self.group_focus as usize % 8];
                     for i in 0..16 {
-                        if self.pad_flash(i, now) {
+                        let is_muted = (muted_mask & (1u16 << i)) != 0;
+                        if self.pad_flash(i, now) && !is_muted {
                             self.led_state.set_pad(i, white);
+                        } else if is_muted {
+                            // Pads mutés : très atténués, comme Maschine.
+                            self.led_state
+                                .set_pad(i, dim_pad_color(dim_pad_color(self.pad_colors[i])));
                         } else if info.triggered_pads[i] {
                             // Joué par le séquenceur : couleur pleine du son.
                             self.led_state.set_pad(i, self.pad_colors[i]);
@@ -2336,40 +2366,50 @@ mod tests {
     }
 
     #[test]
-    fn mute_solo_hold_group() {
+    fn mute_pad_mode_latches_and_toggles_selected_pads() {
         let mut m = HardwareMapper::with_default();
-        // MUTE tenu + Group 2 -> mute groupe 2 sans changer le focus
+        m.group_focus = 1;
+
+        // Appui simple MUTE : active le mode mute des pads (latched).
         let _ = m.handle_hardware_event(HardwareEvent::Button {
             id: maschine_proto::ButtonId::Mute,
             pressed: true,
             ts_ns: 0,
         });
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Mute,
+            pressed: false,
+            ts_ns: 1,
+        });
+        assert!(m.mute_pad_mode);
+
+        // Pad tap en mode MUTE : toggle le mute du pad (pas de lecture).
+        let a = m.handle_hardware_event(pad_ev(4, true, 2));
+        assert_eq!(a, vec![MapperAction::TogglePadMute { group: 1, pad: 4 }]);
+        let a = m.handle_hardware_event(pad_ev(4, false, 3));
+        assert!(a.is_empty());
+
+        // MUTE + Group (mode actif) : mute le groupe sans changer le focus.
         let a = m.handle_hardware_event(HardwareEvent::Button {
             id: maschine_proto::ButtonId::Group(2),
             pressed: true,
-            ts_ns: 1,
+            ts_ns: 4,
         });
         assert!(a.contains(&MapperAction::ToggleMute(2)));
-        assert_eq!(m.group_focus, 0);
-        // Relâchement Mute : pas de double toggle (un groupe a été touché)
-        let a = m.handle_hardware_event(HardwareEvent::Button {
-            id: maschine_proto::ButtonId::Mute,
-            pressed: false,
-            ts_ns: 2,
-        });
-        assert!(!a.contains(&MapperAction::ToggleMute(0)));
-        // Appui simple Mute : toggle groupe focus au relâchement
+        assert_eq!(m.group_focus, 1);
+
+        // Second appui MUTE : sort du mode mute pads.
         let _ = m.handle_hardware_event(HardwareEvent::Button {
             id: maschine_proto::ButtonId::Mute,
             pressed: true,
-            ts_ns: 3,
+            ts_ns: 5,
         });
-        let a = m.handle_hardware_event(HardwareEvent::Button {
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
             id: maschine_proto::ButtonId::Mute,
             pressed: false,
-            ts_ns: 4,
+            ts_ns: 6,
         });
-        assert!(a.contains(&MapperAction::ToggleMute(0)));
+        assert!(!m.mute_pad_mode);
     }
 
     #[test]

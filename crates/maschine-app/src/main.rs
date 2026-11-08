@@ -1311,6 +1311,11 @@ fn cmd_daemon(
                 MapperAction::ToggleMute(g) => {
                     let _ = engine.lock().handle_event(EngineEvent::Mute(g));
                 }
+                MapperAction::TogglePadMute { group, pad } => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::TogglePadMute { group, pad });
+                }
                 MapperAction::ToggleSolo(g) => {
                     let _ = engine.lock().handle_event(EngineEvent::Solo(g));
                 }
@@ -1540,6 +1545,7 @@ fn cmd_daemon(
             triggered_pads: snap.triggered_pads,
             master_vol: snap.master_volume,
             muted_groups: snap.muted_groups,
+            muted_sounds: snap.muted_sounds,
             soloed_groups: snap.soloed_groups,
             left_tab: snap.left_tab,
             right_tab: snap.right_tab,
@@ -2468,6 +2474,7 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             master_volume: 0.85,
             headphone_volume: 0.7,
             muted_groups: 0,
+            muted_sounds: [0; 8],
             soloed_groups: 0,
             left_tab: 0,
             right_tab: 0,
@@ -2490,6 +2497,7 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             project_entries: Vec::new(),
             project_selected: 0,
             current_project_path: None,
+            status_message: None,
             selected_bar: 0,
             step_cursor: 0,
             pattern_bars: 2,

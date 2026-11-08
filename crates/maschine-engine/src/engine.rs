@@ -61,6 +61,8 @@ pub enum EngineEvent {
     HeadphoneVolume(f32),
     /// Toggle mute on group
     Mute(u8),
+    /// Bascule le mute d'un pad/son dans un groupe (mode MUTE Maschine).
+    TogglePadMute { group: u8, pad: u8 },
     /// Toggle solo on group
     Solo(u8),
     /// Select pattern in group
@@ -408,6 +410,8 @@ pub struct EngineSnapshot {
     pub headphone_volume: f32,
     /// Muted groups bitmask
     pub muted_groups: u8,
+    /// Pads/sons coupés par groupe (bit 0..15 = pad 1..16).
+    pub muted_sounds: [u16; 8],
     /// Soloed groups bitmask
     pub soloed_groups: u8,
     /// Tab écran gauche actif (0: Arrange, 1: Mixer, 2: Sampler, 3: Browser)
@@ -454,6 +458,8 @@ pub struct EngineSnapshot {
     pub project_selected: usize,
     /// Chemin du projet courant.
     pub current_project_path: Option<String>,
+    /// Message de statut temporaire (sauvegarde, chargement...).
+    pub status_message: Option<String>,
     /// Mesure sélectionnée pour l'affichage / édition pas-à-pas (0-indexed : 0, 1, 2, 3...)
     pub selected_bar: usize,
     /// Pas sélectionné dans le step sequencer (index absolu 0..pattern_bars*16-1)
@@ -507,6 +513,7 @@ pub struct HardwareSnapshot {
     pub triggered_pads: [bool; 16],
     pub master_volume: f32,
     pub muted_groups: u8,
+    pub muted_sounds: [u16; 8],
     pub soloed_groups: u8,
     pub active_scene: Option<usize>,
     pub num_scenes: usize,
@@ -545,6 +552,8 @@ pub struct Engine {
     headphone_volume: f32,
     /// Muted groups bitmask
     muted_groups: u8,
+    /// Pads/sons coupés par groupe (bit 0..15 = pad 1..16).
+    muted_sounds: [u16; 8],
     /// Soloed groups bitmask
     soloed_groups: u8,
     /// Tab écran gauche
@@ -574,6 +583,9 @@ pub struct Engine {
     pub project_selected: usize,
     /// Chemin du projet courant (sauvegarde rapide / FILE SAVE).
     pub current_project_path: Option<String>,
+    /// Message de statut temporaire (sauvegarde, chargement...) affiché sur MK3/GUI.
+    status_message: Option<String>,
+    status_expires_at: std::time::Instant,
     /// Mode Song (arranger) vs Ideas (scènes)
     pub song_mode: bool,
     /// Section active dans le Song
@@ -796,6 +808,7 @@ impl Engine {
             master_volume: 0.85,
             headphone_volume: 0.85,
             muted_groups: 0,
+            muted_sounds: [0; 8],
             soloed_groups: 0,
             left_tab: 0,
             right_tab: 0,
@@ -810,6 +823,8 @@ impl Engine {
             project_entries: Vec::new(),
             project_selected: 0,
             current_project_path: None,
+            status_message: None,
+            status_expires_at: std::time::Instant::now(),
             song_mode: false,
             active_section: None,
             pad_flash_until: [0; 16],
@@ -878,6 +893,7 @@ impl Engine {
             master_volume: self.master_volume,
             headphone_volume: self.headphone_volume,
             muted_groups: self.muted_groups,
+            muted_sounds: self.muted_sounds,
             soloed_groups: self.soloed_groups,
             left_tab: self.left_tab,
             right_tab: self.right_tab,
@@ -900,6 +916,11 @@ impl Engine {
             project_entries: self.project_entries.clone(),
             project_selected: self.project_selected,
             current_project_path: self.current_project_path.clone(),
+            status_message: if std::time::Instant::now() < self.status_expires_at {
+                self.status_message.clone()
+            } else {
+                None
+            },
             selected_bar,
             step_cursor,
             pattern_bars,
@@ -999,6 +1020,7 @@ impl Engine {
             triggered_pads,
             master_volume: self.master_volume,
             muted_groups: self.muted_groups,
+            muted_sounds: self.muted_sounds,
             soloed_groups: self.soloed_groups,
             active_scene: self.active_scene,
             num_scenes: project.scenes.len().min(16),
@@ -1284,8 +1306,11 @@ impl Engine {
                 velocity,
                 pressed,
             } => {
-                // Groupe muté ? pas de son ni d'enregistrement
-                if self.muted_groups & (1 << self.group_focus) != 0 {
+                // Groupe ou pad muté ? pas de son ni d'enregistrement
+                if self.muted_groups & (1 << self.group_focus) != 0
+                    || self.is_sound_muted(self.group_focus, pad)
+                {
+                    // En mode MUTE, l'appui sert au toggle via mapper ; sinon on ignore.
                     return Ok(());
                 }
                 if pressed {
@@ -1405,13 +1430,34 @@ impl Engine {
             EngineEvent::Save(path) => {
                 self.project.read().save_json_with(&path, true)?;
                 self.current_project_path = Some(path.to_string_lossy().to_string());
+                self.status_message = Some("Projet sauvegardé".to_string());
+                self.status_expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_secs(2);
             }
             EngineEvent::SaveCurrent { quick } => {
-                if let Some(path) = self.current_project_path.clone() {
-                    self.project
-                        .read()
-                        .save_json_with(std::path::Path::new(&path), !quick)?;
-                }
+                let path = if let Some(p) = self
+                    .current_project_path
+                    .clone()
+                    .filter(|s| !s.trim().is_empty())
+                {
+                    std::path::PathBuf::from(p)
+                } else {
+                    // Nouvelle sauvegarde : crée un fichier lisible dans le répertoire projets.
+                    let name = self.project.read().name.clone();
+                    let safe = sanitize_project_filename(&name);
+                    let dir = default_projects_dir();
+                    let _ = std::fs::create_dir_all(&dir);
+                    dir.join(safe)
+                };
+                self.project.read().save_json_with(&path, !quick)?;
+                self.current_project_path = Some(path.to_string_lossy().to_string());
+                self.status_message = Some(if quick {
+                    "Sauvegarde rapide OK".to_string()
+                } else {
+                    "Projet sauvegardé".to_string()
+                });
+                self.status_expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_secs(2);
             }
             EngineEvent::SetProjectPath(path) => {
                 self.current_project_path = path;
@@ -1444,6 +1490,11 @@ impl Engine {
             EngineEvent::Mute(g) => {
                 if g < 8 {
                     self.muted_groups ^= 1 << g;
+                }
+            }
+            EngineEvent::TogglePadMute { group, pad } => {
+                if (group as usize) < 8 && pad < 16 {
+                    self.muted_sounds[group as usize] ^= 1u16 << pad;
                 }
             }
             EngineEvent::Solo(g) => {
@@ -2098,7 +2149,9 @@ impl Engine {
                 velocity,
                 pressed,
             } => {
-                if self.muted_groups & (1 << self.group_focus) != 0 {
+                if self.muted_groups & (1 << self.group_focus) != 0
+                    || self.is_sound_muted(self.group_focus, self.active_sound)
+                {
                     return Ok(());
                 }
                 let note = note.min(127);
@@ -2150,7 +2203,8 @@ impl Engine {
                         self.sampler.set_voice_params(idx, &vparams);
                     }
                     if self.transport.state == TransportState::Recording {
-                        self.record_pad_event(self.active_sound, velocity);
+                        // Keyboard/Chords : enregistre la hauteur jouée (accords = plusieurs événements).
+                        self.record_note_event(self.active_sound, note, velocity);
                     }
                 } else {
                     self.acid_synth.note_off(note);
@@ -2713,6 +2767,7 @@ impl Engine {
                                     new_tick,
                                     &ctx,
                                     &mut self.pad_activity,
+                                    self.muted_sounds[gi],
                                 );
                             }
                         }
@@ -2720,6 +2775,22 @@ impl Engine {
                 }
             }
         }
+    }
+
+    #[must_use]
+    pub fn is_sound_muted(&self, group: u8, pad: u8) -> bool {
+        if group >= 8 || pad >= 16 {
+            return false;
+        }
+        (self.muted_sounds[group as usize] & (1u16 << pad)) != 0
+    }
+
+    #[must_use]
+    pub fn is_group_muted(&self, group: u8) -> bool {
+        if group >= 8 {
+            return false;
+        }
+        (self.muted_groups & (1u8 << group)) != 0
     }
 
     /// Marque l'activité d'un pad (animation écrans) — 0..1 selon vélocité.
@@ -2748,6 +2819,7 @@ impl Engine {
         now_tick: u64,
         ctx: &BlockCtx,
         activity: &mut [f32; 16],
+        muted_sound_mask: u16,
     ) {
         let pat_len = pat.length.to_ticks() as u64;
         if pat_len == 0 || prev_tick == new_tick {
@@ -2780,42 +2852,46 @@ impl Engine {
             };
             if in_window(eff % pat_len.max(1)) {
                 let sound = ev.pad;
-                let note = ev.pitch;
-                let sg = sound_gains.get(sound as usize).copied().unwrap_or(1.0);
-                let sp = sound_pans.get(sound as usize).copied().unwrap_or(0.0);
-                // Décalage sample-accurate dans le bloc courant : la note part à
-                // sa vraie position rythmique, pas au début du buffer audio.
-                let local = eff % pat_len.max(1);
-                let rel_ticks = if !wrapped || local > prev_in_pat {
-                    local.saturating_sub(prev_in_pat) as f64
-                } else {
-                    (pat_len - prev_in_pat + local) as f64
-                };
-                let start_frame = ctx.offset(rel_ticks);
-                let is_acid = is_synth.get(sound as usize).copied().unwrap_or(false);
-                if is_acid {
-                    acid_synth.note_on_at(note, ev.velocity, start_frame);
-                } else if let Some(idx) = sampler.note_on_at(
-                    sampler_sound_id(group, sound),
-                    note,
-                    ev.velocity,
-                    note,
-                    start_frame,
-                ) {
-                    sampler.set_voice_gain(idx, group_gain * sg);
-                    sampler.set_voice_pan(idx, sp);
-                    sampler.set_voice_group(idx, group);
-                    sampler.set_voice_group_pan(idx, group_pan);
-                    if let Some(vp) = voice_params.get(sound as usize) {
-                        sampler.set_voice_params(idx, vp);
+                let sound_muted =
+                    (sound as usize) < 16 && (muted_sound_mask & (1u16 << sound)) != 0;
+                if !sound_muted {
+                    let note = ev.pitch;
+                    let sg = sound_gains.get(sound as usize).copied().unwrap_or(1.0);
+                    let sp = sound_pans.get(sound as usize).copied().unwrap_or(0.0);
+                    // Décalage sample-accurate dans le bloc courant : la note part à
+                    // sa vraie position rythmique, pas au début du buffer audio.
+                    let local = eff % pat_len.max(1);
+                    let rel_ticks = if !wrapped || local > prev_in_pat {
+                        local.saturating_sub(prev_in_pat) as f64
+                    } else {
+                        (pat_len - prev_in_pat + local) as f64
+                    };
+                    let start_frame = ctx.offset(rel_ticks);
+                    let is_acid = is_synth.get(sound as usize).copied().unwrap_or(false);
+                    if is_acid {
+                        acid_synth.note_on_at(note, ev.velocity, start_frame);
+                    } else if let Some(idx) = sampler.note_on_at(
+                        sampler_sound_id(group, sound),
+                        note,
+                        ev.velocity,
+                        note,
+                        start_frame,
+                    ) {
+                        sampler.set_voice_gain(idx, group_gain * sg);
+                        sampler.set_voice_pan(idx, sp);
+                        sampler.set_voice_group(idx, group);
+                        sampler.set_voice_group_pan(idx, group_pan);
+                        if let Some(vp) = voice_params.get(sound as usize) {
+                            sampler.set_voice_params(idx, vp);
+                        }
                     }
-                }
-                // Flash LED du pad (fenêtre d'une triple-croche : bref et net).
-                if (sound as usize) < 16 {
-                    flash_until[sound as usize] = now_tick + 120;
-                    let level = (ev.velocity as f32 / 127.0).clamp(0.35, 1.0);
-                    if level > activity[sound as usize] {
-                        activity[sound as usize] = level;
+                    // Flash LED du pad (fenêtre d'une triple-croche : bref et net).
+                    if (sound as usize) < 16 {
+                        flash_until[sound as usize] = now_tick + 120;
+                        let level = (ev.velocity as f32 / 127.0).clamp(0.35, 1.0);
+                        if level > activity[sound as usize] {
+                            activity[sound as usize] = level;
+                        }
                     }
                 }
             }
@@ -2839,6 +2915,10 @@ impl Engine {
     }
 
     fn record_pad_event(&mut self, pad: u8, velocity: u8) {
+        self.record_note_event(pad, 36 + pad, velocity);
+    }
+
+    fn record_note_event(&mut self, pad: u8, pitch: u8, velocity: u8) {
         let focus = self.group_focus as usize;
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
@@ -2857,14 +2937,15 @@ impl Engine {
                     let pat_len = pat.length.to_ticks().max(1);
                     let tick_in_pat = (self.transport.tick % pat_len as u64) as u32;
                     let q_tick = self.sequencer.grid.quantize(tick_in_pat);
-                    // évite les doublons exacts
-                    pat.events.retain(|e| !(e.pad == pad && e.tick == q_tick));
+                    // évite les doublons exacts (même son + tick + hauteur)
+                    pat.events
+                        .retain(|e| !(e.pad == pad && e.tick == q_tick && e.pitch == pitch));
                     pat.events.push(PatternEvent {
                         pad,
                         tick: q_tick,
                         velocity,
                         length_ticks: 120,
-                        pitch: 36 + pad,
+                        pitch,
                     });
                     pat.events.sort_by_key(|e| e.tick);
                 }
@@ -4387,4 +4468,39 @@ mod tests {
         }
         assert_eq!(snap.active_scene, Some(0));
     }
+}
+
+fn sanitize_project_filename(name: &str) -> String {
+    let mut out: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    out = out.trim().trim_matches('.').to_string();
+    if out.is_empty() {
+        out = "Untitled".to_string();
+    }
+    if out.len() > 80 {
+        out.truncate(80);
+    }
+    if !out.ends_with(".maschine-linux.json") && !out.ends_with(".json") {
+        out.push_str(".maschine-linux.json");
+    }
+    out
+}
+
+fn default_projects_dir() -> std::path::PathBuf {
+    std::env::var("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            std::path::PathBuf::from(home).join(".local/share")
+        })
+        .join("maschine-linux")
+        .join("projects")
 }

@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.10.1" date="2026-11-19">
+      <description>
+        <p>Release 0.10.1 fixes the GNOME launcher and ensures the AppImage and standalone tarball include the same complete desktop binary as RPM and DEB.</p>
+      </description>
+    </release>
     <release version="0.10.0" date="2026-11-19">
       <description>
         <p>Release 0.10.0 adds the complete MK3 Shift-pad shortcut layer to the controller and desktop pad grid, pattern Undo/Redo and event clipboard, and clearer Sound slot deletion and recovery. It also hardens settings writes and validates the declared Rust 1.88 MSRV in CI.</p>

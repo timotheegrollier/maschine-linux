@@ -2,7 +2,18 @@
 
 All notable changes.
 
-## [Unreleased]
+## [0.10.1] - 2026-11-19
+
+### Fixes
+
+- **GNOME launcher opens the GUI**: the desktop entry explicitly runs `maschine-linux gui`; the `0.10.0` universal tarball binary had no default features and otherwise fell back to CLI `probe`.
+- **Consistent desktop binary across packages**: AppImage and tarball reuse the same default-feature binary as RPM and DEB, keeping GUI, audio, USB, and MIDI enabled after an update.
+
+### Validation
+
+- `gtk-launch maschine-linux` opens the GUI through the GNOME desktop entry.
+- `cargo test -p maschine-app default_command_launches_the_gui`
+- Full release validation is recorded after packaging checks.
 
 ### CI/CD
 

@@ -28,6 +28,7 @@ OUT_DIR="${ROOT_DIR}/dist"
 STAGE_DIR="${ROOT_DIR}/target/release-stage/maschine-linux-${VERSION}"
 mkdir -p "${OUT_DIR}"
 rm -rf "${STAGE_DIR}"
+rm -f "${OUT_DIR}/maschine-linux-${VERSION}-linux-x86_64.tar.gz"
 mkdir -p "${STAGE_DIR}"/bin "${STAGE_DIR}"/packaging
 
 cp target/release/maschine-linux "${STAGE_DIR}/bin/"

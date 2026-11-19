@@ -15,7 +15,8 @@ Déclenché sur chaque `push` et `pull_request` sur `master`/`main`, et manuelle
 | Job | Contenu | Rôle |
 |---|---|---|
 | `metadata` | `desktop-file-validate`, `appstreamcli validate --no-net`, `cargo fmt --all -- --check`, extraction des release notes, `bash -n scripts/*.sh` | Échoue en premier sur les erreurs les moins coûteuses à corriger |
-| `test` | `cargo clippy --workspace --all-targets --locked`, `cargo check -p maschine-engine --no-default-features --locked`, `cargo nextest run --workspace`, `cargo test --doc --workspace --locked` | Qualité et non-régression complètes |
+| `clippy` | `cargo clippy --workspace --all-targets --locked`, puis contrôle du moteur sans sampler | Qualité statique indépendante |
+| `test` | `cargo nextest run --workspace --locked` et doctests | Non-régression parallèle au lint |
 | `msrv` | `cargo check --workspace --locked` avec Rust 1.88.0 | Vérifie la version minimale déclarée |
 | `release-build` | `cargo build --release --locked -p maschine-app` + smoke test (`--version`, `probe`) | Uniquement sur `push` vers `master` et en manuel |
 
@@ -50,6 +51,10 @@ Aucune publication n'a lieu si `verify` échoue : la qualité du contenu livré 
 | **`timeout-minutes` par job** | Un job bloqué échoue au lieu de consommer le maximum du runner | Aucune vérification n'est retirée ; seule la durée maximale est bornée. |
 | **`--locked` partout** | `Cargo.lock` désynchronisé détecté immédiatement | Dépendances reproductibles, identiques à celles de la release. |
 | **`scripts/*.sh` validés par `bash -n`** | Erreur de syntaxe de script détectée en secondes, avant la release | Vérification ajoutée, rien de retiré. |
+| **Clippy et tests parallèles** | Les deux contrôles avancent simultanément | Même couverture, temps d'attente réduit. |
+| **Gate lint/tests avant la release** | Clippy, nextest, métadonnées et binaire sont verts avant tout empaquetage | Évite de produire plusieurs formats à partir d'une base invalide. |
+| **Vérification exacte des quatre formats** | Toute absence ou duplication d'un paquet est rejetée | Empêche une publication silencieuse avec un artefact incomplet ou résiduel. |
+| **Cache AppImage** | AppImageTool est restauré entre les runs | Réduit les téléchargements réseau sans modifier l'AppImage produite. |
 
 Les durées exactes varient selon le runner et le cache ; ces optimisations réduisent le nombre de compilations et de jobs séquentiels plutôt que de supprimer des contrôles.
 

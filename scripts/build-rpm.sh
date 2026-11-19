@@ -24,6 +24,7 @@ fi
 
 OUT_DIR="${ROOT_DIR}/dist"
 mkdir -p "${OUT_DIR}"
+rm -f "${OUT_DIR}"/maschine-linux-"${VERSION}"-*.rpm
 
 # Méthode 1 : cargo-generate-rpm (ne nécessite ni sudo ni rpmbuild)
 if command -v cargo-generate-rpm >/dev/null 2>&1; then

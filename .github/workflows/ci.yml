@@ -3,8 +3,14 @@ name: CI
 on:
   push:
     branches: [master, main]
+    paths-ignore:
+      - '**/*.md'
+      - 'examples/**'
   pull_request:
     branches: [master, main]
+    paths-ignore:
+      - '**/*.md'
+      - 'examples/**'
   workflow_dispatch:
 
 # A newer push on the same branch cancels the previous still-running check, so
@@ -57,10 +63,10 @@ jobs:
       - name: Check release script syntax
         run: bash -n scripts/*.sh
 
-  test:
-    name: Clippy & tests
+  clippy:
+    name: Clippy
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -79,12 +85,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-
-      - name: Install nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: nextest
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -92,8 +94,34 @@ jobs:
       - name: Check optional sampler-free engine
         run: cargo check -p maschine-engine --no-default-features --locked
 
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies (ALSA, udev, JACK)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libasound2-dev libudev-dev libjack-jackd2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
       - name: Test
-        run: cargo nextest run --workspace
+        run: cargo nextest run --workspace --locked
 
       - name: Documentation tests
         run: cargo test --doc --workspace --locked
@@ -116,7 +144,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: msrv
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
 
       - name: Check workspace on the declared MSRV
         run: cargo check --workspace --locked
@@ -143,7 +172,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: release
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
 
       - name: Build release binary
         run: cargo build --release --locked -p maschine-app

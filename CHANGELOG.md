@@ -2,6 +2,23 @@
 
 All notable changes.
 
+## [0.10.2] - 2026-11-19
+
+### CI/CD
+
+- **Parallel quality gates**: Clippy and workspace tests now run in separate CI jobs, Cargo caches preserve partial failures and write from both `master` and `main`, and release tags execute lint/tests before the expensive release build.
+- **Resilient packaging**: AppImageTool is cached and downloaded with retries, package scripts remove stale outputs for the current version, and release verification rejects missing or duplicate RPM/DEB/AppImage/tarball artifacts.
+
+### Validation
+
+- `cargo fmt --all -- --check`
+- `bash -n scripts/*.sh`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- `cargo test --workspace --locked`
+- GitHub Actions workflow YAML parsed successfully
+- `desktop-file-validate packaging/maschine-linux.desktop`
+- `appstreamcli validate --no-net packaging/io.github.timotheegrollier.maschine-linux.metainfo.xml`
+
 ## [0.10.1] - 2026-11-19
 
 ### Fixes
@@ -18,6 +35,8 @@ All notable changes.
 ### CI/CD
 
 - **Faster pipeline**: CI is split into parallel `metadata`, `test`, `msrv` and `release-build` jobs with a shared cargo cache and `concurrency` cancellation; tests run under `cargo nextest`. Release now compiles the binary once and packages RPM/DEB/AppImage/tarball in parallel from that artifact instead of recompiling it four times (twice with a different feature set).
+- **Parallel release gates**: Clippy and tests are independent jobs in CI, caches survive partial failures and are shared across `master`/`main`, and release tags run lint/tests before the expensive LTO build.
+- **Resilient artifact assembly**: AppImageTool is cached, downloads are retried, package scripts remove stale outputs for the current version, and release verification rejects missing or duplicate RPM/DEB/AppImage/tarball artifacts.
 - **Release verification gate**: a `verify` job checks that each package carries the expected version and ships `/usr/bin/maschine-linux`, then generates `SHA256SUMS` before anything is published. A manual `publish` switch runs the whole pipeline as a dry run.
 - **Consistent binary in every format**: AppImage and tarball no longer rebuild with `--no-default-features` (which dropped the GUI, audio, USB and MIDI features) but reuse the tested default-feature binary; the packaging scripts accept `MASCHINE_SKIP_BUILD` / `MASCHINE_SKIP_CHECKSUMS` and fail instead of producing an empty package.
 

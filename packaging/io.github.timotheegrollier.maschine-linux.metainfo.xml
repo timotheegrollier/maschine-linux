@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.10.2" date="2026-11-19">
+      <description>
+        <p>Release 0.10.2 improves CI and release reliability with parallel quality gates, resilient AppImage downloads, cache recovery, and exact package verification.</p>
+      </description>
+    </release>
     <release version="0.10.1" date="2026-11-19">
       <description>
         <p>Release 0.10.1 fixes the GNOME launcher and ensures the AppImage and standalone tarball include the same complete desktop binary as RPM and DEB.</p>

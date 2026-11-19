@@ -28,6 +28,7 @@ APP_DIR="${ROOT_DIR}/target/AppDir"
 OUT_DIR="${ROOT_DIR}/dist"
 mkdir -p "${APP_DIR}" "${OUT_DIR}"
 rm -rf "${APP_DIR:?}"/*
+rm -f "${OUT_DIR}/Maschine_Linux-${VERSION}-x86_64.AppImage"
 
 # 1. Structure de l'AppDir
 mkdir -p "${APP_DIR}/usr/bin"
@@ -67,7 +68,9 @@ APPIMAGETOOL="${ROOT_DIR}/target/appimagetool"
 if ! command -v appimagetool >/dev/null 2>&1; then
     if [ ! -f "${APPIMAGETOOL}" ]; then
         echo "==> Téléchargement de appimagetool..."
-        curl -sSL "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" -o "${APPIMAGETOOL}"
+        curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 \
+            "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" \
+            --output "${APPIMAGETOOL}"
         chmod +x "${APPIMAGETOOL}"
     fi
     TOOL="${APPIMAGETOOL}"

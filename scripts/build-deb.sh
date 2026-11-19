@@ -25,6 +25,7 @@ fi
 
 OUT_DIR="${ROOT_DIR}/dist"
 mkdir -p "${OUT_DIR}"
+rm -f "${OUT_DIR}/maschine-linux_${VERSION}_amd64.deb"
 
 if command -v cargo-deb >/dev/null 2>&1; then
     echo "==> Génération DEB via cargo-deb..."

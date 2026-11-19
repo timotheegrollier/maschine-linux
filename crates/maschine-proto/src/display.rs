@@ -131,7 +131,7 @@ impl DisplayFrame {
         // must therefore contain an even number of pixels; otherwise the final
         // pixel is not represented by the 24-bit pair count and the following
         // blit/end bytes are consumed out of alignment by the controller.
-        if self.w % 2 != 0 {
+        if !self.w.is_multiple_of(2) {
             return Err(ProtoError::InvalidDisplayData(
                 "display window width must be even (RGB565 pixel pairs)",
             ));
@@ -499,8 +499,8 @@ mod tests {
     fn checkerboard_not_too_large() {
         let mut pixels = Vec::with_capacity(480 * 272);
         for y in 0..272 {
-            for x in 0..480 {
-                let c = if (x + y) % 2 == 0 {
+            for x in 0..480usize {
+                let c = if (x + y).is_multiple_of(2) {
                     DisplayPixel::WHITE
                 } else {
                     DisplayPixel::BLACK

@@ -285,7 +285,7 @@ pub fn spawn_display_thread(
                         Ok(b) => break 'open b,
                         Err(e) => {
                             open_fails += 1;
-                            if open_fails == 1 || open_fails % 10 == 0 {
+                            if open_fails == 1 || open_fails.is_multiple_of(10) {
                                 log::warn!(
                                     "Impossible d'ouvrir l'accès USB Bulk pour les écrans: {e} \
                                      (nouvel essai dans 3 s)"

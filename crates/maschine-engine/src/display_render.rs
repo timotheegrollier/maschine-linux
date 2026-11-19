@@ -795,7 +795,7 @@ fn fmt_len(ticks: u32) -> String {
         // Longueur par défaut : un pas (double-croche).
         return "1/16".to_string();
     }
-    if ticks % 120 == 0 {
+    if ticks.is_multiple_of(120) {
         return match ticks / 120 {
             1 => "1/32".to_string(),
             2 => "1/16".to_string(),

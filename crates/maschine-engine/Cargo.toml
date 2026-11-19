@@ -2,6 +2,7 @@
 name = "maschine-engine"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "Domaine Maschine : Project/Group/Sound/Pattern/Scene/Section, Transport, Sequencer, Sampler"
 keywords.workspace = true

@@ -2,6 +2,7 @@
 name = "maschine-dsp"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "Real-time DSP effects for guitar (gate, drive, tonestack, cab, delay)"
 categories = ["multimedia::audio", "dsp"]

@@ -11,13 +11,14 @@ Le projet utilise GitHub Actions avec deux workflows distincts :
 1. **`CI` (`.github/workflows/ci.yml`)** : Déclenché sur chaque `push` et `pull_request` sur les branches `master` et `main`.
    - **Objectif** : Valider la qualité du code, l'absence de régression et l'exactitude des fichiers de distribution.
    - **Étapes clés** :
-     - Validation du fichier `.desktop` (`desktop-file-validate`).
+     - Validation des métadonnées AppStream et du fichier `.desktop` (`appstreamcli validate --no-net`, `desktop-file-validate`).
      - Vérification du formatage (`cargo fmt --all -- --check`).
      - Validation des notes de version (`./scripts/extract-release-notes.sh "${version}"`).
      - Linting strict avec warnings en erreurs (`cargo clippy --workspace --all-targets -- -D warnings`).
      - Compilation conditionnelle sans sampler (`cargo check -p maschine-engine --no-default-features`).
-     - Exécution des 167 tests automatisés (`cargo test --workspace`).
+     - Exécution de l'ensemble des tests automatisés (`cargo test --workspace`).
      - Compilation release (`cargo build --workspace --release`).
+   - Un job distinct compile le workspace avec Rust 1.88, la version minimale déclarée dans les manifests.
 
 2. **`Release` (`.github/workflows/release.yml`)** : Déclenché sur la publication de tags `v*`.
    - **Objectif** : Générer l'ensemble des paquets multi-distributions Linux et publier la release GitHub officielle.

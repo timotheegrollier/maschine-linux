@@ -2,6 +2,33 @@
 
 All notable changes.
 
+## [0.10.0] - 2026-11-19
+
+### Added
+
+- **MK3 Shift + Pad layer**: implements all 16 secondary pad legends in Maschine order, including Undo/Redo, step Undo/Redo, full and 50% quantize, nudge, clear, copy/paste, and semitone/octave transposition. The desktop pad grid shows the same labels while Shift is held.
+- **Pattern edit history and clipboard**: Shift-pad edits support undo/redo; Copy/Paste transfers the focused Pattern's event list. Clear and transpose actions are directly available from the pad layer.
+- **Sound slot recovery**: Shift + Erase + Pad removes the Sound and its events across its Group, with Undo restoring the slot; Erase + Events + Pad erases only that Sound's events.
+- **Settings and release checks**: atomic settings writes, corrupt-settings warnings, recent-project path handling, negotiated audio-rate reporting, AppStream validation, a CI check for the declared Rust 1.88 MSRV, and version-specific package collection that skips stale cached RPM/DEB files.
+
+### Notes
+
+- The project has no automation model yet; the printed Clear Auto shortcut reports that it is unavailable.
+- Pad Copy/Paste operates on the event list of the focused Pattern because event-level selection is not implemented yet.
+
+### Validation
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- `cargo +1.88.0 check --workspace --locked` (declared MSRV)
+- `cargo check -p maschine-engine --no-default-features`
+- `cargo test --workspace` (189 tests passed)
+- `cargo build --workspace --release`
+- `appstreamcli validate --no-net packaging/io.github.timotheegrollier.maschine-linux.metainfo.xml`
+- `desktop-file-validate packaging/maschine-linux.desktop`
+- `./scripts/build-rpm.sh`, `./scripts/build-deb.sh`, `./scripts/build-appimage.sh`, and `./scripts/package-release.sh`
+- `sha256sum --check SHA256SUMS` from `dist/` (all four release artifacts passed)
+
 ## [0.9.12] - 2026-11-08
 
 ### Fixes

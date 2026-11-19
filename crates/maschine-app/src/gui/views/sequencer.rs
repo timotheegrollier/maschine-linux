@@ -203,10 +203,21 @@ pub fn render(
                             egui::Sense::click(),
                         );
                         if resp.clicked() {
-                            let _ = app
-                                .engine
-                                .lock()
-                                .handle_event(EngineEvent::SelectSound(snd as u8));
+                            let mut engine = app.engine.lock();
+                            if ui.input(|input| input.modifiers.shift) {
+                                let _ = engine.handle_event(EngineEvent::EraseSound {
+                                    group: snap.group_focus,
+                                    sound: snd as u8,
+                                });
+                            } else {
+                                let _ = engine.handle_event(EngineEvent::SelectSound(snd as u8));
+                            }
+                        }
+                        if resp.secondary_clicked() {
+                            let _ = app.engine.lock().handle_event(EngineEvent::EraseSound {
+                                group: snap.group_focus,
+                                sound: snd as u8,
+                            });
                         }
                         let color = pad_color(snd);
                         let dot = egui::Rect::from_center_size(
@@ -226,7 +237,7 @@ pub fn render(
                         ui.painter().text(
                             egui::pos2(rect.left() + 22.0, rect.center().y),
                             egui::Align2::LEFT_CENTER,
-                            format!("{:02} {name}", snd + 1),
+                            format!("{:02} {name}{}", snd + 1, if resp.hovered() { " · clic droit ou Maj+clic : vider" } else { "" }),
                             egui::FontId::proportional(11.0),
                             if is_focus_sound { c.accent } else { c.text },
                         );
@@ -372,6 +383,10 @@ pub fn render(
                 .and_then(|s| s.as_ref())
                 .map(|s| s.name.clone())
                 .unwrap_or_else(|| "(vide)".to_string());
+            let clear_target = (snap.group_focus, snap.active_sound);
+            if app.confirm_clear_sound.is_some_and(|pending| pending != clear_target) {
+                app.confirm_clear_sound = None;
+            }
             section(
                 ui,
                 &format!(
@@ -387,10 +402,27 @@ pub fn render(
                                 sound: snap.active_sound,
                             });
                         }
+                        if app.confirm_clear_sound == Some(clear_target) {
+                            ui.colored_label(c.error, "Supprimer ce Sound et ses réglages ?");
+                            if chip(ui, "CONFIRMER", false, c.error) {
+                                let _ = app.engine.lock().handle_event(
+                                    EngineEvent::ClearSoundSlot {
+                                        group: snap.group_focus,
+                                        sound: snap.active_sound,
+                                    },
+                                );
+                                app.confirm_clear_sound = None;
+                            }
+                            if chip(ui, "ANNULER", false, c.text_dim) {
+                                app.confirm_clear_sound = None;
+                            }
+                        } else if chip(ui, "SUPPRIMER LE SOUND DU SLOT…", false, c.error) {
+                            app.confirm_clear_sound = Some(clear_target);
+                        }
                         ui.label(
                             egui::RichText::new(
-                                "Astuce : cliquez une cellule pour poser/retirer le pas \
-                                 (identique au hardware, la lecture est en temps réel).",
+            "Clic gauche sur une ligne : sélectionner le son. Clic droit ou Maj+clic : effacer ses notes du pattern actif. \
+                                 Cliquez une cellule pour poser/retirer un pas.",
                             )
                             .small()
                             .color(c.text_dim),

@@ -190,6 +190,14 @@ pub enum EngineEvent {
     SoundReset { group: u8, sound: u8 },
     /// Efface toutes les notes d'un son dans le pattern actif (ERASE + pad)
     EraseSound { group: u8, sound: u8 },
+    /// Retire complètement un Sound de son emplacement et efface ses événements.
+    ClearSoundSlot { group: u8, sound: u8 },
+    /// Raccourci de la couche Shift des pads (index 0..15, ordre Maschine).
+    ShiftPadAction(u8),
+    /// Annule la dernière modification de projet.
+    Undo,
+    /// Rétablit la dernière modification annulée.
+    Redo,
     /// Miroirs workflow pour les écrans (envoyés par le mapper)
     SetSceneMode(bool),
     /// Miroir mode PATTERN
@@ -810,6 +818,13 @@ pub struct Engine {
     /// Compteur de révision (incrémenté à chaque changement d'état) :
     /// l'UI et les écrans évitent de re-rendre/repaint inutilement.
     revision: u64,
+    /// Historique de projets pour les commandes Shift+Pad Undo/Redo.
+    undo_history: Vec<Arc<Project>>,
+    redo_history: Vec<Arc<Project>>,
+    step_undo_history: Vec<Arc<Project>>,
+    step_redo_history: Vec<Arc<Project>>,
+    /// Événements copiés avec Shift+Pad 11.
+    pattern_clipboard: Option<Vec<PatternEvent>>,
 }
 
 /// Copie-on-write du projet pour les écritures (les snapshots tiennent un `Arc`).
@@ -1053,6 +1068,11 @@ impl Engine {
             lock_active: false,
             pattern_chains: [None, None, None, None, None, None, None, None],
             revision: 0,
+            undo_history: Vec::new(),
+            redo_history: Vec::new(),
+            step_undo_history: Vec::new(),
+            step_redo_history: Vec::new(),
+            pattern_clipboard: None,
         };
         eng.rescan_local_projects();
         eng
@@ -1078,6 +1098,207 @@ impl Engine {
         let mut eng = Self::new(Project::new_demo(), sample_rate);
         eng.load_default_808_kit();
         eng
+    }
+
+    fn push_project_history(&mut self) {
+        if self.undo_history.len() >= 64 {
+            self.undo_history.remove(0);
+        }
+        self.undo_history.push(Arc::clone(&self.project.read()));
+        self.redo_history.clear();
+    }
+
+    fn undo_project(&mut self, redo: bool) {
+        let (source, destination) = if redo {
+            (&mut self.redo_history, &mut self.undo_history)
+        } else {
+            (&mut self.undo_history, &mut self.redo_history)
+        };
+        if let Some(previous) = source.pop() {
+            if destination.len() >= 64 {
+                destination.remove(0);
+            }
+            destination.push(Arc::clone(&self.project.read()));
+            *self.project.write() = previous;
+            self.status_message = Some(if redo { "Redo" } else { "Undo" }.to_string());
+            self.status_expires_at =
+                std::time::Instant::now() + std::time::Duration::from_millis(1200);
+        } else {
+            self.status_message = Some(
+                if redo {
+                    "Rien à refaire"
+                } else {
+                    "Rien à annuler"
+                }
+                .to_string(),
+            );
+            self.status_expires_at =
+                std::time::Instant::now() + std::time::Duration::from_millis(1200);
+        }
+    }
+
+    fn push_step_history(&mut self) {
+        if self.step_undo_history.len() >= 64 {
+            self.step_undo_history.remove(0);
+        }
+        self.step_undo_history
+            .push(Arc::clone(&self.project.read()));
+        self.step_redo_history.clear();
+    }
+
+    fn undo_step_project(&mut self, redo: bool) {
+        let previous = if redo {
+            self.step_redo_history.pop()
+        } else {
+            self.step_undo_history.pop()
+        };
+        if let Some(previous) = previous {
+            let current = Arc::clone(&self.project.read());
+            if redo {
+                self.step_undo_history.push(current);
+            } else {
+                self.step_redo_history.push(current);
+            }
+            *self.project.write() = previous;
+            self.status_message = Some(if redo { "Step Redo" } else { "Step Undo" }.to_string());
+        } else {
+            self.status_message = Some(
+                if redo {
+                    "Aucun step à refaire"
+                } else {
+                    "Aucun step à annuler"
+                }
+                .to_string(),
+            );
+        }
+        self.status_expires_at = std::time::Instant::now() + std::time::Duration::from_millis(1200);
+    }
+
+    fn handle_shift_pad_action(&mut self, pad: u8) {
+        match pad {
+            0 => self.undo_project(false),
+            1 => self.undo_project(true),
+            2 => self.undo_step_project(false),
+            3 => self.undo_step_project(true),
+            4 => self.quantize_active_pattern(),
+            5 => self.quantize_active_pattern_strength(0.5),
+            6 => self.nudge_active_pattern(-60),
+            7 => self.nudge_active_pattern(60),
+            8 => {
+                let mut guard = self.project.write();
+                let project = project_mut(&mut guard);
+                let index =
+                    project.active_pattern_index(self.group_focus as usize, self.active_scene);
+                if let Some(pattern) = project
+                    .groups
+                    .get_mut(self.group_focus as usize)
+                    .and_then(|group| index.and_then(|i| group.patterns.get_mut(i)))
+                {
+                    pattern.events.clear();
+                }
+            }
+            9 => {
+                self.status_message = Some(
+                    "Clear Auto indisponible : ce projet ne gère pas encore l’automation"
+                        .to_string(),
+                );
+                self.status_expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_secs(2);
+            }
+            10 => {
+                let project = self.project.read();
+                let index =
+                    project.active_pattern_index(self.group_focus as usize, self.active_scene);
+                self.pattern_clipboard = project
+                    .groups
+                    .get(self.group_focus as usize)
+                    .and_then(|group| index.and_then(|i| group.patterns.get(i)))
+                    .map(|pattern| pattern.events.clone());
+                self.status_message = Some("Pattern copié".to_string());
+                self.status_expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_millis(1200);
+            }
+            11 => {
+                if let Some(events) = self.pattern_clipboard.clone() {
+                    let mut guard = self.project.write();
+                    let project = project_mut(&mut guard);
+                    let index =
+                        project.active_pattern_index(self.group_focus as usize, self.active_scene);
+                    if let Some(pattern) = project
+                        .groups
+                        .get_mut(self.group_focus as usize)
+                        .and_then(|group| index.and_then(|i| group.patterns.get_mut(i)))
+                    {
+                        pattern.events = events;
+                        self.status_message = Some("Pattern collé".to_string());
+                        self.status_expires_at =
+                            std::time::Instant::now() + std::time::Duration::from_millis(1200);
+                    }
+                } else {
+                    self.status_message =
+                        Some("Presse d'abord Shift+Pad 11 pour copier".to_string());
+                    self.status_expires_at =
+                        std::time::Instant::now() + std::time::Duration::from_secs(2);
+                }
+            }
+            12 => self.transpose_active_pattern(-1),
+            13 => self.transpose_active_pattern(1),
+            14 => self.transpose_active_pattern(-12),
+            15 => self.transpose_active_pattern(12),
+            _ => {}
+        }
+    }
+
+    fn quantize_active_pattern_strength(&mut self, strength: f32) {
+        let grid = self.sequencer.grid;
+        let mut guard = self.project.write();
+        let project = project_mut(&mut guard);
+        let index = project.active_pattern_index(self.group_focus as usize, self.active_scene);
+        if let Some(pattern) = project
+            .groups
+            .get_mut(self.group_focus as usize)
+            .and_then(|group| index.and_then(|i| group.patterns.get_mut(i)))
+        {
+            for event in &mut pattern.events {
+                let snapped = grid.quantize(event.tick);
+                event.tick = (event.tick as f32 + (snapped as f32 - event.tick as f32) * strength)
+                    .round()
+                    .max(0.0) as u32;
+            }
+            pattern.events.sort_by_key(|event| event.tick);
+        }
+    }
+
+    fn nudge_active_pattern(&mut self, delta: i32) {
+        let mut guard = self.project.write();
+        let project = project_mut(&mut guard);
+        let index = project.active_pattern_index(self.group_focus as usize, self.active_scene);
+        if let Some(pattern) = project
+            .groups
+            .get_mut(self.group_focus as usize)
+            .and_then(|group| index.and_then(|i| group.patterns.get_mut(i)))
+        {
+            let max_tick = pattern.length.to_ticks().saturating_sub(1);
+            for event in &mut pattern.events {
+                event.tick = (event.tick as i64 + delta as i64).clamp(0, max_tick as i64) as u32;
+            }
+            pattern.events.sort_by_key(|event| event.tick);
+        }
+    }
+
+    fn transpose_active_pattern(&mut self, semitones: i8) {
+        let mut guard = self.project.write();
+        let project = project_mut(&mut guard);
+        let index = project.active_pattern_index(self.group_focus as usize, self.active_scene);
+        if let Some(pattern) = project
+            .groups
+            .get_mut(self.group_focus as usize)
+            .and_then(|group| index.and_then(|i| group.patterns.get_mut(i)))
+        {
+            for event in &mut pattern.events {
+                event.pitch = (event.pitch as i16 + semitones as i16).clamp(0, 127) as u8;
+            }
+        }
     }
 
     /// Handle partagé du projet (pour UI).
@@ -1585,6 +1806,9 @@ impl Engine {
         let is_synth_sound = synth_params.is_some();
         let is_kick_sound = kick_params.is_some();
         let is_wavetable_sound = wavetable_params.is_some();
+        if snd_ref.is_none() {
+            return;
+        }
         let (snd_gain, snd_pan, vparams) = snd_ref
             .map(|s| {
                 let filter_off = s.filter.kind == crate::project::FilterKind::Off;
@@ -1655,6 +1879,38 @@ impl Engine {
 
     /// Traite un `EngineEvent`.
     pub fn handle_event(&mut self, ev: EngineEvent) -> crate::Result<()> {
+        let records_history = matches!(
+            &ev,
+            EngineEvent::ClearPattern { .. }
+                | EngineEvent::DuplicatePattern { .. }
+                | EngineEvent::DeletePattern { .. }
+                | EngineEvent::AddPattern { .. }
+                | EngineEvent::CreatePatternAt { .. }
+                | EngineEvent::RenamePattern { .. }
+                | EngineEvent::EraseSound { .. }
+                | EngineEvent::ClearSoundSlot { .. }
+                | EngineEvent::Quantize { .. }
+                | EngineEvent::Variation
+                | EngineEvent::QuantizeActive
+                | EngineEvent::StepVelocityDelta(_)
+                | EngineEvent::StepNudgeTicks(_)
+                | EngineEvent::StepLengthDelta(_)
+                | EngineEvent::StepPitchDelta(_)
+                | EngineEvent::SetPatternBars(_)
+                | EngineEvent::ShiftPadAction(4..=8 | 11..=15)
+        );
+        if records_history {
+            self.push_project_history();
+        }
+        if matches!(
+            &ev,
+            EngineEvent::StepVelocityDelta(_)
+                | EngineEvent::StepNudgeTicks(_)
+                | EngineEvent::StepLengthDelta(_)
+                | EngineEvent::StepPitchDelta(_)
+        ) {
+            self.push_step_history();
+        }
         // Toute action utilisateur invalide l'affichage (repaint UI + écrans).
         self.revision = self.revision.wrapping_add(1);
         match ev {
@@ -2494,6 +2750,22 @@ impl Engine {
             EngineEvent::EraseSound { group, sound } => {
                 self.erase_sound(group, sound);
             }
+            EngineEvent::ShiftPadAction(pad) => self.handle_shift_pad_action(pad),
+            EngineEvent::ClearSoundSlot { group, sound } => {
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
+                if let Some(target_group) = proj.groups.get_mut(group as usize) {
+                    for pattern in &mut target_group.patterns {
+                        pattern.events.retain(|event| event.pad != sound);
+                    }
+                    if let Some(slot) = target_group.sounds.get_mut(sound as usize) {
+                        *slot = None;
+                    }
+                }
+                self.revision = self.revision.wrapping_add(1);
+            }
+            EngineEvent::Undo => self.undo_project(false),
+            EngineEvent::Redo => self.undo_project(true),
             EngineEvent::SetSceneMode(v) => {
                 self.scene_mode = v;
             }
@@ -5374,6 +5646,8 @@ impl Engine {
     /// La comparaison se fait par case de 16e (tolère humanize/nudge) et
     /// supprime tous les doublons de la case : un seul appui suffit toujours.
     pub fn toggle_step(&mut self, pad: u8, tick: u32) {
+        self.push_project_history();
+        self.push_step_history();
         // Le pas touché devient le pas sélectionné (les knobs l'éditent).
         self.selected_bar = (tick / (4 * 960)) as usize;
         self.step_cursor = (tick / 240) as usize;
@@ -5410,6 +5684,7 @@ impl Engine {
 
     /// Remplit les temps 1, 2, 3, 4 pour un pad (ex: Kick 4-on-the-Floor)
     pub fn fill_four_on_the_floor(&mut self, pad: u8, bar: usize) {
+        self.push_project_history();
         let group_idx = self.group_focus as usize;
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
@@ -5437,6 +5712,7 @@ impl Engine {
 
     /// Remplit les croches (8ths) pour un pad (ex: Charlestons)
     pub fn fill_eighths(&mut self, pad: u8, bar: usize) {
+        self.push_project_history();
         let group_idx = self.group_focus as usize;
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
@@ -5464,6 +5740,7 @@ impl Engine {
 
     /// Supprime toutes les notes d'une mesure donnée
     pub fn clear_bar(&mut self, bar: usize) {
+        self.push_project_history();
         self.revision = self.revision.wrapping_add(1);
         let group_idx = self.group_focus as usize;
         let mut guard = self.project.write();
@@ -5483,6 +5760,7 @@ impl Engine {
 
     /// Remplit les 16 doubles-croches de la mesure courante pour le pad actif (FILL)
     pub fn fill_sixteenths(&mut self, pad: u8, bar: usize) {
+        self.push_project_history();
         self.revision = self.revision.wrapping_add(1);
         let group_idx = self.group_focus as usize;
         let mut guard = self.project.write();
@@ -6159,7 +6437,9 @@ mod tests {
             eng.render_audio(&mut buf);
             if first.is_none() {
                 if let Some(pos) = buf
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .position(|f| f[0].abs() > 2e-3 || f[1].abs() > 2e-3)
                 {
                     first = Some((block, pos));
@@ -7079,6 +7359,150 @@ mod tests {
         assert_eq!(
             eng.project.read().groups[0].sounds[1].as_ref().unwrap().pan,
             0.0
+        );
+    }
+
+    #[test]
+    fn shift_pad_quantize_nudge_and_transpose_edit_active_pattern() {
+        let mut engine = Engine::new_demo(48_000);
+        {
+            let mut project = engine.project.write();
+            let events = &mut project_mut(&mut project).groups[0].patterns[0].events;
+            events.clear();
+            events.push(PatternEvent {
+                pad: 0,
+                tick: 200,
+                velocity: 100,
+                length_ticks: 120,
+                pitch: 60,
+            });
+        }
+
+        engine.handle_event(EngineEvent::ShiftPadAction(4)).unwrap(); // Quantize
+        assert_eq!(
+            engine.project.read().groups[0].patterns[0].events[0].tick,
+            240
+        );
+
+        {
+            let mut project = engine.project.write();
+            project_mut(&mut project).groups[0].patterns[0].events[0].tick = 200;
+        }
+        engine.handle_event(EngineEvent::ShiftPadAction(5)).unwrap(); // 50%
+        assert_eq!(
+            engine.project.read().groups[0].patterns[0].events[0].tick,
+            220
+        );
+        engine.handle_event(EngineEvent::ShiftPadAction(6)).unwrap(); // Nudge left
+        assert_eq!(
+            engine.project.read().groups[0].patterns[0].events[0].tick,
+            160
+        );
+        engine.handle_event(EngineEvent::ShiftPadAction(7)).unwrap(); // Nudge right
+        assert_eq!(
+            engine.project.read().groups[0].patterns[0].events[0].tick,
+            220
+        );
+
+        let pitch = engine.project.read().groups[0].patterns[0].events[0].pitch;
+        engine
+            .handle_event(EngineEvent::ShiftPadAction(12))
+            .unwrap(); // Semitone down
+        assert_eq!(
+            engine.project.read().groups[0].patterns[0].events[0].pitch,
+            pitch - 1
+        );
+        engine
+            .handle_event(EngineEvent::ShiftPadAction(13))
+            .unwrap(); // Semitone up
+        assert_eq!(
+            engine.project.read().groups[0].patterns[0].events[0].pitch,
+            pitch
+        );
+        engine
+            .handle_event(EngineEvent::ShiftPadAction(14))
+            .unwrap(); // Octave down
+        assert_eq!(
+            engine.project.read().groups[0].patterns[0].events[0].pitch,
+            pitch - 12
+        );
+        engine
+            .handle_event(EngineEvent::ShiftPadAction(15))
+            .unwrap(); // Octave up
+        assert_eq!(
+            engine.project.read().groups[0].patterns[0].events[0].pitch,
+            pitch
+        );
+    }
+
+    #[test]
+    fn shift_pad_clear_copy_paste_and_undo_redo_work_on_pattern_events() {
+        let mut engine = Engine::new_demo(48_000);
+        let original = engine.project.read().groups[0].patterns[0].events.clone();
+
+        engine
+            .handle_event(EngineEvent::ShiftPadAction(10))
+            .unwrap(); // Copy
+        engine.handle_event(EngineEvent::ShiftPadAction(8)).unwrap(); // Clear
+        assert!(engine.project.read().groups[0].patterns[0]
+            .events
+            .is_empty());
+        engine
+            .handle_event(EngineEvent::ShiftPadAction(11))
+            .unwrap(); // Paste
+        assert_eq!(engine.project.read().groups[0].patterns[0].events, original);
+
+        engine.handle_event(EngineEvent::ShiftPadAction(8)).unwrap();
+        engine.handle_event(EngineEvent::ShiftPadAction(0)).unwrap(); // Undo
+        assert_eq!(engine.project.read().groups[0].patterns[0].events, original);
+        engine.handle_event(EngineEvent::ShiftPadAction(1)).unwrap(); // Redo
+        assert!(engine.project.read().groups[0].patterns[0]
+            .events
+            .is_empty());
+    }
+
+    #[test]
+    fn shift_pad_step_undo_redo_and_clear_auto_feedback_are_contextual() {
+        let mut engine = Engine::new_demo(48_000);
+        let original = engine.project.read().groups[0].patterns[0].events.clone();
+        engine.toggle_step(15, 15 * 240);
+        assert_ne!(engine.project.read().groups[0].patterns[0].events, original);
+        engine.handle_event(EngineEvent::ShiftPadAction(2)).unwrap(); // Step Undo
+        assert_eq!(engine.project.read().groups[0].patterns[0].events, original);
+        engine.handle_event(EngineEvent::ShiftPadAction(3)).unwrap(); // Step Redo
+        assert_ne!(engine.project.read().groups[0].patterns[0].events, original);
+
+        engine.handle_event(EngineEvent::ShiftPadAction(9)).unwrap(); // Clear Auto
+        assert!(engine
+            .snapshot()
+            .status_message
+            .as_deref()
+            .is_some_and(|message| message.contains("automation")));
+    }
+
+    #[test]
+    fn shift_erase_pad_removes_a_sound_slot_and_undo_restores_it() {
+        let mut engine = Engine::new_demo(48_000);
+        let original_sound = engine.project.read().groups[0].sounds[4]
+            .as_ref()
+            .unwrap()
+            .name
+            .clone();
+        engine
+            .handle_event(EngineEvent::ClearSoundSlot { group: 0, sound: 4 })
+            .unwrap();
+        assert!(engine.project.read().groups[0].sounds[4].is_none());
+        assert!(engine.project.read().groups[0].patterns[0]
+            .events
+            .iter()
+            .all(|event| event.pad != 4));
+        engine.handle_event(EngineEvent::ShiftPadAction(0)).unwrap();
+        assert_eq!(
+            engine.project.read().groups[0].sounds[4]
+                .as_ref()
+                .unwrap()
+                .name,
+            original_sound
         );
     }
 }

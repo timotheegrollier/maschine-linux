@@ -36,6 +36,31 @@
   </provides>
 
   <releases>
+    <release version="0.10.0" date="2026-11-19">
+      <description>
+        <p>Release 0.10.0 adds the complete MK3 Shift-pad shortcut layer to the controller and desktop pad grid, pattern Undo/Redo and event clipboard, and clearer Sound slot deletion and recovery. It also hardens settings writes and validates the declared Rust 1.88 MSRV in CI.</p>
+      </description>
+    </release>
+    <release version="0.9.12" date="2026-11-08">
+      <description>
+        <p>Release 0.9.12 routes the filter cutoff and resonance knobs to the focused synth (kick, wavetable, TB-303) when one is loaded, falling back to the sampler filter otherwise.</p>
+      </description>
+    </release>
+    <release version="0.9.11" date="2026-11-08">
+      <description>
+        <p>Release 0.9.11 unifies the multimode sampler filter (low-pass, high-pass, band-pass, off) with the synth paths and restores the last opened project at startup.</p>
+      </description>
+    </release>
+    <release version="0.9.10" date="2026-11-08">
+      <description>
+        <p>Release 0.9.10 splits the hardware mapper into focused handlers, adds 8 groups with 128 independent tracks, universal filter shortcuts, sustained pad notes, and a cleaner AppImage restart.</p>
+      </description>
+    </release>
+    <release version="0.9.9" date="2026-11-08">
+      <description>
+        <p>Release 0.9.9 adds direct low-pass, high-pass, band-pass and off filter soft keys, aligns Shift soft-key labels with hardware dispatch, and starts the MK3 reverse-engineering guide.</p>
+      </description>
+    </release>
     <release version="0.9.8" date="2026-11-08">
       <description>
         <p>Release 0.9.8 brings authentic Maschine MK3 pattern toggle-off, multi-pad pattern chaining, dynamic real-time Shift labels on display buttons with contextual actions, improved 4D mixer navigation (Up to drill into group, Down to return), per-pad synth/sampler mixer volume isolation, full Nexus/Wavetable synth knob controls, latchable Note Repeat with rate selection, and hardware LED state fixes.</p>

@@ -120,7 +120,6 @@ pub struct GuiApp {
     /// Signal de repaint (le thread HID réveille l'UI).
     pub repaint: crate::gui::RepaintSignal,
     /// Fenêtre réglages audio ouverte.
-    #[allow(dead_code)]
     pub show_settings: bool,
     /// Fenêtre de mise à jour ouverte.
     pub show_updater: bool,
@@ -154,6 +153,8 @@ pub struct GuiApp {
     pub pattern_name_buf: String,
     /// Cible du buffer de renommage (groupe, pattern).
     pub pattern_name_target: Option<(u8, usize)>,
+    /// Sound dont la suppression du slot attend une seconde confirmation.
+    pub confirm_clear_sound: Option<(u8, u8)>,
     /// Mode avancé de la TB-303 (les macros restent le mode par défaut).
     pub plugin_advanced: bool,
     /// Recherche browser.
@@ -227,6 +228,7 @@ impl GuiApp {
             layout_initialized: false,
             pattern_name_buf: String::new(),
             pattern_name_target: None,
+            confirm_clear_sound: None,
             plugin_advanced: false,
             browser_search: String::new(),
             browser_category: 0,
@@ -275,6 +277,7 @@ impl GuiApp {
             layout_initialized: false,
             pattern_name_buf: String::new(),
             pattern_name_target: None,
+            confirm_clear_sound: None,
             plugin_advanced: false,
             browser_search: String::new(),
             browser_category: 0,
@@ -954,15 +957,34 @@ impl GuiApp {
         ui: &mut egui::Ui,
         snap: &maschine_engine::EngineSnapshot,
         pad_size: f32,
-        press: &mut Option<(u8, u8)>,
+        press: &mut Option<(u8, u8, bool)>,
         release: &mut Option<u8>,
     ) {
         const KEYBOARD_LABELS: [&str; 16] = [
             "C3", "D3", "D#3", "F3", "G3", "G#3", "A#3", "C4", "D4", "D#4", "F4", "G4", "G#4",
             "A#4", "C5", "D5",
         ];
+        const SHIFT_PAD_LABELS: [&str; 16] = [
+            "UNDO",
+            "REDO",
+            "STEP UNDO",
+            "STEP REDO",
+            "QUANTIZE",
+            "QUANT 50%",
+            "NUDGE ←",
+            "NUDGE →",
+            "CLEAR",
+            "CLEAR AUTO",
+            "COPY",
+            "PASTE",
+            "− SEMI",
+            "+ SEMI",
+            "− OCT",
+            "+ OCT",
+        ];
         let c = MachColors::dark();
         let gf = snap.group_focus as usize;
+        let shift_layer = snap.shift_held || ui.input(|input| input.modifiers.shift);
         let assigned_pattern = snap
             .active_scene
             .and_then(|scene| snap.project.scenes.get(scene))
@@ -1011,6 +1033,11 @@ impl GuiApp {
                             crate::gui::views::pad_color(index as usize),
                         )
                     };
+                    let label = if shift_layer {
+                        SHIFT_PAD_LABELS[index as usize].to_string()
+                    } else {
+                        label
+                    };
                     let st = PadState {
                         index,
                         color,
@@ -1021,14 +1048,21 @@ impl GuiApp {
                     };
                     let inter = pad_button(ui, &st, pad_size);
                     if inter.pressed {
-                        *press = Some((index, inter.velocity));
+                        *press = Some((index, inter.velocity, shift_layer));
                     }
                     if inter.released {
                         *release = Some(index);
                     }
                     if inter.secondary_clicked {
-                        // Clic droit : sélectionner le Sound sans le jouer.
-                        self.send(EngineEvent::SelectSound(index));
+                        // Clic droit sur un pad : efface les notes du son dans le pattern actif.
+                        if snap.controller_mode == 0 && !snap.pattern_mode && !snap.scene_mode {
+                            self.send(EngineEvent::EraseSound {
+                                group: snap.group_focus,
+                                sound: index,
+                            });
+                        } else {
+                            self.send(EngineEvent::SelectSound(index));
+                        }
                     }
                 }
             });
@@ -1093,7 +1127,7 @@ impl GuiApp {
         let width = ui.available_width();
         let pad_size = ((width - 22.0) / 4.0).clamp(36.0, 60.0);
         let side_by_side = width >= pad_size * 4.0 + 190.0;
-        let mut press: Option<(u8, u8)> = None;
+        let mut press: Option<(u8, u8, bool)> = None;
         let mut release: Option<u8> = None;
 
         if side_by_side {
@@ -1112,8 +1146,10 @@ impl GuiApp {
             self.draw_group_controls(ui, snap, 34.0);
         }
 
-        if let Some((pad, velocity)) = press {
-            if snap.scene_mode {
+        if let Some((pad, velocity, shift_layer)) = press {
+            if shift_layer {
+                self.send(EngineEvent::ShiftPadAction(pad));
+            } else if snap.scene_mode {
                 self.send(EngineEvent::Scene(pad as usize));
             } else if snap.pattern_mode {
                 self.send(EngineEvent::PatternSelect {

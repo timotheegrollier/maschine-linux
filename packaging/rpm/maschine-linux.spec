@@ -6,7 +6,7 @@ License:        GPL-3.0-or-later
 URL:            https://github.com/timotheegrollier/maschine-linux
 Source0:        %{name}-%{version}.tar.gz
 
-BuildRequires:  rust >= 1.75
+BuildRequires:  rust >= 1.88
 BuildRequires:  cargo
 BuildRequires:  alsa-lib-devel
 BuildRequires:  systemd-devel

@@ -2,6 +2,7 @@
 name = "maschine-hardware"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "Découverte et I/O Maschine MK3 : hidraw, nusb/rusb, ALSA Seq, JACK — threads temps-réel"
 keywords.workspace = true

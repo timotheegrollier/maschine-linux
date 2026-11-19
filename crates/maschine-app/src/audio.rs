@@ -31,6 +31,8 @@ pub struct AudioStats {
     pub max_frames: AtomicU64,
     /// Erreurs/underruns signalés par le backend ALSA.
     pub errors: AtomicU64,
+    /// Taux d'échantillonnage du stream négocié (0 si aucun stream ouvert).
+    pub sample_rate: AtomicU64,
 }
 
 impl AudioStats {
@@ -48,6 +50,11 @@ impl AudioStats {
     /// Taille du dernier buffer audio (frames) — 0 si inconnu.
     pub fn buffer_frames(&self) -> u64 {
         self.last_frames.load(Ordering::Relaxed)
+    }
+
+    /// Taux d'échantillonnage réel du device — 0 si aucun stream n'est ouvert.
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate.load(Ordering::Relaxed) as u32
     }
 }
 
@@ -186,6 +193,9 @@ impl AudioOutput {
 
         let actual_rate = cfg.sample_rate.0;
         let channels = cfg.channels as usize;
+        stats
+            .sample_rate
+            .store(actual_rate as u64, Ordering::Relaxed);
 
         // Le moteur (et ses presets DSP) se cale sur le taux réel AVANT que le
         // stream ne consomme des échantillons : sinon le kit joue faux.
@@ -275,7 +285,7 @@ fn event_logger(stats: Arc<AudioStats>) -> impl FnMut(cpal::StreamError) + Send 
         stats.errors.fetch_add(1, Ordering::Relaxed);
         total += 1;
         let now = Instant::now();
-        if logged_at.map_or(true, |t| now.duration_since(t) >= Duration::from_secs(1)) {
+        if logged_at.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1)) {
             log::warn!("cpal stream event: {err} (erreur audio #{total})");
             logged_at = Some(now);
         }
@@ -400,7 +410,7 @@ fn lock_engine_with_wait(
         }
         std::hint::spin_loop();
         spins += 1;
-        if spins % 128 == 0 {
+        if spins.is_multiple_of(128) {
             if std::time::Instant::now() >= deadline {
                 return None;
             }

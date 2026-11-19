@@ -1089,7 +1089,7 @@ impl Sampler {
                     .collect::<crate::Result<Vec<_>>>()?
             }
         };
-        if samples.len() % spec.channels as usize != 0 {
+        if !samples.len().is_multiple_of(spec.channels as usize) {
             return Err(crate::EngineError::Sampler(
                 "WAV sample count is not divisible by channel count".to_string(),
             ));

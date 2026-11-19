@@ -14,9 +14,9 @@ Maschine Linux is an independent project. It does not include Native
 Instruments code or proprietary assets; it reproduces the documented workflow
 and hardware behavior through a clean-room implementation.
 
-## Current state (0.9.0)
+## Current state (0.10.0)
 
-Cargo workspace with four main crates:
+Cargo workspace with six crates:
 
 | Crate | Responsibility |
 |---|---|
@@ -24,6 +24,8 @@ Cargo workspace with four main crates:
 | `maschine-hardware` | USB discovery (`hidraw` first, `nusb`/`rusb` fallback), real-time threads, complete hardware mapper, Pad/Step/Keyboard/Chords modes, latched navigation |
 | `maschine-engine` | Domain: Project/Group/Sound/Pattern/Scene/Section, transport, multi-bar sequencer, 808 Drum Synth (16 instruments), Acid TB-303 synthesizer, 480×272 dual-LCD rendering |
 | `maschine-app` | `maschine-linux` binary: native `egui` GUI, headless daemon, low-latency PipeWire audio, updater |
+| `maschine-dsp` | Real-time guitar DSP chain: noise gate, overdrive, tone stack, cabinet simulation, delay, lock-free atomic parameters |
+| `maschine-guitar-standalone` | Optional standalone guitar FX rack (JACK/CPAL audio, `egui` GUI); built by the workspace but independent from the Maschine workflow |
 
 Real-time design: the engine snapshot is shared through `Arc` (copy-on-write,
 O(1) reads), a revision counter only repaints changed state, VU meters are
@@ -34,7 +36,7 @@ inside each block, and a drum kit regenerated at the device sample rate.
 Instrumentation: `--debug-latency` (HID→Engine, real buffer size, misses,
 errors) and `--stress` (deliberate engine-lock contention).
 
-### Workflow and GUI parity in 0.9.0
+### Workflow and GUI parity in 0.10.0
 
 - **Complete PATTERN mode**: empty pads create pattern slots, `DUPLICATE`
   copies the active pattern, `SHIFT + ERASE` clears its events, and the 4D
@@ -89,6 +91,10 @@ pw-top  # ERR must stay at 0
 
 ## Build and run
 
+Requires **Rust 1.88** or newer: this is the `rust-version` declared in
+`Cargo.toml` (inherited by every workspace crate), and the `msrv` job in CI
+compiles the workspace with exactly that toolchain.
+
 ```bash
 # Optimized release build
 cargo build --release
@@ -113,7 +119,7 @@ target/release/maschine-linux daemon --debug-latency --stress
 Useful GUI shortcuts: `I` Ideas, `S` Sequencer, `K` Keyboard, `M` Mixer,
 `A` Sampler, `T`/`P` Plugin/TB-303, `B` Browser, `Space` Play/Stop,
 `F1` toggle navigation rail, `F2` toggle MK3 panel, `F3` toggle centre
-workspace, `Ctrl+S` save.
+workspace, `Ctrl+S` save, `Ctrl+Shift+S` quick save.
 
 ## Architecture
 

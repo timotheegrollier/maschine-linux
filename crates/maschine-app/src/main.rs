@@ -59,7 +59,12 @@ fn spawn_latency_logger(
             let audio_txt = match &audio_stats {
                 Some(a) => {
                     let frames = a.buffer_frames();
-                    let ms = if frames > 0 { frames as f64 * 1000.0 / 48000.0 } else { 0.0 };
+                    let rate = a.sample_rate();
+                    let ms = if frames > 0 && rate > 0 {
+                        frames as f64 * 1000.0 / f64::from(rate)
+                    } else {
+                        0.0
+                    };
                     format!(
                         "audio: {} cb (buffer {} frames ≈ {:.1} ms), {} miss, {} err, max {} µs",
                         a.callbacks.swap(0, Ordering::Relaxed),
@@ -1551,6 +1556,14 @@ fn cmd_daemon(
                     let _ = engine
                         .lock()
                         .handle_event(EngineEvent::EraseSound { group, sound });
+                }
+                MapperAction::ClearSoundSlot { group, sound } => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::ClearSoundSlot { group, sound });
+                }
+                MapperAction::ShiftPadAction(pad) => {
+                    let _ = engine.lock().handle_event(EngineEvent::ShiftPadAction(pad));
                 }
                 MapperAction::ToggleMute(g) => {
                     let _ = engine.lock().handle_event(EngineEvent::Mute(g));

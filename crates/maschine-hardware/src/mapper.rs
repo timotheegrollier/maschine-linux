@@ -224,6 +224,10 @@ pub enum MapperAction {
     PatternStep { group: u8, delta: i32 },
     /// Efface toutes les notes d'un son dans le pattern actif (mode ERASE + pad)
     EraseSound { group: u8, sound: u8 },
+    /// Supprime le Sound et ses événements (SHIFT + ERASE + pad).
+    ClearSoundSlot { group: u8, sound: u8 },
+    /// Fonction secondaire imprimée sous SHIFT, index logique 0..15.
+    ShiftPadAction(u8),
     /// Basculement d'un pas du séquenceur (son 0..15, mesure 0..1, pas 0..15)
     ToggleStep { sound: u8, bar: usize, step: usize },
     /// Lecture / Pause
@@ -608,6 +612,8 @@ pub struct HardwareMapper {
     select_pinned: bool,
     /// Bouton Erase tenu
     pub erase_held: bool,
+    /// Shift était tenu au début de l'appui ERASE (effacement différé jusqu'au relâchement).
+    erase_shift_held: bool,
     /// Un Pad a été touché pendant Erase tenu
     erase_used: bool,
     /// Mode Erase épinglé
@@ -625,6 +631,8 @@ pub struct HardwareMapper {
     pub lock_active: bool,
     /// Bouton Duplicate enfoncé
     pub duplicate_held: bool,
+    /// EVENTS tenu avec SHIFT pour ERASE + EVENTS + pad.
+    events_held: bool,
 }
 
 impl HardwareMapper {
@@ -693,6 +701,7 @@ impl HardwareMapper {
             select_used: false,
             select_pinned: false,
             erase_held: false,
+            erase_shift_held: false,
             erase_used: false,
             erase_pinned: false,
             pad_pressed: [false; 16],
@@ -701,6 +710,7 @@ impl HardwareMapper {
             strip_pos: 512,
             lock_active: false,
             duplicate_held: false,
+            events_held: false,
         }
     }
 
@@ -971,6 +981,18 @@ impl HardwareMapper {
                 }
                 if pressed {
                     if self.shift_held {
+                        // Permet Shift+Erase+pad (suppression du Sound). Si aucun pad
+                        // n'est pressé, l'action globale est exécutée au relâchement.
+                        self.erase_shift_held = true;
+                        self.erase_used = false;
+                    } else {
+                        self.erase_shift_held = false;
+                        self.erase_used = false;
+                        self.erase_mode = true;
+                        actions.push(MapperAction::SetEraseMode(true));
+                    }
+                } else if self.erase_shift_held {
+                    if !self.erase_used {
                         if self.pattern_select_mode {
                             actions.push(MapperAction::ClearPattern {
                                 group: self.group_focus,
@@ -978,11 +1000,8 @@ impl HardwareMapper {
                         } else {
                             actions.push(MapperAction::ClearBar(self.selected_bar));
                         }
-                    } else {
-                        self.erase_used = false;
-                        self.erase_mode = true;
-                        actions.push(MapperAction::SetEraseMode(true));
                     }
+                    self.erase_shift_held = false;
                 } else if !self.shift_held && self.erase_mode {
                     if self.erase_used {
                         self.erase_pinned = false;
@@ -1272,6 +1291,10 @@ impl HardwareMapper {
                 true
             }
             ButtonId::Events => {
+                if self.shift_held || self.erase_held || self.events_held {
+                    self.events_held = true;
+                    return true;
+                }
                 let tab = if self.right_tab == 1 { 0 } else { 1 };
                 self.right_tab = tab;
                 self.led_state.set_button_raw(
@@ -1485,6 +1508,11 @@ impl HardwareMapper {
     fn handle_button_event(&mut self, id: ButtonId, pressed: bool) -> Vec<MapperAction> {
         let mut actions = Vec::new();
         if self.handle_modifier_button(id, pressed, &mut actions) {
+            return actions;
+        }
+
+        if id == ButtonId::Events && !pressed {
+            self.events_held = false;
             return actions;
         }
 
@@ -1923,6 +1951,33 @@ impl HardwareMapper {
             // garanti même si le release suit aussitôt (tap éclair).
             if (p.pad as usize) < 16 {
                 self.pad_hit_at[p.pad as usize] = Some(Instant::now());
+            }
+
+            // Raccourcis documentés par Native Instruments : Shift+Erase+pad
+            // retire le Sound du slot; Erase+Events+pad efface ses événements.
+            if self.erase_held && (self.erase_shift_held || self.shift_held) {
+                self.erase_used = true;
+                self.active_sound = p.pad;
+                actions.push(MapperAction::SelectSound(p.pad));
+                actions.push(MapperAction::ClearSoundSlot {
+                    group: self.group_focus,
+                    sound: p.pad,
+                });
+                return actions;
+            }
+            if self.events_held && (self.shift_held || self.erase_held) {
+                self.erase_used = true;
+                self.active_sound = p.pad;
+                actions.push(MapperAction::SelectSound(p.pad));
+                actions.push(MapperAction::EraseSound {
+                    group: self.group_focus,
+                    sound: p.pad,
+                });
+                return actions;
+            }
+            if self.shift_held {
+                actions.push(MapperAction::ShiftPadAction(p.pad));
+                return actions;
             }
 
             // Modes workflow prioritaires (façon Maschine) — avant les modes de jeu.
@@ -3331,7 +3386,13 @@ mod tests {
             pressed: true,
             ts_ns: 2,
         });
-        let clear = press_button(&mut m, maschine_proto::ButtonId::Erase);
+        let press = press_button(&mut m, maschine_proto::ButtonId::Erase);
+        assert!(press.is_empty());
+        let clear = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Erase,
+            pressed: false,
+            ts_ns: 3,
+        });
         assert!(clear.contains(&MapperAction::ClearPattern { group: 0 }));
         assert!(!clear.contains(&MapperAction::ClearBar(0)));
     }
@@ -4045,24 +4106,36 @@ mod tests {
         m.group_focus = 1;
         m.selected_bar = 2;
 
-        // 1. Shift + Erase en mode pattern : ClearPattern sur group_focus
+        // 1. Shift + Erase en mode pattern : ClearPattern au relâchement si aucun pad n'a été pressé.
         m.pattern_select_mode = true;
         m.shift_held = true;
-        let a = m.handle_hardware_event(HardwareEvent::Button {
+        let press = m.handle_hardware_event(HardwareEvent::Button {
             id: maschine_proto::ButtonId::Erase,
             pressed: true,
             ts_ns: 1,
+        });
+        assert!(press.is_empty());
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Erase,
+            pressed: false,
+            ts_ns: 2,
         });
         assert_eq!(a, vec![MapperAction::ClearPattern { group: 1 }]);
         m.pattern_select_mode = false;
         m.shift_held = false;
 
-        // 2. Shift + Erase en mode normal : ClearBar sur selected_bar
+        // 2. Shift + Erase en mode normal : ClearBar au relâchement si aucun pad n'a été pressé.
         m.shift_held = true;
-        let a = m.handle_hardware_event(HardwareEvent::Button {
+        let press = m.handle_hardware_event(HardwareEvent::Button {
             id: maschine_proto::ButtonId::Erase,
             pressed: true,
-            ts_ns: 2,
+            ts_ns: 3,
+        });
+        assert!(press.is_empty());
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Erase,
+            pressed: false,
+            ts_ns: 4,
         });
         assert_eq!(a, vec![MapperAction::ClearBar(2)]);
         m.shift_held = false;
@@ -4235,5 +4308,82 @@ mod tests {
             ts_ns: 24,
         });
         assert_eq!(m.touchstrip_mode, TouchStripMode::Notes);
+    }
+
+    #[test]
+    fn shift_layer_routes_all_sixteen_pads_by_maschine_index() {
+        for pad in 0..16u8 {
+            let mut mapper = HardwareMapper::with_default();
+            let shift = mapper.handle_hardware_event(HardwareEvent::Button {
+                id: maschine_proto::ButtonId::Shift,
+                pressed: true,
+                ts_ns: 1,
+            });
+            assert!(shift.contains(&MapperAction::SetShiftHeld(true)));
+
+            let actions = mapper.handle_hardware_event(HardwareEvent::Pad(PadState {
+                pad,
+                pressed: true,
+                velocity: 100,
+                pressure: 0x5000,
+                ts_ns: 2,
+            }));
+            assert_eq!(actions, vec![MapperAction::ShiftPadAction(pad)]);
+        }
+    }
+
+    #[test]
+    fn documented_erase_pad_chords_remain_distinct_from_shift_pad_layer() {
+        let mut mapper = HardwareMapper::with_default();
+        let _ = mapper.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Shift,
+            pressed: true,
+            ts_ns: 1,
+        });
+        let _ = mapper.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Erase,
+            pressed: true,
+            ts_ns: 2,
+        });
+        let clear_slot = mapper.handle_hardware_event(HardwareEvent::Pad(PadState {
+            pad: 4,
+            pressed: true,
+            velocity: 100,
+            pressure: 0x5000,
+            ts_ns: 3,
+        }));
+        assert_eq!(
+            clear_slot,
+            vec![
+                MapperAction::SelectSound(4),
+                MapperAction::ClearSoundSlot { group: 0, sound: 4 }
+            ]
+        );
+
+        let mut mapper = HardwareMapper::with_default();
+        let _ = mapper.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Erase,
+            pressed: true,
+            ts_ns: 1,
+        });
+        let _ = mapper.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Events,
+            pressed: true,
+            ts_ns: 2,
+        });
+        let erase_events = mapper.handle_hardware_event(HardwareEvent::Pad(PadState {
+            pad: 7,
+            pressed: true,
+            velocity: 100,
+            pressure: 0x5000,
+            ts_ns: 3,
+        }));
+        assert_eq!(
+            erase_events,
+            vec![
+                MapperAction::SelectSound(7),
+                MapperAction::EraseSound { group: 0, sound: 7 }
+            ]
+        );
     }
 }

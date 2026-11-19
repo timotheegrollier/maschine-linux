@@ -16,6 +16,11 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+The MSRV is **Rust 1.88**, declared in `Cargo.toml` (each crate inherits
+`rust-version.workspace = true`) and enforced by the `msrv` CI job
+(`cargo check --workspace --locked`). Keep contributions compatible with 1.88
+and mention it in the pull request if a change requires a newer toolchain.
+
 ## Branches
 
 - `master`: stable

@@ -2,6 +2,7 @@
 name = "maschine-guitar-standalone"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "Standalone guitar FX rack (JACK/CPAL + egui GUI)"
 categories = ["multimedia::audio", "dsp"]

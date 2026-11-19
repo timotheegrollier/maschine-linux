@@ -8,12 +8,12 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.9.12"
+version = "0.10.0"
 edition = "2021"
 authors = ["maschine-linux contributors"]
 license = "GPL-3.0-or-later"
 repository = "https://github.com/timotheegrollier/maschine-linux"
-rust-version = "1.75"
+rust-version = "1.88"
 keywords = ["maschine", "mk3", "daw", "audio", "midi"]
 categories = ["multimedia::audio", "hardware-support"]
 

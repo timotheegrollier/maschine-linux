@@ -525,12 +525,17 @@ pub fn pad_button(ui: &mut egui::Ui, st: &PadState<'_>, size: f32) -> PadInterac
         egui::FontId::monospace(10.0),
         text_col.gamma_multiply(0.85),
     );
-    if size >= 46.0 && !st.label.is_empty() {
+    if size >= 36.0 && !st.label.is_empty() {
+        let font_size = if st.label.chars().count() > 7 {
+            7.0
+        } else {
+            8.5
+        };
         ui.painter().text(
             egui::pos2(rect.left() + 5.0, rect.bottom() - 4.0),
             egui::Align2::LEFT_BOTTOM,
             st.label,
-            egui::FontId::proportional(9.5),
+            egui::FontId::proportional(font_size),
             text_col.gamma_multiply(0.95),
         );
     }

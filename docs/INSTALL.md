@@ -103,9 +103,25 @@ pw-dump | grep -i maschine
 
 ## Uninstallation
 
+The install script can remove everything it installed (`--user` if you used
+`./scripts/install.sh --user`):
+
 ```bash
-sudo rm /etc/udev/rules.d/99-maschine-mk3.rules
-rm ~/.config/pipewire/pipewire.conf.d/99-maschine-lowlatency.conf
-rm ~/.config/wireplumber/wireplumber.conf.d/51-maschine-mk3.conf
-rm ~/.local/bin/maschine-linux
+./scripts/install.sh --uninstall --user
+```
+
+Or remove the files manually:
+
+```bash
+# User install (./scripts/install.sh --user)
+rm -f ~/.local/bin/maschine-linux
+rm -f ~/.config/pipewire/pipewire.conf.d/99-maschine-lowlatency.conf
+rm -f ~/.config/wireplumber/wireplumber.conf.d/51-maschine-mk3.conf
+
+# System install (./scripts/install.sh --system, the default)
+sudo rm -f /usr/local/bin/maschine-linux /usr/bin/maschine-linux
+sudo rm -f /etc/udev/rules.d/99-maschine-mk3.rules /usr/lib/udev/rules.d/99-maschine-mk3.rules
+sudo rm -f /usr/share/pipewire/pipewire.conf.d/99-maschine-lowlatency.conf
+sudo rm -f /usr/share/wireplumber/wireplumber.conf.d/51-maschine-mk3.conf
+sudo udevadm control --reload-rules && sudo udevadm trigger
 ```

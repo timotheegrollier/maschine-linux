@@ -41,7 +41,7 @@ pub fn sanitize_project_filename(name: &str) -> String {
     let mut out: String = name
         .chars()
         .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ' {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ' || c == '.' {
                 c
             } else {
                 '_'
@@ -55,7 +55,10 @@ pub fn sanitize_project_filename(name: &str) -> String {
     if out.len() > 80 {
         out.truncate(80);
     }
-    if !out.ends_with(".maschine-linux.json") && !out.ends_with(".json") {
+    // Une extension existante est conservée (insensible à la casse) :
+    // "track.json" reste "track.json", sans double suffixe.
+    let lower = out.to_ascii_lowercase();
+    if !lower.ends_with(".maschine-linux.json") && !lower.ends_with(".json") {
         out.push_str(".maschine-linux.json");
     }
     out
@@ -191,4 +194,63 @@ pub fn remember_project(settings: &mut AppSettings, path: &Path) {
         settings.projects_dir = Some(parent.to_string_lossy().to_string());
     }
     let _ = settings.save();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_project_filename;
+
+    #[test]
+    fn sanitize_project_filename_appends_the_project_suffix() {
+        assert_eq!(
+            sanitize_project_filename("My Track"),
+            "My Track.maschine-linux.json"
+        );
+        // Les espaces de bord sont retirés, ceux du milieu conservés.
+        assert_eq!(
+            sanitize_project_filename("  My Track  "),
+            "My Track.maschine-linux.json"
+        );
+        assert_eq!(
+            sanitize_project_filename("Bass_&_Acid"),
+            "Bass___Acid.maschine-linux.json"
+        );
+    }
+
+    #[test]
+    fn sanitize_project_filename_preserves_a_json_extension() {
+        assert_eq!(sanitize_project_filename("track.json"), "track.json");
+        assert_eq!(
+            sanitize_project_filename("Set 1.maschine-linux.json"),
+            "Set 1.maschine-linux.json"
+        );
+        // L'extension est reconnue sans tenir compte de la casse.
+        assert_eq!(sanitize_project_filename("Take.JSON"), "Take.JSON");
+    }
+
+    #[test]
+    fn sanitize_project_filename_replaces_unsafe_characters() {
+        assert_eq!(
+            sanitize_project_filename("live/set:2026?"),
+            "live_set_2026_.maschine-linux.json"
+        );
+    }
+
+    #[test]
+    fn sanitize_project_filename_falls_back_and_caps_the_length() {
+        assert_eq!(
+            sanitize_project_filename(""),
+            "Untitled.maschine-linux.json"
+        );
+        assert_eq!(
+            sanitize_project_filename("   "),
+            "Untitled.maschine-linux.json"
+        );
+
+        let long = "a".repeat(100);
+        let sanitized = sanitize_project_filename(&long);
+        assert_eq!(sanitized.len(), 80 + ".maschine-linux.json".len());
+        assert!(sanitized.starts_with(&"a".repeat(80)));
+        assert!(sanitized.ends_with(".maschine-linux.json"));
+    }
 }

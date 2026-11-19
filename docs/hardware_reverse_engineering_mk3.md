@@ -135,6 +135,31 @@ Un moteur différentiel (`display_differ`) calcule en temps réel les rectangles
 | **PLUGIN** | Ouvre le synthétiseur chargé (Kick, 303, Nexus) | Accède à la page secondaire d'effets et modulations |
 | **BROWSER** | Explorateur de kits, presets et plugins | Ouvre le gestionnaire de projets (FILE) |
 
+### Couche secondaire officielle des 16 pads (`SHIFT` maintenu)
+
+Le guide matériel Native Instruments numérote le Pad 1 en bas à gauche, puis progresse de gauche à droite et de bas en haut. Ces seize commandes sont globales :
+
+| Pad | Fonction imprimée | Action dans Maschine Linux |
+|---:|---|---|
+| 1 | Undo | Annule la dernière édition de pattern prise en charge |
+| 2 | Redo | Rétablit la dernière édition annulée |
+| 3 | Step Undo | Annule la dernière édition de pas |
+| 4 | Step Redo | Rétablit la dernière édition de pas annulée |
+| 5 | Quantize | Quantifie le pattern actif sur la grille courante |
+| 6 | Quantize 50% | Déplace les événements à mi-chemin de la grille |
+| 7 | Nudge Left | Décale les événements du pattern de 60 ticks vers la gauche |
+| 8 | Nudge Right | Décale les événements du pattern de 60 ticks vers la droite |
+| 9 | Clear | Vide les événements du pattern actif |
+| 10 | Clear Auto | Indisponible : le projet ne stocke pas encore d'automation |
+| 11 | Copy | Copie la liste d'événements du pattern actif |
+| 12 | Paste | Remplace les événements du pattern actif par la copie |
+| 13 | Semitone Down | Transpose les événements du pattern d'un demi-ton vers le bas |
+| 14 | Semitone Up | Transpose les événements du pattern d'un demi-ton vers le haut |
+| 15 | Octave Down | Transpose les événements du pattern d'une octave vers le bas |
+| 16 | Octave Up | Transpose les événements du pattern d'une octave vers le haut |
+
+La disposition et les libellés viennent du [guide officiel Native Instruments sur la disposition MK3](https://docs.native-instruments.com/online-guides/maschine-accessibility/en/maschine-hardware-layout.html). Copy/Paste agit sur tout le pattern, faute de sélection d'événements individuels. L'application desktop montre ces libellés quand Shift est maintenu sur la grille de pads.
+
 ### Raccourcis Écran (Soft Keys 1 à 8) selon le Contexte
 
 #### En mode PATTERN avec SHIFT :

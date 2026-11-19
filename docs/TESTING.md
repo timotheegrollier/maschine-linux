@@ -11,6 +11,8 @@ This guide pairs each documented promise with a concrete check. Cargo tests cove
 | LCD protocol | `cargo test -p maschine-proto` | Valid RGB565 windows, even width, single-pixel expansion, pair counter and exact framebuffer reconstruction (`differ_always_reconstructs_exactly`). |
 | LCD sending | `cargo test -p maschine-hardware` | Completion and termination of an interrupted window, including the short-write case captured in the logs; HID reports and LED feedback. |
 | Hardware navigation | `cargo test -p maschine-hardware selecting_main_view_clears_events_overlay` | Switching from EVENTS to a main view restores its contextual right-hand page. |
+| MK3 Shift-pad mapping | `cargo test -p maschine-hardware shift_layer_routes_all_sixteen_pads_by_maschine_index`; `cargo test -p maschine-hardware documented_erase_pad_chords_remain_distinct_from_shift_pad_layer` | All 16 secondary pad actions route by logical MK3 pad number; Shift+Erase+Pad and Erase+Events+Pad stay distinct. |
+| Shift-pad engine edits | `cargo test -p maschine-engine shift_pad_` | Quantize, 50% quantize, nudge, transpose, clear, clipboard, pattern and step undo/redo, Clear Auto feedback, and Sound-slot restoration. |
 | Engine navigation | `cargo test -p maschine-engine selecting_sampler_restores_contextual_right_screen_after_events` | SAMPLER resumes its right-hand screen after EVENTS; changing view outside ARRANGE leaves Song mode. |
 | WAV import and playback | `cargo test -p maschine-engine` | Signed 32-bit PCM WAV, state preserved if import fails, cached waveform, Group isolation, writing mappings into the project and reloading a relative path. |
 | Mixing during playback | `cargo test -p maschine-engine sound_and_group_mix_edits_reach_active_voices_immediately` | Sound/Group volume and pan are reflected on voices already triggered. |
@@ -22,7 +24,7 @@ This guide pairs each documented promise with a concrete check. Cargo tests cove
 | Mixer per pad | manual / integration coverage | Selecting pads changes the editable Sound; per-pad volume/pan edits apply and persist per Group. |
 | Keyboard/Chords | manual / integration coverage | Root/scale/octave/chord controls change musical state; pads play pitched notes/chords; MK3/GUI screens reflect the state. |
 | GUI/HID integration | `cargo test -p maschine-app` | Event routing, context transitions and the 2×1 RGB565 recovery probe. |
-| General regressions | `cargo test --workspace` | All unit and integration tests in the workspace (167 automated tests). |
+| General regressions | `cargo test --workspace` | All unit and integration tests in the workspace. |
 | Universal filter shortcuts | `cargo test -p maschine-hardware test_4d_encoder_shift_push_cycles_filter_in_all_views test_knobs_shift_filter_cycle_in_plugin_and_arrange` | Shift+Push on 4D encoder and Shift+Knobs cycle sound filter modes across all views without switching screens. |
 | 8 Groups & 128 Tracks | `cargo test -p maschine-hardware test_all_eight_groups_and_pads_routing`; `cargo test -p maschine-engine test_synth_pad_mixer_volume_and_mute` | All 8 groups (A..H) and 16 pads per group route actions independently to distinct voices, synth models, and mix parameters. |
 | Mute/Solo with Groups | `cargo test -p maschine-hardware test_mute_and_solo_with_groups` | Mute/Solo modifiers combined with Group buttons target groups without losing track focus; actively held Solo takes precedence over latched Mute pad mode. |
@@ -30,8 +32,15 @@ This guide pairs each documented promise with a concrete check. Cargo tests cove
 | Sustained Synth Notes | `cargo test -p maschine-engine test_acid_synth_pad_hold_sustains_indefinitely test_wavetable_synth_pad_hold_sustains_indefinitely` | Long pad presses hold notes indefinitely; stuck sensor detection isolates resting noise (< 0x4280) from intentional holds. |
 | Clean App Restart | `cargo test -p maschine-app` | Detached restart via nohup/sh restores original working directory and strips AppImage environment variables. |
 | Optimized binary | `cargo build --workspace --release` | Compilation of the binary and crates in release mode. |
+| Release packages | `./scripts/build-rpm.sh`; `./scripts/build-deb.sh`; `./scripts/build-appimage.sh`; `./scripts/package-release.sh` | Builds RPM, DEB, AppImage and standalone tarball; AppImage metadata validates and `sha256sum --check SHA256SUMS` succeeds from `dist/`. |
 
-GitHub CI runs formatting, Clippy, engine build without Sampler, workspace tests and release build on every push/PR to `master` or `main`.
+GitHub CI runs desktop-entry and AppStream validation, formatting, release-note extraction, Clippy, the engine build without Sampler, workspace tests and release builds on every push/PR to `master` or `main`. A separate job checks the workspace with the declared Rust 1.88 MSRV.
+
+## MK3 Shift-pad matrix and desktop parity
+
+Hold Shift and verify Pads 1–16 in physical order (Pad 1 is bottom-left): Undo, Redo, Step Undo, Step Redo, Quantize, Quantize 50%, Nudge Left, Nudge Right, Clear, Clear Auto, Copy, Paste, Semitone Down, Semitone Up, Octave Down, Octave Up. The pad layer must take precedence over PATTERN/SCENE pad behavior while Shift is held. Undo/Redo should restore pattern events; the step variants should restore step edits. Copy then Clear then Paste should restore the focused Pattern's event list. Pad 10 reports that automation is unavailable because automation is not yet represented in the project model.
+
+Also verify `Shift + Erase + Pad` removes the Sound slot and its events across the Group, and Shift+Pad 1 restores it. `Erase + Events + Pad` removes only the pad's events. On desktop, hold the keyboard Shift key over the 4×4 pad grid to reveal the same 16 labels and click a pad; right-click or Shift-click a sequencer row to clear that Sound's notes. The active Sound panel requires a second confirmation before deleting its slot.
 
 ## Hardware smoke tests
 
@@ -48,7 +57,7 @@ Expected results: `probe` reports `17cc:1600`, the `hidraw` device and an openab
 
 Validation performed for 0.8.0 on a connected MK3 (`serial=1B64AB9B`, `/dev/hidraw2`):
 
-- `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` (167 tests) pass.
+- `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` (all workspace tests) pass.
 - `probe`: device detected, `hidraw open: OK`, ALSA card `MK3` present.
 - GUI hardware startup: LED writer, display thread, first frame OK, serial logged, updater reported up to date.
 - GUI hardware close: the HID loop and display/LED writers are joined, the final splash is sent, the display interface is released without a USB reset, and the log reports `Écrans libérés — logo MK3 par défaut`.

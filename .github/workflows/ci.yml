@@ -19,7 +19,7 @@ jobs:
       - name: Install system dependencies (ALSA, udev, JACK)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libudev-dev libjack-jackd2-dev desktop-file-utils
+          sudo apt-get install -y libasound2-dev libudev-dev libjack-jackd2-dev desktop-file-utils appstream
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -30,6 +30,9 @@ jobs:
 
       - name: Validate Desktop Entry
         run: desktop-file-validate packaging/maschine-linux.desktop
+
+      - name: Validate AppStream Metadata
+        run: appstreamcli validate --no-net packaging/io.github.timotheegrollier.maschine-linux.metainfo.xml
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -50,3 +53,23 @@ jobs:
 
       - name: Build release
         run: cargo build --workspace --release --verbose
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies (ALSA, udev, JACK)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libjack-jackd2-dev
+
+      - uses: dtolnay/rust-toolchain@1.88.0
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+
+      - name: Check workspace on the declared MSRV
+        run: cargo check --workspace --locked

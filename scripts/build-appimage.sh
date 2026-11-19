@@ -29,8 +29,8 @@ mkdir -p "${APP_DIR}/usr/share/icons/hicolor/scalable/apps"
 # 2. Copie du binaire et des métadonnées
 cp target/release/maschine-linux "${APP_DIR}/usr/bin/maschine-linux"
 cp packaging/maschine-linux.desktop "${APP_DIR}/usr/share/applications/maschine-linux.desktop"
-cp packaging/maschine-linux.desktop "${APP_DIR}/maschine-linux.desktop"
-cp packaging/io.github.timotheegrollier.maschine-linux.metainfo.xml "${APP_DIR}/usr/share/metainfo/"
+cp packaging/maschine-linux.desktop "${APP_DIR}/io.github.timotheegrollier.maschine-linux.desktop"
+cp packaging/io.github.timotheegrollier.maschine-linux.metainfo.xml "${APP_DIR}/usr/share/metainfo/io.github.timotheegrollier.maschine-linux.appdata.xml"
 
 # 3. Icônes
 cp packaging/icons/maschine-linux.svg "${APP_DIR}/usr/share/icons/hicolor/scalable/apps/maschine-linux.svg"

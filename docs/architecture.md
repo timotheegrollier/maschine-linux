@@ -2,7 +2,7 @@
 
 ## Principles
 
-- **Rust everywhere**, `edition 2021`, `MSRV 1.75`, `#![deny(warnings)]` in CI.
+- **Rust everywhere**, `edition 2021`, `MSRV 1.88`, `#![deny(warnings)]` in CI.
 - **Real-time**: no `alloc`, `lock` or blocking `syscall` in the audio callback. HID on a dedicated `SCHED_FIFO` thread (or `rtkit` via PipeWire), communication through bounded lock-free `rtrb` / `crossbeam-channel`.
 - **No I/O in `maschine-proto`**: pure codec, offline-testable, fuzzable.
 - **`maschine-hardware` module isolates USB**: `hidraw` strategy first (no `usbhid` detach, hotplug friendly, only needs a udev rule), `nusb`/`rusb` fallback for the bulk display, which has no driver.

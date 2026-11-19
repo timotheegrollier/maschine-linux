@@ -23,7 +23,7 @@ mkdir -p "${OUT_DIR}"
 if command -v cargo-generate-rpm >/dev/null 2>&1; then
     echo "==> Génération RPM via cargo-generate-rpm..."
     (cd crates/maschine-app && cargo generate-rpm --target-dir ../../target)
-    find target/generate-rpm -name "maschine-linux-*.rpm" -exec cp {} "${OUT_DIR}/" \;
+    find target/generate-rpm -name "maschine-linux-${VERSION}-*.rpm" -exec cp {} "${OUT_DIR}/" \;
     echo "✓ RPM créé dans ${OUT_DIR}/"
     ls -la "${OUT_DIR}"/*.rpm
     exit 0

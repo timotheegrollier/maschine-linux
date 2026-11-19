@@ -921,9 +921,9 @@ fn header(frame: &mut DisplayFrame, p: &Pal, snap: &EngineSnapshot, title: &str,
     let strip_w = 16 * seg_w + 15 * gap;
     let strip_x = SCR_W - 10 - strip_w;
     let strip_y = 8usize;
-    for i in 0..16usize {
+    for (i, activity) in snap.pad_activity.iter().enumerate() {
         let x = strip_x + i * (seg_w + gap);
-        let act = snap.pad_activity[i].clamp(0.0, 1.0);
+        let act = activity.clamp(0.0, 1.0);
         let col = if act > 0.02 {
             let base = hue_color(i);
             // Intensité ≈ vélocité : on éclaircit le segment actif.

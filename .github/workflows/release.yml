@@ -186,9 +186,12 @@ jobs:
           done
 
           # The app binary must be installed by all three installable formats.
-          rpm -qlp dist/*.rpm | grep -qx '/usr/bin/maschine-linux'
-          dpkg-deb --contents dist/*.deb | grep -q './usr/bin/maschine-linux'
-          tar -tzf dist/*-linux-x86_64.tar.gz | grep -qx "maschine-linux-${version}/bin/maschine-linux"
+          # grep reads its whole input on purpose: with `pipefail`, a `grep -q`
+          # that exits early makes tar/rpm fail on a closed stdout.
+          rpm -qlp dist/*.rpm | grep -x '/usr/bin/maschine-linux' > /dev/null
+          dpkg-deb --contents dist/*.deb | grep -F './usr/bin/maschine-linux' > /dev/null
+          tar -tzf dist/*-linux-x86_64.tar.gz \
+            | grep -Fx "maschine-linux-${version}/bin/maschine-linux" > /dev/null
 
           chmod +x dist/*.AppImage
           test -s dist/*.AppImage

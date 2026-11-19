@@ -4,88 +4,244 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the GitHub Release (off = dry run: artifacts only)'
+        type: boolean
+        default: false
 
 permissions:
-  contents: write
+  contents: read
+
+# Never cancel a publishing run halfway through; a new tag waits for the
+# previous one to finish instead of leaving a half-uploaded release behind.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  publish-release:
-    name: Build Multi-Distribution Packages & GitHub Release
+  build:
+    name: Build release binary
     runs-on: ubuntu-latest
+    timeout-minutes: 40
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system packaging tools
+      - name: Install system dependencies (ALSA, udev, JACK)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libasound2-dev \
-            libudev-dev \
-            libjack-jackd2-dev \
-            desktop-file-utils \
-            rpm \
-            dpkg-dev \
-            curl \
-            imagemagick
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libasound2-dev libudev-dev libjack-jackd2-dev
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
 
-      - name: Install cargo packaging tools
-        run: |
-          cargo install cargo-generate-rpm --locked || true
-          cargo install cargo-deb --locked || true
-
-      - name: Verify tag matches workspace version
+      - name: Resolve version and verify tag
+        id: version
         run: |
           version="$(grep -m1 '^version =' Cargo.toml | cut -d '"' -f2)"
-          test "v${version}" = "${GITHUB_REF_NAME}" || {
-            echo "error: tag ${GITHUB_REF_NAME} does not match workspace version ${version}" >&2
-            exit 1
-          }
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            test "v${version}" = "${GITHUB_REF_NAME}" || {
+              echo "error: tag ${GITHUB_REF_NAME} does not match workspace version ${version}" >&2
+              exit 1
+            }
+          fi
+          echo "Building v${version}"
 
+      # The single binary every package reuses: no format may ship a different
+      # build of the app.
       - name: Build release binaries
-        run: |
-          cargo build --release --locked -p maschine-app
+        run: cargo build --release --locked -p maschine-app
 
-      - name: Validate Desktop Entry
-        run: desktop-file-validate packaging/maschine-linux.desktop
-
-      - name: Build Fedora / Nobara RPM Package
+      - name: Smoke test binary
         run: |
-          ./scripts/build-rpm.sh
+          ./target/release/maschine-linux --version
+          ./target/release/maschine-linux --version | grep -q "${{ steps.version.outputs.version }}"
+          ./target/release/maschine-linux probe
 
-      - name: Build Universal AppImage (All Linux distros)
-        run: |
-          ./scripts/build-appimage.sh
+      - name: Upload release binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: maschine-linux-x86_64
+          path: target/release/maschine-linux
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Build Debian / Ubuntu DEB Package
-        run: |
-          ./scripts/build-deb.sh
+  packages:
+    name: Package ${{ matrix.name }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: RPM (Fedora / Nobara)
+            target: rpm
+            script: ./scripts/build-rpm.sh
+            tool: cargo-generate-rpm
+          - name: DEB (Debian / Ubuntu)
+            target: deb
+            script: ./scripts/build-deb.sh
+            tool: cargo-deb
+          - name: AppImage (universal)
+            target: appimage
+            script: ./scripts/build-appimage.sh
+            tool: ''
+          - name: Tarball (standalone)
+            target: tarball
+            script: ./scripts/package-release.sh
+            tool: ''
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Package Universal Standalone Tarball & SHA-256 Checksums
-        run: |
-          ./scripts/package-release.sh
+      - name: Restore the compiled binary
+        uses: actions/download-artifact@v4
+        with:
+          name: maschine-linux-x86_64
+          path: target/release
 
-      - name: Verify generated packages in dist/
+      - name: Make the restored binary executable
+        run: chmod +x target/release/maschine-linux
+
+      # cargo-deb / cargo-generate-rpm read Cargo.toml through cargo; without
+      # --no-build they would start a fresh compile of the app.
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.tool != ''
+        with:
+          profile: minimal
+
+      - name: Install packaging tool
+        if: matrix.tool != ''
+        uses: taiki-e/install-action@v2
+        with:
+          tool: ${{ matrix.tool }}
+
+      - name: Build package
+        env:
+          MASCHINE_SKIP_BUILD: '1'
+          MASCHINE_SKIP_CHECKSUMS: ${{ matrix.target == 'tarball' && '1' || '' }}
+        run: ${{ matrix.script }}
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  verify:
+    name: Verify packages
+    needs: [build, packages]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect every package
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pkg-*
+          path: dist
+          merge-multiple: true
+
+      - name: Install verification tools
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rpm
+
+      - name: Verify package contents and versions
+        run: |
+          set -euo pipefail
+          version="${{ needs.build.outputs.version }}"
+
           ls -lh dist/
-          cat dist/SHA256SUMS
+
+          # Every format must be present exactly once, with the right version.
+          for glob in '*.rpm' '*.deb' '*.AppImage' '*-linux-x86_64.tar.gz'; do
+            # shellcheck disable=SC2086
+            set -- dist/${glob}
+            if [[ ! -f "$1" ]]; then
+              echo "error: no ${glob} package in dist/" >&2
+              exit 1
+            fi
+            case "$1" in
+              *"${version}"*) ;;
+              *)
+                echo "error: $1 does not carry version ${version}" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          # The app binary must be installed by all three installable formats.
+          rpm -qlp dist/*.rpm | grep -qx '/usr/bin/maschine-linux'
+          dpkg-deb --contents dist/*.deb | grep -q './usr/bin/maschine-linux'
+          tar -tzf dist/*-linux-x86_64.tar.gz | grep -qx "maschine-linux-${version}/bin/maschine-linux"
+
+          chmod +x dist/*.AppImage
+          test -s dist/*.AppImage
+
+      - name: Generate and check SHA-256 sums
+        run: |
+          set -euo pipefail
+          cd dist
+          rm -f SHA256SUMS
+          sha256sum *.rpm *.deb *.AppImage *-linux-x86_64.tar.gz > SHA256SUMS
+          sha256sum --check SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload verified assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: [build, verify]
+    # Tag pushes publish automatically; manual runs publish only when asked,
+    # so the whole pipeline can be rehearsed without touching the release page.
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # Full history: release notes fall back to the commits since the last tag.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download verified assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist
 
       - name: Extract English release notes
         run: |
-          mkdir -p dist
-          ./scripts/extract-release-notes.sh "${GITHUB_REF_NAME#v}" > dist/RELEASE_NOTES.md
+          ./scripts/extract-release-notes.sh "${{ needs.build.outputs.version }}" > dist/RELEASE_NOTES.md
           cat dist/RELEASE_NOTES.md
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ needs.build.outputs.version }}
+          name: v${{ needs.build.outputs.version }}
           files: |
             dist/*.rpm
             dist/*.AppImage
@@ -94,5 +250,6 @@ jobs:
             dist/SHA256SUMS
           body_path: dist/RELEASE_NOTES.md
           generate_release_notes: false
+          fail_on_unmatched_files: true
           draft: false
           prerelease: false

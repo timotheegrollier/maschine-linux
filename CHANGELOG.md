@@ -2,6 +2,14 @@
 
 All notable changes.
 
+## [Unreleased]
+
+### CI/CD
+
+- **Faster pipeline**: CI is split into parallel `metadata`, `test`, `msrv` and `release-build` jobs with a shared cargo cache and `concurrency` cancellation; tests run under `cargo nextest`. Release now compiles the binary once and packages RPM/DEB/AppImage/tarball in parallel from that artifact instead of recompiling it four times (twice with a different feature set).
+- **Release verification gate**: a `verify` job checks that each package carries the expected version and ships `/usr/bin/maschine-linux`, then generates `SHA256SUMS` before anything is published. A manual `publish` switch runs the whole pipeline as a dry run.
+- **Consistent binary in every format**: AppImage and tarball no longer rebuild with `--no-default-features` (which dropped the GUI, audio, USB and MIDI features) but reuse the tested default-feature binary; the packaging scripts accept `MASCHINE_SKIP_BUILD` / `MASCHINE_SKIP_CHECKSUMS` and fail instead of producing an empty package.
+
 ## [0.10.0] - 2026-11-19
 
 ### Added

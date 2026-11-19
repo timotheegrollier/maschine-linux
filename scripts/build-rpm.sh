@@ -11,9 +11,15 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${ROOT_DIR}"
 
 VERSION="$(grep -m1 '^version =' Cargo.toml | cut -d '"' -f2)"
-if [ ! -f "target/release/maschine-linux" ]; then
+# La CI fournit le binaire déjà compilé (MASCHINE_SKIP_BUILD=1) : un seul
+# build pour tous les formats, et jamais une variante différente par paquet.
+if [[ "${MASCHINE_SKIP_BUILD:-0}" != "1" ]] && [ ! -f "target/release/maschine-linux" ]; then
     echo "==> Compilation du binaire release (v${VERSION})..."
-    cargo build --release -p maschine-app --no-default-features || cargo build --release --locked -p maschine-app
+    cargo build --release --locked -p maschine-app
+fi
+if [ ! -f "target/release/maschine-linux" ]; then
+    echo "error: target/release/maschine-linux introuvable" >&2
+    exit 1
 fi
 
 OUT_DIR="${ROOT_DIR}/dist"

@@ -24,7 +24,7 @@ This guide pairs each documented promise with a concrete check. Cargo tests cove
 | Mixer per pad | manual / integration coverage | Selecting pads changes the editable Sound; per-pad volume/pan edits apply and persist per Group. |
 | Keyboard/Chords | manual / integration coverage | Root/scale/octave/chord controls change musical state; pads play pitched notes/chords; MK3/GUI screens reflect the state. |
 | GUI/HID integration | `cargo test -p maschine-app` | Event routing, context transitions and the 2×1 RGB565 recovery probe. |
-| General regressions | `cargo test --workspace` | All unit and integration tests in the workspace. |
+| General regressions | `cargo nextest run --workspace` (ou `cargo test --workspace`) | All unit and integration tests in the workspace. |
 | Universal filter shortcuts | `cargo test -p maschine-hardware test_4d_encoder_shift_push_cycles_filter_in_all_views test_knobs_shift_filter_cycle_in_plugin_and_arrange` | Shift+Push on 4D encoder and Shift+Knobs cycle sound filter modes across all views without switching screens. |
 | 8 Groups & 128 Tracks | `cargo test -p maschine-hardware test_all_eight_groups_and_pads_routing`; `cargo test -p maschine-engine test_synth_pad_mixer_volume_and_mute` | All 8 groups (A..H) and 16 pads per group route actions independently to distinct voices, synth models, and mix parameters. |
 | Mute/Solo with Groups | `cargo test -p maschine-hardware test_mute_and_solo_with_groups` | Mute/Solo modifiers combined with Group buttons target groups without losing track focus; actively held Solo takes precedence over latched Mute pad mode. |
@@ -34,7 +34,7 @@ This guide pairs each documented promise with a concrete check. Cargo tests cove
 | Optimized binary | `cargo build --workspace --release` | Compilation of the binary and crates in release mode. |
 | Release packages | `./scripts/build-rpm.sh`; `./scripts/build-deb.sh`; `./scripts/build-appimage.sh`; `./scripts/package-release.sh` | Builds RPM, DEB, AppImage and standalone tarball; AppImage metadata validates and `sha256sum --check SHA256SUMS` succeeds from `dist/`. |
 
-GitHub CI runs desktop-entry and AppStream validation, formatting, release-note extraction, Clippy, the engine build without Sampler, workspace tests and release builds on every push/PR to `master` or `main`. A separate job checks the workspace with the declared Rust 1.88 MSRV.
+GitHub CI runs these checks in parallel jobs: `metadata` (desktop-entry and AppStream validation, formatting, release-note extraction, shell syntax), `test` (Clippy, the engine build without Sampler, `cargo nextest run --workspace`, doctests), `msrv` (the workspace with the declared Rust 1.88 MSRV) and, on every push to `master`, a release build with a binary smoke test (`--version`, `probe`). The Release pipeline builds the binary once, packages RPM/DEB/AppImage/tarball in parallel, verifies each package's contents and version, then publishes. See [CI_CD_RELEASE.md](CI_CD_RELEASE.md) for the dry-run procedure.
 
 ## MK3 Shift-pad matrix and desktop parity
 

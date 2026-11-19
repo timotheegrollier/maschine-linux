@@ -13,7 +13,16 @@ cd "${ROOT_DIR}"
 VERSION="$(grep -m1 '^version =' Cargo.toml | cut -d '"' -f2)"
 echo "==> Préparation du paquet universel AppImage (v${VERSION})..."
 
-cargo build --release -p maschine-app --no-default-features
+# La CI compile le binaire une seule fois et le fournit à tous les formats
+# (MASCHINE_SKIP_BUILD=1) ; en local, on compile ici le profil release complet.
+if [[ "${MASCHINE_SKIP_BUILD:-0}" != "1" ]]; then
+    cargo build --release --locked -p maschine-app
+fi
+if [[ ! -x target/release/maschine-linux ]]; then
+    echo "error: target/release/maschine-linux introuvable" >&2
+    echo "       compilez-le (cargo build --release -p maschine-app) ou retirez MASCHINE_SKIP_BUILD=1" >&2
+    exit 1
+fi
 
 APP_DIR="${ROOT_DIR}/target/AppDir"
 OUT_DIR="${ROOT_DIR}/dist"

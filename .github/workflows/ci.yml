@@ -5,28 +5,40 @@ on:
     branches: [master, main]
   pull_request:
     branches: [master, main]
+  workflow_dispatch:
+
+# A newer push on the same branch cancels the previous still-running check, so
+# obsolete commits never hold a runner for the whole pipeline duration.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+  # Keep usable backtraces on failure without paying for full debuginfo.
+  CARGO_PROFILE_DEV_DEBUG: 1
+  CARGO_PROFILE_TEST_DEBUG: 1
 
 jobs:
-  check:
+  metadata:
+    name: Metadata & formatting
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies (ALSA, udev, JACK)
+      - name: Install validation tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev libudev-dev libjack-jackd2-dev desktop-file-utils appstream
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq desktop-file-utils appstream
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+          components: rustfmt
 
       - name: Validate Desktop Entry
         run: desktop-file-validate packaging/maschine-linux.desktop
@@ -42,27 +54,61 @@ jobs:
           version="$(grep -m1 '^version =' Cargo.toml | cut -d '"' -f2)"
           ./scripts/extract-release-notes.sh "${version}" > /dev/null
 
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Check release script syntax
+        run: bash -n scripts/*.sh
 
-      - name: Check optional sampler-free engine
-        run: cargo check -p maschine-engine --no-default-features
-
-      - name: Test
-        run: cargo test --workspace
-
-      - name: Build release
-        run: cargo build --workspace --release --verbose
-
-  msrv:
+  test:
+    name: Clippy & tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - name: Install system dependencies (ALSA, udev, JACK)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev libudev-dev libjack-jackd2-dev
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libasound2-dev libudev-dev libjack-jackd2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # One shared cache key: the first job to need a crate compiles it, later
+      # runs restore it. Only master writes the cache, so PRs never fight over it.
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Check optional sampler-free engine
+        run: cargo check -p maschine-engine --no-default-features --locked
+
+      - name: Test
+        run: cargo nextest run --workspace
+
+      - name: Documentation tests
+        run: cargo test --doc --workspace --locked
+
+  msrv:
+    name: MSRV 1.88
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies (ALSA, udev, JACK)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libasound2-dev libudev-dev libjack-jackd2-dev
 
       - uses: dtolnay/rust-toolchain@1.88.0
 
@@ -70,6 +116,41 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: msrv
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Check workspace on the declared MSRV
         run: cargo check --workspace --locked
+
+  release-build:
+    name: Release build & binary smoke test
+    # Pull requests stop at Clippy + tests; every push to master (and manual
+    # runs) proves the optimized profile still compiles and starts. Tags reuse
+    # the exact same build in Release, so nothing ships unverified.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies (ALSA, udev, JACK)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libasound2-dev libudev-dev libjack-jackd2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+
+      - name: Build release binary
+        run: cargo build --release --locked -p maschine-app
+
+      - name: Smoke test binary
+        run: |
+          version="$(grep -m1 '^version =' Cargo.toml | cut -d '"' -f2)"
+          ./target/release/maschine-linux --version
+          ./target/release/maschine-linux --version | grep -q "${version}"
+          ./target/release/maschine-linux probe

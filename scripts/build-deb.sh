@@ -13,7 +13,15 @@ cd "${ROOT_DIR}"
 VERSION="$(grep -m1 '^version =' Cargo.toml | cut -d '"' -f2)"
 echo "==> Préparation du paquet Debian/Ubuntu (v${VERSION})..."
 
-cargo build --release --locked -p maschine-app
+# La CI fournit le binaire déjà compilé (MASCHINE_SKIP_BUILD=1).
+if [[ "${MASCHINE_SKIP_BUILD:-0}" != "1" ]]; then
+    cargo build --release --locked -p maschine-app
+fi
+if [[ ! -x target/release/maschine-linux ]]; then
+    echo "error: target/release/maschine-linux introuvable" >&2
+    echo "       compilez-le (cargo build --release -p maschine-app) ou retirez MASCHINE_SKIP_BUILD=1" >&2
+    exit 1
+fi
 
 OUT_DIR="${ROOT_DIR}/dist"
 mkdir -p "${OUT_DIR}"

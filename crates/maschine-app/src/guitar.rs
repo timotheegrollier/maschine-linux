@@ -510,8 +510,8 @@ impl GuitarProcessor {
         }
 
         let monitor_gain = c.monitor_gain.load(Ordering::Relaxed);
-        for i in 0..frames {
-            let sample = self.out_buf[i] * monitor_gain;
+        for (i, &value) in self.out_buf[..frames].iter().enumerate() {
+            let sample = value * monitor_gain;
             let base = i * channels;
             for ch in 0..channels {
                 let factor = if ch < 2 { 1.0 } else { hp_vol };

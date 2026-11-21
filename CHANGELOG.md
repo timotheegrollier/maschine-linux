@@ -2,6 +2,27 @@
 
 All notable changes.
 
+## [0.11.3] - 2026-11-21
+
+### Fixes & Improvements
+
+- **Ampli guitare & capture Line In 1 sur Maschine MK3** :
+  - **Auto-configuration et routage PipeWire pro-audio** : Détection automatique de la source audio Maschine MK3 Pro (`node 132`) sous PipeWire/WirePlumber et définition en source par défaut via `wpctl`.
+  - **Repli automatique ALSA / PipeWire** : Si l'accès matériel direct ALSA est occupé par PipeWire (`EBUSY`), le flux de capture bascule de manière transparente sur le graphe PipeWire connecté aux prises Line In physiques de la MK3.
+  - **Sélection explicite du canal d'entrée** : Prise en charge de `LINE IN 1` (par défaut, AUX0/canal 0), `LINE IN 2` et `STEREO`, évitant l'atténuation de 6 dB liée au downmix mono.
+  - **Support du format pro-audio PCM 32-bit** (`cpal::SampleFormat::I32`).
+  - **Ampli actif par défaut avec accordage silencieux (Silent Tuning)** : Le signal guitare est immédiatement monitoré à l'ouverture, et la coupure de `MONITOR` laisse l'accordeur et l'analyseur spectral actifs pour s'accorder en silence sur scène.
+- **Contrôles matériels MK3 dédiés pour l'ampli guitare** :
+  - Les 8 encodeurs rotatifs d'écran pilotent en direct les 8 paramètres de l'ampli (`GAIN`, `BASS`, `MID`, `TREBLE`, `PRESENCE`, `SAG`, `MASTER`, `MONITOR`).
+  - Les 8 soft keys MK3 intègrent `ACTIF`, `MONITOR`, `BYPASS`, et le cycle de canal d'entrée `INPUT+` (`LINE 1` / `LINE 2` / `STEREO`).
+  - Nouveau sélecteur interactif de canal d'entrée dans la vue GUI.
+
+### Validation
+
+- `cargo test --workspace` (219 tests unitaires, d'intégration et fuzzing réussis)
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- `cargo fmt --all -- --check`
+
 ## [0.11.2] - 2026-11-21
 
 ### Features

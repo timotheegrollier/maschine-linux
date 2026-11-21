@@ -115,8 +115,7 @@ fn render_controls(ui: &mut egui::Ui, app: &mut crate::gui::app::GuiApp, c: &Mac
 
 fn render_analysis(ui: &mut egui::Ui, app: &mut crate::gui::app::GuiApp, c: &MachColors) {
     let t = app.guitar.telemetry.lock().clone();
-    ui.horizontal(|ui| {
-        // VU mètres entrée / sortie.
+    ui.horizontal_wrapped(|ui| {
         card_frame().show(ui, |ui| {
             ui.set_min_width(220.0);
             ui.label(egui::RichText::new("NIVEAUX").small().color(c.text_dim));

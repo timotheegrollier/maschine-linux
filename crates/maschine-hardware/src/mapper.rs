@@ -405,6 +405,14 @@ pub enum MapperAction {
     KickDriveTypeDelta(i32),
     /// Kick Synth : cycle mode de filtre
     KickFilterModeDelta(i32),
+    /// Kick Synth : cycle forme d'onde
+    KickWaveformDelta(i32),
+    /// Kick Synth : modulation FM
+    KickFmAmtDelta(f32),
+    /// Kick Synth : ratio FM
+    KickFmRatioDelta(f32),
+    /// Kick Synth : tonalité de saturation
+    KickToneDelta(f32),
     // ─── Wavetable / Nexus Synth (tab 4) ──────────────────────
     /// Knob 1 : Cutoff filtre Wavetable
     WavetableCutoffDelta(f32),
@@ -556,6 +564,8 @@ pub struct HardwareMapper {
     pub right_tab: u8,
     /// Page de l'éditeur PLUGIN (0: Sound, 1: TB-303)
     pub plugin_page: u8,
+    /// Sous-page active de paramètres synthé (0: Main, 1: Filtre & Disto)
+    pub synth_param_page: u8,
     /// Son actif sélectionné pour édition Step/Keyboard (0..15)
     pub active_sound: u8,
     /// Preset sélectionné dans le Browser (0..15)
@@ -671,6 +681,7 @@ impl HardwareMapper {
             left_tab: 0,
             right_tab: 0,
             plugin_page: 0,
+            synth_param_page: 0,
             active_sound: 0,
             browser_preset_idx: 0,
             browser_kind: 0,
@@ -1693,12 +1704,18 @@ impl HardwareMapper {
             || self.has_acid_synth
         {
             if self.has_kick_synth {
-                if self.shift_held && idx == 5 {
-                    actions.push(MapperAction::KickDriveTypeDelta(delta.signum()));
-                } else if self.shift_held && idx == 6 {
-                    actions.push(MapperAction::KickFilterCutoffDelta(delta as f32));
-                } else if self.shift_held && idx == 7 {
-                    actions.push(MapperAction::KickFilterModeDelta(delta.signum()));
+                let is_page2 = (self.synth_param_page == 1) ^ self.shift_held;
+                if is_page2 {
+                    match idx {
+                        0 => actions.push(MapperAction::KickWaveformDelta(delta.signum())),
+                        1 => actions.push(MapperAction::KickFmAmtDelta(delta as f32 * 0.02)),
+                        2 => actions.push(MapperAction::KickFmRatioDelta(delta as f32 * 0.1)),
+                        3 => actions.push(MapperAction::KickToneDelta(delta as f32 * 0.02)),
+                        4 => actions.push(MapperAction::KickDriveTypeDelta(delta.signum())),
+                        5 => actions.push(MapperAction::KickFilterModeDelta(delta.signum())),
+                        6 => actions.push(MapperAction::KickFilterCutoffDelta(delta as f32)),
+                        _ => actions.push(MapperAction::KickFilterResoDelta(delta as f32)),
+                    }
                 } else {
                     match idx {
                         0 => actions.push(MapperAction::KickTuneDelta(delta as f32)),
@@ -1712,7 +1729,8 @@ impl HardwareMapper {
                     }
                 }
             } else if self.has_wavetable_synth {
-                if self.shift_held {
+                let is_page2 = (self.synth_param_page == 1) ^ self.shift_held;
+                if is_page2 {
                     match idx {
                         0 => actions.push(MapperAction::WavetableFilterModeCycle),
                         1 => actions.push(MapperAction::WavetableUnisonVoicesDelta(delta.signum())),
@@ -3684,14 +3702,14 @@ mod tests {
         m.has_kick_synth = true;
         m.shift_held = true;
 
-        // Shift + Knob 6 (index 5) = Disto Type
-        let _ = m.handle_hardware_event(knob_ev(6, 200, 2));
-        let a = m.handle_hardware_event(knob_ev(6, 201, 3));
+        // Shift + Knob 5 (index 4) = Disto Type
+        let _ = m.handle_hardware_event(knob_ev(5, 200, 2));
+        let a = m.handle_hardware_event(knob_ev(5, 201, 3));
         assert_eq!(a, vec![MapperAction::KickDriveTypeDelta(1)]);
 
-        // Shift + Knob 8 (index 7) = Filter Mode
-        let _ = m.handle_hardware_event(knob_ev(8, 300, 4));
-        let a = m.handle_hardware_event(knob_ev(8, 301, 5));
+        // Shift + Knob 6 (index 5) = Filter Mode
+        let _ = m.handle_hardware_event(knob_ev(6, 300, 4));
+        let a = m.handle_hardware_event(knob_ev(6, 301, 5));
         assert_eq!(a, vec![MapperAction::KickFilterModeDelta(1)]);
 
         // 3. En vue WAVETABLE SYNTH (left_tab = 4, plugin_page = 1, has_wavetable_synth = true)

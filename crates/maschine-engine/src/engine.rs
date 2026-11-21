@@ -390,6 +390,8 @@ pub enum EngineEvent {
     KickWaveformDelta(i32),
     /// Ajuste la modulation FM du Kick Synth
     KickFmAmtDelta(f32),
+    /// Ajuste le ratio de modulation FM du Kick Synth
+    KickFmRatioDelta(f32),
     /// Ajuste le drive du Kick Synth
     KickDriveDelta(f32),
     /// Ajuste l'accordage (tune) du Kick Synth
@@ -3215,6 +3217,11 @@ impl Engine {
                 p.fm_amount = (p.fm_amount + delta).clamp(0.0, 1.0);
                 let _ = self.handle_event(EngineEvent::KickSetParams(p));
             }
+            EngineEvent::KickFmRatioDelta(delta) => {
+                let mut p = self.kick_synth.params.clone();
+                p.fm_ratio = (p.fm_ratio + delta * 0.1).clamp(0.25, 8.0);
+                let _ = self.handle_event(EngineEvent::KickSetParams(p));
+            }
             EngineEvent::KickDriveDelta(delta) => {
                 let mut p = self.kick_synth.params.clone();
                 p.drive = (p.drive + delta * 0.02).clamp(0.0, 1.0);
@@ -4618,15 +4625,23 @@ impl Engine {
                 }
                 4 => {
                     if self.focus_sound_has_wavetable() {
-                        return [
-                            "FLT MOD", "UNISON", "OSC1 WV", "OSC2 WV", "CHORUS", "DELAY", "REVERB",
-                            "VOLUME",
-                        ];
-                    } else if self.focus_sound_has_kick() {
-                        let is_page2 = (self.synth_param_page == 1) ^ true;
+                        let is_page2 = (self.synth_param_page == 1) ^ self.shift_held;
                         if is_page2 {
                             return [
-                                "PAGE 1/2", "DRV TYP", "WAVE", "OFF", "LP", "HP", "BP", "NOTCH",
+                                "PAGE 1/2", "FLT MOD", "UNISON", "OSC1 WV", "OSC2 WV", "CHORUS",
+                                "DELAY", "REVERB",
+                            ];
+                        } else {
+                            return [
+                                "PAGE 1/2", "PRES <", "PRES >", "PIANO", "M1 PIANO", "808 SUB",
+                                "REESE", "BROWSER",
+                            ];
+                        }
+                    } else if self.focus_sound_has_kick() {
+                        let is_page2 = (self.synth_param_page == 1) ^ self.shift_held;
+                        if is_page2 {
+                            return [
+                                "PAGE 1/2", "DRV TYP", "WAVE", "FLT MOD", "LP", "HP", "BP", "NTCH/PK",
                             ];
                         } else {
                             return [
@@ -4727,7 +4742,7 @@ impl Engine {
                     let is_page2 = self.synth_param_page == 1;
                     if is_page2 {
                         [
-                            "PAGE 1/2", "DRV TYP", "WAVE", "OFF", "LP", "HP", "BP", "NOTCH",
+                            "PAGE 1/2", "DRV TYP", "WAVE", "FLT MOD", "LP", "HP", "BP", "NTCH/PK",
                         ]
                     } else {
                         [
@@ -4747,10 +4762,18 @@ impl Engine {
                         "BROWSER",
                     ]
                 } else if self.focus_sound_has_wavetable() {
-                    [
-                        "PRES <", "PRES >", "PIANO", "M1 PIANO", "808 SUB", "REESE", "TITANIUM",
-                        "STRINGS",
-                    ]
+                    let is_page2 = self.synth_param_page == 1;
+                    if is_page2 {
+                        [
+                            "PAGE 1/2", "FLT MOD", "UNISON", "OSC1 WV", "OSC2 WV", "CHORUS",
+                            "DELAY", "REVERB",
+                        ]
+                    } else {
+                        [
+                            "PAGE 1/2", "PRES <", "PRES >", "PIANO", "M1 PIANO", "808 SUB",
+                            "REESE", "BROWSER",
+                        ]
+                    }
                 } else {
                     [
                         "SND <", "SND >", "ECOUTE", "CYC FLT", "LP/HP/BP", "NOTCH", "PEAK", "OFF",
@@ -5013,16 +5036,7 @@ impl Engine {
             };
         }
         if self.left_tab == 4 && self.focus_sound_has_wavetable() {
-            return match idx {
-                0 => self.handle_event(EngineEvent::WavetableFilterModeCycle),
-                1 => self.handle_event(EngineEvent::WavetableUnisonVoicesDelta(1)),
-                2 => self.handle_event(EngineEvent::WavetableOsc1WaveCycle),
-                3 => self.handle_event(EngineEvent::WavetableOsc2WaveCycle),
-                4 => self.handle_event(EngineEvent::WavetableChorusDelta(0.1)),
-                5 => self.handle_event(EngineEvent::WavetableDelayDelta(0.1)),
-                6 => self.handle_event(EngineEvent::WavetableReverbDelta(0.1)),
-                _ => self.handle_event(EngineEvent::WavetableVolumeDelta(1.0)),
-            };
+            return self.handle_soft_key_synth(idx);
         }
         if self.left_tab == 4 && self.focus_sound_has_kick() {
             return self.handle_soft_key_synth(idx);
@@ -5397,9 +5411,7 @@ impl Engine {
                 match idx {
                     1 => self.handle_event(EngineEvent::KickDriveTypeDelta(1)),
                     2 => self.handle_event(EngineEvent::KickWaveformDelta(1)),
-                    3 => self.handle_event(EngineEvent::KickSetFilterMode(
-                        crate::kick_synth::KickFilterMode::Off,
-                    )),
+                    3 => self.handle_event(EngineEvent::KickFilterModeDelta(1)),
                     4 => self.handle_event(EngineEvent::KickSetFilterMode(
                         crate::kick_synth::KickFilterMode::LowPass,
                     )),
@@ -5409,9 +5421,15 @@ impl Engine {
                     6 => self.handle_event(EngineEvent::KickSetFilterMode(
                         crate::kick_synth::KickFilterMode::BandPass,
                     )),
-                    _ => self.handle_event(EngineEvent::KickSetFilterMode(
-                        crate::kick_synth::KickFilterMode::Notch,
-                    )),
+                    _ => {
+                        let cur = self.kick_synth.params.filter_mode;
+                        let next = if cur == crate::kick_synth::KickFilterMode::Notch {
+                            crate::kick_synth::KickFilterMode::Peak
+                        } else {
+                            crate::kick_synth::KickFilterMode::Notch
+                        };
+                        self.handle_event(EngineEvent::KickSetFilterMode(next))
+                    }
                 }
             } else {
                 match idx {
@@ -5454,15 +5472,34 @@ impl Engine {
                 }
             }
         } else if self.focus_sound_has_wavetable() {
-            match idx {
-                0 => self.handle_event(EngineEvent::WavetablePrevPreset),
-                1 => self.handle_event(EngineEvent::WavetableNextPreset),
-                2 => self.handle_event(EngineEvent::WavetableSetPreset(0)),
-                3 => self.handle_event(EngineEvent::WavetableSetPreset(1)),
-                4 => self.handle_event(EngineEvent::WavetableSetPreset(4)),
-                5 => self.handle_event(EngineEvent::WavetableSetPreset(5)),
-                6 => self.handle_event(EngineEvent::WavetableSetPreset(8)),
-                _ => self.handle_event(EngineEvent::WavetableSetPreset(11)),
+            let is_page2 = (self.synth_param_page == 1) ^ self.shift_held;
+            if idx == 0 {
+                return self.handle_event(EngineEvent::ToggleSynthParamPage);
+            }
+            if is_page2 {
+                match idx {
+                    1 => self.handle_event(EngineEvent::WavetableFilterModeCycle),
+                    2 => self.handle_event(EngineEvent::WavetableUnisonVoicesDelta(1)),
+                    3 => self.handle_event(EngineEvent::WavetableOsc1WaveCycle),
+                    4 => self.handle_event(EngineEvent::WavetableOsc2WaveCycle),
+                    5 => self.handle_event(EngineEvent::WavetableChorusDelta(0.1)),
+                    6 => self.handle_event(EngineEvent::WavetableDelayDelta(0.1)),
+                    _ => self.handle_event(EngineEvent::WavetableReverbDelta(0.1)),
+                }
+            } else {
+                match idx {
+                    1 => self.handle_event(EngineEvent::WavetablePrevPreset),
+                    2 => self.handle_event(EngineEvent::WavetableNextPreset),
+                    3 => self.handle_event(EngineEvent::WavetableSetPreset(0)),
+                    4 => self.handle_event(EngineEvent::WavetableSetPreset(1)),
+                    5 => self.handle_event(EngineEvent::WavetableSetPreset(4)),
+                    6 => self.handle_event(EngineEvent::WavetableSetPreset(5)),
+                    _ => {
+                        self.left_tab = 3;
+                        self.browser_kind = 2;
+                        Ok(())
+                    }
+                }
             }
         } else {
             self.handle_soft_key_sampler(idx)

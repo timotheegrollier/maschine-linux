@@ -295,6 +295,7 @@ fn sync_mapper_context(
     mapper.right_tab = snap.right_tab;
     mapper.browser_kind = snap.browser_kind;
     mapper.plugin_page = snap.plugin_page;
+    mapper.synth_param_page = snap.synth_param_page;
     mapper.mixer_mode = snap.mixer_mode;
     mapper.has_kick_synth = snap.has_kick_synth;
     mapper.has_acid_synth = snap.has_acid_synth;
@@ -1324,6 +1325,26 @@ fn cmd_daemon(
                     let _ = engine
                         .lock()
                         .handle_event(EngineEvent::KickFilterModeDelta(delta));
+                }
+                MapperAction::KickWaveformDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::KickWaveformDelta(delta));
+                }
+                MapperAction::KickFmAmtDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::KickFmAmtDelta(delta));
+                }
+                MapperAction::KickFmRatioDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::KickFmRatioDelta(delta));
+                }
+                MapperAction::KickToneDelta(delta) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::KickToneDelta(delta));
                 }
                 MapperAction::SetMixerMode(mode) => {
                     let _ = engine.lock().handle_event(EngineEvent::SetMixerMode(mode));

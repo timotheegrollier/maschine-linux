@@ -311,7 +311,7 @@ fn render_sound_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine
                         ui.selectable_value(&mut kind, FilterKind::Peak, "Peak (cloche)");
                     });
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if chip(ui, "OFF", filter_kind == FilterKind::Off, c.text_dim) {
                     kind = FilterKind::Off;
                 }
@@ -341,14 +341,13 @@ fn render_sound_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine
                         kind,
                     });
             }
-            let filter_on = filter_kind != FilterKind::Off;
             draw_filter_curve(
                 ui,
                 (card_w - 26.0).max(160.0),
                 88.0,
                 cutoff,
                 reso,
-                filter_on,
+                filter_kind,
             );
             ui.add_space(2.0);
             let mut cutoff_spec = KnobSpec::log("CUTOFF", " Hz", 20.0, 20000.0, 20000.0);
@@ -356,7 +355,7 @@ fn render_sound_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine
             let mut reso_spec = KnobSpec::linear("RESO", " %", 0.0, 1.0, 0.0);
             reso_spec.size = 38.0;
             ui.horizontal_wrapped(|ui| {
-                if !filter_on {
+                if filter_kind == FilterKind::Off {
                     ui.label(
                         egui::RichText::new(
                             "Filtre inactif — choisis Low-pass pour entendre le cutoff.",
@@ -858,7 +857,7 @@ fn render_acid_advanced(
                 70.0,
                 p.cutoff_hz,
                 p.resonance,
-                true,
+                FilterKind::LowPass,
             );
             ui.add_space(2.0);
             let mut cutoff = KnobSpec::log("CUTOFF", " Hz", 20.0, 10000.0, 500.0);
@@ -1050,34 +1049,61 @@ fn draw_filter_curve(
     height: f32,
     cutoff_hz: f32,
     resonance: f32,
-    on: bool,
+    kind: FilterKind,
 ) {
     let c = MachColors::dark();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(rect, egui::CornerRadius::same(4), c.bg);
-    if on {
+    if kind != FilterKind::Off {
         let norm_cutoff = ((cutoff_hz.max(20.0).log10() - 20.0f32.log10())
             / (20000.0f32.log10() - 20.0f32.log10()))
         .clamp(0.03, 0.97);
         let cutoff_x = rect.left() + norm_cutoff * rect.width();
         let mut points = Vec::with_capacity(64);
+        let base_y = rect.bottom() - 18.0;
+        let bump_h = resonance.clamp(0.0, 1.0) * 26.0;
         for step in 0..=60 {
             let x = rect.left() + (step as f32 / 60.0) * rect.width();
-            let dist = (x - cutoff_x) / 32.0;
-            let bump = resonance.clamp(0.0, 1.0) * 30.0 * (-dist * dist).exp();
-            let rolloff = if x < cutoff_x {
-                0.0
-            } else {
-                ((x - cutoff_x) / 12.0).powi(2)
+            let dist = (x - cutoff_x) / 28.0;
+            let bump = bump_h * (-dist * dist).exp();
+            let y_raw = match kind {
+                FilterKind::LowPass => {
+                    let rolloff = if x < cutoff_x { 0.0 } else { ((x - cutoff_x) / 10.0).powi(2) };
+                    base_y - bump + rolloff
+                }
+                FilterKind::HighPass => {
+                    let rolloff = if x > cutoff_x { 0.0 } else { ((cutoff_x - x) / 10.0).powi(2) };
+                    base_y - bump + rolloff
+                }
+                FilterKind::BandPass => {
+                    let peak = (20.0 + bump_h * 1.2) * (-dist * dist).exp();
+                    base_y + 16.0 - peak
+                }
+                FilterKind::Notch => {
+                    let dip = 32.0 * (-dist * dist).exp();
+                    base_y - 12.0 + dip
+                }
+                FilterKind::Peak => {
+                    let peak = (14.0 + bump_h * 1.5) * (-dist * dist).exp();
+                    base_y - peak
+                }
+                FilterKind::Off => base_y,
             };
-            let y = (rect.bottom() - 20.0 - bump + rolloff)
-                .clamp(rect.top() + 5.0, rect.bottom() - 4.0);
+            let y = y_raw.clamp(rect.top() + 5.0, rect.bottom() - 4.0);
             points.push(egui::pos2(x, y));
         }
+        let stroke_color = match kind {
+            FilterKind::LowPass => c.accent,
+            FilterKind::HighPass => c.accent_cyan,
+            FilterKind::BandPass => c.warning,
+            FilterKind::Notch => c.accent_cyan,
+            FilterKind::Peak => c.accent,
+            FilterKind::Off => c.text_dim,
+        };
         painter.add(egui::Shape::line(
             points,
-            egui::Stroke::new(2.0_f32, c.accent_cyan),
+            egui::Stroke::new(2.0_f32, stroke_color),
         ));
         painter.vline(
             cutoff_x,
@@ -1087,7 +1113,7 @@ fn draw_filter_curve(
         painter.text(
             egui::pos2(rect.left() + 6.0, rect.top() + 5.0),
             egui::Align2::LEFT_TOP,
-            format!("{:.0} Hz • réso {:.0}%", cutoff_hz, resonance * 100.0),
+            format!("{:?} • {:.0} Hz • réso {:.0}%", kind, cutoff_hz, resonance * 100.0),
             egui::FontId::monospace(9.5),
             c.text_dim,
         );
@@ -1299,7 +1325,7 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                         .small()
                         .color(c.text_muted),
                 );
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if chip(ui, "SINE", params.waveform == KickWaveform::Sine, c.accent) {
                         params.waveform = KickWaveform::Sine;
                         changed = true;
@@ -1442,14 +1468,156 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                 .color(c.warning),
         );
         ui.add_space(6.0);
-        ui.horizontal_wrapped(|ui| {
+        let avail_w = ui.available_width();
+        if avail_w >= 620.0 {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new("DISTO TYPE")
+                            .small()
+                            .color(c.text_muted),
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        if chip(
+                            ui,
+                            "TANH",
+                            params.drive_type == KickDriveType::AnalogTanh,
+                            c.warning,
+                        ) {
+                            params.drive_type = KickDriveType::AnalogTanh;
+                            changed = true;
+                        }
+                        if chip(
+                            ui,
+                            "HARD CLIP",
+                            params.drive_type == KickDriveType::HardClip,
+                            c.error,
+                        ) {
+                            params.drive_type = KickDriveType::HardClip;
+                            changed = true;
+                        }
+                        if chip(
+                            ui,
+                            "WAVEFOLDER",
+                            params.drive_type == KickDriveType::Wavefolder,
+                            c.accent_cyan,
+                        ) {
+                            params.drive_type = KickDriveType::Wavefolder;
+                            changed = true;
+                        }
+                        if chip(
+                            ui,
+                            "TUBE",
+                            params.drive_type == KickDriveType::TubeDrive,
+                            c.accent,
+                        ) {
+                            params.drive_type = KickDriveType::TubeDrive;
+                            changed = true;
+                        }
+                        if chip(
+                            ui,
+                            "CRUSH",
+                            params.drive_type == KickDriveType::Bitcrush,
+                            c.accent_cyan,
+                        ) {
+                            params.drive_type = KickDriveType::Bitcrush;
+                            changed = true;
+                        }
+                        if chip(
+                            ui,
+                            "FUZZ",
+                            params.drive_type == KickDriveType::Fuzz,
+                            c.error,
+                        ) {
+                            params.drive_type = KickDriveType::Fuzz;
+                            changed = true;
+                        }
+                        if chip(
+                            ui,
+                            "RECT",
+                            params.drive_type == KickDriveType::Rectifier,
+                            c.warning,
+                        ) {
+                            params.drive_type = KickDriveType::Rectifier;
+                            changed = true;
+                        }
+                    });
+                });
+
+                ui.separator();
+
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new("FILTRE MODE")
+                            .small()
+                            .color(c.text_muted),
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        if chip(
+                            ui,
+                            "OFF",
+                            params.filter_mode == KickFilterMode::Off,
+                            c.text_dim,
+                        ) {
+                            params.set_filter_mode(KickFilterMode::Off);
+                            changed = true;
+                        }
+                        if chip(
+                            ui,
+                            "LP",
+                            params.filter_mode == KickFilterMode::LowPass,
+                            c.accent,
+                        ) {
+                            params.set_filter_mode(KickFilterMode::LowPass);
+                            changed = true;
+                        }
+                        if chip(
+                            ui,
+                            "HP",
+                            params.filter_mode == KickFilterMode::HighPass,
+                            c.accent_cyan,
+                        ) {
+                            params.set_filter_mode(KickFilterMode::HighPass);
+                            changed = true;
+                        }
+                        if chip(
+                            ui,
+                            "BP",
+                            params.filter_mode == KickFilterMode::BandPass,
+                            c.warning,
+                        ) {
+                            params.set_filter_mode(KickFilterMode::BandPass);
+                            changed = true;
+                        }
+                        if chip(
+                            ui,
+                            "NOTCH",
+                            params.filter_mode == KickFilterMode::Notch,
+                            c.accent_cyan,
+                        ) {
+                            params.set_filter_mode(KickFilterMode::Notch);
+                            changed = true;
+                        }
+                        if chip(
+                            ui,
+                            "PEAK",
+                            params.filter_mode == KickFilterMode::Peak,
+                            c.accent,
+                        ) {
+                            params.set_filter_mode(KickFilterMode::Peak);
+                            changed = true;
+                        }
+                    });
+                });
+            });
+        } else {
             ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new("DISTO TYPE")
                         .small()
                         .color(c.text_muted),
                 );
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if chip(
                         ui,
                         "TANH",
@@ -1514,17 +1682,17 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                         changed = true;
                     }
                 });
-            });
 
-            ui.separator();
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(4.0);
 
-            ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new("FILTRE MODE")
                         .small()
                         .color(c.text_muted),
                 );
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if chip(
                         ui,
                         "OFF",
@@ -1581,7 +1749,7 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                     }
                 });
             });
-        });
+        }
 
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
@@ -1780,7 +1948,7 @@ fn render_wavetable_page(
                         .small()
                         .color(c.text_muted),
                 );
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if chip(
                         ui,
                         "SAW",
@@ -1833,6 +2001,24 @@ fn render_wavetable_page(
                         c.accent,
                     ) {
                         params.osc1_wave = WavetableWaveform::Square;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "TRI",
+                        params.osc1_wave == WavetableWaveform::Triangle,
+                        c.accent,
+                    ) {
+                        params.osc1_wave = WavetableWaveform::Triangle;
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "SINE",
+                        params.osc1_wave == WavetableWaveform::Sine,
+                        c.accent,
+                    ) {
+                        params.osc1_wave = WavetableWaveform::Sine;
                         changed = true;
                     }
                 });
@@ -1900,7 +2086,7 @@ fn render_wavetable_page(
                         .small()
                         .color(c.text_muted),
                 );
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if chip(
                         ui,
                         "LP 24",
@@ -1935,6 +2121,24 @@ fn render_wavetable_page(
                         c.accent,
                     ) {
                         params.set_filter_mode(WavetableFilterMode::BandPass);
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "NOTCH",
+                        params.filter_mode == WavetableFilterMode::Notch,
+                        c.accent_cyan,
+                    ) {
+                        params.set_filter_mode(WavetableFilterMode::Notch);
+                        changed = true;
+                    }
+                    if chip(
+                        ui,
+                        "PEAK",
+                        params.filter_mode == WavetableFilterMode::Peak,
+                        c.accent,
+                    ) {
+                        params.set_filter_mode(WavetableFilterMode::Peak);
                         changed = true;
                     }
                     if chip(

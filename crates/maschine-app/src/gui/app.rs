@@ -817,7 +817,6 @@ impl GuiApp {
     }
 
     fn render_mk3_knobs(&mut self, ui: &mut egui::Ui, snap: &maschine_engine::EngineSnapshot) {
-        let params = knob_params(self.view, snap.plugin_page);
         let gf = snap.group_focus as usize;
         let snd = snap.active_sound as usize;
         let group = snap.project.groups.get(gf);
@@ -851,6 +850,157 @@ impl GuiApp {
         } else {
             42.0
         };
+
+        // ── Kick Synth : knobs contextuels par page ──────────────────────
+        if self.view == StudioView::Plugin && snap.focus_sound_kick.is_some() {
+            let kp = snap.focus_sound_kick.clone().unwrap_or_default();
+            let is_page2 = snap.synth_param_page == 1;
+            ui.horizontal_wrapped(|ui| {
+                if !is_page2 {
+                    // Page 1 : paramètres principaux
+                    let specs: &[(&str, &str, f32, f32, f32, f32)] = &[
+                        ("TUNE", " Hz", 20.0, 200.0, 60.0, kp.tune_hz),
+                        ("DECAY", " ms", 20.0, 2000.0, 400.0, kp.decay_ms),
+                        ("SNAP", "", 0.0, 1.0, 0.3, kp.snap),
+                        ("SWEEP", " ms", 5.0, 120.0, 30.0, kp.sweep_time_ms),
+                        ("CLICK", "", 0.0, 1.0, 0.2, kp.click),
+                        ("DRIVE", "", 0.0, 1.0, 0.0, kp.drive),
+                        ("SUB", "", 0.0, 1.0, 0.6, kp.sub),
+                        ("OUTPUT", " dB", -24.0, 6.0, 0.0, kp.volume_db),
+                    ];
+                    for (j, (label, unit, min, max, def, val)) in specs.iter().enumerate() {
+                        let mut spec = KnobSpec::linear(label, unit, *min, *max, *def);
+                        spec.size = knob_size;
+                        if let Some(v) = knob(ui, ("kick_p1", j), *val, &spec) {
+                            let mut p = kp.clone();
+                            match j {
+                                0 => p.tune_hz = v,
+                                1 => p.decay_ms = v,
+                                2 => p.snap = v,
+                                3 => p.sweep_time_ms = v,
+                                4 => p.click = v,
+                                5 => p.drive = v,
+                                6 => p.sub = v,
+                                _ => p.volume_db = v,
+                            }
+                            self.send(EngineEvent::KickSetParams(p));
+                        }
+                    }
+                } else {
+                    // Page 2 : waveform FM + distorsion + filtre
+                    let specs: &[(&str, &str, f32, f32, f32, f32)] = &[
+                        ("FM AMT", "", 0.0, 1.0, 0.0, kp.fm_amount),
+                        ("FM RATIO", "x", 0.25, 8.0, 1.0, kp.fm_ratio),
+                        ("TONE", "", 0.0, 1.0, 0.65, kp.drive_tone),
+                        ("NOISE", "", 0.0, 1.0, 0.15, kp.noise_mix),
+                        ("DRV AMT", "", 0.0, 1.0, 0.0, kp.drive),
+                        ("CUTOFF", " Hz", 20.0, 18000.0, 12000.0, kp.filter_cutoff_hz),
+                        ("RESO", "", 0.0, 1.0, 0.0, kp.filter_reso),
+                        ("OUTPUT", " dB", -24.0, 6.0, 0.0, kp.volume_db),
+                    ];
+                    for (j, (label, unit, min, max, def, val)) in specs.iter().enumerate() {
+                        let mut spec = KnobSpec::linear(label, unit, *min, *max, *def);
+                        spec.size = knob_size;
+                        if let Some(v) = knob(ui, ("kick_p2", j), *val, &spec) {
+                            let mut p = kp.clone();
+                            match j {
+                                0 => p.fm_amount = v,
+                                1 => p.fm_ratio = v,
+                                2 => p.drive_tone = v,
+                                3 => p.noise_mix = v,
+                                4 => p.drive = v,
+                                5 => p.filter_cutoff_hz = v,
+                                6 => p.filter_reso = v,
+                                _ => p.volume_db = v,
+                            }
+                            self.send(EngineEvent::KickSetParams(p));
+                        }
+                    }
+                }
+            });
+            return;
+        }
+
+        // ── Wavetable Synth : knobs contextuels par page ─────────────────
+        if self.view == StudioView::Plugin && snap.focus_sound_wavetable.is_some() {
+            let wp = snap.focus_sound_wavetable.clone().unwrap_or_default();
+            let is_page2 = snap.synth_param_page == 1;
+            ui.horizontal_wrapped(|ui| {
+                if !is_page2 {
+                    // Page 1 : filtre + ADSR
+                    let specs_lin: &[(&str, &str, f32, f32, f32, f32)] = &[
+                        ("RESO", "", 0.0, 0.95, 0.2, wp.filter_reso),
+                        ("ENV AMT", "", -1.0, 1.0, 0.3, wp.filter_env_amt),
+                        ("DRIVE", "", 0.0, 1.0, 0.0, wp.filter_drive),
+                        ("ATTACK", " ms", 1.0, 1000.0, 12.0, wp.amp_attack_ms),
+                        ("DECAY", " ms", 10.0, 3000.0, 450.0, wp.amp_decay_ms),
+                        ("SUSTAIN", "", 0.0, 1.0, 0.7, wp.amp_sustain),
+                        ("RELEASE", " ms", 10.0, 3000.0, 350.0, wp.amp_release_ms),
+                    ];
+                    // knob 0 : cutoff (log)
+                    {
+                        let mut spec = KnobSpec::log("CUTOFF", " Hz", 20.0, 20000.0, 4500.0);
+                        spec.size = knob_size;
+                        if let Some(v) = knob(ui, ("wt_p1", 0usize), wp.filter_cutoff, &spec) {
+                            let mut p = wp.clone();
+                            p.filter_cutoff = v;
+                            self.send(EngineEvent::WavetableSetParams(p));
+                        }
+                    }
+                    for (j, (label, unit, min, max, def, val)) in specs_lin.iter().enumerate() {
+                        let mut spec = KnobSpec::linear(label, unit, *min, *max, *def);
+                        spec.size = knob_size;
+                        if let Some(v) = knob(ui, ("wt_p1", j + 1), *val, &spec) {
+                            let mut p = wp.clone();
+                            match j {
+                                0 => p.filter_reso = v,
+                                1 => p.filter_env_amt = v,
+                                2 => p.filter_drive = v,
+                                3 => p.amp_attack_ms = v,
+                                4 => p.amp_decay_ms = v,
+                                5 => p.amp_sustain = v,
+                                _ => p.amp_release_ms = v,
+                            }
+                            self.send(EngineEvent::WavetableSetParams(p));
+                        }
+                    }
+                } else {
+                    // Page 2 : FX + volume
+                    let specs: &[(&str, &str, f32, f32, f32, f32)] = &[
+                        ("CHORUS", "", 0.0, 1.0, 0.25, wp.fx_chorus_mix),
+                        ("DLY TIME", " ms", 50.0, 800.0, 350.0, wp.fx_delay_time_ms),
+                        ("DLY MIX", "", 0.0, 1.0, 0.2, wp.fx_delay_mix),
+                        ("REVERB", "", 0.0, 1.0, 0.3, wp.fx_reverb_mix),
+                        ("DISTO", "", 0.0, 1.0, 0.0, wp.fx_distortion),
+                        ("OSC1 LVL", "", 0.0, 1.0, 0.8, wp.osc1_level),
+                        ("OSC2 LVL", "", 0.0, 1.0, 0.6, wp.osc2_level),
+                        ("VOL OUT", " dB", -24.0, 6.0, 0.0, wp.master_volume_db),
+                    ];
+                    for (j, (label, unit, min, max, def, val)) in specs.iter().enumerate() {
+                        let mut spec = KnobSpec::linear(label, unit, *min, *max, *def);
+                        spec.size = knob_size;
+                        if let Some(v) = knob(ui, ("wt_p2", j), *val, &spec) {
+                            let mut p = wp.clone();
+                            match j {
+                                0 => p.fx_chorus_mix = v,
+                                1 => p.fx_delay_time_ms = v,
+                                2 => p.fx_delay_mix = v,
+                                3 => p.fx_reverb_mix = v,
+                                4 => p.fx_distortion = v,
+                                5 => p.osc1_level = v,
+                                6 => p.osc2_level = v,
+                                _ => p.master_volume_db = v,
+                            }
+                            self.send(EngineEvent::WavetableSetParams(p));
+                        }
+                    }
+                }
+            });
+            return;
+        }
+
+        // ── Knobs génériques (tous les autres contextes) ──────────────────
+        let params = knob_params(self.view, snap.plugin_page);
         ui.horizontal_wrapped(|ui| {
             for (i, param) in params.iter().enumerate() {
                 let (mut spec, value) = match param {

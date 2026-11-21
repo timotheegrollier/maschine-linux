@@ -365,7 +365,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                                 .color(c.accent),
                         );
                         ui.add_space(2.0);
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             use maschine_engine::project::FilterKind;
                             if chip(ui, "OFF", filter_kind == FilterKind::Off, c.text_dim) {
                                 let _ = app.engine.lock().handle_event(EngineEvent::SetSoundFilterKind {
@@ -393,6 +393,20 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                                     group: snap.group_focus,
                                     sound: snap.active_sound,
                                     kind: FilterKind::BandPass,
+                                });
+                            }
+                            if chip(ui, "NOTCH", filter_kind == FilterKind::Notch, c.accent_cyan) {
+                                let _ = app.engine.lock().handle_event(EngineEvent::SetSoundFilterKind {
+                                    group: snap.group_focus,
+                                    sound: snap.active_sound,
+                                    kind: FilterKind::Notch,
+                                });
+                            }
+                            if chip(ui, "PEAK", filter_kind == FilterKind::Peak, c.accent) {
+                                let _ = app.engine.lock().handle_event(EngineEvent::SetSoundFilterKind {
+                                    group: snap.group_focus,
+                                    sound: snap.active_sound,
+                                    kind: FilterKind::Peak,
                                 });
                             }
                         });

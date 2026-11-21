@@ -3427,6 +3427,97 @@ pub fn render_kick_synth_left(snap: &EngineSnapshot) -> DisplayFrame {
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
     let s_name = sound_name(snap, snap.active_sound as usize);
     let kp = snap.focus_sound_kick.as_ref().unwrap_or(&snap.kick_params);
+    let is_page2 = (snap.synth_param_page == 1) ^ snap.shift_held;
+
+    if is_page2 {
+        let wave_name = match kp.waveform {
+            crate::kick_synth::KickWaveform::Sine => "SINE",
+            crate::kick_synth::KickWaveform::Triangle => "TRI",
+            crate::kick_synth::KickWaveform::SatSine => "SAT SINE",
+            crate::kick_synth::KickWaveform::Parabolic => "PARABOLIC",
+            crate::kick_synth::KickWaveform::Ramp => "RAMP",
+            crate::kick_synth::KickWaveform::SquareSub => "SQR SUB",
+            crate::kick_synth::KickWaveform::NoiseTransient => "NOISE",
+        };
+        header(
+            &mut frame,
+            &p,
+            snap,
+            "KICK SYNTH | ONDES & FM (P.2/2)",
+            &format!(
+                "GRP {} | SND {:02} | ONDE: {}",
+                group_letter(snap.group_focus),
+                snap.active_sound + 1,
+                wave_name
+            ),
+        );
+
+        // Panneau Forme d'onde (226 x 92)
+        panel(&mut frame, &p, 8, 28, 226, 92);
+        draw_text(&mut frame, 14, 32, "FORME D'ONDE DE BASE", p.dim, p.panel);
+        let w_x = 18usize;
+        let w_y = 44usize;
+        let w_w = 204usize;
+        let w_h = 56usize;
+        fill_rect(&mut frame, w_x, w_y, w_w, w_h, p.track);
+        let mid_y = w_y + w_h / 2;
+        for x in 0..w_w {
+            let t = (x as f32 / w_w as f32) * 2.0 * std::f32::consts::PI;
+            let val = match kp.waveform {
+                crate::kick_synth::KickWaveform::Sine => t.sin(),
+                crate::kick_synth::KickWaveform::Triangle => (t.sin()).asin() * (2.0 / std::f32::consts::PI),
+                crate::kick_synth::KickWaveform::SatSine => (t.sin() * 2.5).tanh(),
+                crate::kick_synth::KickWaveform::Parabolic => 1.0 - 2.0 * ((t / std::f32::consts::PI - 1.0).fract().powi(2)),
+                crate::kick_synth::KickWaveform::Ramp => 1.0 - 2.0 * (x as f32 / w_w as f32),
+                crate::kick_synth::KickWaveform::SquareSub => {
+                    if (t / (2.0 * std::f32::consts::PI)).fract() < 0.5 { 0.85 } else { -0.85 }
+                }
+                crate::kick_synth::KickWaveform::NoiseTransient => {
+                    let n = (((x * 1103515245 + 12345) >> 16) & 0xFF) as f32 / 128.0 - 1.0;
+                    n * (- (x as f32 / 30.0)).exp() + t.sin() * 0.4
+                }
+            };
+            let py = (mid_y as f32 - val * (w_h as f32 * 0.38))
+                .clamp((w_y + 2) as f32, (w_y + w_h - 4) as f32) as usize;
+            fill_rect(&mut frame, w_x + x, py, 1, 2, p.accent);
+        }
+        draw_text(&mut frame, w_x + 6, w_y + 6, &format!("ONDE : {}", wave_name), p.white, p.track);
+        draw_text(&mut frame, w_x + 6, w_y + 20, &format!("TONE : {:.0}%", kp.drive_tone * 100.0), p.green, p.track);
+
+        // Panneau FM Modulation (226 x 92)
+        panel(&mut frame, &p, 246, 28, 226, 92);
+        draw_text(&mut frame, 252, 32, "MODULATION FM & RATIO", p.dim, p.panel);
+        let f_x = 256usize;
+        let f_y = 44usize;
+        let f_w = 204usize;
+        let f_h = 56usize;
+        fill_rect(&mut frame, f_x, f_y, f_w, f_h, p.track);
+        let fm_mid_y = f_y + f_h / 2;
+        for x in 0..f_w {
+            let t = (x as f32 / f_w as f32) * 4.0 * std::f32::consts::PI;
+            let mod_sig = (t * kp.fm_ratio).sin() * kp.fm_amount * 2.0;
+            let val = (t + mod_sig).sin();
+            let py = (fm_mid_y as f32 - val * (f_h as f32 * 0.38))
+                .clamp((f_y + 2) as f32, (f_y + f_h - 4) as f32) as usize;
+            fill_rect(&mut frame, f_x + x, py, 1, 2, p.cyan);
+        }
+        draw_text(&mut frame, f_x + 6, f_y + 6, &format!("FM AMT : {:.0}%", kp.fm_amount * 100.0), p.cyan, p.track);
+        draw_text(&mut frame, f_x + 6, f_y + 20, &format!("RATIO : {:.2}x", kp.fm_ratio), p.yellow, p.track);
+
+        let slots = [
+            Some(("1:WAVE", wave_name.to_string(), 0.5, p.accent)),
+            Some(("2:FM AMT", format!("{:.0}%", kp.fm_amount * 100.0), kp.fm_amount, p.cyan)),
+            Some(("3:RATIO", format!("{:.2}x", kp.fm_ratio), (kp.fm_ratio - 0.25) / 7.75, p.yellow)),
+            Some(("4:TONE", format!("{:.0}%", kp.drive_tone * 100.0), kp.drive_tone, p.green)),
+        ];
+        encoder_row(&mut frame, &p, &slots);
+
+        let mut active = [false; 8];
+        active[0] = true;
+        footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+        return frame;
+    }
+
     header(
         &mut frame,
         &p,
@@ -3534,6 +3625,143 @@ pub fn render_kick_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
     let p = Pal::new();
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     let kp = snap.focus_sound_kick.as_ref().unwrap_or(&snap.kick_params);
+    let is_page2 = (snap.synth_param_page == 1) ^ snap.shift_held;
+
+    if is_page2 {
+        let drv_str = match kp.drive_type {
+            crate::kick_synth::KickDriveType::AnalogTanh => "TANH",
+            crate::kick_synth::KickDriveType::HardClip => "HARD",
+            crate::kick_synth::KickDriveType::Wavefolder => "FOLD",
+            crate::kick_synth::KickDriveType::TubeDrive => "TUBE",
+            crate::kick_synth::KickDriveType::Bitcrush => "CRUSH",
+            crate::kick_synth::KickDriveType::Fuzz => "FUZZ",
+            crate::kick_synth::KickDriveType::Rectifier => "RECT",
+        };
+        let flt_str = match kp.filter_mode {
+            crate::kick_synth::KickFilterMode::Off => "OFF",
+            crate::kick_synth::KickFilterMode::LowPass => "LP",
+            crate::kick_synth::KickFilterMode::HighPass => "HP",
+            crate::kick_synth::KickFilterMode::BandPass => "BP",
+            crate::kick_synth::KickFilterMode::Notch => "NOTCH",
+            crate::kick_synth::KickFilterMode::Peak => "PEAK",
+        };
+        header(
+            &mut frame,
+            &p,
+            snap,
+            "KICK SYNTH | DISTO & FILTRE (P.2/2)",
+            &format!("DISTO: {} ({:.0}%) | FLT: {}", drv_str, kp.drive * 100.0, flt_str),
+        );
+
+        // Panneau Distorsion Multi-Types (226 x 92)
+        panel(&mut frame, &p, 8, 28, 226, 92);
+        draw_text(&mut frame, 14, 32, "DISTORSION MULTI-TYPES", p.dim, p.panel);
+        let d_x = 18usize;
+        let d_y = 44usize;
+        let d_w = 204usize;
+        let d_h = 56usize;
+        fill_rect(&mut frame, d_x, d_y, d_w, d_h, p.track);
+        let d_mid_y = d_y + d_h / 2;
+        let drive_amt = 1.0 + kp.drive * 6.0;
+        for x in 0..d_w {
+            let t = (x as f32 / d_w as f32) * 2.0 * std::f32::consts::PI;
+            let raw = t.sin() * drive_amt;
+            let val = match kp.drive_type {
+                crate::kick_synth::KickDriveType::AnalogTanh => raw.tanh(),
+                crate::kick_synth::KickDriveType::HardClip => raw.clamp(-1.0, 1.0),
+                crate::kick_synth::KickDriveType::Wavefolder => {
+                    let mut s = raw;
+                    while s > 1.0 || s < -1.0 {
+                        if s > 1.0 { s = 2.0 - s; }
+                        else if s < -1.0 { s = -2.0 - s; }
+                    }
+                    s
+                }
+                crate::kick_synth::KickDriveType::TubeDrive => {
+                    if raw > 0.0 { raw.tanh() } else { raw * 0.8 / (1.0 + raw.abs() * 0.5) }
+                }
+                crate::kick_synth::KickDriveType::Bitcrush => (raw * 4.0).round() / 4.0,
+                crate::kick_synth::KickDriveType::Fuzz => {
+                    if raw > 0.0 { 1.0 - (-raw * 2.0).exp() } else { -1.0 + (raw * 2.0).exp() }
+                }
+                crate::kick_synth::KickDriveType::Rectifier => raw.abs() * 2.0 - 1.0,
+            };
+            let py = (d_mid_y as f32 - val.clamp(-1.2, 1.2) * (d_h as f32 * 0.38))
+                .clamp((d_y + 2) as f32, (d_y + d_h - 4) as f32) as usize;
+            fill_rect(&mut frame, d_x + x, py, 1, 2, p.red);
+        }
+        draw_text(&mut frame, d_x + 6, d_y + 6, &format!("TYPE : {}", drv_str), p.red, p.track);
+        draw_text(&mut frame, d_x + 6, d_y + 20, &format!("DRIVE : {:.0}%", kp.drive * 100.0), p.white, p.track);
+
+        // Panneau Filtre Résonant (226 x 92)
+        panel(&mut frame, &p, 246, 28, 226, 92);
+        draw_text(&mut frame, 252, 32, "FILTRE RÉSONANT MULTIMODE", p.dim, p.panel);
+        let fl_x = 256usize;
+        let fl_y = 44usize;
+        let fl_w = 204usize;
+        let fl_h = 56usize;
+        fill_rect(&mut frame, fl_x, fl_y, fl_w, fl_h, p.track);
+        let cut_norm = ((kp.filter_cutoff_hz.max(20.0).log10() - 20.0f32.log10())
+            / (18000.0f32.log10() - 20.0f32.log10()))
+        .clamp(0.05, 0.95);
+        let peak_x = fl_x + (cut_norm * (fl_w as f32)) as usize;
+        let reso_h = kp.filter_reso * 24.0;
+        let base_y = fl_y + fl_h - 12;
+        for x in 0..fl_w {
+            let px = fl_x + x;
+            let dist = px as f32 - peak_x as f32;
+            let py = match kp.filter_mode {
+                crate::kick_synth::KickFilterMode::Off => base_y - 20,
+                crate::kick_synth::KickFilterMode::LowPass => {
+                    let drop = if dist <= 0.0 { 0.0 } else { (dist / 14.0).powi(2) };
+                    let bump = reso_h * (- (dist / 18.0).powi(2)).exp();
+                    (base_y as f32 - 20.0 - bump + drop) as usize
+                }
+                crate::kick_synth::KickFilterMode::HighPass => {
+                    let drop = if dist >= 0.0 { 0.0 } else { (dist / 14.0).powi(2) };
+                    let bump = reso_h * (- (dist / 18.0).powi(2)).exp();
+                    (base_y as f32 - 20.0 - bump + drop) as usize
+                }
+                crate::kick_synth::KickFilterMode::BandPass => {
+                    let bump = (20.0 + reso_h) * (- (dist / 16.0).powi(2)).exp();
+                    (base_y as f32 - bump) as usize
+                }
+                crate::kick_synth::KickFilterMode::Notch => {
+                    let dip = 30.0 * (- (dist / 12.0).powi(2)).exp();
+                    (base_y as f32 - 25.0 + dip) as usize
+                }
+                crate::kick_synth::KickFilterMode::Peak => {
+                    let bump = (12.0 + reso_h * 1.5) * (- (dist / 15.0).powi(2)).exp();
+                    (base_y as f32 - 18.0 - bump) as usize
+                }
+            };
+            let clamped_y = py.clamp(fl_y + 4, fl_y + fl_h - 4);
+            fill_rect(&mut frame, px, clamped_y, 1, 2, p.cyan);
+        }
+        draw_text(&mut frame, fl_x + 6, fl_y + 6, &format!("MODE : {}", flt_str), p.cyan, p.track);
+        draw_text(&mut frame, fl_x + 6, fl_y + 20, &format!("CUT : {}", fmt_hz(kp.filter_cutoff_hz)), p.white, p.track);
+        draw_text(&mut frame, fl_x + 6, fl_y + 34, &format!("RESO : {:.0}%", kp.filter_reso * 100.0), p.yellow, p.track);
+
+        let slots = [
+            Some(("5:DISTO", drv_str.to_string(), 0.5, p.red)),
+            Some(("6:FILTER", flt_str.to_string(), 0.5, p.cyan)),
+            Some(("7:CUTOFF", fmt_hz(kp.filter_cutoff_hz), cut_norm, p.accent)),
+            Some(("8:RESO", format!("{:.0}%", kp.filter_reso * 100.0), kp.filter_reso, p.yellow)),
+        ];
+        encoder_row(&mut frame, &p, &slots);
+
+        let mut active = [false; 8];
+        match kp.filter_mode {
+            crate::kick_synth::KickFilterMode::LowPass => active[4] = true,
+            crate::kick_synth::KickFilterMode::HighPass => active[5] = true,
+            crate::kick_synth::KickFilterMode::BandPass => active[6] = true,
+            crate::kick_synth::KickFilterMode::Notch | crate::kick_synth::KickFilterMode::Peak => active[7] = true,
+            _ => active[3] = true,
+        }
+        footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+        return frame;
+    }
+
     header(
         &mut frame,
         &p,
@@ -3759,32 +3987,74 @@ pub fn render_wavetable_synth_left(snap: &EngineSnapshot) -> DisplayFrame {
         p.track,
     );
 
-    let slots = [
-        Some((
-            "1:CUTOFF",
-            format!("{:.0}Hz", wp.filter_cutoff),
-            (wp.filter_cutoff / 20000.0).clamp(0.0, 1.0),
-            p.accent,
-        )),
-        Some((
-            "2:RESO",
-            format!("{:.0}%", wp.filter_reso * 100.0),
-            wp.filter_reso.clamp(0.0, 1.0),
-            p.yellow,
-        )),
-        Some((
-            "3:ENV AMT",
-            format!("{:.0}%", wp.filter_env_amt * 100.0),
-            wp.filter_env_amt.abs().clamp(0.0, 1.0),
-            p.cyan,
-        )),
-        Some((
-            "4:DRIVE",
-            format!("{:.0}%", wp.filter_drive * 100.0),
-            wp.filter_drive.clamp(0.0, 1.0),
-            p.red,
-        )),
-    ];
+    let is_page2 = (snap.synth_param_page == 1) ^ snap.shift_held;
+    let slots = if is_page2 {
+        let flt_str = match wp.filter_mode {
+            crate::wavetable_synth::WavetableFilterMode::Off => "OFF",
+            crate::wavetable_synth::WavetableFilterMode::LowPass12 => "LP12",
+            crate::wavetable_synth::WavetableFilterMode::LowPass24 => "LP24",
+            crate::wavetable_synth::WavetableFilterMode::HighPass => "HP",
+            crate::wavetable_synth::WavetableFilterMode::BandPass => "BP",
+            crate::wavetable_synth::WavetableFilterMode::Notch => "NOTCH",
+            crate::wavetable_synth::WavetableFilterMode::Peak => "PEAK",
+        };
+        [
+            Some((
+                "1:FLT MOD",
+                flt_str.to_string(),
+                match wp.filter_mode {
+                    crate::wavetable_synth::WavetableFilterMode::Off => 0.0,
+                    _ => 0.7,
+                },
+                p.accent,
+            )),
+            Some((
+                "2:UNISON",
+                format!("{} VOICES", wp.unison_voices),
+                (wp.unison_voices as f32 - 1.0) / 6.0,
+                p.yellow,
+            )),
+            Some((
+                "3:OSC1 WV",
+                format!("{:?}", wp.osc1_wave),
+                0.5,
+                p.cyan,
+            )),
+            Some((
+                "4:OSC2 WV",
+                format!("{:?}", wp.osc2_wave),
+                0.5,
+                p.cyan,
+            )),
+        ]
+    } else {
+        [
+            Some((
+                "1:CUTOFF",
+                format!("{:.0}Hz", wp.filter_cutoff),
+                (wp.filter_cutoff / 20000.0).clamp(0.0, 1.0),
+                p.accent,
+            )),
+            Some((
+                "2:RESO",
+                format!("{:.0}%", wp.filter_reso * 100.0),
+                wp.filter_reso.clamp(0.0, 1.0),
+                p.yellow,
+            )),
+            Some((
+                "3:ENV AMT",
+                format!("{:.0}%", wp.filter_env_amt * 100.0),
+                wp.filter_env_amt.abs().clamp(0.0, 1.0),
+                p.cyan,
+            )),
+            Some((
+                "4:DRIVE",
+                format!("{:.0}%", wp.filter_drive * 100.0),
+                wp.filter_drive.clamp(0.0, 1.0),
+                p.red,
+            )),
+        ]
+    };
     encoder_row(&mut frame, &p, &slots);
 
     let active = [false; 8];
@@ -3902,32 +4172,62 @@ pub fn render_wavetable_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
         p.track,
     );
 
-    let slots = [
-        Some((
-            "5:ATTACK",
-            format!("{:.0}ms", wp.amp_attack_ms),
-            (wp.amp_attack_ms / 1000.0).clamp(0.0, 1.0),
-            p.accent,
-        )),
-        Some((
-            "6:DECAY",
-            format!("{:.0}ms", wp.amp_decay_ms),
-            (wp.amp_decay_ms / 3000.0).clamp(0.0, 1.0),
-            p.accent,
-        )),
-        Some((
-            "7:SUSTAIN",
-            format!("{:.0}%", wp.amp_sustain * 100.0),
-            wp.amp_sustain.clamp(0.0, 1.0),
-            p.accent,
-        )),
-        Some((
-            "8:RELEASE",
-            format!("{:.0}ms", wp.amp_release_ms),
-            (wp.amp_release_ms / 3000.0).clamp(0.0, 1.0),
-            p.accent,
-        )),
-    ];
+    let is_page2 = (snap.synth_param_page == 1) ^ snap.shift_held;
+    let slots = if is_page2 {
+        [
+            Some((
+                "5:CHORUS",
+                format!("{:.0}%", wp.fx_chorus_mix * 100.0),
+                wp.fx_chorus_mix.clamp(0.0, 1.0),
+                p.cyan,
+            )),
+            Some((
+                "6:DELAY",
+                format!("{:.0}%", wp.fx_delay_mix * 100.0),
+                wp.fx_delay_mix.clamp(0.0, 1.0),
+                p.green,
+            )),
+            Some((
+                "7:REVERB",
+                format!("{:.0}%", wp.fx_reverb_mix * 100.0),
+                wp.fx_reverb_mix.clamp(0.0, 1.0),
+                p.accent,
+            )),
+            Some((
+                "8:VOLUME",
+                format!("{:.1}dB", wp.master_volume_db),
+                db_norm(wp.master_volume_db),
+                p.yellow,
+            )),
+        ]
+    } else {
+        [
+            Some((
+                "5:ATTACK",
+                format!("{:.0}ms", wp.amp_attack_ms),
+                (wp.amp_attack_ms / 1000.0).clamp(0.0, 1.0),
+                p.accent,
+            )),
+            Some((
+                "6:DECAY",
+                format!("{:.0}ms", wp.amp_decay_ms),
+                (wp.amp_decay_ms / 3000.0).clamp(0.0, 1.0),
+                p.accent,
+            )),
+            Some((
+                "7:SUSTAIN",
+                format!("{:.0}%", wp.amp_sustain * 100.0),
+                wp.amp_sustain.clamp(0.0, 1.0),
+                p.accent,
+            )),
+            Some((
+                "8:RELEASE",
+                format!("{:.0}ms", wp.amp_release_ms),
+                (wp.amp_release_ms / 3000.0).clamp(0.0, 1.0),
+                p.accent,
+            )),
+        ]
+    };
     encoder_row(&mut frame, &p, &slots);
 
     let active = [false; 8];

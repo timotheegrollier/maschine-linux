@@ -4610,7 +4610,7 @@ impl Engine {
                 }
                 2 => {
                     return [
-                        "REVERSE", "LOOP", "NORMLZ", "CYC FLT", "LP", "HP", "BP", "OFF",
+                        "REVERSE", "LOOP", "NORMLZ", "CYC FLT", "LP/HP/BP", "NOTCH", "PEAK", "OFF",
                     ];
                 }
                 4 if self.plugin_page == 2 => {
@@ -4699,7 +4699,7 @@ impl Engine {
                 "GRP A", "GRP B", "GRP C", "GRP D", "GRP E", "GRP F", "GRP G", "GRP H",
             ],
             2 => [
-                "SND <", "SND >", "ECOUTE", "CYC FLT", "LP", "HP", "BP", "OFF",
+                "SND <", "SND >", "ECOUTE", "CYC FLT", "LP/HP/BP", "NOTCH", "PEAK", "OFF",
             ],
             3 if self.browser_kind == 1 && self.delete_project_confirm => {
                 ["ANNULER", "", "", "", "", "CONFIRMER", "", ""]
@@ -4747,7 +4747,7 @@ impl Engine {
                     ]
                 } else {
                     [
-                        "SND <", "SND >", "ECOUTE", "CYC FLT", "LP", "HP", "BP", "OFF",
+                        "SND <", "SND >", "ECOUTE", "CYC FLT", "LP/HP/BP", "NOTCH", "PEAK", "OFF",
                     ]
                 }
             }
@@ -4963,21 +4963,42 @@ impl Engine {
                     group: self.group_focus,
                     sound: self.active_sound,
                 }),
-                4 => self.handle_event(EngineEvent::SetSoundFilterKind {
-                    group: self.group_focus,
-                    sound: self.active_sound,
-                    kind: crate::project::FilterKind::LowPass,
-                }),
+                // Touche 4 (idx 4) = «LP/HP/BP» : cycle LP → HP → BP → LP
+                4 => {
+                    use crate::project::FilterKind;
+                    let cur = self
+                        .project
+                        .read()
+                        .groups
+                        .get(self.group_focus as usize)
+                        .and_then(|g| g.sounds.get(self.active_sound as usize))
+                        .and_then(|s| s.as_ref())
+                        .map(|s| s.filter.kind)
+                        .unwrap_or(FilterKind::Off);
+                    let next = match cur {
+                        FilterKind::LowPass => FilterKind::HighPass,
+                        FilterKind::HighPass => FilterKind::BandPass,
+                        _ => FilterKind::LowPass,
+                    };
+                    self.handle_event(EngineEvent::SetSoundFilterKind {
+                        group: self.group_focus,
+                        sound: self.active_sound,
+                        kind: next,
+                    })
+                }
+                // Touche 5 (idx 5) = NOTCH
                 5 => self.handle_event(EngineEvent::SetSoundFilterKind {
                     group: self.group_focus,
                     sound: self.active_sound,
-                    kind: crate::project::FilterKind::HighPass,
+                    kind: crate::project::FilterKind::Notch,
                 }),
+                // Touche 6 (idx 6) = PEAK
                 6 => self.handle_event(EngineEvent::SetSoundFilterKind {
                     group: self.group_focus,
                     sound: self.active_sound,
-                    kind: crate::project::FilterKind::BandPass,
+                    kind: crate::project::FilterKind::Peak,
                 }),
+                // Touche 7 (idx 7) = OFF
                 _ => self.handle_event(EngineEvent::SetSoundFilterKind {
                     group: self.group_focus,
                     sound: self.active_sound,
@@ -5191,21 +5212,42 @@ impl Engine {
                 group: self.group_focus,
                 sound: self.active_sound,
             }),
-            4 => self.handle_event(EngineEvent::SetSoundFilterKind {
-                group: self.group_focus,
-                sound: self.active_sound,
-                kind: crate::project::FilterKind::LowPass,
-            }),
+            // Touche 4 : cycle LP → HP → BP (les 3 filtres «classiques» en un clic)
+            4 => {
+                use crate::project::FilterKind;
+                let cur = self
+                    .project
+                    .read()
+                    .groups
+                    .get(self.group_focus as usize)
+                    .and_then(|g| g.sounds.get(self.active_sound as usize))
+                    .and_then(|s| s.as_ref())
+                    .map(|s| s.filter.kind)
+                    .unwrap_or(FilterKind::Off);
+                let next = match cur {
+                    FilterKind::LowPass => FilterKind::HighPass,
+                    FilterKind::HighPass => FilterKind::BandPass,
+                    _ => FilterKind::LowPass,
+                };
+                self.handle_event(EngineEvent::SetSoundFilterKind {
+                    group: self.group_focus,
+                    sound: self.active_sound,
+                    kind: next,
+                })
+            }
+            // Touche 5 : filtre Notch
             5 => self.handle_event(EngineEvent::SetSoundFilterKind {
                 group: self.group_focus,
                 sound: self.active_sound,
-                kind: crate::project::FilterKind::HighPass,
+                kind: crate::project::FilterKind::Notch,
             }),
+            // Touche 6 : filtre Peak (cloche)
             6 => self.handle_event(EngineEvent::SetSoundFilterKind {
                 group: self.group_focus,
                 sound: self.active_sound,
-                kind: crate::project::FilterKind::BandPass,
+                kind: crate::project::FilterKind::Peak,
             }),
+            // Touche 7 : filtre OFF
             _ => self.handle_event(EngineEvent::SetSoundFilterKind {
                 group: self.group_focus,
                 sound: self.active_sound,
@@ -7137,7 +7179,7 @@ mod tests {
         eng.left_tab = 2; // Sampler view
         eng.active_sound = 0;
 
-        // Par défaut le filtre peut être LowPass ou Off
+        // Réinitialise le filtre à Off
         eng.handle_event(EngineEvent::SetSoundFilterKind {
             group: 0,
             sound: 0,
@@ -7145,8 +7187,8 @@ mod tests {
         })
         .unwrap();
 
-        // 1. Cycle filtre : Off -> LowPass -> HighPass -> BandPass -> Off
-        eng.handle_event(EngineEvent::SoftKey(4)).unwrap(); // SoftKey 4 = CYC FLT (idx 3)
+        // SoftKey 4 (idx 3) = CYC FLT : Off → LowPass
+        eng.handle_event(EngineEvent::SoftKey(4)).unwrap();
         let f1 = eng.project.read().groups[0].sounds[0]
             .as_ref()
             .unwrap()
@@ -7154,6 +7196,7 @@ mod tests {
             .kind;
         assert_eq!(f1, crate::project::FilterKind::LowPass);
 
+        // SoftKey 4 (idx 3) = CYC FLT : LowPass → HighPass
         eng.handle_event(EngineEvent::SoftKey(4)).unwrap();
         let f2 = eng.project.read().groups[0].sounds[0]
             .as_ref()
@@ -7162,8 +7205,9 @@ mod tests {
             .kind;
         assert_eq!(f2, crate::project::FilterKind::HighPass);
 
-        // 2. Sélection directe via soft keys 5..8 (LP, HP, BP, OFF)
-        eng.handle_event(EngineEvent::SoftKey(7)).unwrap(); // SoftKey 7 = BP (idx 6)
+        // Nouvelle disposition : touche 5 (idx 4) = «LP/HP/BP» cycle
+        // On est en HP → cycle donne BP
+        eng.handle_event(EngineEvent::SoftKey(5)).unwrap();
         let f3 = eng.project.read().groups[0].sounds[0]
             .as_ref()
             .unwrap()
@@ -7171,21 +7215,41 @@ mod tests {
             .kind;
         assert_eq!(f3, crate::project::FilterKind::BandPass);
 
-        eng.handle_event(EngineEvent::SoftKey(8)).unwrap(); // SoftKey 8 = OFF (idx 7)
+        // Touche 6 (idx 5) = NOTCH
+        eng.handle_event(EngineEvent::SoftKey(6)).unwrap();
         let f4 = eng.project.read().groups[0].sounds[0]
             .as_ref()
             .unwrap()
             .filter
             .kind;
-        assert_eq!(f4, crate::project::FilterKind::Off);
+        assert_eq!(f4, crate::project::FilterKind::Notch);
 
-        eng.handle_event(EngineEvent::SoftKey(5)).unwrap(); // SoftKey 5 = LP (idx 4)
+        // Touche 7 (idx 6) = PEAK
+        eng.handle_event(EngineEvent::SoftKey(7)).unwrap();
         let f5 = eng.project.read().groups[0].sounds[0]
             .as_ref()
             .unwrap()
             .filter
             .kind;
-        assert_eq!(f5, crate::project::FilterKind::LowPass);
+        assert_eq!(f5, crate::project::FilterKind::Peak);
+
+        // Touche 8 (idx 7) = OFF
+        eng.handle_event(EngineEvent::SoftKey(8)).unwrap();
+        let f6 = eng.project.read().groups[0].sounds[0]
+            .as_ref()
+            .unwrap()
+            .filter
+            .kind;
+        assert_eq!(f6, crate::project::FilterKind::Off);
+
+        // Touche 5 (idx 4) depuis Off → cycle vers LP
+        eng.handle_event(EngineEvent::SoftKey(5)).unwrap();
+        let f7 = eng.project.read().groups[0].sounds[0]
+            .as_ref()
+            .unwrap()
+            .filter
+            .kind;
+        assert_eq!(f7, crate::project::FilterKind::LowPass);
     }
 
     #[test]
@@ -7475,25 +7539,20 @@ mod tests {
         eng.active_sound = 0;
         eng.handle_event(EngineEvent::SetShiftHeld(true)).unwrap();
 
+        // Nouvelle disposition : LP/HP/BP=4, NOTCH=5, PEAK=6, OFF=7
         let labels = eng.soft_key_labels();
         assert_eq!(
             labels,
-            ["REVERSE", "LOOP", "NORMLZ", "CYC FLT", "LP", "HP", "BP", "OFF"]
+            [
+                "REVERSE", "LOOP", "NORMLZ", "CYC FLT", "LP/HP/BP", "NOTCH", "PEAK", "OFF"
+            ]
         );
 
-        // SoftKey 4 = CYC FLT
+        // SoftKey 4 (idx 3) = CYC FLT → Off → LowPass
         eng.handle_event(EngineEvent::SoftKey(4)).unwrap();
-        // SoftKey 5 = LP
-        eng.handle_event(EngineEvent::SoftKey(5)).unwrap();
-        let f_lp = eng.project.read().groups[0].sounds[0]
-            .as_ref()
-            .unwrap()
-            .filter
-            .kind;
-        assert_eq!(f_lp, crate::project::FilterKind::LowPass);
 
-        // SoftKey 6 = HP
-        eng.handle_event(EngineEvent::SoftKey(6)).unwrap();
+        // SoftKey 5 (idx 4) = LP/HP/BP cycle : LowPass → HighPass
+        eng.handle_event(EngineEvent::SoftKey(5)).unwrap();
         let f_hp = eng.project.read().groups[0].sounds[0]
             .as_ref()
             .unwrap()
@@ -7501,7 +7560,25 @@ mod tests {
             .kind;
         assert_eq!(f_hp, crate::project::FilterKind::HighPass);
 
-        // SoftKey 8 = OFF
+        // SoftKey 6 (idx 5) = NOTCH
+        eng.handle_event(EngineEvent::SoftKey(6)).unwrap();
+        let f_notch = eng.project.read().groups[0].sounds[0]
+            .as_ref()
+            .unwrap()
+            .filter
+            .kind;
+        assert_eq!(f_notch, crate::project::FilterKind::Notch);
+
+        // SoftKey 7 (idx 6) = PEAK
+        eng.handle_event(EngineEvent::SoftKey(7)).unwrap();
+        let f_peak = eng.project.read().groups[0].sounds[0]
+            .as_ref()
+            .unwrap()
+            .filter
+            .kind;
+        assert_eq!(f_peak, crate::project::FilterKind::Peak);
+
+        // SoftKey 8 (idx 7) = OFF
         eng.handle_event(EngineEvent::SoftKey(8)).unwrap();
         let f_off = eng.project.read().groups[0].sounds[0]
             .as_ref()

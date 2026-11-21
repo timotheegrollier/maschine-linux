@@ -3405,11 +3405,13 @@ pub fn render_sampler_right(snap: &EngineSnapshot) -> DisplayFrame {
 
     let mut active = [false; 8];
     match f_kind {
+        // LP, HP, BP partagent la touche 4 «LP/HP/BP» (cycle)
         crate::project::FilterKind::LowPass => active[4] = true,
-        crate::project::FilterKind::HighPass => active[5] = true,
-        crate::project::FilterKind::BandPass => active[6] = true,
-        crate::project::FilterKind::Notch => {} // pas de softkey dédiée — aucun highlight
-        crate::project::FilterKind::Peak => {}  // idem
+        crate::project::FilterKind::HighPass => active[4] = true,
+        crate::project::FilterKind::BandPass => active[4] = true,
+        // Notch → touche 5, Peak → touche 6, Off → touche 7
+        crate::project::FilterKind::Notch => active[5] = true,
+        crate::project::FilterKind::Peak => active[6] = true,
         crate::project::FilterKind::Off => active[7] = true,
     }
     footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);

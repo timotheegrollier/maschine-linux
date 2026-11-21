@@ -14,7 +14,7 @@ Maschine Linux is an independent project. It does not include Native
 Instruments code or proprietary assets; it reproduces the documented workflow
 and hardware behavior through a clean-room implementation.
 
-## Current state (0.10.1)
+## Current state (0.11.0)
 
 Cargo workspace with six crates:
 
@@ -23,8 +23,8 @@ Cargo workspace with six crates:
 | `maschine-proto` | Pure codec (no I/O): HID IN `0x01` (buttons, 4D encoder) / `0x02` (pads), HID OUT `0x80`/`0x81`, raw RGB565 Bulk Display with aligned partial windows, color palette |
 | `maschine-hardware` | USB discovery (`hidraw` first, `nusb`/`rusb` fallback), real-time threads, complete hardware mapper, Pad/Step/Keyboard/Chords modes, latched navigation |
 | `maschine-engine` | Domain: Project/Group/Sound/Pattern/Scene/Section, transport, multi-bar sequencer, 808 Drum Synth (16 instruments), Acid TB-303 synthesizer, 480×272 dual-LCD rendering |
-| `maschine-app` | `maschine-linux` binary: native `egui` GUI, headless daemon, low-latency PipeWire audio, updater |
-| `maschine-dsp` | Real-time guitar DSP chain: noise gate, overdrive, tone stack, cabinet simulation, delay, lock-free atomic parameters |
+| `maschine-app` | `maschine-linux` binary: native `egui` GUI, headless daemon, low-latency PipeWire audio, guitar amp monitoring on the MK3 input, updater |
+| `maschine-dsp` | Real-time guitar DSP: 4x-oversampled multi-model tube preamp (Vox AC30, Fender Blackface/Tweed, High Gain), correct click-free biquad tone stacks, cabinet simulation, gate, delay, tuner (YIN), FFT spectrum, lock-free atomic parameters |
 | `maschine-guitar-standalone` | Optional standalone guitar FX rack (JACK/CPAL audio, `egui` GUI); built by the workspace but independent from the Maschine workflow |
 
 Real-time design: the engine snapshot is shared through `Arc` (copy-on-write,
@@ -35,6 +35,33 @@ Audio uses a 256-frame buffer (64-frame period, about 1.3 ms) at 48 kHz, a
 inside each block, and a drum kit regenerated at the device sample rate.
 Instrumentation: `--debug-latency` (HID→Engine, real buffer size, misses,
 errors) and `--stress` (deliberate engine-lock contention).
+
+### Guitar amp on the MK3 input
+
+The `AMPLI GUITARE` view (`G` shortcut) turns the MK3 audio input into a real
+tube-amp signal chain, monitored through the normal MK3 outputs:
+
+```
+jack guitare → MK3 input (CPAL capture) → SPSC ring → gate
+             → tube preamp (4x oversampling) → tone stack → cabinet → delay
+             → mix into Maschine output (main 1/2 + headphones 3/4)
+```
+
+- Four amp voices: **Vox AC30**, **Fender Blackface**, **Fender Tweed** and
+  **High Gain**, each with its own gain stages, tone stack and power-amp sag.
+- Controls: Gain, Bass, Mid, Treble, Presence, Sag, Master and Monitor level,
+  editable from the GUI or the eight contextual MK3 knobs.
+- **Both MK3 screens switch to the amp** (PLUGIN page 2): `PREAMP` on the left
+  (saturation curve, 3-band tone stack, knobs 1–4 Gain/Bass/Mid/Treble, soft keys
+  `AMP <`/`AMP >`/`CAB <`/`CAB >`) and `ANALYSE` on the right (IN/OUT VU, YIN
+  tuner, 48-band FFT, CPU/latency/Xruns, knobs 5–8 Presence/Sag/Master/Monitor,
+  soft keys `BYPASS`/`MONITOR`/`RESET`/`PAGE SND`). The GUI panel is a mirror of
+  the very same frames.
+- Diagnostics: input/output VU meters, real DSP CPU load, estimated latency,
+  clipping counter, Xruns, YIN tuner (note + cents) and a live FFT spectrum.
+- The capture stream is opened from the MK3 when available (WirePlumber
+  `pro-audio` profile, see below), with fallback to the system default input.
+  Failure to open an input never prevents the rest of the app from running.
 
 ### Workflow and GUI parity in 0.10.1
 
@@ -111,13 +138,16 @@ target/release/maschine-linux gui --no-hardware
 # Headless daemon with detailed logs
 target/release/maschine-linux daemon --verbose
 
+# List output AND input devices (MK3 capture port for the guitar amp)
+target/release/maschine-linux audio-list
+
 # Real-time instrumentation (HID→Engine latency + audio stats every 2 s)
 target/release/maschine-linux daemon --debug-latency
 target/release/maschine-linux daemon --debug-latency --stress
 ```
 
 Useful GUI shortcuts: `I` Ideas, `S` Sequencer, `K` Keyboard, `M` Mixer,
-`A` Sampler, `T`/`P` Plugin/TB-303, `B` Browser, `Space` Play/Stop,
+`A` Sampler, `T`/`P` Plugin/TB-303, `G` Guitar Amp, `B` Browser, `Space` Play/Stop,
 `F1` toggle navigation rail, `F2` toggle MK3 panel, `F3` toggle centre
 workspace, `Ctrl+S` save, `Ctrl+Shift+S` quick save.
 
@@ -135,6 +165,9 @@ MK3 USB IF4 HID (0x01 buttons/encoders, 0x02 pads)
 
 Engine ─► ALSA Seq (virtual) / JACK MIDI
 PipeWire-JACK 48k/128 ─► Engine audio callback
+
+MK3 input (jack guitare) ─► CPAL capture ─► SPSC ring ─► maschine-dsp
+                            (tube amp + cab) ─► mix ─► CPAL output (MK3)
 ```
 
 ## Reproduced Maschine workflow

@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.11.0" date="2026-11-21">
+      <description>
+        <p>Release 0.11.0 adds a real-time tube guitar amp on the Maschine MK3 input (four amp voices, cabinet simulation, tuner and spectrum diagnostics) with dedicated screens on both MK3 displays and contextual soft keys.</p>
+      </description>
+    </release>
     <release version="0.10.5" date="2026-11-21">
       <description>
         <p>Release 0.10.5 fixes synth pad sustain so held notes sound continuously, redesigns Kick Synth BP/HP filters with analog resonance and punch, and improves Nexus Wavetable Synth filters and parameter persistence.</p>

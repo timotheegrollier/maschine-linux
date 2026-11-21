@@ -1956,7 +1956,7 @@ impl Engine {
                 self.sync_acid_from_active_sound();
                 self.sync_kick_from_active_sound();
                 self.sync_wavetable_from_active_sound();
-                if self.left_tab == 4 {
+                if self.left_tab == 4 && self.plugin_page != 2 {
                     self.plugin_page = if self.focus_sound_has_synth() { 1 } else { 0 };
                 }
             }
@@ -2256,7 +2256,8 @@ impl Engine {
                 self.nav_serial = self.nav_serial.wrapping_add(1);
             }
             EngineEvent::SetPluginPage(page) => {
-                self.plugin_page = page.min(1);
+                // 0: SOUND, 1: synth, 2: ampli guitare.
+                self.plugin_page = page.min(2);
                 if self.plugin_page == 1 {
                     self.sync_acid_from_active_sound();
                     self.sync_kick_from_active_sound();
@@ -2268,7 +2269,7 @@ impl Engine {
                 self.sync_acid_from_active_sound();
                 self.sync_kick_from_active_sound();
                 self.sync_wavetable_from_active_sound();
-                if self.left_tab == 4 {
+                if self.left_tab == 4 && self.plugin_page != 2 {
                     self.plugin_page = if self.focus_sound_has_synth() { 1 } else { 0 };
                 }
             }
@@ -4434,6 +4435,9 @@ impl Engine {
                         "REVERSE", "LOOP", "NORMLZ", "CYC FLT", "LP", "HP", "BP", "OFF",
                     ];
                 }
+                4 if self.plugin_page == 2 => {
+                    return crate::display_render::GUITAR_SOFT_LABELS;
+                }
                 4 => {
                     if self.focus_sound_has_wavetable() {
                         return [
@@ -4495,6 +4499,11 @@ impl Engine {
             return [
                 "ROOT -", "ROOT +", "SCALE-", "SCALE+", "CHORD-", "CHORD+", "INV -", "INV +",
             ];
+        }
+        // Page AMPLI GUITARE : les labels annoncent exactement les actions
+        // gérées par l'app (voir GuiApp::guitar_soft_key).
+        if self.left_tab == 4 && self.plugin_page == 2 {
+            return crate::display_render::GUITAR_SOFT_LABELS;
         }
         match self.left_tab {
             1 if self.mixer_mode == 0 || self.mixer_mode == 1 => [
@@ -5639,7 +5648,11 @@ impl Engine {
 
     /// Synchronise la page PLUGIN et les paramètres TB avec le Sound actif.
     fn sync_plugin_for_active_sound(&mut self) {
-        self.plugin_page = if self.focus_sound_has_synth() { 1 } else { 0 };
+        // La page 2 (ampli guitare) est pilotée par la GUI et doit survivre
+        // à un changement de Sound.
+        if self.plugin_page != 2 {
+            self.plugin_page = if self.focus_sound_has_synth() { 1 } else { 0 };
+        }
         self.sync_acid_from_active_sound();
         self.sync_kick_from_active_sound();
         self.sync_wavetable_from_active_sound();

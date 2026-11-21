@@ -93,6 +93,43 @@ fn main() -> std::io::Result<()> {
     eng.handle_event(maschine_engine::EngineEvent::SetRightTab(0))
         .unwrap();
 
+    // AMPLI GUITARE (page PLUGIN 2) — valeurs réalistes pour vérifier les
+    // libellés au-dessus des 8 Knobs et les soft keys des 8 boutons.
+    eng.handle_event(maschine_engine::EngineEvent::SetLeftTab(4))
+        .unwrap();
+    eng.handle_event(maschine_engine::EngineEvent::SetPluginPage(2))
+        .unwrap();
+    {
+        let snap = eng.snapshot();
+        let mut g = display_render::GuitarScreenData {
+            model: 0,
+            cab: 0,
+            enabled: true,
+            monitor: true,
+            bypass: false,
+            input_db: -14.5,
+            output_db: -3.2,
+            cpu_load: 0.28,
+            latency_ms: 6.4,
+            xruns: 0,
+            tuner_label: Some("E2 +2c".to_string()),
+            tuner_freq: 82.6,
+            ..display_render::GuitarScreenData::default()
+        };
+        for (i, v) in [0.55, 0.6, 0.45, 0.65, 0.5, 0.4, 0.8, 0.75]
+            .into_iter()
+            .enumerate()
+        {
+            g.params[i] = v;
+        }
+        for (i, v) in g.spectrum.iter_mut().enumerate() {
+            *v = -90.0 + (i as f32 * 0.6).sin() * 12.0 - i as f32 * 0.4;
+        }
+        let (left, right) = display_render::render_screens_with_guitar(&snap, Some(&g));
+        write_ppm(&dir.join("guitar_left.ppm"), &left)?;
+        write_ppm(&dir.join("guitar_right.ppm"), &right)?;
+    }
+
     // SONG et SCENES
     eng.handle_event(maschine_engine::EngineEvent::ToggleSongMode)
         .unwrap();

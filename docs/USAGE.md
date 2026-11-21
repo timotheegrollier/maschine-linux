@@ -17,6 +17,7 @@ maschine-linux daemon
 maschine-linux daemon --project my.json
 maschine-linux gui --project my.json   # GUI, Maschine optional
 maschine-linux gui --no-hardware       # force standalone mode, ignore any MK3
+maschine-linux audio-list              # list outputs AND inputs (MK3 capture port)
 ```
 
 ## Daemon
@@ -32,6 +33,41 @@ The daemon:
 7. Renders the engine voices; `--no-audio` also advances the transport with silent rendering to test the interface.
 
 Logs: `RUST_LOG=debug maschine-linux -vv daemon`
+
+## Guitar amp (MK3 input monitoring)
+
+Open the `AMPLI GUITARE` view with `G` (or the navigation rail). Plug the guitar
+into the MK3 input jack; the capture stream is opened automatically on the MK3
+input port when the device is in `pro-audio` mode (shipped WirePlumber config),
+otherwise on the system default input. `maschine-linux audio-list` shows the
+available input ports.
+
+1. Set `ACTIF` and `MONITOR` on (both are on by default when an input opens).
+2. Pick an amp voice — `Vox AC30`, `Fender Blackface`, `Fender Tweed` or
+   `High Gain` — and a cabinet (`Vox 12"`, `Fender 12"`, `Modern 12"`, `Flat`).
+3. Shape the sound with Gain / Bass / Mid / Treble / Presence / Sag / Master.
+   The same eight controls are mapped to the MK3 contextual knobs in this view.
+4. Use `BYPASS` to compare with the dry signal, and `MONITOR` to set the level
+   sent to the main outputs (headphones follow their own volume).
+
+The panel shows live IN/OUT VU meters, a YIN tuner (note, octave, cents), an FFT
+spectrum of the guitar input, and real-time diagnostics: DSP CPU load, estimated
+round-trip latency, clipped samples, peak level, block count, Xruns (dropped
+input samples) and the name of the capture device.
+
+**Both MK3 screens switch to the amp** (PLUGIN page 2). The left screen is
+`GUITAR AMP | PREAMP` (saturation curve, tone stack, ACTIF/MON/BYPASS status)
+with knobs `1:GAIN`, `2:BASS`, `3:MID`, `4:TREBLE` and soft keys
+`AMP <`, `AMP >`, `CAB <`, `CAB >`. The right screen is
+`GUITAR AMP | ANALYSE` (IN/OUT VU, tuner, 48-band spectrum, CPU/Xruns/latency)
+with knobs `5:PRESENCE`, `6:SAG`, `7:MASTER`, `8:MONITOR` and soft keys
+`BYPASS`, `MONITOR`, `RESET`, `PAGE SND`. Values above each knob are live and
+identical in the GUI mirror; `PAGE SND` returns to the normal PLUGIN page.
+
+Signal path: CPAL capture → preallocated SPSC ring → noise gate → 4x-oversampled
+tube preamp → tone stack → cabinet → delay → mix into the engine output. No
+allocation or blocking lock occurs in either audio callback; GUI parameters are
+atomics and telemetry is published with `try_lock`.
 
 ### Supported Maschine MK3 hardware controls
 
@@ -71,6 +107,7 @@ Logs: `RUST_LOG=debug maschine-linux -vv daemon`
     - *PLUGIN / WAVETABLE*: buttons 1..4 = Cutoff, Resonance, Env Mod, Drive; 5..8 = Attack, Decay, Sustain, Release.
     - *BROWSER*: knob selects pads and scrolls 808 presets.
     - *ARRANGE*: tempo, swing, volume and global filter.
+    - *AMPLI GUITARE*: knobs 1..8 = Gain, Bass, Mid, Treble, Presence, Sag, Master, Monitor.
   - **PLUGIN soft keys**: SOUND page `[1: SND <]`, `[2: SND >]`, `[3: PAGE TB]`, `[4: LISTEN]`, `[5: APPLY]`, `[6: RESET]`, `[7: VOL -]`, `[8: VOL +]`; TB-303 page `[1: SAW/SQR]`, `[2: OCT -]`, `[3: OCT +]`, `[4: SLIDE]`, `[5: CLASSIC]`, `[6: SQUELCH]`, `[7: PAGE SND]`, `[8: DUB]`; Kick page `[1: DRV TYP]`, `[2: FLT MOD]`, presets and direct filter selectors.
   - **PATTERN soft keys**: `[1: PAT <]`, `[2: PAT >]`, `[3: + PAT]`, `[4: DUPL]`, `[5: VIDER]`, `[6: SUPPR]`, `[7: 1 MES]`, `[8: 2 MES]`. `SUPPR` is ignored when only one pattern remains in the Group.
   - **Latched workflow menus**: PATTERN, STEP, KEYBOARD, SCENE, EVENTS, MACRO, SETTINGS, and PLUGIN remain active after the first press. Pressing the same button again returns to the default Pad workflow. Only one workflow menu is active at a time. Pressing any top view button (FILE/SAVE, BROWSER, PLUGIN, CHANNEL/MIDI, MIXER, SAMPLING, ARRANGER) automatically exits any active latch (PATTERN, SCENE, SELECT, ERASE, MUTE) and closes overlays (EVENTS, MACRO, SETTINGS) before entering the selected view.

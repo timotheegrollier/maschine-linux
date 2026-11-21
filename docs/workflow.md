@@ -74,7 +74,8 @@ hot-plug reconnection are ignored.
 
 ## MK3 screens (480×272) & soft keys
 
-Both screens are rendered by the same function (`display_render::render_screens`): the MK3 panel in the GUI is the mirror of the content computed for the hardware. The USB loop compares renders at 30 Hz, sends only modified rectangles (up to six), limits average throughput to 1.6 MB/s and sends a full-screen pair every 2 seconds to resynchronize the controller.
+Both screens are rendered by the same function (`display_render::render_screens` /
+`render_screens_with_guitar`): the MK3 panel in the GUI is the mirror of the content computed for the hardware. The USB loop compares renders at 30 Hz, sends only modified rectangles (up to six), limits average throughput to 1.6 MB/s and sends a full-screen pair every 2 seconds to resynchronize the controller. For the Guitar Amp page, `maschine-app` publishes a plain `GuitarScreenData` snapshot (atomics + telemetry) to both render paths, so the hardware screens and the GUI mirror are always identical.
 
 - **Left screen**: ARRANGE (8 groups, scene pattern, real VU), SCENES/IDEAS (SCENE mode), PATTERN slots (PATTERN mode: 16 slots with name, length, event count, active/assigned markers), SONG (sections), MIXER A–D, SAMPLER (waveform + ADSR + info), BROWSER (808 presets), STEP (full pattern grid + selected step parameters), and PLUGIN (SOUND page or TB-303 page).
 - **Right screen**: PATTERN (16 sounds × 16 steps grid + playhead), STEP (active Sound velocities + edit cursor), SONG TIMELINE, MIXER master + group/sound focus, SAMPLER full-screen envelope, BROWSER loading, EVENTS, MACRO, SETTINGS, PLUGIN SOUND envelope.
@@ -91,8 +92,13 @@ Both screens are rendered by the same function (`display_render::render_screens`
   - PLUGIN KICK SYNTH: `DRV TYPE`, `FLT MODE`, `TECHNO`, `909`, `HARDCORE`, `808 SUB`, `INDUSTRIAL`, `BROWSER`. Knobs 1..8 control Tune, Decay, Snap, Sweep, Click, Drive (Shift: Filter Cutoff), Sub (Shift: Filter Reso), Volume.
   - PLUGIN NEXUS SYNTH: `PRES <`, `PRES >`, `PIANO`, `M1 PIANO`, `808 SUB`, `REESE`, `TITANIUM`, `STRINGS`. Knobs 1..8 control Filter Cutoff, Reso, Env Amt, Drive, Attack, Decay, Sustain, Release.
   - PLUGIN TB-303: `SAW/SQR`, `OCT -`, `OCT +`, `SLIDE`, `CLASSIC`, `SQUELCH`, `PAGE SND`, `DUB`.
+  - **PLUGIN GUITAR AMP (page 2)** — deux écrans dédiés (`GUITAR AMP | PREAMP` et `GUITAR AMP | ANALYSE`) :
+    - Soft keys 1–4 (écran gauche) : `AMP <`, `AMP >` (choix du modèle Vox AC30 / Fender Blackface / Tweed / High Gain), `CAB <`, `CAB >` (Vox 12 / Fender 12 / Modern 12 / Flat).
+    - Soft keys 5–8 (écran droit) : `BYPASS`, `MONITOR`, `RESET`, `PAGE SND` (retour à la page PLUGIN SOUND).
+    - Écran gauche : courbe de saturation du préampli, tone stack 3 bandes, état ACTIF / MON / BYPASS. Knobs **1:GAIN, 2:BASS, 3:MID, 4:TREBLE**.
+    - Écran droit : VU entrée/sortie, accordeur (note + cents + Hz), spectre 48 bandes, CPU / Xruns / latence. Knobs **5:PRESENCE, 6:SAG, 7:MASTER, 8:MONITOR**.
   - SCENE: `SCN 1..8`. SONG: `SEC <</>>`, `+SEC`, `IDEAS`, scenes and `+SCN`.
-- **Encoders**: each screen displays the 4 parameters actually controlled by its knobs (1–4 on the left, 5–8 on the right) with live values. PLUGIN routes knobs by page: SOUND uses Vol/Pan/Cutoff/Reso + ADSR, TB-303 uses Cutoff/Reso/EnvMod/Decay + Accent/Drive/Time/Mix.
+- **Encoders**: each screen displays the 4 parameters actually controlled by its knobs (1–4 on the left, 5–8 on the right) with live values. PLUGIN routes knobs by page: SOUND uses Vol/Pan/Cutoff/Reso + ADSR, TB-303 uses Cutoff/Reso/EnvMod/Decay + Accent/Drive/Time/Mix, GUITAR AMP uses Gain/Bass/Mid/Treble + Presence/Sag/Master/Monitor.
 - **Navigation between views**: choosing ARRANGE, MIXER, SAMPLER, BROWSER or PLUGIN returns the right screen to the page linked to that view. EVENTS, MACRO and SETTINGS are right-hand views that can then be explicitly selected. Clicking the active main view again in the GUI returns to its contextual right page.
 - **Latched workflow menus**: PATTERN, STEP, KEYBOARD, SCENE, EVENTS, MACRO, SETTINGS and PLUGIN latch on the first press. A second press on the same button returns to the default Pad workflow and the Sequencer view. Only one workflow menu is active at a time.
 - **PATTERN mode**: the left screen lists the 16 pattern slots of the focus Group with length and event count; the right screen shows the selected pattern grid. Empty pads create the corresponding slot; pressing the active pattern deselects it (stops the pattern, allowing all pads to be off); pressing two pads simultaneously chains the patterns into a sequential loop; `DUPLICATE` copies the active pattern, `SHIFT + ERASE` clears its events, and the 4D encoder moves to the previous/next pattern. The last pattern of a Group cannot be deleted.

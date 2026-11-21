@@ -261,6 +261,7 @@ fn flush_screen(
 pub fn spawn_display_thread(
     engine: Arc<Mutex<Engine>>,
     activity: Arc<AtomicBool>,
+    guitar: Arc<crate::guitar::GuitarRuntime>,
 ) -> anyhow::Result<DisplayThreadHandle> {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = stop.clone();
@@ -375,8 +376,12 @@ pub fn spawn_display_thread(
                     }
 
                     if !failed {
+                        let guitar_data = guitar.screen_data();
                         let (left_frame, right_frame) =
-                            maschine_engine::display_render::render_screens(&snap);
+                            maschine_engine::display_render::render_screens_with_guitar(
+                                &snap,
+                                Some(&guitar_data),
+                            );
                         let left_plan = left.plan(&left_frame);
                         let right_plan = right.plan(&right_frame);
                         let bytes: usize = left_plan

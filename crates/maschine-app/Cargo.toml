@@ -16,6 +16,8 @@ path = "src/main.rs"
 maschine-proto = { workspace = true }
 maschine-hardware = { workspace = true }
 maschine-engine = { workspace = true }
+maschine-dsp = { workspace = true }
+atomic_float = "1.1"
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
@@ -38,8 +40,9 @@ ureq = { version = "3.5.1", features = ["json"] }
 semver = "1.0.28"
 
 [features]
-default = ["audio", "usb", "midi-alsa", "gui"]
+default = ["audio", "usb", "midi-alsa", "gui", "analysis-dsp"]
 audio = ["dep:cpal"]
+analysis-dsp = ["maschine-dsp/analysis"]
 gui = ["dep:eframe", "dep:egui"]
 usb = ["maschine-hardware/usb", "dep:rusb"]
 midi-alsa = ["maschine-hardware/midi-alsa"]

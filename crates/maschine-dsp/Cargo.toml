@@ -19,7 +19,8 @@ hound = { version = "3.5", optional = true }    # WAV loading for IR
 
 [features]
 default = []
-ir = ["realfft", "rustfft", "hound"]  # enable cab IR convolution (heavier)
+ir = ["realfft", "rustfft", "hound"]       # enable cab IR convolution (heavier)
+analysis = ["realfft"]                     # enable FFT spectrum analyser
 
 [dev-dependencies]
 criterion = "0.5"

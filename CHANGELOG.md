@@ -2,6 +2,38 @@
 
 All notable changes.
 
+## [0.11.0] - 2026-11-21
+
+### Features
+
+- **Dedicated Guitar Amp screens on both MK3 displays**: PLUGIN page 2 renders
+  `GUITAR AMP | PREAMP` (saturation curve, 3-band tone stack, live values above
+  knobs 1–4) and `GUITAR AMP | ANALYSE` (IN/OUT VU, YIN tuner, 48-band FFT,
+  CPU/latency/Xruns, knobs 5–8). Soft keys 1–8 map to amp/cab selection, bypass,
+  monitor, reset and `PAGE SND`, identically on hardware and in the GUI mirror.
+- **Guitar amp on the MK3 input**: new `AMPLI GUITARE` view (`G`) monitors the
+  guitar jack through a real tube-amp chain inside `maschine-app`. CPAL capture
+  (MK3 `pro-audio` input, fallback to default input) feeds a lock-free SPSC ring;
+  the output callback runs a 4x-oversampled preamp (Vox AC30, Fender Blackface,
+  Fender Tweed, High Gain), click-free biquad tone stack, cabinet simulation and
+  delay, then mixes the result into the Maschine outputs. Eight MK3 contextual
+  knobs control Gain/Bass/Mid/Treble/Presence/Sag/Master/Monitor.
+- **Guitar diagnostics**: YIN tuner (note + cents), live FFT spectrum, real DSP
+  CPU load, estimated latency, clipping/peak counters, Xruns and capture-device
+  name in the new view. `maschine-linux audio-list` now lists input devices.
+- **`maschine-dsp` rewrite**: fixed DF1 biquad state (now DF2T with smooth
+  coefficient crossfades), real `set_sample_rate`, preallocated chain buffers,
+  per-block parameter smoothing, and a polyphase 4x oversampler for alias-free
+  tube saturation. The standalone rack's GUI knobs now actually reach the DSP.
+
+### Validation
+
+- `cargo test --workspace --locked` (all tests pass, including new DSP amp,
+  tuner, biquad, diagnostics, ring-buffer and MK3 guitar-screen tests)
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- `cargo run -p maschine-engine --example dump_screens` (visual PPM export of
+  both guitar screens)
+
 ## [0.10.5] - 2026-11-21
 
 ### Fixes & Improvements

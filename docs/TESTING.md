@@ -24,6 +24,10 @@ This guide pairs each documented promise with a concrete check. Cargo tests cove
 | Mixer per pad | manual / integration coverage | Selecting pads changes the editable Sound; per-pad volume/pan edits apply and persist per Group. |
 | Keyboard/Chords | manual / integration coverage | Root/scale/octave/chord controls change musical state; pads play pitched notes/chords; MK3/GUI screens reflect the state. |
 | GUI/HID integration | `cargo test -p maschine-app` | Event routing, context transitions and the 2×1 RGB565 recovery probe. |
+| Guitar amp DSP | `cargo test -p maschine-dsp --features analysis` | 11 tests: correct biquad response and state continuity, all four amp models finite/non-silent, gain increases harmonics, model switching, A440 YIN tuning, silence rejection, note conversion, clip/timing stats. |
+| Guitar input pipeline | `cargo test -p maschine-app processor_mixes_signal_without_nan ring_buffer` | SPSC ring write/read and wraparound, atomic control round-trip, and amp processor mixing into the output block without NaN. |
+| Guitar MK3 screens | `cargo test -p maschine-engine guitar_` ; `cargo test -p maschine-app screen_data_maps_controls` | PLUGIN page 2 renders two dedicated frames (left PREAMP, right ANALYSE), knob values and VU/CPU changes redraw them, soft-key labels match the app actions, and `GuitarRuntime::screen_data()` maps atomics/telemetry to the renderer. |
+| Visual screen check | `cargo run -p maschine-engine --example dump_screens -- /tmp/opencode/screens` | Exports both MK3 frames to PPM, including a `guitar_left` / `guitar_right` pair with representative values; convert with `convert guitar_left.ppm guitar_left.png` to inspect labels above the knobs and buttons. |
 | General regressions | `cargo nextest run --workspace` (ou `cargo test --workspace`) | All unit and integration tests in the workspace. |
 | Universal filter shortcuts | `cargo test -p maschine-hardware test_4d_encoder_shift_push_cycles_filter_in_all_views test_knobs_shift_filter_cycle_in_plugin_and_arrange` | Shift+Push on 4D encoder and Shift+Knobs cycle sound filter modes across all views without switching screens. |
 | 8 Groups & 128 Tracks | `cargo test -p maschine-hardware test_all_eight_groups_and_pads_routing`; `cargo test -p maschine-engine test_synth_pad_mixer_volume_and_mute` | All 8 groups (A..H) and 16 pads per group route actions independently to distinct voices, synth models, and mix parameters. |
@@ -51,6 +55,7 @@ With the MK3 connected, the following commands exercise the output paths without
 ./target/release/maschine-linux led-test --pad 0 --color 6
 ./target/release/maschine-linux pad-test --step-ms 180
 ./target/release/maschine-linux display-test --r 0 --g 160 --b 80 --duration 1200
+./target/release/maschine-linux audio-list    # verify the MK3 capture port is listed
 ```
 
 Expected results: `probe` reports `17cc:1600`, the `hidraw` device and an openable HID handle; `led-test` writes report `0x80`/`0x81`; `pad-test` lights pads 1..16 in logical order; `display-test` sends a solid RGB565 frame. A successful USB write confirms transport acceptance, not visible pixels, so also inspect both LCDs.
@@ -64,6 +69,23 @@ Validation performed for 0.8.0 on a connected MK3 (`serial=1B64AB9B`, `/dev/hidr
 - `probe` after GUI exit: the MK3 is still detected and `hidraw open: OK`, confirming the shutdown did not reset or lose the device.
 - GUI standalone startup and close with `--no-hardware`: no hardware session, no hot-plug reconnect, virtual MIDI opened, window closes cleanly.
 - Automated mapper tests cover PATTERN-mode `DUPLICATE`, `SHIFT + ERASE`, and 4D stepping; engine/display tests cover pattern CRUD, slot creation, Scene re-indexing, soft keys, pattern-mode screens, and the shutdown splash.
+
+## Guitar amp check (MK3 input)
+
+With the MK3 connected in `pro-audio` mode and a guitar plugged into its input
+jack:
+
+1. `maschine-linux audio-list` must show an input whose name contains
+   `Maschine` / `MK3` / `USB Audio`.
+2. Launch `maschine-linux gui`, press `G`, and check that `ACTIF` and `MONITOR`
+   are lit and the capture device name appears in `DIAGNOSTICS TEMPS RÉEL`.
+3. Play a note: the IN VU meter must move, the tuner must show the correct note
+   and cents, the spectrum must display harmonics, and the OUT meter must show
+   the amplified signal.
+4. Cycle the four amp voices and the cab models: the tone must change audibly
+   without clicks or dropouts. `BYPASS` must give the dry guitar signal.
+5. Check that the DSP CPU figure stays well below 100 %, Xruns stays at 0, and
+   `pw-top` reports no `ERR` while playing.
 
 ## Manual check on the Maschine MK3
 

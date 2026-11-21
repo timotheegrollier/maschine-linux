@@ -10,6 +10,8 @@ use parking_lot::Mutex;
 
 use maschine_engine::Engine;
 
+use crate::guitar::{GuitarProcessor, GuitarRuntime};
+
 /// Attente max du verrou moteur dans le callback avant de rendre du silence.
 /// L'UI/HID ne tient le verrou que quelques µs : un `try_lock` raté ne doit
 /// pas couper 10 ms de son (c'était la source des craquements).
@@ -58,9 +60,11 @@ impl AudioStats {
     }
 }
 
-/// Gère le stream cpal.
+/// Gère les streams cpal (sortie Maschine + entrée guitare MK3).
 pub struct AudioOutput {
     _stream: cpal::Stream,
+    /// Flux d'entrée de l'interface MK3 (si disponible).
+    _input_stream: Option<cpal::Stream>,
     #[allow(dead_code)]
     device_name: String,
     sample_rate: u32,
@@ -80,6 +84,7 @@ impl AudioOutput {
         engine: Arc<Mutex<Engine>>,
         explicit_device: Option<&str>,
         hp_dup: bool,
+        guitar: Arc<GuitarRuntime>,
     ) -> anyhow::Result<Self> {
         auto_configure_djm_routing();
         let host = cpal::default_host();
@@ -146,6 +151,7 @@ impl AudioOutput {
                             channels as usize,
                             hp_dup,
                             stats.clone(),
+                            guitar.clone(),
                         ),
                         cpal::SampleFormat::I16 => build_i16_stream(
                             &device,
@@ -154,6 +160,7 @@ impl AudioOutput {
                             channels as usize,
                             hp_dup,
                             stats.clone(),
+                            guitar.clone(),
                         ),
                         cpal::SampleFormat::U16 => build_u16_stream(
                             &device,
@@ -162,6 +169,7 @@ impl AudioOutput {
                             channels as usize,
                             hp_dup,
                             stats.clone(),
+                            guitar.clone(),
                         ),
                         other => {
                             anyhow::bail!("format d'échantillon non supporté: {other:?}");
@@ -205,11 +213,25 @@ impl AudioOutput {
             eng.set_audio_sample_rate(actual_rate);
         }
 
+        // Entrée guitare : on ouvre le port de capture de la MK3 (profil
+        // pro-audio) en fallback sur le device par défaut. Un échec ici ne
+        // doit pas empêcher le reste de l'application de fonctionner.
+        let input_stream = build_guitar_input_stream(&host, actual_rate, guitar.clone());
+        if let Some(stream) = input_stream.as_ref() {
+            if let Err(e) = stream.play() {
+                log::warn!("Impossible de démarrer l'entrée guitare: {e}");
+            }
+        } else {
+            log::warn!("Aucune entrée audio disponible — monitoring guitare désactivé");
+            guitar.control.enabled.store(false, Ordering::Relaxed);
+        }
+
         stream.play().context("stream play")?;
         log::info!("✓ Audio stream démarré sur '{dev_name}' {actual_rate}Hz (channels={channels})");
 
         Ok(Self {
             _stream: stream,
+            _input_stream: input_stream,
             device_name: dev_name,
             sample_rate: actual_rate,
             stats,
@@ -222,8 +244,9 @@ impl AudioOutput {
         engine: Arc<Mutex<Engine>>,
         explicit_device: Option<String>,
         hp_dup: bool,
+        guitar: Arc<GuitarRuntime>,
     ) -> anyhow::Result<Self> {
-        Self::open(engine, explicit_device.as_deref(), hp_dup)
+        Self::open(engine, explicit_device.as_deref(), hp_dup, guitar)
     }
 
     /// Nom du device.
@@ -293,6 +316,115 @@ fn event_logger(stats: Arc<AudioStats>) -> impl FnMut(cpal::StreamError) + Send 
     }
 }
 
+/// Estimation de la latence aller-retour (entrée + sortie) d'après la
+/// configuration négociée. Affichée dans les diagnostics de l'ampli.
+fn guitar_latency_ms(cfg: &cpal::StreamConfig) -> f32 {
+    let frames = match cfg.buffer_size {
+        cpal::BufferSize::Fixed(n) => n as f32,
+        cpal::BufferSize::Default => 256.0,
+    };
+    let ms = frames * 1000.0 / cfg.sample_rate.0 as f32;
+    // Deux buffers (capture + lecture) plus une petite marge backend.
+    ms * 2.0 + 2.0
+}
+
+/// Ouvre le flux de capture de la MK3 (ou du device par défaut) et écrit les
+/// échantillons mono dans le ring buffer de l'ampli. L'échec est non fatal :
+/// l'application continue sans monitoring guitare.
+fn build_guitar_input_stream(
+    host: &cpal::Host,
+    sample_rate: u32,
+    guitar: Arc<GuitarRuntime>,
+) -> Option<cpal::Stream> {
+    let device = find_mk3_input_device(host).or_else(|| host.default_input_device())?;
+    let name = device.name().unwrap_or_else(|_| "unknown".to_string());
+    log::info!("Entrée guitare sélectionnée: {name}");
+    *guitar.input_device_name.lock() = Some(name.clone());
+
+    let input_format = device
+        .default_input_config()
+        .map(|c| c.sample_format())
+        .unwrap_or(cpal::SampleFormat::F32);
+
+    for channels in [2u16, 1] {
+        let cfg = cpal::StreamConfig {
+            channels,
+            sample_rate: cpal::SampleRate(sample_rate),
+            buffer_size: cpal::BufferSize::Default,
+        };
+        let rt = guitar.clone();
+        let attempt = match input_format {
+            cpal::SampleFormat::F32 => device.build_input_stream(
+                &cfg,
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    push_input_frames(&rt.input_ring, &rt.dropped, data, channels as usize);
+                },
+                |e| log::warn!("Input stream error: {e}"),
+                None,
+            ),
+            cpal::SampleFormat::I16 => device.build_input_stream(
+                &cfg,
+                move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    let mut converted = [0.0f32; 1024];
+                    for chunk in data.chunks(1024) {
+                        for (i, &s) in chunk.iter().enumerate() {
+                            converted[i] = s as f32 / i16::MAX as f32;
+                        }
+                        push_input_frames(
+                            &rt.input_ring,
+                            &rt.dropped,
+                            &converted[..chunk.len()],
+                            channels as usize,
+                        );
+                    }
+                },
+                |e| log::warn!("Input stream error: {e}"),
+                None,
+            ),
+            other => {
+                log::warn!("Format d'entrée non supporté: {other:?}");
+                return None;
+            }
+        };
+        match attempt {
+            Ok(stream) => return Some(stream),
+            Err(e) => log::debug!("Config entrée refusée ({channels}ch): {e}"),
+        }
+    }
+    None
+}
+
+/// Convertit un bloc entrelacé en mono et l'écrit dans le ring buffer.
+fn push_input_frames(
+    ring: &crate::guitar::SpscRing,
+    dropped: &std::sync::atomic::AtomicU64,
+    data: &[f32],
+    channels: usize,
+) {
+    let channels = channels.max(1);
+    let frames = data.len() / channels;
+    if frames == 0 {
+        return;
+    }
+    let mut mono = [0.0f32; 512];
+    let mut base = 0usize;
+    while base < frames {
+        let n = (frames - base).min(mono.len());
+        for i in 0..n {
+            let mut sum = 0.0;
+            for ch in 0..channels {
+                sum += data[(base + i) * channels + ch];
+            }
+            mono[i] = sum / channels as f32;
+        }
+        let written = ring.write(&mono[..n]);
+        if written < n {
+            dropped.fetch_add((n - written) as u64, Ordering::Relaxed);
+        }
+        base += n;
+    }
+}
+
 /// Construit le stream F32 et branche le callback.
 fn build_f32_stream(
     device: &cpal::Device,
@@ -301,14 +433,25 @@ fn build_f32_stream(
     channels: usize,
     hp_dup: bool,
     stats: Arc<AudioStats>,
+    guitar: Arc<GuitarRuntime>,
 ) -> Result<cpal::Stream, cpal::BuildStreamError> {
     let sr = cfg.sample_rate.0;
     let mut st_err = event_logger(stats.clone());
     let st_cb = stats;
+    let mut guitar_proc = GuitarProcessor::new(sr, guitar);
+    guitar_proc.set_latency_ms(guitar_latency_ms(cfg));
     device.build_output_stream(
         cfg,
         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            audio_callback_f32(data, &engine, sr, channels, hp_dup, &st_cb);
+            audio_callback_f32(
+                data,
+                &engine,
+                sr,
+                channels,
+                hp_dup,
+                &st_cb,
+                &mut guitar_proc,
+            );
         },
         move |err| {
             st_err(err);
@@ -325,10 +468,13 @@ fn build_i16_stream(
     channels: usize,
     hp_dup: bool,
     stats: Arc<AudioStats>,
+    guitar: Arc<GuitarRuntime>,
 ) -> Result<cpal::Stream, cpal::BuildStreamError> {
     let sr = cfg.sample_rate.0;
     let mut st_err = event_logger(stats.clone());
     let st_cb = stats;
+    let mut guitar_proc = GuitarProcessor::new(sr, guitar);
+    guitar_proc.set_latency_ms(guitar_latency_ms(cfg));
     // Scratch pré-alloué : aucune allocation dans le callback.
     let mut tmp: Vec<f32> = vec![0.0; 8192 * 2];
     device.build_output_stream(
@@ -344,6 +490,7 @@ fn build_i16_stream(
                 channels,
                 hp_dup,
                 &st_cb,
+                &mut guitar_proc,
             );
             for (o, &s) in data.iter_mut().zip(tmp.iter()) {
                 *o = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
@@ -364,10 +511,13 @@ fn build_u16_stream(
     channels: usize,
     hp_dup: bool,
     stats: Arc<AudioStats>,
+    guitar: Arc<GuitarRuntime>,
 ) -> Result<cpal::Stream, cpal::BuildStreamError> {
     let sr = cfg.sample_rate.0;
     let mut st_err = event_logger(stats.clone());
     let st_cb = stats;
+    let mut guitar_proc = GuitarProcessor::new(sr, guitar);
+    guitar_proc.set_latency_ms(guitar_latency_ms(cfg));
     let mut tmp: Vec<f32> = vec![0.0; 8192 * 2];
     device.build_output_stream(
         cfg,
@@ -382,6 +532,7 @@ fn build_u16_stream(
                 channels,
                 hp_dup,
                 &st_cb,
+                &mut guitar_proc,
             );
             for (o, &s) in data.iter_mut().zip(tmp.iter()) {
                 *o = ((s.clamp(-1.0, 1.0) * 0.5 + 0.5) * u16::MAX as f32) as u16;
@@ -429,8 +580,9 @@ fn audio_callback_f32(
     channels: usize,
     hp_dup: bool,
     stats: &AudioStats,
+    guitar: &mut GuitarProcessor,
 ) {
-    render_audio_block(data, engine, sample_rate, channels, hp_dup, stats);
+    render_audio_block(data, engine, sample_rate, channels, hp_dup, stats, guitar);
 }
 
 /// Rendu d'un bloc complet dans `out`, au format interleaved du device
@@ -443,6 +595,7 @@ fn render_audio_block(
     channels: usize,
     hp_dup: bool,
     stats: &AudioStats,
+    guitar: &mut GuitarProcessor,
 ) {
     let channels = channels.max(1);
     let frames = out.len() / channels;
@@ -497,6 +650,13 @@ fn render_audio_block(
         }
         frame += n;
     }
+
+    // Le moteur n'est plus nécessaire : on relâche son verrou avant de
+    // traiter la guitare pour ne pas le bloquer pendant le DSP de l'ampli.
+    drop(eng);
+
+    // Monitoring : ampli guitare sur l'entrée de la MK3, mixé dans la sortie.
+    guitar.process_output(out, channels, sample_rate, hp_vol);
 
     // Sécurité : le limiteur du moteur borne déjà à ±1 (jamais d'écrêtage dur).
     for s in out.iter_mut() {
@@ -584,6 +744,50 @@ fn find_device_by_name(host: &cpal::Host, name: &str) -> Option<cpal::Device> {
     for dev in host.output_devices().ok()? {
         if let Ok(n) = dev.name() {
             if n.to_lowercase().contains(&name.to_lowercase()) {
+                return Some(dev);
+            }
+        }
+    }
+    None
+}
+
+/// Liste les périphériques d'entrée (pour le choix du jack guitare).
+pub fn list_input_devices() -> Vec<AudioDeviceInfo> {
+    let host = cpal::default_host();
+    let default_name = host.default_input_device().and_then(|d| d.name().ok());
+    let mut list = Vec::new();
+    if let Ok(devices) = host.input_devices() {
+        for dev in devices {
+            if let Ok(name) = dev.name() {
+                let lower = name.to_lowercase();
+                let is_mk3 = ["maschine", "mk3", "usb audio", "native"]
+                    .iter()
+                    .any(|kw| lower.contains(*kw));
+                let is_default = default_name.as_deref() == Some(name.as_str());
+                let (channels, rate) = dev
+                    .default_input_config()
+                    .map(|c| (c.channels(), c.sample_rate().0))
+                    .unwrap_or((2, 48000));
+                list.push(AudioDeviceInfo {
+                    name,
+                    is_default,
+                    is_mk3,
+                    channels,
+                    default_sample_rate: rate,
+                });
+            }
+        }
+    }
+    list
+}
+
+fn find_mk3_input_device(host: &cpal::Host) -> Option<cpal::Device> {
+    let keywords = ["maschine", "mk3", "usb audio", "native"];
+    for dev in host.input_devices().ok()? {
+        if let Ok(n) = dev.name() {
+            let lower = n.to_lowercase();
+            if keywords.iter().any(|kw| lower.contains(*kw)) {
+                log::info!("MK3 entrance candidate: {n}");
                 return Some(dev);
             }
         }

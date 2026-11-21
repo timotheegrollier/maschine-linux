@@ -5953,10 +5953,407 @@ pub fn render_chords_right(snap: &EngineSnapshot) -> DisplayFrame {
     frame
 }
 
-/// Rend la paire d'écrans (gauche, droite) selon la vue/onglets courants.
-/// Partagée par le thread d'affichage USB et le miroir GUI (mêmes écrans).
+// ── AMPLI GUITARE (page PLUGIN 2) ────────────────────────────────────────
+
+/// Libellés des 8 soft keys de la page ampli guitare (identiques dans
+/// l'engine et dans le miroir GUI).
+pub const GUITAR_SOFT_LABELS: [&str; 8] = [
+    "AMP <", "AMP >", "CAB <", "CAB >", "BYPASS", "MONITOR", "RESET", "PAGE SND",
+];
+
+const GUITAR_AMP_NAMES: [&str; 4] = ["VOX AC30", "FENDER BF", "TWEED", "HIGH GAIN"];
+const GUITAR_CAB_NAMES: [&str; 4] = ["VOX 12", "FENDER 12", "MODERN 12", "FLAT"];
+const GUITAR_SPECTRUM_BINS: usize = 48;
+
+/// État de l'ampli guitare nécessaire aux écrans. Fourni par `maschine-app`
+/// (qui détient les paramètres atomiques et la télémétrie audio) ; l'engine
+/// ne connaît pas le crate DSP et reçoit donc une simple structure de données.
+#[derive(Debug, Clone)]
+pub struct GuitarScreenData {
+    pub model: u8,
+    pub cab: u8,
+    pub enabled: bool,
+    pub monitor: bool,
+    pub bypass: bool,
+    /// Valeurs normalisées 0..1 : gain, bass, mid, treble, presence, sag,
+    /// master, monitor.
+    pub params: [f32; 8],
+    pub input_db: f32,
+    pub output_db: f32,
+    pub cpu_load: f32,
+    pub latency_ms: f32,
+    pub xruns: u32,
+    /// Ex. "A4 +3c" — construit par l'app depuis la lecture de l'accordeur.
+    pub tuner_label: Option<String>,
+    pub tuner_freq: f32,
+    /// Spectre en dBFS, déjà réduit à `GUITAR_SPECTRUM_BINS` bandes.
+    pub spectrum: [f32; GUITAR_SPECTRUM_BINS],
+}
+
+impl Default for GuitarScreenData {
+    fn default() -> Self {
+        Self {
+            model: 0,
+            cab: 0,
+            enabled: true,
+            monitor: true,
+            bypass: false,
+            params: [0.5; 8],
+            input_db: -120.0,
+            output_db: -120.0,
+            cpu_load: 0.0,
+            latency_ms: 0.0,
+            xruns: 0,
+            tuner_label: None,
+            tuner_freq: 0.0,
+            spectrum: [-120.0; GUITAR_SPECTRUM_BINS],
+        }
+    }
+}
+
+fn guitar_soft_active(g: &GuitarScreenData) -> [bool; 8] {
+    [
+        false, false, false, false, g.bypass, g.monitor, false, false,
+    ]
+}
+
+fn guitar_param(g: &GuitarScreenData, index: usize) -> f32 {
+    g.params.get(index).copied().unwrap_or(0.5).clamp(0.0, 1.0)
+}
+
+fn guitar_pct(v: f32) -> String {
+    format!("{:.0}%", v * 100.0)
+}
+
+/// Écran gauche — page AMPLI GUITARE : préampli, saturation et tone stack.
 #[must_use]
-pub fn render_screens(snap: &EngineSnapshot) -> (DisplayFrame, DisplayFrame) {
+pub fn render_guitar_amp_left(snap: &EngineSnapshot, g: &GuitarScreenData) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
+    let model = GUITAR_AMP_NAMES[(g.model as usize) % GUITAR_AMP_NAMES.len()];
+    header(
+        &mut frame,
+        &p,
+        snap,
+        "GUITAR AMP | PREAMP",
+        &format!("{} | {}", model, if g.bypass { "BYPASS" } else { "ON" }),
+    );
+
+    // Courbe de saturation du préampli (tanh asymétrique).
+    panel(&mut frame, &p, 8, 28, 226, 150);
+    draw_text(
+        &mut frame,
+        14,
+        32,
+        "TUBE PREAMP / SATURATION",
+        p.dim,
+        p.panel,
+    );
+    let cx = 18usize;
+    let cy = 44usize;
+    let cw = 204usize;
+    let ch = 58usize;
+    fill_rect(&mut frame, cx, cy, cw, ch, p.track);
+    // Ligne de référence à zéro.
+    fill_rect(&mut frame, cx, cy + ch / 2, cw, 1, p.border);
+    let drive = 1.0 + guitar_param(g, 0) * 7.0;
+    let bias: f32 = 0.22;
+    let tb = bias.tanh();
+    let norm = (1.0 - tb * tb).max(1e-4);
+    for x in 0..cw {
+        let input = (x as f32 / cw as f32) * 4.0 - 2.0;
+        let y = (((input * drive + bias).tanh() - tb) / norm).clamp(-1.0, 1.0);
+        let py = if y >= 0.0 {
+            cy + ch / 2 - (y * (ch / 2 - 3) as f32) as usize
+        } else {
+            cy + ch / 2 + (-y * (ch / 2 - 3) as f32) as usize
+        };
+        fill_rect(&mut frame, cx + x, py.min(cy + ch - 2), 1, 2, p.red);
+    }
+    draw_text(
+        &mut frame,
+        cx + 6,
+        cy + 4,
+        &format!("GAIN {}", guitar_pct(guitar_param(g, 0))),
+        p.white,
+        p.track,
+    );
+
+    // Tone stack 3 bandes.
+    draw_text(&mut frame, 14, 110, "TONE STACK", p.dim, p.panel);
+    for (i, label) in ["BASS", "MID", "TREB"].iter().enumerate() {
+        let y = 126 + i * 16;
+        draw_text(&mut frame, 14, y, label, p.muted, p.panel);
+        bar_h(
+            &mut frame,
+            &p,
+            64,
+            y + 2,
+            154,
+            7,
+            guitar_param(g, i + 1),
+            p.cyan,
+        );
+    }
+
+    // Voix, baffle et état.
+    panel(&mut frame, &p, 246, 28, 226, 150);
+    draw_text(&mut frame, 252, 32, "AMPLI & BAFFLE", p.dim, p.panel);
+    fill_rect(&mut frame, 252, 46, 214, 30, p.panel2);
+    center_text(&mut frame, 53, model, p.accent, p.panel2);
+    let cab = GUITAR_CAB_NAMES[(g.cab as usize) % GUITAR_CAB_NAMES.len()];
+    draw_text(
+        &mut frame,
+        252,
+        84,
+        &format!("CAB : {}", trunc(cab, 14)),
+        p.cyan,
+        p.panel,
+    );
+    pill(&mut frame, &p, 252, 104, 66, "ACTIF", p.green, g.enabled);
+    pill(&mut frame, &p, 324, 104, 66, "MON", p.cyan, g.monitor);
+    pill(&mut frame, &p, 396, 104, 70, "BYPASS", p.red, g.bypass);
+    draw_text(
+        &mut frame,
+        252,
+        132,
+        "SOFT KEYS 1-4 : AMP/CAB",
+        p.muted,
+        p.panel,
+    );
+    draw_text(&mut frame, 252, 148, "5-8 : DIAG & PAGES", p.muted, p.panel);
+
+    let slots = [
+        Some((
+            "1:GAIN",
+            guitar_pct(guitar_param(g, 0)),
+            guitar_param(g, 0),
+            p.red,
+        )),
+        Some((
+            "2:BASS",
+            guitar_pct(guitar_param(g, 1)),
+            guitar_param(g, 1),
+            p.cyan,
+        )),
+        Some((
+            "3:MID",
+            guitar_pct(guitar_param(g, 2)),
+            guitar_param(g, 2),
+            p.cyan,
+        )),
+        Some((
+            "4:TREBLE",
+            guitar_pct(guitar_param(g, 3)),
+            guitar_param(g, 3),
+            p.cyan,
+        )),
+    ];
+    encoder_row(&mut frame, &p, &slots);
+    footer_softkeys(
+        &mut frame,
+        &p,
+        &GUITAR_SOFT_LABELS,
+        0,
+        &guitar_soft_active(g),
+    );
+    frame
+}
+
+/// Écran droit — page AMPLI GUITARE : baffle, analyse et diagnostics.
+#[must_use]
+pub fn render_guitar_amp_right(snap: &EngineSnapshot, g: &GuitarScreenData) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
+    let cab = GUITAR_CAB_NAMES[(g.cab as usize) % GUITAR_CAB_NAMES.len()];
+    header(
+        &mut frame,
+        &p,
+        snap,
+        "GUITAR AMP | ANALYSE",
+        &format!("{} | {:.0}ms", cab, g.latency_ms),
+    );
+
+    // Niveaux et baffle.
+    panel(&mut frame, &p, 8, 28, 226, 150);
+    draw_text(&mut frame, 14, 32, "NIVEAUX & BAFFLE", p.dim, p.panel);
+    draw_text(&mut frame, 14, 48, "IN", p.muted, p.panel);
+    vu_h(
+        &mut frame,
+        &p,
+        38,
+        48,
+        186,
+        10,
+        db_norm(g.input_db).max(0.0),
+        0.0,
+    );
+    draw_text(
+        &mut frame,
+        14,
+        64,
+        &format!("{:.1} dB", g.input_db.max(-99.0)),
+        p.white,
+        p.panel,
+    );
+    draw_text(&mut frame, 14, 82, "OUT", p.muted, p.panel);
+    vu_h(
+        &mut frame,
+        &p,
+        38,
+        82,
+        186,
+        10,
+        db_norm(g.output_db).max(0.0),
+        0.0,
+    );
+    draw_text(
+        &mut frame,
+        14,
+        98,
+        &format!("{:.1} dB", g.output_db.max(-99.0)),
+        p.white,
+        p.panel,
+    );
+    draw_text(&mut frame, 14, 118, "TONE / PRESENCE", p.dim, p.panel);
+    bar_h(
+        &mut frame,
+        &p,
+        14,
+        134,
+        210,
+        8,
+        guitar_param(g, 4),
+        p.accent,
+    );
+    draw_text(&mut frame, 14, 150, "SAG", p.muted, p.panel);
+    bar_h(
+        &mut frame,
+        &p,
+        54,
+        150,
+        170,
+        8,
+        guitar_param(g, 5),
+        p.yellow,
+    );
+
+    // Accordeur, spectre et diagnostics.
+    panel(&mut frame, &p, 246, 28, 226, 150);
+    draw_text(&mut frame, 252, 32, "ACCORDEUR / SPECTRE", p.dim, p.panel);
+    match g.tuner_label.as_deref() {
+        Some(label) => {
+            draw_text(&mut frame, 252, 46, &trunc(label, 18), p.accent, p.panel);
+            draw_text(
+                &mut frame,
+                366,
+                46,
+                &format!("{:.0}Hz", g.tuner_freq),
+                p.muted,
+                p.panel,
+            );
+        }
+        None => draw_text(&mut frame, 252, 46, "-- (jouer une note)", p.muted, p.panel),
+    }
+    // Spectre 48 bandes.
+    let sx = 252usize;
+    let sy = 66usize;
+    let sw = 214usize;
+    let sh = 64usize;
+    fill_rect(&mut frame, sx, sy, sw, sh, p.track);
+    let bw = sw / GUITAR_SPECTRUM_BINS;
+    for (i, &db) in g.spectrum.iter().enumerate() {
+        let norm = ((db + 90.0) / 90.0).clamp(0.0, 1.0);
+        let h = (norm * sh as f32) as usize;
+        if h == 0 {
+            continue;
+        }
+        let col = if norm > 0.85 {
+            p.red
+        } else if norm > 0.65 {
+            p.yellow
+        } else {
+            p.cyan
+        };
+        fill_rect(
+            &mut frame,
+            sx + i * bw,
+            sy + sh - h,
+            bw.saturating_sub(1),
+            h,
+            col,
+        );
+    }
+    draw_text(
+        &mut frame,
+        252,
+        136,
+        &format!("CPU {:.0}%  XRUN {}", g.cpu_load * 100.0, g.xruns),
+        if g.cpu_load > 0.8 || g.xruns > 0 {
+            p.yellow
+        } else {
+            p.green
+        },
+        p.panel,
+    );
+    draw_text(
+        &mut frame,
+        252,
+        152,
+        &format!(
+            "LAT {:.1}ms | {}",
+            g.latency_ms,
+            if g.monitor { "MON" } else { "OFF" }
+        ),
+        p.muted,
+        p.panel,
+    );
+
+    let slots = [
+        Some((
+            "5:PRES",
+            guitar_pct(guitar_param(g, 4)),
+            guitar_param(g, 4),
+            p.accent,
+        )),
+        Some((
+            "6:SAG",
+            guitar_pct(guitar_param(g, 5)),
+            guitar_param(g, 5),
+            p.yellow,
+        )),
+        Some((
+            "7:MASTER",
+            guitar_pct(guitar_param(g, 6)),
+            guitar_param(g, 6),
+            p.green,
+        )),
+        Some((
+            "8:MONITOR",
+            guitar_pct(guitar_param(g, 7)),
+            guitar_param(g, 7),
+            p.cyan,
+        )),
+    ];
+    encoder_row(&mut frame, &p, &slots);
+    footer_softkeys(
+        &mut frame,
+        &p,
+        &GUITAR_SOFT_LABELS,
+        4,
+        &guitar_soft_active(g),
+    );
+    frame
+}
+
+/// Rend la paire d'écrans avec l'état ampli guitare éventuel.
+#[must_use]
+pub fn render_screens_with_guitar(
+    snap: &EngineSnapshot,
+    guitar: Option<&GuitarScreenData>,
+) -> (DisplayFrame, DisplayFrame) {
+    let fallback = GuitarScreenData::default();
+    let g = guitar.unwrap_or(&fallback);
     let left = if snap.song_mode {
         render_arranger_left(snap)
     } else if snap.scene_mode && snap.left_tab == 0 {
@@ -5970,6 +6367,7 @@ pub fn render_screens(snap: &EngineSnapshot) -> (DisplayFrame, DisplayFrame) {
             3 if snap.browser_kind == 1 => render_project_browser_left(snap),
             3 => render_browser_left(snap),
             4 if snap.plugin_page == 0 => render_sampler_left(snap),
+            4 if snap.plugin_page == 2 => render_guitar_amp_left(snap, g),
             4 => render_synth_left(snap),
             _ => {
                 if snap.controller_mode == 3 {
@@ -5988,6 +6386,8 @@ pub fn render_screens(snap: &EngineSnapshot) -> (DisplayFrame, DisplayFrame) {
         render_arranger_right(snap)
     } else if snap.left_tab == 4 && snap.right_tab == 0 && snap.plugin_page == 0 {
         render_sampler_right(snap)
+    } else if snap.left_tab == 4 && snap.right_tab == 0 && snap.plugin_page == 2 {
+        render_guitar_amp_right(snap, g)
     } else if snap.left_tab == 4 && snap.right_tab == 0 {
         render_synth_right(snap)
     } else if snap.left_tab == 2 && snap.right_tab == 0 {
@@ -6015,6 +6415,13 @@ pub fn render_screens(snap: &EngineSnapshot) -> (DisplayFrame, DisplayFrame) {
         }
     };
     (left, right)
+}
+
+/// Rend la paire d'écrans (gauche, droite) selon la vue/onglets courants.
+/// Partagée par le thread d'affichage USB et le miroir GUI (mêmes écrans).
+#[must_use]
+pub fn render_screens(snap: &EngineSnapshot) -> (DisplayFrame, DisplayFrame) {
+    render_screens_with_guitar(snap, None)
 }
 
 /// Écrans de fermeture : splash neutre « MASCHINE MK3 LINUX » envoyé avant
@@ -6055,7 +6462,7 @@ pub fn render_shutdown_screens() -> (DisplayFrame, DisplayFrame) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::Engine;
+    use crate::engine::{Engine, EngineEvent};
 
     fn check_pair(frame: &DisplayFrame) {
         assert_eq!(frame.w as usize, SCR_W);
@@ -6066,6 +6473,92 @@ mod tests {
             .pixels
             .iter()
             .any(|px| *px != DisplayPixel::from_rgb(12, 13, 17)));
+    }
+
+    fn guitar_snapshot() -> EngineSnapshot {
+        let mut eng = Engine::new_demo(48000);
+        let _ = eng.handle_event(EngineEvent::SetLeftTab(4));
+        let _ = eng.handle_event(EngineEvent::SetPluginPage(2));
+        eng.snapshot()
+    }
+
+    fn guitar_data() -> GuitarScreenData {
+        let mut g = GuitarScreenData {
+            model: 3,
+            cab: 2,
+            bypass: true,
+            monitor: false,
+            input_db: -12.0,
+            output_db: -3.0,
+            cpu_load: 0.42,
+            latency_ms: 7.5,
+            xruns: 2,
+            tuner_label: Some("A4 +3c".to_string()),
+            tuner_freq: 440.0,
+            ..GuitarScreenData::default()
+        };
+        for (i, v) in [0.9, 0.2, 0.6, 0.4, 0.7, 0.3, 0.8, 0.5]
+            .into_iter()
+            .enumerate()
+        {
+            g.params[i] = v;
+        }
+        g.spectrum[12] = -6.0;
+        g
+    }
+
+    #[test]
+    fn guitar_amp_page_renders_on_both_screens() {
+        let snap = guitar_snapshot();
+        assert_eq!(snap.plugin_page, 2);
+        let data = guitar_data();
+        let (left, right) = render_screens_with_guitar(&snap, Some(&data));
+        check_pair(&left);
+        check_pair(&right);
+        assert_eq!(left.pixels, render_guitar_amp_left(&snap, &data).pixels);
+        assert_eq!(right.pixels, render_guitar_amp_right(&snap, &data).pixels);
+
+        // La page 0 doit afficher le sampler, pas l'ampli.
+        let mut other = snap.clone();
+        other.plugin_page = 0;
+        let (sampler_left, _) = render_screens_with_guitar(&other, Some(&data));
+        assert_ne!(left.pixels, sampler_left.pixels);
+    }
+
+    #[test]
+    fn guitar_screen_reflects_control_values() {
+        let snap = guitar_snapshot();
+        let mut data = guitar_data();
+        let before = render_guitar_amp_left(&snap, &data);
+        data.params[0] = 0.05;
+        data.params[1] = 0.95;
+        let after = render_guitar_amp_left(&snap, &data);
+        assert_ne!(
+            before.pixels, after.pixels,
+            "les valeurs des knobs doivent être dessinées"
+        );
+
+        let before_right = render_guitar_amp_right(&snap, &data);
+        data.input_db = -3.0;
+        data.cpu_load = 0.95;
+        let after_right = render_guitar_amp_right(&snap, &data);
+        assert_ne!(
+            before_right.pixels, after_right.pixels,
+            "VU et CPU doivent être dessinés"
+        );
+    }
+
+    #[test]
+    fn guitar_soft_labels_match_the_app_actions() {
+        assert_eq!(GUITAR_SOFT_LABELS[0], "AMP <");
+        assert_eq!(GUITAR_SOFT_LABELS[1], "AMP >");
+        assert_eq!(GUITAR_SOFT_LABELS[6], "RESET");
+        assert_eq!(GUITAR_SOFT_LABELS[7], "PAGE SND");
+        let eng = Engine::new_demo(48000);
+        let mut eng = eng;
+        let _ = eng.handle_event(EngineEvent::SetLeftTab(4));
+        let _ = eng.handle_event(EngineEvent::SetPluginPage(2));
+        assert_eq!(eng.soft_key_labels(), GUITAR_SOFT_LABELS);
     }
 
     /// Toutes les vues des 2 écrans doivent se rendre sans panic.

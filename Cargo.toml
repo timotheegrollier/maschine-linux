@@ -8,7 +8,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.10.5"
+version = "0.11.0"
 edition = "2021"
 authors = ["maschine-linux contributors"]
 license = "GPL-3.0-or-later"
@@ -21,6 +21,7 @@ categories = ["multimedia::audio", "hardware-support"]
 maschine-proto = { path = "crates/maschine-proto" }
 maschine-hardware = { path = "crates/maschine-hardware" }
 maschine-engine = { path = "crates/maschine-engine" }
+maschine-dsp = { path = "crates/maschine-dsp" }
 
 # common deps
 anyhow = "1.0"

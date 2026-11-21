@@ -39,6 +39,7 @@ impl HardwareSession {
         led_rx: crossbeam_channel::Receiver<LedState>,
         engine: Arc<Mutex<Engine>>,
         display_activity: Arc<AtomicBool>,
+        guitar: Arc<crate::guitar::GuitarRuntime>,
         no_led: bool,
     ) -> anyhow::Result<Self> {
         let hidraw_path = device
@@ -68,7 +69,7 @@ impl HardwareSession {
 
         #[cfg(feature = "usb")]
         let display_handle =
-            match crate::display_thread::spawn_display_thread(engine, display_activity) {
+            match crate::display_thread::spawn_display_thread(engine, display_activity, guitar) {
                 Ok(h) => {
                     info!("✓ Thread affichage écran MK3 démarré en Plug & Play");
                     Some(h)
@@ -80,7 +81,7 @@ impl HardwareSession {
             };
 
         #[cfg(not(feature = "usb"))]
-        let _ = (engine, display_activity);
+        let _ = (engine, display_activity, guitar);
 
         Ok(Self {
             hidraw_path,

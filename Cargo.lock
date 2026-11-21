@@ -2354,9 +2354,10 @@ dependencies = [
 
 [[package]]
 name = "maschine-app"
-version = "0.10.5"
+version = "0.11.0"
 dependencies = [
  "anyhow",
+ "atomic_float",
  "clap",
  "cpal",
  "crossbeam-channel",
@@ -2366,6 +2367,7 @@ dependencies = [
  "env_logger",
  "libc",
  "log",
+ "maschine-dsp",
  "maschine-engine",
  "maschine-hardware",
  "maschine-proto",
@@ -2381,7 +2383,7 @@ dependencies = [
 
 [[package]]
 name = "maschine-dsp"
-version = "0.10.5"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "atomic_float",
@@ -2395,7 +2397,7 @@ dependencies = [
 
 [[package]]
 name = "maschine-engine"
-version = "0.10.5"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "cpal",
@@ -2413,7 +2415,7 @@ dependencies = [
 
 [[package]]
 name = "maschine-guitar-standalone"
-version = "0.10.5"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "atomic_float",
@@ -2436,7 +2438,7 @@ dependencies = [
 
 [[package]]
 name = "maschine-hardware"
-version = "0.10.5"
+version = "0.11.0"
 dependencies = [
  "alsa",
  "anyhow",
@@ -2455,7 +2457,7 @@ dependencies = [
 
 [[package]]
 name = "maschine-proto"
-version = "0.10.5"
+version = "0.11.0"
 dependencies = [
  "serde",
  "serde_json",

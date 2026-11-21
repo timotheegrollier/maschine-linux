@@ -3,6 +3,7 @@
 use eframe::egui;
 
 pub mod browser;
+pub mod guitar;
 pub mod ideas;
 pub mod keyboard;
 pub mod mixer;
@@ -20,17 +21,19 @@ pub enum StudioView {
     Sampler,
     Browser,
     Plugin,
+    Guitar,
 }
 
 impl StudioView {
     /// Toutes les vues, dans l'ordre du rail de navigation.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Ideas,
         Self::Sequencer,
         Self::Keyboard,
         Self::Mixer,
         Self::Sampler,
         Self::Plugin,
+        Self::Guitar,
         Self::Browser,
     ];
 
@@ -43,6 +46,7 @@ impl StudioView {
             Self::Mixer => "MIXER",
             Self::Sampler => "SAMPLER",
             Self::Plugin => "PLUGIN",
+            Self::Guitar => "AMPLI GUITARE",
             Self::Browser => "BROWSER",
         }
     }
@@ -56,6 +60,7 @@ impl StudioView {
             Self::Mixer => "MIXER",
             Self::Sampler => "SAMPLER",
             Self::Plugin => "PLUGIN",
+            Self::Guitar => "GUITARE",
             Self::Browser => "BROWSER",
         }
     }
@@ -68,6 +73,8 @@ impl StudioView {
             Self::Sampler => 2,
             Self::Browser => 3,
             Self::Plugin => 4,
+            // L'ampli partage l'onglet Plugin de la MK3.
+            Self::Guitar => 4,
         }
     }
 }
@@ -87,6 +94,7 @@ pub fn render_view(
         StudioView::Sampler => sampler::render(ui, app, snap),
         StudioView::Browser => browser::render(ui, app, snap),
         StudioView::Plugin => synth::render(ui, app, snap),
+        StudioView::Guitar => guitar::render(ui, app, snap),
     }
 }
 

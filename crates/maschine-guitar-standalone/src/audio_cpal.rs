@@ -8,10 +8,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{Receiver, Sender};
-use log::{debug, error, info, warn};
+use log::{error, info};
 
 use maschine_dsp::{AudioContext, GuitarChain, ParamId};
 
+use crate::params_bridge::AtomicParams;
 use crate::{AppConfig, AudioToGui, GuiToAudio, ParamsBridge};
 
 /// Run audio thread using CPAL
@@ -84,11 +85,13 @@ pub fn run_audio_thread(
                     return;
                 }
 
-                // Apply pending param updates
+                // Apply pending param updates and forward them into the DSP
+                // chain (the bridge's atomics are the GUI's source of truth).
                 params_bridge_for_input.apply_pending();
 
                 // Process audio
                 let mut chain_lock = chain.lock();
+                sync_atomic_params(&mut chain_lock, &params);
                 let frames = data.len() / config.audio.input_channels as usize;
 
                 // Mono input - take first channel
@@ -236,3 +239,31 @@ fn list_output_devices(host: &cpal::Host) -> Vec<String> {
 }
 
 use parking_lot::Mutex;
+
+/// Copie les paramètres atomiques du bridge dans le chain DSP. Sans cela,
+/// les potentiomètres de la GUI ne modifiaient jamais le son.
+fn sync_atomic_params(chain: &mut GuitarChain, params: &AtomicParams) {
+    let load = |v: &atomic_float::AtomicF32| v.load(Ordering::Relaxed);
+    macro_rules! apply {
+        ($id:expr, $field:ident) => {
+            chain.get_param_mut($id).set_target(load(&params.$field));
+        };
+    }
+    apply!(ParamId::GateThreshold, gate_threshold);
+    apply!(ParamId::GateAttack, gate_attack);
+    apply!(ParamId::GateRelease, gate_release);
+    apply!(ParamId::DriveGain, drive_gain);
+    apply!(ParamId::DriveTone, drive_tone);
+    apply!(ParamId::DriveMix, drive_mix);
+    apply!(ParamId::ToneBass, tone_bass);
+    apply!(ParamId::ToneMid, tone_mid);
+    apply!(ParamId::ToneTreble, tone_treble);
+    apply!(ParamId::CabEnabled, cab_enabled);
+    apply!(ParamId::CabHighcut, cab_highcut);
+    apply!(ParamId::CabResonance, cab_resonance);
+    apply!(ParamId::DelayEnabled, delay_enabled);
+    apply!(ParamId::DelayTimeMs, delay_time_ms);
+    apply!(ParamId::DelayFeedback, delay_feedback);
+    apply!(ParamId::DelayMix, delay_mix);
+    apply!(ParamId::MasterVolume, master_volume);
+}

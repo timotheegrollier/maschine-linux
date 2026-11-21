@@ -38,6 +38,18 @@ impl SmoothParam {
         next
     }
 
+    /// Advance smoothing over an entire block in a single step and return
+    /// the resulting value. Equivalent to calling `get()` `samples` times,
+    /// but with a single pair of atomic operations.
+    pub fn get_block(&self, samples: usize) -> f32 {
+        let current = self.current.load(Ordering::Relaxed);
+        let target = self.target.load(Ordering::Relaxed);
+        let alpha = 1.0 - (1.0 - self.coeff).powi(samples as i32);
+        let next = current + (target - current) * alpha;
+        self.current.store(next, Ordering::Relaxed);
+        next
+    }
+
     /// Get current value without smoothing (for display)
     pub fn get_raw(&self) -> f32 {
         self.current.load(Ordering::Relaxed)
@@ -47,6 +59,11 @@ impl SmoothParam {
     pub fn reset(&self) {
         let target = self.target.load(Ordering::Relaxed);
         self.current.store(target, Ordering::Relaxed);
+    }
+
+    /// Recompute the smoothing coefficient for a new sample rate.
+    pub fn set_sample_rate(&mut self, sample_rate: f32) {
+        self.coeff = 1.0 - (-1.0 / (SMOOTHING_TIME * sample_rate)).exp();
     }
 }
 
@@ -110,9 +127,24 @@ impl GuitarParams {
 
     /// Update sample rate for all smoothing coefficients
     pub fn set_sample_rate(&mut self, sample_rate: f32) {
-        let _coeff = 1.0 - (-1.0 / (SMOOTHING_TIME * sample_rate)).exp();
-        // Can't easily update coeff in existing structs, so recreate or use new method
-        // For now, params are created once at init with correct SR
+        self.gate_threshold.set_sample_rate(sample_rate);
+        self.gate_attack.set_sample_rate(sample_rate);
+        self.gate_release.set_sample_rate(sample_rate);
+        self.drive_gain.set_sample_rate(sample_rate);
+        self.drive_tone.set_sample_rate(sample_rate);
+        self.drive_mix.set_sample_rate(sample_rate);
+        self.tone_bass.set_sample_rate(sample_rate);
+        self.tone_mid.set_sample_rate(sample_rate);
+        self.tone_treble.set_sample_rate(sample_rate);
+        self.cab_enabled.set_sample_rate(sample_rate);
+        self.cab_highcut.set_sample_rate(sample_rate);
+        self.cab_resonance.set_sample_rate(sample_rate);
+        self.delay_enabled.set_sample_rate(sample_rate);
+        self.delay_time_ms.set_sample_rate(sample_rate);
+        self.delay_feedback.set_sample_rate(sample_rate);
+        self.delay_mix.set_sample_rate(sample_rate);
+        self.master_volume.set_sample_rate(sample_rate);
+        self.bypass.set_sample_rate(sample_rate);
     }
 }
 

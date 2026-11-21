@@ -43,6 +43,15 @@ enum KParam {
     AcidDrive,
     AcidDelayTime,
     AcidDelayMix,
+    // Paramètres ampli guitare
+    GuitarGain,
+    GuitarBass,
+    GuitarMid,
+    GuitarTreble,
+    GuitarPresence,
+    GuitarSag,
+    GuitarMaster,
+    GuitarMonitor,
 }
 
 fn knob_params(view: StudioView, plugin_page: u8) -> &'static [KParam] {
@@ -107,6 +116,16 @@ fn knob_params(view: StudioView, plugin_page: u8) -> &'static [KParam] {
             KParam::SndVol,
             KParam::SndPan,
         ],
+        StudioView::Guitar => &[
+            KParam::GuitarGain,
+            KParam::GuitarBass,
+            KParam::GuitarMid,
+            KParam::GuitarTreble,
+            KParam::GuitarPresence,
+            KParam::GuitarSag,
+            KParam::GuitarMaster,
+            KParam::GuitarMonitor,
+        ],
     }
 }
 
@@ -119,6 +138,8 @@ pub struct GuiApp {
     pub audio: Option<Arc<Mutex<Option<crate::audio::AudioOutput>>>>,
     /// Signal de repaint (le thread HID réveille l'UI).
     pub repaint: crate::gui::RepaintSignal,
+    /// État partagé de l'ampli guitare (contrôles + telemetry).
+    pub guitar: Arc<crate::guitar::GuitarRuntime>,
     /// Fenêtre réglages audio ouverte.
     pub show_settings: bool,
     /// Fenêtre de mise à jour ouverte.
@@ -182,6 +203,7 @@ impl GuiApp {
         engine: Arc<Mutex<Engine>>,
         audio: Option<Arc<Mutex<Option<crate::audio::AudioOutput>>>>,
         repaint: crate::gui::RepaintSignal,
+        guitar: Arc<crate::guitar::GuitarRuntime>,
     ) -> Self {
         let devices = crate::audio::list_output_devices();
         let current_dev = audio.as_ref().and_then(|a| {
@@ -211,6 +233,7 @@ impl GuiApp {
             engine,
             audio,
             repaint,
+            guitar,
             show_settings: false,
             show_updater: false,
             updater_state,
@@ -243,7 +266,11 @@ impl GuiApp {
 
     /// Crée l'app (sans audio).
     #[cfg(not(feature = "audio"))]
-    pub fn new(engine: Arc<Mutex<Engine>>, repaint: crate::gui::RepaintSignal) -> Self {
+    pub fn new(
+        engine: Arc<Mutex<Engine>>,
+        repaint: crate::gui::RepaintSignal,
+        guitar: Arc<crate::guitar::GuitarRuntime>,
+    ) -> Self {
         let (sample_load_tx, sample_load_rx) = crossbeam_channel::unbounded();
         let updater_state = Arc::new(Mutex::new(crate::updater::UpdateState::default()));
         {
@@ -262,6 +289,7 @@ impl GuiApp {
         Self {
             engine,
             repaint,
+            guitar,
             show_settings: false,
             show_updater: false,
             updater_state,
@@ -328,6 +356,23 @@ impl GuiApp {
         let tab = view.tab_index();
         self.last_left_tab = tab;
         self.send(EngineEvent::SetLeftTab(tab));
+        // Page PLUGIN 2 = ampli guitare ; 0 = SOUND, 1 = synth.
+        let page = match view {
+            StudioView::Guitar => 2,
+            StudioView::Plugin => 1,
+            _ => 0,
+        };
+        self.send(EngineEvent::SetPluginPage(page));
+    }
+
+    /// Soft keys de la page ampli guitare : mêmes actions sur l'écran MK3,
+    /// le miroir GUI et les boutons physiques.
+    pub fn guitar_soft_key(&mut self, key: u8) {
+        if key == 8 {
+            self.switch_view(StudioView::Plugin);
+        } else {
+            self.guitar.soft_key(key);
+        }
     }
 
     /// Décode le WAV sur un thread de travail puis installe ses données sans
@@ -410,7 +455,12 @@ impl GuiApp {
             }
             std::thread::sleep(std::time::Duration::from_millis(30));
             let hp_dup = true;
-            match crate::audio::AudioOutput::open(self.engine.clone(), Some(target), hp_dup) {
+            match crate::audio::AudioOutput::open(
+                self.engine.clone(),
+                Some(target),
+                hp_dup,
+                self.guitar.clone(),
+            ) {
                 Ok(new_out) => {
                     let dev_name = new_out.device_name().to_string();
                     let rate = new_out.sample_rate();
@@ -463,6 +513,7 @@ impl GuiApp {
                     (egui::Key::T, StudioView::Plugin),
                     (egui::Key::P, StudioView::Plugin),
                     (egui::Key::B, StudioView::Browser),
+                    (egui::Key::G, StudioView::Guitar),
                 ]
                 .map(|(k, v)| (i.key_pressed(k), v));
                 let save_key = i.modifiers.command && i.key_pressed(egui::Key::S);
@@ -730,6 +781,38 @@ impl GuiApp {
                 p.delay_mix = v;
                 self.send(EngineEvent::AcidSetParams(p));
             }
+            KParam::GuitarGain => self
+                .guitar
+                .control
+                .set_norm(crate::guitar::GuitarParam::Gain, v),
+            KParam::GuitarBass => self
+                .guitar
+                .control
+                .set_norm(crate::guitar::GuitarParam::Bass, v),
+            KParam::GuitarMid => self
+                .guitar
+                .control
+                .set_norm(crate::guitar::GuitarParam::Mid, v),
+            KParam::GuitarTreble => self
+                .guitar
+                .control
+                .set_norm(crate::guitar::GuitarParam::Treble, v),
+            KParam::GuitarPresence => self
+                .guitar
+                .control
+                .set_norm(crate::guitar::GuitarParam::Presence, v),
+            KParam::GuitarSag => self
+                .guitar
+                .control
+                .set_norm(crate::guitar::GuitarParam::Sag, v),
+            KParam::GuitarMaster => self
+                .guitar
+                .control
+                .set_norm(crate::guitar::GuitarParam::Master, v),
+            KParam::GuitarMonitor => self
+                .guitar
+                .control
+                .set_norm(crate::guitar::GuitarParam::MonitorGain, v),
         }
     }
 
@@ -837,6 +920,54 @@ impl GuiApp {
                         KnobSpec::linear("MIX", " %", 0.0, 1.0, 0.25),
                         snap.acid_params.delay_mix,
                     ),
+                    KParam::GuitarGain => (
+                        KnobSpec::linear("GAIN", " %", 0.0, 1.0, 0.45),
+                        self.guitar
+                            .control
+                            .get_norm(crate::guitar::GuitarParam::Gain),
+                    ),
+                    KParam::GuitarBass => (
+                        KnobSpec::linear("BASS", " %", 0.0, 1.0, 0.5),
+                        self.guitar
+                            .control
+                            .get_norm(crate::guitar::GuitarParam::Bass),
+                    ),
+                    KParam::GuitarMid => (
+                        KnobSpec::linear("MID", " %", 0.0, 1.0, 0.5),
+                        self.guitar
+                            .control
+                            .get_norm(crate::guitar::GuitarParam::Mid),
+                    ),
+                    KParam::GuitarTreble => (
+                        KnobSpec::linear("TREBLE", " %", 0.0, 1.0, 0.5),
+                        self.guitar
+                            .control
+                            .get_norm(crate::guitar::GuitarParam::Treble),
+                    ),
+                    KParam::GuitarPresence => (
+                        KnobSpec::linear("PRES", " %", 0.0, 1.0, 0.5),
+                        self.guitar
+                            .control
+                            .get_norm(crate::guitar::GuitarParam::Presence),
+                    ),
+                    KParam::GuitarSag => (
+                        KnobSpec::linear("SAG", " %", 0.0, 1.0, 0.5),
+                        self.guitar
+                            .control
+                            .get_norm(crate::guitar::GuitarParam::Sag),
+                    ),
+                    KParam::GuitarMaster => (
+                        KnobSpec::linear("MASTER", " %", 0.0, 1.0, 0.8),
+                        self.guitar
+                            .control
+                            .get_norm(crate::guitar::GuitarParam::Master),
+                    ),
+                    KParam::GuitarMonitor => (
+                        KnobSpec::linear("MONITOR", " %", 0.0, 1.0, 0.8),
+                        self.guitar
+                            .control
+                            .get_norm(crate::guitar::GuitarParam::MonitorGain),
+                    ),
                 };
                 spec.size = knob_size;
                 if let Some(v) = knob(ui, ("mk3_knob", i), value, &spec) {
@@ -848,10 +979,16 @@ impl GuiApp {
 
     fn render_displays(&mut self, ui: &mut egui::Ui, snap: &maschine_engine::EngineSnapshot) {
         let now = Instant::now();
-        let due = snap.revision != self.mirror_revision
+        // Les paramètres ampli vivent dans des atomiques : le miroir doit se
+        // rafraîchir même quand la `revision` du moteur ne bouge pas.
+        let guitar_due = self.view == StudioView::Guitar
+            && now.duration_since(self.mirror_last) >= Duration::from_millis(28);
+        let due = (snap.revision != self.mirror_revision || guitar_due)
             && now.duration_since(self.mirror_last) >= Duration::from_millis(28);
         if due || self.left_tex.is_none() {
-            let (left, right) = maschine_engine::display_render::render_screens(snap);
+            let data = self.guitar.screen_data();
+            let (left, right) =
+                maschine_engine::display_render::render_screens_with_guitar(snap, Some(&data));
             let left_img = crate::gui::widgets::display_pixels_to_image(
                 left.w as usize,
                 left.h as usize,
@@ -945,7 +1082,11 @@ impl GuiApp {
                     .fill(if active { c.accent } else { c.widget_bg })
                     .stroke(egui::Stroke::new(1.0_f32, c.border));
                 if ui.add(btn).clicked() {
-                    self.send(EngineEvent::SoftKey(i as u8 + 1));
+                    if self.view == StudioView::Guitar {
+                        self.guitar_soft_key(i as u8 + 1);
+                    } else {
+                        self.send(EngineEvent::SoftKey(i as u8 + 1));
+                    }
                 }
             }
         });
@@ -1249,6 +1390,14 @@ impl eframe::App for GuiApp {
                 _ => StudioView::Sequencer,
             };
             self.last_left_tab = snap.left_tab;
+        }
+
+        // La page PLUGIN 2 est l'ampli guitare : elle doit survivre aux
+        // navigations hardware et ramener la GUI sur la bonne vue.
+        if snap.left_tab == 4 && snap.plugin_page == 2 {
+            self.view = StudioView::Guitar;
+        } else if self.view == StudioView::Guitar && snap.plugin_page != 2 {
+            self.view = StudioView::Plugin;
         }
 
         // ── Barre d'application : vues rapides + panneaux + états latchés ──
@@ -1721,6 +1870,7 @@ pub fn run_native_gui(
     engine: Arc<Mutex<maschine_engine::Engine>>,
     audio: Arc<Mutex<Option<crate::audio::AudioOutput>>>,
     repaint: crate::gui::RepaintSignal,
+    guitar: Arc<crate::guitar::GuitarRuntime>,
 ) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -1733,7 +1883,7 @@ pub fn run_native_gui(
         options,
         Box::new(move |cc| {
             crate::gui::theme::apply_theme(&cc.egui_ctx);
-            Ok(Box::new(GuiApp::new(engine, Some(audio), repaint)) as Box<dyn eframe::App>)
+            Ok(Box::new(GuiApp::new(engine, Some(audio), repaint, guitar)) as Box<dyn eframe::App>)
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe: {e}"))
@@ -1744,6 +1894,7 @@ pub fn run_native_gui(
 pub fn run_native_gui(
     engine: Arc<Mutex<maschine_engine::Engine>>,
     repaint: crate::gui::RepaintSignal,
+    guitar: Arc<crate::guitar::GuitarRuntime>,
 ) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -1756,7 +1907,7 @@ pub fn run_native_gui(
         options,
         Box::new(move |cc| {
             crate::gui::theme::apply_theme(&cc.egui_ctx);
-            Ok(Box::new(GuiApp::new(engine, repaint)) as Box<dyn eframe::App>)
+            Ok(Box::new(GuiApp::new(engine, repaint, guitar)) as Box<dyn eframe::App>)
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe: {e}"))

@@ -30,6 +30,10 @@ cp config/wireplumber/51-maschine-mk3.conf ~/.config/wireplumber/wireplumber.con
 systemctl --user restart pipewire wireplumber
 ```
 
+The `51-maschine-mk3.conf` file forces the MK3 into `pro-audio` mode, which
+exposes its discrete capture ports — required for the guitar amp input
+monitoring. Verify them with `maschine-linux audio-list`.
+
 ## Verification
 
 ```bash

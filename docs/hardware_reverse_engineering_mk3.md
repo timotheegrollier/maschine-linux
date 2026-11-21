@@ -198,6 +198,16 @@ La disposition et les libellés viennent du [guide officiel Native Instruments s
 - **Knobs 1 à 8** : Cutoff, Résonance, Modulation Enveloppe, Drive, Attaque, Déclin, Maintien (Sustain), Relâchement (Release).
 - **Avec SHIFT (Boutons 1 à 8)** : Mode de filtre (LP12/LP24/HP/BP), Nombre de voix d'unisson, Forme d'onde Osc 1, Forme d'onde Osc 2, Mix Chorus, Mix Delay, Mix Reverb, Volume principal du synthétiseur.
 
+#### En mode AMPLI GUITARE (Tab 4, page PLUGIN 2) :
+Deux écrans dédiés, rendus par `maschine-engine::display_render::render_guitar_amp_left/right` :
+- **Écran gauche `GUITAR AMP | PREAMP`** : courbe de saturation asymétrique (préampli à lampes 4× suréchantillonné), tone stack 3 bandes, état `ACTIF` / `MON` / `BYPASS`.
+  - **Knobs 1 à 4** : `1:GAIN`, `2:BASS`, `3:MID`, `4:TREBLE` (valeurs et barres live au-dessus des boutons).
+  - **Boutons 1 à 4** : `AMP <`, `AMP >` (Vox AC30 / Fender Blackface / Tweed / High Gain), `CAB <`, `CAB >` (Vox 12 / Fender 12 / Modern 12 / Flat).
+- **Écran droit `GUITAR AMP | ANALYSE`** : VU entrée/sortie, accordeur YIN (note, cents, Hz), spectre FFT 48 bandes, charge CPU, Xruns et latence.
+  - **Knobs 5 à 8** : `5:PRESENCE`, `6:SAG`, `7:MASTER`, `8:MONITOR`.
+  - **Boutons 5 à 8** : `BYPASS`, `MONITOR`, `RESET`, `PAGE SND` (retour à la page PLUGIN SOUND).
+- Les valeurs sont fournies par `maschine-app` via `GuitarScreenData` (atomiques + télémétrie) ; le miroir GUI et le flux USB utilisent exactement le même rendu.
+
 #### Structure des 8 Groupes (A à H) et 128 Pistes :
 Le projet initialise nativement 8 groupes indépendants (`Groupes A..H`), chacun doté de 16 pads/sons distincts (128 pistes au total) :
 - **Groupe A** : `Kit 808` complet (Kick, Snare, HiHats, Clap, Toms, Percs, Acid 303 sur Pad 15).

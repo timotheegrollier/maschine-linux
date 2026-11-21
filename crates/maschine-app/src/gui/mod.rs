@@ -51,8 +51,9 @@ pub fn run_with_engine(
     engine: Arc<Mutex<maschine_engine::Engine>>,
     audio: Arc<Mutex<Option<crate::audio::AudioOutput>>>,
     repaint: RepaintSignal,
+    guitar: Arc<crate::guitar::GuitarRuntime>,
 ) -> anyhow::Result<()> {
-    app::run_native_gui(engine, audio, repaint)
+    app::run_native_gui(engine, audio, repaint, guitar)
 }
 
 /// Lance le GUI avec un engine seul (pas d'audio).
@@ -60,6 +61,7 @@ pub fn run_with_engine(
 pub fn run_with_engine(
     engine: Arc<Mutex<maschine_engine::Engine>>,
     repaint: RepaintSignal,
+    guitar: Arc<crate::guitar::GuitarRuntime>,
 ) -> anyhow::Result<()> {
-    app::run_native_gui(engine, repaint)
+    app::run_native_gui(engine, repaint, guitar)
 }

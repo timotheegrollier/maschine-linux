@@ -25,6 +25,7 @@ mod audio;
 mod display_thread;
 #[cfg(feature = "gui")]
 mod gui;
+mod guitar;
 pub mod hotplug;
 mod hw_output;
 mod projects;
@@ -596,6 +597,9 @@ fn cmd_daemon(
     #[cfg(feature = "audio")]
     let hp_dup = headphone_mode == "duplicate";
 
+    // État partagé GUI ↔ callback audio pour l'ampli guitare (MK3 input).
+    let guitar_runtime = Arc::new(crate::guitar::GuitarRuntime::default());
+
     #[cfg(feature = "audio")]
     // cpal::Stream n'est pas Send/Sync sur ALSA : l'AudioOutput vit dans ce
     // mutex partagé avec le thread GUI (même thread d'accès en pratique).
@@ -605,7 +609,12 @@ fn cmd_daemon(
     if no_audio {
         log::warn!("--no-audio : pas de sortie son");
     } else {
-        match audio::AudioOutput::open(engine.clone(), initial_audio_dev.as_deref(), hp_dup) {
+        match audio::AudioOutput::open(
+            engine.clone(),
+            initial_audio_dev.as_deref(),
+            hp_dup,
+            guitar_runtime.clone(),
+        ) {
             Ok(a) => {
                 info!(
                     "✓ Audio démarré: '{}' (cible {:?})",
@@ -623,7 +632,12 @@ fn cmd_daemon(
                     "Sortie audio sélectionnée {:?} indisponible ({error}) — repli sur la sortie système",
                     initial_audio_dev
                 );
-                match audio::AudioOutput::open(engine.clone(), Some("default"), hp_dup) {
+                match audio::AudioOutput::open(
+                    engine.clone(),
+                    Some("default"),
+                    hp_dup,
+                    guitar_runtime.clone(),
+                ) {
                     Ok(audio) => {
                         info!(
                             "✓ Audio démarré sur la sortie système: '{}'",
@@ -756,7 +770,11 @@ fn cmd_daemon(
     // Display bulk (optionnel, feature usb)
     #[cfg(feature = "usb")]
     let mut display_handle = if hardware_connected {
-        match display_thread::spawn_display_thread(engine.clone(), display_activity.clone()) {
+        match display_thread::spawn_display_thread(
+            engine.clone(),
+            display_activity.clone(),
+            guitar_runtime.clone(),
+        ) {
             Ok(h) => {
                 log::info!("✓ Thread affichage écran MK3 démarré");
                 Some(h)
@@ -839,6 +857,7 @@ fn cmd_daemon(
         engine: &Arc<Mutex<Engine>>,
         mapper: &mut HardwareMapper,
         actions: Vec<MapperAction>,
+        guitar: &Arc<crate::guitar::GuitarRuntime>,
     ) {
         for action in actions {
             match action {
@@ -1640,9 +1659,27 @@ fn cmd_daemon(
                     let _ = engine.lock().handle_event(EngineEvent::ToggleMetronome);
                 }
                 MapperAction::SoftKey(n) => {
-                    // Action contextuelle décidée par l'Engine : exactement ce
-                    // que le label affiché sous l'écran annonce.
-                    let _ = engine.lock().handle_event(EngineEvent::SoftKey(n));
+                    // Page AMPLI GUITARE : les soft keys pilotent directement
+                    // l'ampli (les labels sont GUITAR_SOFT_LABELS).
+                    let guitar_page = {
+                        let eng = engine.lock();
+                        let snap = eng.snapshot();
+                        snap.left_tab == 4 && snap.plugin_page == 2
+                    };
+                    if guitar_page {
+                        if n == 8 {
+                            // "PAGE SND" : retour à la page plugin normale.
+                            let mut eng = engine.lock();
+                            let _ = eng.handle_event(EngineEvent::SetPluginPage(1));
+                            let _ = eng.handle_event(EngineEvent::NavigateView(4));
+                        } else {
+                            guitar.soft_key(n);
+                        }
+                    } else {
+                        // Action contextuelle décidée par l'Engine : exactement
+                        // ce que le label affiché sous l'écran annonce.
+                        let _ = engine.lock().handle_event(EngineEvent::SoftKey(n));
+                    }
                 }
                 MapperAction::SaveProject => {
                     let mut settings = settings::AppSettings::load();
@@ -1857,6 +1894,7 @@ fn cmd_daemon(
         let repaint_bg = repaint.clone();
         let hw_tx_hotplug = hardware_tx.clone();
         let led_rx_hotplug = led_rx.clone();
+        let guitar_for_hw = guitar_runtime.clone();
         let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let shutdown_bg = shutdown.clone();
 
@@ -1906,6 +1944,7 @@ fn cmd_daemon(
                                 led_rx_hotplug.clone(),
                                 engine_bg.clone(),
                                 display_activity_bg.clone(),
+                                guitar_for_hw.clone(),
                                 no_led,
                             ) {
                                 Ok(sess) => {
@@ -1970,7 +2009,7 @@ fn cmd_daemon(
                                     }
                                 }
                             }
-                            apply_mapper_actions(&engine_bg, &mut mapper, actions);
+                            apply_mapper_actions(&engine_bg, &mut mapper, actions, &guitar_for_hw);
                             display_activity_bg.store(true, Ordering::Relaxed);
 
                             if is_connected && !no_led {
@@ -2006,9 +2045,9 @@ fn cmd_daemon(
             info!("Lancement GUI egui autonome…");
         }
         #[cfg(feature = "audio")]
-        let gui_res = gui::run_with_engine(engine, audio_shared, repaint);
+        let gui_res = gui::run_with_engine(engine, audio_shared, repaint, guitar_runtime);
         #[cfg(not(feature = "audio"))]
-        let gui_res = gui::run_with_engine(engine, repaint);
+        let gui_res = gui::run_with_engine(engine, repaint, guitar_runtime);
 
         // 1) Stoppe la boucle HID (et sa session Plug & Play éventuelle).
         shutdown.store(true, Ordering::Relaxed);
@@ -2083,6 +2122,7 @@ fn cmd_daemon(
                     led_rx.clone(),
                     engine.clone(),
                     display_activity.clone(),
+                    guitar_runtime.clone(),
                     no_led,
                 ) {
                     Ok(sess) => {
@@ -2136,7 +2176,7 @@ fn cmd_daemon(
                         }
                     }
                 }
-                apply_mapper_actions(&engine, &mut mapper, actions);
+                apply_mapper_actions(&engine, &mut mapper, actions, &guitar_runtime);
                 display_activity.store(true, Ordering::Relaxed);
 
                 if is_connected && !no_led {
@@ -2810,7 +2850,14 @@ fn cmd_display_probe() -> anyhow::Result<()> {
 fn cmd_audio_list() -> anyhow::Result<()> {
     #[cfg(feature = "audio")]
     {
-        audio::AudioOutput::list_devices()
+        audio::AudioOutput::list_devices()?;
+        println!("\nPériphériques d'entrée (jack guitare MK3):");
+        for dev in audio::list_input_devices() {
+            let marker = if dev.is_mk3 { " [MK3]" } else { "" };
+            let default = if dev.is_default { " (défaut)" } else { "" };
+            println!("  - {}{}{}", dev.name, marker, default);
+        }
+        Ok(())
     }
     #[cfg(not(feature = "audio"))]
     {

@@ -12,15 +12,22 @@
 
 ```
 maschine-proto  ──► maschine-hardware ──► maschine-app (binary)
-      ▲                    ▲                     ▲
-      └────────────────────┴──── maschine-engine ┘
-             (domain, sampler, sequencer, state)
+      ▲                    ▲                     ▲    ▲
+      └────────────────────┴──── maschine-engine ┘    │
+             (domain, sampler, sequencer, state)       │
+                                        maschine-dsp ──┘
+                            (guitar preamp, cab, tuner, FFT)
 ```
+
+`maschine-app` owns the CPAL duplex path: the engine renders into the output
+callback, while the MK3 capture callback feeds a preallocated SPSC ring that the
+same output callback drains through `maschine-dsp` for guitar monitoring.
 
 - `maschine-proto`: `thiserror`, `serde` (palette), zero `unsafe` except RGB565 helpers.
 - `maschine-hardware`: `nusb` (or `rusb` feature), `hidapi`, `midir`/`alsa`, `crossbeam-channel`, `parking_lot`, `log`.
 - `maschine-engine`: `serde`, `serde_json`, `hound`, `rubato`, `cpal` (`audio` feature), `midly` for SMF import.
-- `maschine-app`: `clap`, `anyhow`, `env_logger`, `tokio` (daemon), `eframe`/`egui` (`gui` feature).
+- `maschine-app`: `clap`, `anyhow`, `env_logger`, `tokio` (daemon), `eframe`/`egui` (`gui` feature), `cpal` (`audio`), `maschine-dsp` (+ `analysis` feature for the spectrum).
+- `maschine-dsp`: `atomic_float` (lock-free params), optional `realfft`/`rustfft`/`hound` (`ir`, `analysis`). No allocation in `process()`.
 
 ## Threads & priorities
 
@@ -28,7 +35,8 @@ maschine-proto  ──► maschine-hardware ──► maschine-app (binary)
 |---|---|---|---|
 | `hid-poll` | `SCHED_FIFO 70` (via `chrt` or `rtkit`) | isolated core if possible | `poll` `/dev/hidraw3` (`bInterval 1ms`), parse `0x01`/`0x02`, push `HardwareEvent` |
 | `display` | `SCHED_OTHER nice -5` | - | compare renders at 30 Hz, merge RGB565 rectangles into even-width regions, 1.6 MB/s budget, bulk `0x04` |
-| `audio` | `SCHED_FIFO 80` (JACK/PipeWire) | - | `cpal`/`jack` callback: mix Groups, voices, ADSR |
+| `audio` | `SCHED_FIFO 80` (PipeWire) | - | CPAL output callback: `Engine::render_audio` (Groups, voices, ADSR) then guitar amp mix |
+| `audio-capture` | `SCHED_FIFO 80` (PipeWire) | - | CPAL input callback: MK3 capture → mono → SPSC ring (no allocation, no lock) |
 | `engine` | `SCHED_OTHER` | - | sequencer, swing, quantize, automation |
 | `ui` | `SCHED_OTHER` | - | `egui` 60fps, lock-free state snapshot |
 
@@ -48,7 +56,22 @@ Verifiable priorities: `ps -eLo pid,cls,rtprio,comm | grep -E "maschine|pipewire
                                              └─► LedState + DisplayFrame ─► hid_output / bulk
 ```
 
-Audio: `Engine::audio_callback(&mut [f32], frames, sample_rate)` called by `cpal`/`jack`. It only mixes active voices (`Voice { sample: Arc<[f32]>, pos: f64, gain, pan, adsr }`).
+Audio: `render_audio_block()` in `maschine-app/src/audio.rs` is called by the CPAL
+output callback. It locks the engine with a 2 ms deadline (`lock_engine_with_wait`),
+aligns the sample-rate clock, advances the transport and calls
+`Engine::render_audio()` in 1024-frame chunks into a stack buffer. It then drops
+the engine lock and mixes the guitar amp output (from `maschine-dsp`) into the
+same block before clamping to ±1.
+
+Guitar capture: `build_guitar_input_stream()` opens an input stream on the MK3
+(WirePlumber `pro-audio` profile) or the default input device. The callback
+downmixes to mono and writes into a preallocated SPSC ring (`GuitarRuntime`);
+the output callback reads it into preallocated buffers, runs
+`Gate → tube preamp → cabinet → delay`, and mixes the result into all output
+channels (headphones scaled by their volume). GUI ↔ audio uses only atomics
+(`GuitarControl`) and a `try_lock`-only telemetry snapshot, so no callback ever
+blocks. The YIN tuner, FFT spectrum and CPU/clipping stats are computed in the
+audio callback and published through that snapshot.
 
 ## State & persistence
 

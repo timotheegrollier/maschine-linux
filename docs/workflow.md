@@ -95,7 +95,7 @@ Both screens are rendered by the same function (`display_render::render_screens`
   - **PLUGIN GUITAR AMP (page 2)** — deux écrans dédiés (`GUITAR AMP | PREAMP` et `GUITAR AMP | ANALYSE`) :
     - Soft keys 1–4 (écran gauche) : `AMP <`, `AMP >` (choix du modèle Vox AC30 / Fender Blackface / Tweed / High Gain), `CAB <`, `CAB >` (Vox 12 / Fender 12 / Modern 12 / Flat).
     - Soft keys 5–8 (écran droit) : `BYPASS`, `MONITOR`, `RESET`, `PAGE SND` (retour à la page PLUGIN SOUND).
-    - Écran gauche : courbe de saturation du préampli, tone stack 3 bandes, état ACTIF / MON / BYPASS. Knobs **1:GAIN, 2:BASS, 3:MID, 4:TREBLE**.
+    - Écran gauche : courbe de saturation du préampli, tone stack 3 bandes, état ACTIF / MON / BYPASS (ACTIF et MON sont **éteints au démarrage** ; l'utilisateur les active explicitement). Knobs **1:GAIN, 2:BASS, 3:MID, 4:TREBLE**.
     - Écran droit : VU entrée/sortie, accordeur (note + cents + Hz), spectre 48 bandes, CPU / Xruns / latence. Knobs **5:PRESENCE, 6:SAG, 7:MASTER, 8:MONITOR**.
   - SCENE: `SCN 1..8`. SONG: `SEC <</>>`, `+SEC`, `IDEAS`, scenes and `+SCN`.
 - **Encoders**: each screen displays the 4 parameters actually controlled by its knobs (1–4 on the left, 5–8 on the right) with live values. PLUGIN routes knobs by page: SOUND uses Vol/Pan/Cutoff/Reso + ADSR, TB-303 uses Cutoff/Reso/EnvMod/Decay + Accent/Drive/Time/Mix, GUITAR AMP uses Gain/Bass/Mid/Treble + Presence/Sag/Master/Monitor.

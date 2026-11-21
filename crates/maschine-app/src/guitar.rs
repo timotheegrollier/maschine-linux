@@ -125,8 +125,10 @@ impl Default for GuitarControl {
     fn default() -> Self {
         let settings = AmpSettings::default();
         Self {
-            enabled: AtomicBool::new(true),
-            monitor: AtomicBool::new(true),
+            // L'ampli ne doit jamais démarrer tout seul : l'utilisateur
+            // active explicitement ACTIF et MONITOR depuis la vue guitare.
+            enabled: AtomicBool::new(false),
+            monitor: AtomicBool::new(false),
             bypass: AtomicBool::new(false),
             model: AtomicU32::new(0),
             cab_model: AtomicU32::new(0),
@@ -561,6 +563,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn engine_output_is_untouched_when_amp_is_off() {
+        let runtime = Arc::new(GuitarRuntime::default());
+        let mut proc = GuitarProcessor::new(48000, runtime.clone());
+        // Instrument du pattern déjà rendu dans `out`.
+        let mut out = vec![0.25_f32; 256 * 2];
+        // Même avec du signal dans le ring, l'ampli désactivé ne doit rien
+        // ajouter et ne doit pas toucher aux échantillons du moteur.
+        let tone: Vec<f32> = (0..256)
+            .map(|i| 0.8 * (2.0 * std::f32::consts::PI * 220.0 * i as f32 / 48000.0).sin())
+            .collect();
+        runtime.input_ring.write(&tone);
+        proc.process_output(&mut out, 2, 48000, 1.0);
+        assert!(out.iter().all(|s| (*s - 0.25).abs() < 1e-6));
+        assert_eq!(runtime.input_ring.available(), 0);
+    }
+
+    #[test]
+    fn amp_is_off_by_default() {
+        let runtime = GuitarRuntime::default();
+        assert!(!runtime.control.enabled.load(Ordering::Relaxed));
+        assert!(!runtime.control.monitor.load(Ordering::Relaxed));
+        let data = runtime.screen_data();
+        assert!(!data.enabled);
+        assert!(!data.monitor);
+    }
+
+    #[test]
     fn screen_data_maps_controls_and_telemetry() {
         let runtime = GuitarRuntime::default();
         runtime.control.set_norm(GuitarParam::Gain, 0.8);
@@ -593,6 +622,10 @@ mod tests {
         assert_eq!(runtime.control.cab_model.load(Ordering::Relaxed), 1);
         runtime.soft_key(5);
         assert!(runtime.control.bypass.load(Ordering::Relaxed));
+        // MONITOR démarre éteint : la touche 6 l'allume, un second appui l'éteint.
+        assert!(!runtime.control.monitor.load(Ordering::Relaxed));
+        runtime.soft_key(6);
+        assert!(runtime.control.monitor.load(Ordering::Relaxed));
         runtime.soft_key(6);
         assert!(!runtime.control.monitor.load(Ordering::Relaxed));
     }
@@ -633,6 +666,9 @@ mod tests {
     #[test]
     fn processor_mixes_signal_without_nan() {
         let runtime = Arc::new(GuitarRuntime::default());
+        // L'utilisateur active explicitement l'ampli avant d'entendre quelque chose.
+        runtime.control.enabled.store(true, Ordering::Relaxed);
+        runtime.control.monitor.store(true, Ordering::Relaxed);
         let mut proc = GuitarProcessor::new(48000, runtime.clone());
         let input: Vec<f32> = (0..256)
             .map(|i| 0.2 * (2.0 * std::f32::consts::PI * 110.0 * i as f32 / 48000.0).sin())

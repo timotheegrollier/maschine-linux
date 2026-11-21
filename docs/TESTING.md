@@ -78,7 +78,9 @@ jack:
 1. `maschine-linux audio-list` must show an input whose name contains
    `Maschine` / `MK3` / `USB Audio`.
 2. Launch `maschine-linux gui`, press `G`, and check that `ACTIF` and `MONITOR`
-   are lit and the capture device name appears in `DIAGNOSTICS TEMPS RÉEL`.
+   are **off** at startup (the pattern instruments must sound unchanged and no
+   guitar signal is monitored). Then enable both and check that the capture
+   device name appears in `DIAGNOSTICS TEMPS RÉEL`.
 3. Play a note: the IN VU meter must move, the tuner must show the correct note
    and cents, the spectrum must display harmonics, and the OUT meter must show
    the amplified signal.

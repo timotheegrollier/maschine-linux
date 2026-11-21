@@ -4630,8 +4630,14 @@ impl Engine {
                             ];
                         } else {
                             return [
-                                "PAGE 1/2", "PRESETS", "TECHNO", "909", "HARDCORE", "808 SUB",
-                                "INDUSTRIAL", "BROWSER",
+                                "PAGE 1/2",
+                                "PRESETS",
+                                "TECHNO",
+                                "909",
+                                "HARDCORE",
+                                "808 SUB",
+                                "INDUSTRIAL",
+                                "BROWSER",
                             ];
                         }
                     } else if self.focus_sound_has_acid() {
@@ -7543,9 +7549,7 @@ mod tests {
         let labels = eng.soft_key_labels();
         assert_eq!(
             labels,
-            [
-                "REVERSE", "LOOP", "NORMLZ", "CYC FLT", "LP/HP/BP", "NOTCH", "PEAK", "OFF"
-            ]
+            ["REVERSE", "LOOP", "NORMLZ", "CYC FLT", "LP/HP/BP", "NOTCH", "PEAK", "OFF"]
         );
 
         // SoftKey 4 (idx 3) = CYC FLT → Off → LowPass

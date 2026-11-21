@@ -42,7 +42,9 @@ input port when the device is in `pro-audio` mode (shipped WirePlumber config),
 otherwise on the system default input. `maschine-linux audio-list` shows the
 available input ports.
 
-1. Set `ACTIF` and `MONITOR` on (both are on by default when an input opens).
+1. The amp is **OFF by default**: nothing is processed or monitored at startup.
+   Set `ACTIF` then `MONITOR` in the view (or press the corresponding chips in
+   the GUI mirror) to actually hear the guitar.
 2. Pick an amp voice — `Vox AC30`, `Fender Blackface`, `Fender Tweed` or
    `High Gain` — and a cabinet (`Vox 12"`, `Fender 12"`, `Modern 12"`, `Flat`).
 3. Shape the sound with Gain / Bass / Mid / Treble / Presence / Sag / Master.
@@ -64,10 +66,13 @@ with knobs `5:PRESENCE`, `6:SAG`, `7:MASTER`, `8:MONITOR` and soft keys
 `BYPASS`, `MONITOR`, `RESET`, `PAGE SND`. Values above each knob are live and
 identical in the GUI mirror; `PAGE SND` returns to the normal PLUGIN page.
 
-Signal path: CPAL capture → preallocated SPSC ring → noise gate → 4x-oversampled
-tube preamp → tone stack → cabinet → delay → mix into the engine output. No
-allocation or blocking lock occurs in either audio callback; GUI parameters are
-atomics and telemetry is published with `try_lock`.
+Signal path: CPAL capture (MK3 input only) → preallocated SPSC ring → noise
+gate → 4x-oversampled tube preamp → tone stack → cabinet → delay → **added** to
+the engine output for monitoring. The pattern instruments are never routed
+through the amp chain: with `ACTIF`/`MONITOR` off (the default), the callback
+leaves every engine sample untouched. No allocation or blocking lock occurs in
+either audio callback; GUI parameters are atomics and telemetry is published
+with `try_lock`.
 
 ### Supported Maschine MK3 hardware controls
 

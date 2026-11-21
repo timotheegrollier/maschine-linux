@@ -643,8 +643,8 @@ impl Sampler {
                             voice.filter_s1 = (voice.filter_b1 * s - voice.filter_a1 * sat_out
                                 + voice.filter_s2)
                                 .clamp(-16.0, 16.0);
-                            voice.filter_s2 =
-                                (voice.filter_b2 * s - voice.filter_a2 * sat_out).clamp(-16.0, 16.0);
+                            voice.filter_s2 = (voice.filter_b2 * s - voice.filter_a2 * sat_out)
+                                .clamp(-16.0, 16.0);
                             s = sat_out;
                         }
                         // ADSR complète (A/D/S/R du Sound)

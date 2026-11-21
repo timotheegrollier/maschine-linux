@@ -14,7 +14,7 @@ Maschine Linux is an independent project. It does not include Native
 Instruments code or proprietary assets; it reproduces the documented workflow
 and hardware behavior through a clean-room implementation.
 
-## Current state (0.11.0)
+## Current state (0.11.1)
 
 Cargo workspace with six crates:
 
@@ -39,7 +39,10 @@ errors) and `--stress` (deliberate engine-lock contention).
 ### Guitar amp on the MK3 input
 
 The `AMPLI GUITARE` view (`G` shortcut) turns the MK3 audio input into a real
-tube-amp signal chain, monitored through the normal MK3 outputs:
+tube-amp signal chain, monitored through the normal MK3 outputs. It is **OFF by
+default** (`ACTIF` + `MONITOR` must be enabled) and only ever processes the MK3
+capture stream — pattern instruments are not routed through it and their samples
+are left untouched:
 
 ```
 jack guitare → MK3 input (CPAL capture) → SPSC ring → gate

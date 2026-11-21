@@ -2,6 +2,22 @@
 
 All notable changes.
 
+## [0.11.1] - 2026-11-21
+
+### Fixes
+
+- **Guitar amp no longer starts automatically**: `ACTIF` and `MONITOR` now
+  default to OFF, so nothing is processed or monitored until the user enables
+  them in the `AMPLI GUITARE` view.
+- **Pattern audio untouched**: the amp chain only processes the MK3 capture
+  stream and adds its output for monitoring; engine/instrument samples are
+  never routed through it and remain identical while the amp is off.
+
+### Validation
+
+- `cargo test --workspace --locked` (new default-off and engine-output tests)
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+
 ## [0.11.0] - 2026-11-21
 
 ### Features

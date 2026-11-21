@@ -2,6 +2,13 @@
 
 All notable changes.
 
+## [0.10.3] - 2026-11-21
+
+### Fixes
+
+- **MK3 transport audio stability**: releasing or recovering the display USB interface no longer resets the entire controller, preventing a screen error during playback from interrupting the shared audio interface.
+- **Preserve the system audio output**: with no saved device preference, Maschine Linux now uses the system default instead of automatically redirecting audio to the MK3; the DJM remains selected when configured as the system default.
+
 ## [0.10.2] - 2026-11-19
 
 ### CI/CD

@@ -118,7 +118,7 @@ enum Commands {
         /// Port MIDI virtuel (ALSA) — placeholder
         #[arg(long, default_value = "Maschine MK3 Virtual")]
         midi_port: String,
-        /// Device audio explicite (ex: "Maschine", sinon auto MK3)
+        /// Device audio explicite (ex: "Maschine", sinon sortie système)
         #[arg(long)]
         audio_device: Option<String>,
         /// Pas d'audio (silence, test HID seul)
@@ -467,6 +467,13 @@ fn select_hidraw_device(
     anyhow::bail!("pas de MK3 hidraw trouvée — lance probe")
 }
 
+fn select_initial_audio_device(
+    explicit_device: Option<String>,
+    saved_device: Option<String>,
+) -> Option<String> {
+    explicit_device.or(saved_device)
+}
+
 #[allow(clippy::too_many_arguments)] // handler CLI : 1 paramètre par option
 fn cmd_daemon(
     project: Option<PathBuf>,
@@ -585,7 +592,7 @@ fn cmd_daemon(
     let settings = settings::AppSettings::load();
     #[cfg(feature = "audio")]
     let has_explicit_audio_device = audio_device.is_some();
-    let initial_audio_dev = audio_device.or(settings.audio_device);
+    let initial_audio_dev = select_initial_audio_device(audio_device, settings.audio_device);
     #[cfg(feature = "audio")]
     let hp_dup = headphone_mode == "duplicate";
 
@@ -609,12 +616,11 @@ fn cmd_daemon(
             }
             Err(error)
                 if gui_can_run_offline
-                    && !hardware_connected
                     && !has_explicit_audio_device
                     && initial_audio_dev.is_some() =>
             {
                 warn!(
-                    "Sortie audio mémorisée {:?} indisponible sans MK3 ({error}) — repli sur la sortie système",
+                    "Sortie audio sélectionnée {:?} indisponible ({error}) — repli sur la sortie système",
                     initial_audio_dev
                 );
                 match audio::AudioOutput::open(engine.clone(), Some("default"), hp_dup) {
@@ -2941,6 +2947,22 @@ mod tests {
     #[test]
     fn daemon_mode_keeps_requiring_hardware() {
         assert!(select_hidraw_device(Vec::new(), false).is_err());
+    }
+
+    #[test]
+    fn audio_device_selection_prefers_explicit_then_saved_then_system_default() {
+        assert_eq!(
+            select_initial_audio_device(
+                Some("USB DAC".to_string()),
+                Some("Maschine MK3".to_string())
+            ),
+            Some("USB DAC".to_string())
+        );
+        assert_eq!(
+            select_initial_audio_device(None, Some("USB DAC".to_string())),
+            Some("USB DAC".to_string())
+        );
+        assert_eq!(select_initial_audio_device(None, None), None);
     }
 
     #[cfg(feature = "gui")]

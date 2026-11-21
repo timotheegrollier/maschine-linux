@@ -184,15 +184,14 @@ impl GuiApp {
         repaint: crate::gui::RepaintSignal,
     ) -> Self {
         let devices = crate::audio::list_output_devices();
-        let current_dev = audio
-            .as_ref()
-            .and_then(|a| {
-                let guard = a.lock();
-                (*guard).as_ref().map(|o| o.device_name().to_string())
-            })
-            .unwrap_or_else(|| "default".to_string());
+        let current_dev = audio.as_ref().and_then(|a| {
+            let guard = a.lock();
+            (*guard).as_ref().map(|o| o.device_name().to_string())
+        });
         let settings = crate::settings::AppSettings::load();
-        let selected = settings.audio_device.unwrap_or(current_dev);
+        let selected = current_dev
+            .or(settings.audio_device)
+            .unwrap_or_else(|| "default".to_string());
         let (sample_load_tx, sample_load_rx) = crossbeam_channel::unbounded();
         let updater_state = Arc::new(Mutex::new(crate::updater::UpdateState::default()));
         {

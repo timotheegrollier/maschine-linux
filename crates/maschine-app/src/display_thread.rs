@@ -481,7 +481,7 @@ pub fn spawn_display_thread(
                         log::warn!("Écran droit: splash de fermeture non envoyé ({e})");
                     }
                     std::thread::sleep(Duration::from_millis(180));
-                    bulk.release_for_shutdown();
+                    bulk.release_interface();
                     std::thread::sleep(Duration::from_millis(120));
                     log::info!("✓ Écrans libérés — logo MK3 par défaut");
                     return;

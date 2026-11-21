@@ -38,10 +38,8 @@ pub(crate) fn packet_tail(px_rest: usize) -> Vec<u8> {
 pub struct BulkHandle {
     handle: DeviceHandle<Context>,
     iface: u8,
-    /// Interface déjà libérée proprement pour un arrêt d'application : le
-    /// `Drop` ne doit alors surtout pas resetter le device (le firmware MK3
-    /// réaffiche son logo dès que IF5 est rendue).
-    released_for_shutdown: bool,
+    /// Évite de libérer deux fois l'interface quand le thread s'arrête proprement.
+    interface_released: bool,
 }
 
 #[cfg(feature = "usb")]
@@ -70,7 +68,7 @@ impl BulkHandle {
                 return Ok(Self {
                     handle,
                     iface,
-                    released_for_shutdown: false,
+                    interface_released: false,
                 });
             }
         }
@@ -179,27 +177,36 @@ impl BulkHandle {
         let _ = self.handle.clear_halt(0x04);
     }
 
-    /// Libère proprement l'interface pour l'arrêt de l'application.
+    /// Libère proprement l'interface des écrans sans réinitialiser toute la MK3.
     ///
-    /// Contrairement au `Drop` historique, on ne reset **pas** le device : la
-    /// MK3 réaffiche son logo par défaut dès que l'interface écrans est rendue,
-    /// et un reset USB peut laisser les écrans figés ou perturber le flux audio.
-    pub fn release_for_shutdown(&mut self) {
+    /// La MK3 réaffiche son logo par défaut dès que l'interface écrans est
+    /// rendue; un reset USB global peut interrompre son interface audio.
+    pub fn release_interface(&mut self) {
+        self.release_interface_claim(true);
+    }
+
+    fn release_interface_claim(&mut self, attach_kernel_driver: bool) {
+        if self.interface_released {
+            return;
+        }
         let _ = self.handle.release_interface(self.iface);
         std::thread::sleep(std::time::Duration::from_millis(80));
-        let _ = self.handle.attach_kernel_driver(self.iface);
-        self.released_for_shutdown = true;
+        if attach_kernel_driver {
+            let _ = self.handle.attach_kernel_driver(self.iface);
+        }
+        self.interface_released = true;
     }
 
     /// Ré-acquiert l'interface IF5 sans reset USB complet (récupération après
     /// plusieurs écritures en échec).
     pub fn reacquire(&mut self) -> Result<()> {
-        let _ = self.handle.release_interface(self.iface);
+        self.release_interface_claim(false);
         std::thread::sleep(std::time::Duration::from_millis(60));
-        self.handle
-            .claim_interface(self.iface)
-            .map_err(|e| HardwareError::Usb(format!("re-claim IF5: {e}")))?;
-        self.released_for_shutdown = false;
+        if let Err(e) = self.handle.claim_interface(self.iface) {
+            let _ = self.handle.attach_kernel_driver(self.iface);
+            return Err(HardwareError::Usb(format!("re-claim IF5: {e}")));
+        }
+        self.interface_released = false;
         self.clear_stall();
         Ok(())
     }
@@ -208,15 +215,9 @@ impl BulkHandle {
 #[cfg(feature = "usb")]
 impl Drop for BulkHandle {
     fn drop(&mut self) {
-        if self.released_for_shutdown {
-            // Arrêt propre : IF5 déjà rendue au firmware, ne jamais resetter.
-            return;
+        if !self.interface_released {
+            self.release_interface();
         }
-        let _ = self.handle.release_interface(self.iface);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let _ = self.handle.reset();
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        let _ = self.handle.attach_kernel_driver(self.iface);
     }
 }
 
@@ -242,8 +243,8 @@ impl BulkHandle {
     /// Efface un halt — stub.
     pub fn clear_stall(&mut self) {}
 
-    /// Libère proprement l'interface pour l'arrêt de l'application.
-    pub fn release_for_shutdown(&mut self) {}
+    /// Libère proprement l'interface sans réinitialiser la MK3.
+    pub fn release_interface(&mut self) {}
 
     /// Ré-acquiert — stub.
     pub fn reacquire(&mut self) -> Result<()> {

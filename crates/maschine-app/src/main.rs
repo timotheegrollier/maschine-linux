@@ -1952,24 +1952,7 @@ fn cmd_daemon(
                                     repaint_bg.notify();
                                     continue;
                                 }
-                                HardwareEvent::Pot { id, value } => {
-                                    use maschine_proto::ButtonId;
-                                    match id {
-                                        ButtonId::Unknown(99, 2) => {
-                                            let vol = *value as f32 / 1023.0;
-                                            let _ = engine_bg
-                                                .lock()
-                                                .handle_event(EngineEvent::MasterVolume(vol));
-                                        }
-                                        ButtonId::Unknown(99, 1) => {
-                                            let vol = *value as f32 / 1023.0;
-                                            let _ = engine_bg
-                                                .lock()
-                                                .handle_event(EngineEvent::HeadphoneVolume(vol));
-                                        }
-                                        _ => {}
-                                    }
-                                }
+                                HardwareEvent::Pot { .. } => {}
                                 _ => {}
                             }
 
@@ -2140,22 +2123,7 @@ fn cmd_daemon(
                             sess.stop();
                         }
                     }
-                    HardwareEvent::Pot { id, value } => {
-                        use maschine_proto::ButtonId;
-                        match id {
-                            ButtonId::Unknown(99, 2) => {
-                                let vol = *value as f32 / 1023.0;
-                                let _ = engine.lock().handle_event(EngineEvent::MasterVolume(vol));
-                            }
-                            ButtonId::Unknown(99, 1) => {
-                                let vol = *value as f32 / 1023.0;
-                                let _ = engine
-                                    .lock()
-                                    .handle_event(EngineEvent::HeadphoneVolume(vol));
-                            }
-                            _ => {}
-                        }
-                    }
+                    HardwareEvent::Pot { .. } => {}
                     _ => {}
                 }
 

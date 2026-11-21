@@ -81,6 +81,7 @@ impl AudioOutput {
         explicit_device: Option<&str>,
         hp_dup: bool,
     ) -> anyhow::Result<Self> {
+        auto_configure_djm_routing();
         let host = cpal::default_host();
         log::info!("cpal host: {:?}", host.id());
 
@@ -646,4 +647,40 @@ pub fn play_test_tone(
     stream.play()?;
     std::thread::sleep(std::time::Duration::from_secs_f32(duration_secs));
     Ok(())
+}
+
+/// Détecte et configure automatiquement les tables de mixage Pioneer DJM connectées (ex: DJM-250MK2).
+/// Sur Linux/ALSA, la sortie USB 1-2 peut par défaut être routée vers 'Aux' plutôt que 'Ch1',
+/// ce qui rend le son inaudible sur la voie 1. Cette fonction s'assure que Output 1 -> Ch1 et Output 3 -> Aux.
+pub fn auto_configure_djm_routing() {
+    let Ok(cards) = std::fs::read_to_string("/proc/asound/cards") else {
+        return;
+    };
+    for line in cards.lines() {
+        if line.contains("DJM") {
+            if let Some(card_id) = line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|s| s.strip_prefix("[").and_then(|s| s.strip_suffix("]")))
+            {
+                let check = std::process::Command::new("amixer")
+                    .args(["-c", card_id, "sget", "Output 1"])
+                    .output();
+                if let Ok(out) = check {
+                    let out_str = String::from_utf8_lossy(&out.stdout);
+                    if out_str.contains("Item0: 'Aux'") {
+                        log::info!(
+                            "Pioneer DJM détectée ({card_id}) avec Output 1 sur Aux — routage automatique vers Ch1"
+                        );
+                        let _ = std::process::Command::new("amixer")
+                            .args(["-c", card_id, "sset", "Output 1", "Ch1"])
+                            .output();
+                        let _ = std::process::Command::new("amixer")
+                            .args(["-c", card_id, "sset", "Output 3", "Aux"])
+                            .output();
+                    }
+                }
+            }
+        }
+    }
 }

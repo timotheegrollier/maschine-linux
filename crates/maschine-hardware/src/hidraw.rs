@@ -687,25 +687,10 @@ fn hidraw_loop(
                         for ts_ev in inp.touchstrip {
                             let _ = tx.send(HardwareEvent::TouchStrip(ts_ev));
                         }
-                        for (id, val) in inp.pots {
-                            // map KnobId -> ButtonId placeholder
-                            let bid = match id {
-                                maschine_proto::hid_input::KnobId::MicGain => {
-                                    maschine_proto::ButtonId::Unknown(99, 0)
-                                }
-                                maschine_proto::hid_input::KnobId::Headphone => {
-                                    maschine_proto::ButtonId::Unknown(99, 1)
-                                }
-                                maschine_proto::hid_input::KnobId::Master => {
-                                    maschine_proto::ButtonId::Unknown(99, 2)
-                                }
-                                _ => maschine_proto::ButtonId::Unknown(99, 3),
-                            };
-                            let _ = tx.send(HardwareEvent::Pot {
-                                id: bid,
-                                value: val,
-                            });
-                        }
+                        // Note: sur la Maschine MK3 physique, les potentiomètres Mic/Casque/Line
+                        // arrière sont 100% analogiques et non numérisés dans le report 0x01.
+                        // Les octets 36..41 sont à 0 et ne doivent pas émettre d'événements Pot
+                        // fantômes (ce qui écrasait le volume Master à 0% à chaque appui bouton).
                     }
                     Err(e) => {
                         log::warn!("decode 0x01 err: {e} data={:02x?}", &data[..n.min(16)]);

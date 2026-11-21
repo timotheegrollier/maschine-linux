@@ -1578,7 +1578,7 @@ impl eframe::App for GuiApp {
 
                     ui.horizontal(|ui| {
                         if ui
-                            .button(egui::RichText::new("Haut-parleurs PC").strong())
+                            .button(egui::RichText::new("Sortie système (Défaut / DJM)").strong())
                             .clicked()
                         {
                             switch_target = Some("default".to_string());

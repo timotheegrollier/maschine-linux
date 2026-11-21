@@ -2,6 +2,14 @@
 
 All notable changes.
 
+## [0.10.4] - 2026-11-21
+
+### Fixes
+
+- **Fix master volume drop to 0% on hardware Play button**: removed erroneous phantom potentiometer handling for bytes 36..41 in HID report `0x01` which reset master and headphone volumes to 0% upon pressing Play or other controller buttons.
+- **Auto-configure Pioneer DJM mixer audio routing**: automatically detect connected Pioneer DJM USB soundcards (e.g. DJM-250MK2) and ensure ALSA `Output 1` is routed to `Ch1` (instead of `Aux`) so stereo audio outputs directly to Channel 1 of the mixer.
+- **Audio settings clarity**: updated GUI audio output button label to clearly indicate the system default routing (PipeWire / DJM).
+
 ## [0.10.3] - 2026-11-21
 
 ### Fixes

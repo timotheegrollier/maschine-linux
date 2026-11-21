@@ -36,6 +36,16 @@
   </provides>
 
   <releases>
+    <release version="0.10.4" date="2026-11-21">
+      <description>
+        <p>Release 0.10.4 fixes Master volume dropping to 0% when pressing Play on MK3 and automatically routes Pioneer DJM mixer USB channels to Channel 1.</p>
+      </description>
+    </release>
+    <release version="0.10.3" date="2026-11-21">
+      <description>
+        <p>Release 0.10.3 stabilizes USB display interface recovery and preserves system default audio output when MK3 connects.</p>
+      </description>
+    </release>
     <release version="0.10.2" date="2026-11-19">
       <description>
         <p>Release 0.10.2 improves CI and release reliability with parallel quality gates, resilient AppImage downloads, cache recovery, and exact package verification.</p>

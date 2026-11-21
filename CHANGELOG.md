@@ -2,6 +2,25 @@
 
 All notable changes.
 
+## [0.11.2] - 2026-11-21
+
+### Features
+
+- **Plein accès matériel MK3 et affichage LCD double écran pour Kick Synth & Wavetable** :
+  - **Kick Synth Page 2** : Visualisation dynamique des 7 formes d'ondes + modulation FM en temps réel sur l'écran gauche (encodeurs 1: WAVE, 2: FM AMT, 3: RATIO, 4: TONE), courbe de saturation multi-types et réponse fréquentielle résonante sur l'écran droit (encodeurs 5: DISTO, 6: FILTER, 7: CUTOFF, 8: RESO).
+  - **Filtres Notch & Peak** : Intégrés et sélectionnables directement depuis les touches MK3 et les encodeurs rotatifs, avec courbes SVF et biquad dédiées.
+  - **Wavetable Synth Page 2** : Contrôle complet des filtres SVF multimodes (LP12, LP24, HP, BP, Notch, Peak, Off), voix d'unisson, oscillateurs et rack d'effets (Chorus, Ping-Pong Delay, Reverb spatiale, Distortion, Volume).
+  - **Parité totale GUI & MK3** : Les 8 encodeurs virtuels du panneau droit de la GUI basculent et affichent dynamiquement les paramètres exacts du matériel.
+- **Interface graphique responsive et fluide** :
+  - Remplacement de l'ensemble des conteneurs rigides par des flux adaptatifs `horizontal_wrapped` dans les vues Synth, Sampler et Guitar Amp.
+  - Résolution des débordements et masquages des boutons et chips sur les écrans étroits ou avec facteur d'échelle élevé.
+  - Courbe de filtre visuelle précise reflétant fidèlement le gain et la bande passante pour tous les types de filtres.
+
+### Validation
+
+- `cargo test --workspace` (216 tests unitaires, d'intégration et fuzzing réussis)
+- `cargo clippy --workspace --all-targets -- -D warnings`
+
 ## [0.11.1] - 2026-11-21
 
 ### Fixes

@@ -4641,7 +4641,8 @@ impl Engine {
                         let is_page2 = (self.synth_param_page == 1) ^ self.shift_held;
                         if is_page2 {
                             return [
-                                "PAGE 1/2", "DRV TYP", "WAVE", "FLT MOD", "LP", "HP", "BP", "NTCH/PK",
+                                "PAGE 1/2", "DRV TYP", "WAVE", "FLT MOD", "LP", "HP", "BP",
+                                "NTCH/PK",
                             ];
                         } else {
                             return [

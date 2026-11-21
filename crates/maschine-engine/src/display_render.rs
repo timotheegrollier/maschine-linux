@@ -3465,24 +3465,46 @@ pub fn render_kick_synth_left(snap: &EngineSnapshot) -> DisplayFrame {
             let t = (x as f32 / w_w as f32) * 2.0 * std::f32::consts::PI;
             let val = match kp.waveform {
                 crate::kick_synth::KickWaveform::Sine => t.sin(),
-                crate::kick_synth::KickWaveform::Triangle => (t.sin()).asin() * (2.0 / std::f32::consts::PI),
+                crate::kick_synth::KickWaveform::Triangle => {
+                    (t.sin()).asin() * (2.0 / std::f32::consts::PI)
+                }
                 crate::kick_synth::KickWaveform::SatSine => (t.sin() * 2.5).tanh(),
-                crate::kick_synth::KickWaveform::Parabolic => 1.0 - 2.0 * ((t / std::f32::consts::PI - 1.0).fract().powi(2)),
+                crate::kick_synth::KickWaveform::Parabolic => {
+                    1.0 - 2.0 * ((t / std::f32::consts::PI - 1.0).fract().powi(2))
+                }
                 crate::kick_synth::KickWaveform::Ramp => 1.0 - 2.0 * (x as f32 / w_w as f32),
                 crate::kick_synth::KickWaveform::SquareSub => {
-                    if (t / (2.0 * std::f32::consts::PI)).fract() < 0.5 { 0.85 } else { -0.85 }
+                    if (t / (2.0 * std::f32::consts::PI)).fract() < 0.5 {
+                        0.85
+                    } else {
+                        -0.85
+                    }
                 }
                 crate::kick_synth::KickWaveform::NoiseTransient => {
                     let n = (((x * 1103515245 + 12345) >> 16) & 0xFF) as f32 / 128.0 - 1.0;
-                    n * (- (x as f32 / 30.0)).exp() + t.sin() * 0.4
+                    n * (-(x as f32 / 30.0)).exp() + t.sin() * 0.4
                 }
             };
             let py = (mid_y as f32 - val * (w_h as f32 * 0.38))
                 .clamp((w_y + 2) as f32, (w_y + w_h - 4) as f32) as usize;
             fill_rect(&mut frame, w_x + x, py, 1, 2, p.accent);
         }
-        draw_text(&mut frame, w_x + 6, w_y + 6, &format!("ONDE : {}", wave_name), p.white, p.track);
-        draw_text(&mut frame, w_x + 6, w_y + 20, &format!("TONE : {:.0}%", kp.drive_tone * 100.0), p.green, p.track);
+        draw_text(
+            &mut frame,
+            w_x + 6,
+            w_y + 6,
+            &format!("ONDE : {}", wave_name),
+            p.white,
+            p.track,
+        );
+        draw_text(
+            &mut frame,
+            w_x + 6,
+            w_y + 20,
+            &format!("TONE : {:.0}%", kp.drive_tone * 100.0),
+            p.green,
+            p.track,
+        );
 
         // Panneau FM Modulation (226 x 92)
         panel(&mut frame, &p, 246, 28, 226, 92);
@@ -3501,14 +3523,43 @@ pub fn render_kick_synth_left(snap: &EngineSnapshot) -> DisplayFrame {
                 .clamp((f_y + 2) as f32, (f_y + f_h - 4) as f32) as usize;
             fill_rect(&mut frame, f_x + x, py, 1, 2, p.cyan);
         }
-        draw_text(&mut frame, f_x + 6, f_y + 6, &format!("FM AMT : {:.0}%", kp.fm_amount * 100.0), p.cyan, p.track);
-        draw_text(&mut frame, f_x + 6, f_y + 20, &format!("RATIO : {:.2}x", kp.fm_ratio), p.yellow, p.track);
+        draw_text(
+            &mut frame,
+            f_x + 6,
+            f_y + 6,
+            &format!("FM AMT : {:.0}%", kp.fm_amount * 100.0),
+            p.cyan,
+            p.track,
+        );
+        draw_text(
+            &mut frame,
+            f_x + 6,
+            f_y + 20,
+            &format!("RATIO : {:.2}x", kp.fm_ratio),
+            p.yellow,
+            p.track,
+        );
 
         let slots = [
             Some(("1:WAVE", wave_name.to_string(), 0.5, p.accent)),
-            Some(("2:FM AMT", format!("{:.0}%", kp.fm_amount * 100.0), kp.fm_amount, p.cyan)),
-            Some(("3:RATIO", format!("{:.2}x", kp.fm_ratio), (kp.fm_ratio - 0.25) / 7.75, p.yellow)),
-            Some(("4:TONE", format!("{:.0}%", kp.drive_tone * 100.0), kp.drive_tone, p.green)),
+            Some((
+                "2:FM AMT",
+                format!("{:.0}%", kp.fm_amount * 100.0),
+                kp.fm_amount,
+                p.cyan,
+            )),
+            Some((
+                "3:RATIO",
+                format!("{:.2}x", kp.fm_ratio),
+                (kp.fm_ratio - 0.25) / 7.75,
+                p.yellow,
+            )),
+            Some((
+                "4:TONE",
+                format!("{:.0}%", kp.drive_tone * 100.0),
+                kp.drive_tone,
+                p.green,
+            )),
         ];
         encoder_row(&mut frame, &p, &slots);
 
@@ -3650,7 +3701,12 @@ pub fn render_kick_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
             &p,
             snap,
             "KICK SYNTH | DISTO & FILTRE (P.2/2)",
-            &format!("DISTO: {} ({:.0}%) | FLT: {}", drv_str, kp.drive * 100.0, flt_str),
+            &format!(
+                "DISTO: {} ({:.0}%) | FLT: {}",
+                drv_str,
+                kp.drive * 100.0,
+                flt_str
+            ),
         );
 
         // Panneau Distorsion Multi-Types (226 x 92)
@@ -3672,17 +3728,28 @@ pub fn render_kick_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
                 crate::kick_synth::KickDriveType::Wavefolder => {
                     let mut s = raw;
                     while s > 1.0 || s < -1.0 {
-                        if s > 1.0 { s = 2.0 - s; }
-                        else if s < -1.0 { s = -2.0 - s; }
+                        if s > 1.0 {
+                            s = 2.0 - s;
+                        } else if s < -1.0 {
+                            s = -2.0 - s;
+                        }
                     }
                     s
                 }
                 crate::kick_synth::KickDriveType::TubeDrive => {
-                    if raw > 0.0 { raw.tanh() } else { raw * 0.8 / (1.0 + raw.abs() * 0.5) }
+                    if raw > 0.0 {
+                        raw.tanh()
+                    } else {
+                        raw * 0.8 / (1.0 + raw.abs() * 0.5)
+                    }
                 }
                 crate::kick_synth::KickDriveType::Bitcrush => (raw * 4.0).round() / 4.0,
                 crate::kick_synth::KickDriveType::Fuzz => {
-                    if raw > 0.0 { 1.0 - (-raw * 2.0).exp() } else { -1.0 + (raw * 2.0).exp() }
+                    if raw > 0.0 {
+                        1.0 - (-raw * 2.0).exp()
+                    } else {
+                        -1.0 + (raw * 2.0).exp()
+                    }
                 }
                 crate::kick_synth::KickDriveType::Rectifier => raw.abs() * 2.0 - 1.0,
             };
@@ -3690,12 +3757,33 @@ pub fn render_kick_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
                 .clamp((d_y + 2) as f32, (d_y + d_h - 4) as f32) as usize;
             fill_rect(&mut frame, d_x + x, py, 1, 2, p.red);
         }
-        draw_text(&mut frame, d_x + 6, d_y + 6, &format!("TYPE : {}", drv_str), p.red, p.track);
-        draw_text(&mut frame, d_x + 6, d_y + 20, &format!("DRIVE : {:.0}%", kp.drive * 100.0), p.white, p.track);
+        draw_text(
+            &mut frame,
+            d_x + 6,
+            d_y + 6,
+            &format!("TYPE : {}", drv_str),
+            p.red,
+            p.track,
+        );
+        draw_text(
+            &mut frame,
+            d_x + 6,
+            d_y + 20,
+            &format!("DRIVE : {:.0}%", kp.drive * 100.0),
+            p.white,
+            p.track,
+        );
 
         // Panneau Filtre Résonant (226 x 92)
         panel(&mut frame, &p, 246, 28, 226, 92);
-        draw_text(&mut frame, 252, 32, "FILTRE RÉSONANT MULTIMODE", p.dim, p.panel);
+        draw_text(
+            &mut frame,
+            252,
+            32,
+            "FILTRE RÉSONANT MULTIMODE",
+            p.dim,
+            p.panel,
+        );
         let fl_x = 256usize;
         let fl_y = 44usize;
         let fl_w = 204usize;
@@ -3713,40 +3801,74 @@ pub fn render_kick_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
             let py = match kp.filter_mode {
                 crate::kick_synth::KickFilterMode::Off => base_y - 20,
                 crate::kick_synth::KickFilterMode::LowPass => {
-                    let drop = if dist <= 0.0 { 0.0 } else { (dist / 14.0).powi(2) };
-                    let bump = reso_h * (- (dist / 18.0).powi(2)).exp();
+                    let drop = if dist <= 0.0 {
+                        0.0
+                    } else {
+                        (dist / 14.0).powi(2)
+                    };
+                    let bump = reso_h * (-(dist / 18.0).powi(2)).exp();
                     (base_y as f32 - 20.0 - bump + drop) as usize
                 }
                 crate::kick_synth::KickFilterMode::HighPass => {
-                    let drop = if dist >= 0.0 { 0.0 } else { (dist / 14.0).powi(2) };
-                    let bump = reso_h * (- (dist / 18.0).powi(2)).exp();
+                    let drop = if dist >= 0.0 {
+                        0.0
+                    } else {
+                        (dist / 14.0).powi(2)
+                    };
+                    let bump = reso_h * (-(dist / 18.0).powi(2)).exp();
                     (base_y as f32 - 20.0 - bump + drop) as usize
                 }
                 crate::kick_synth::KickFilterMode::BandPass => {
-                    let bump = (20.0 + reso_h) * (- (dist / 16.0).powi(2)).exp();
+                    let bump = (20.0 + reso_h) * (-(dist / 16.0).powi(2)).exp();
                     (base_y as f32 - bump) as usize
                 }
                 crate::kick_synth::KickFilterMode::Notch => {
-                    let dip = 30.0 * (- (dist / 12.0).powi(2)).exp();
+                    let dip = 30.0 * (-(dist / 12.0).powi(2)).exp();
                     (base_y as f32 - 25.0 + dip) as usize
                 }
                 crate::kick_synth::KickFilterMode::Peak => {
-                    let bump = (12.0 + reso_h * 1.5) * (- (dist / 15.0).powi(2)).exp();
+                    let bump = (12.0 + reso_h * 1.5) * (-(dist / 15.0).powi(2)).exp();
                     (base_y as f32 - 18.0 - bump) as usize
                 }
             };
             let clamped_y = py.clamp(fl_y + 4, fl_y + fl_h - 4);
             fill_rect(&mut frame, px, clamped_y, 1, 2, p.cyan);
         }
-        draw_text(&mut frame, fl_x + 6, fl_y + 6, &format!("MODE : {}", flt_str), p.cyan, p.track);
-        draw_text(&mut frame, fl_x + 6, fl_y + 20, &format!("CUT : {}", fmt_hz(kp.filter_cutoff_hz)), p.white, p.track);
-        draw_text(&mut frame, fl_x + 6, fl_y + 34, &format!("RESO : {:.0}%", kp.filter_reso * 100.0), p.yellow, p.track);
+        draw_text(
+            &mut frame,
+            fl_x + 6,
+            fl_y + 6,
+            &format!("MODE : {}", flt_str),
+            p.cyan,
+            p.track,
+        );
+        draw_text(
+            &mut frame,
+            fl_x + 6,
+            fl_y + 20,
+            &format!("CUT : {}", fmt_hz(kp.filter_cutoff_hz)),
+            p.white,
+            p.track,
+        );
+        draw_text(
+            &mut frame,
+            fl_x + 6,
+            fl_y + 34,
+            &format!("RESO : {:.0}%", kp.filter_reso * 100.0),
+            p.yellow,
+            p.track,
+        );
 
         let slots = [
             Some(("5:DISTO", drv_str.to_string(), 0.5, p.red)),
             Some(("6:FILTER", flt_str.to_string(), 0.5, p.cyan)),
             Some(("7:CUTOFF", fmt_hz(kp.filter_cutoff_hz), cut_norm, p.accent)),
-            Some(("8:RESO", format!("{:.0}%", kp.filter_reso * 100.0), kp.filter_reso, p.yellow)),
+            Some((
+                "8:RESO",
+                format!("{:.0}%", kp.filter_reso * 100.0),
+                kp.filter_reso,
+                p.yellow,
+            )),
         ];
         encoder_row(&mut frame, &p, &slots);
 
@@ -3755,7 +3877,9 @@ pub fn render_kick_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
             crate::kick_synth::KickFilterMode::LowPass => active[4] = true,
             crate::kick_synth::KickFilterMode::HighPass => active[5] = true,
             crate::kick_synth::KickFilterMode::BandPass => active[6] = true,
-            crate::kick_synth::KickFilterMode::Notch | crate::kick_synth::KickFilterMode::Peak => active[7] = true,
+            crate::kick_synth::KickFilterMode::Notch | crate::kick_synth::KickFilterMode::Peak => {
+                active[7] = true
+            }
             _ => active[3] = true,
         }
         footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
@@ -4014,18 +4138,8 @@ pub fn render_wavetable_synth_left(snap: &EngineSnapshot) -> DisplayFrame {
                 (wp.unison_voices as f32 - 1.0) / 6.0,
                 p.yellow,
             )),
-            Some((
-                "3:OSC1 WV",
-                format!("{:?}", wp.osc1_wave),
-                0.5,
-                p.cyan,
-            )),
-            Some((
-                "4:OSC2 WV",
-                format!("{:?}", wp.osc2_wave),
-                0.5,
-                p.cyan,
-            )),
+            Some(("3:OSC1 WV", format!("{:?}", wp.osc1_wave), 0.5, p.cyan)),
+            Some(("4:OSC2 WV", format!("{:?}", wp.osc2_wave), 0.5, p.cyan)),
         ]
     } else {
         [

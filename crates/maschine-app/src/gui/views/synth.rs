@@ -1069,11 +1069,19 @@ fn draw_filter_curve(
             let bump = bump_h * (-dist * dist).exp();
             let y_raw = match kind {
                 FilterKind::LowPass => {
-                    let rolloff = if x < cutoff_x { 0.0 } else { ((x - cutoff_x) / 10.0).powi(2) };
+                    let rolloff = if x < cutoff_x {
+                        0.0
+                    } else {
+                        ((x - cutoff_x) / 10.0).powi(2)
+                    };
                     base_y - bump + rolloff
                 }
                 FilterKind::HighPass => {
-                    let rolloff = if x > cutoff_x { 0.0 } else { ((cutoff_x - x) / 10.0).powi(2) };
+                    let rolloff = if x > cutoff_x {
+                        0.0
+                    } else {
+                        ((cutoff_x - x) / 10.0).powi(2)
+                    };
                     base_y - bump + rolloff
                 }
                 FilterKind::BandPass => {
@@ -1113,7 +1121,12 @@ fn draw_filter_curve(
         painter.text(
             egui::pos2(rect.left() + 6.0, rect.top() + 5.0),
             egui::Align2::LEFT_TOP,
-            format!("{:?} • {:.0} Hz • réso {:.0}%", kind, cutoff_hz, resonance * 100.0),
+            format!(
+                "{:?} • {:.0} Hz • réso {:.0}%",
+                kind,
+                cutoff_hz,
+                resonance * 100.0
+            ),
             egui::FontId::monospace(9.5),
             c.text_dim,
         );

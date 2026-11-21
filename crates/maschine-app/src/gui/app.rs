@@ -367,12 +367,9 @@ impl GuiApp {
 
     /// Soft keys de la page ampli guitare : mêmes actions sur l'écran MK3,
     /// le miroir GUI et les boutons physiques.
+    /// Layout : 1=AMP< 2=AMP> 3=CAB< 4=CAB> 5=ACTIF 6=MON 7=BYP 8=IN+
     pub fn guitar_soft_key(&mut self, key: u8) {
-        if key == 8 {
-            self.switch_view(StudioView::Plugin);
-        } else {
-            self.guitar.soft_key(key);
-        }
+        self.guitar.soft_key(key);
     }
 
     /// Décode le WAV sur un thread de travail puis installe ses données sans

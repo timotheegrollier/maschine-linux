@@ -71,6 +71,24 @@ fn render_controls(ui: &mut egui::Ui, app: &mut crate::gui::app::GuiApp, c: &Mac
                     .bypass
                     .store(!bypass, std::sync::atomic::Ordering::Relaxed);
             }
+            // Sélecteur canal d'entrée
+            let ch = app
+                .guitar
+                .control
+                .input_channel
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let ch_label = match ch {
+                crate::guitar::INPUT_CHANNEL_LINE1 => "LINE IN 1",
+                crate::guitar::INPUT_CHANNEL_LINE2 => "LINE IN 2",
+                crate::guitar::INPUT_CHANNEL_STEREO => "STEREO",
+                _ => "STEREO",
+            };
+            if chip(ui, &format!("IN: {ch_label}"), true, c.text_dim) {
+                app.guitar
+                    .control
+                    .input_channel
+                    .store((ch + 1).rem_euclid(3), std::sync::atomic::Ordering::Relaxed);
+            }
         });
         ui.add_space(6.0);
 

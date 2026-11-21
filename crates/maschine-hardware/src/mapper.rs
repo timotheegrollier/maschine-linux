@@ -461,6 +461,10 @@ pub enum MapperAction {
     SetShiftHeld(bool),
     /// Verrou LOCK activé / désactivé
     ToggleLock(bool),
+    /// Page ampli guitare : ajustement d'un paramètre continu depuis un encodeur.
+    /// `idx` : 0=Gain 1=Bass 2=Mid 3=Treble 4=Presence 5=Sag 6=Master 7=MonitorGain.
+    /// `delta` : variation normalisée (cran d'encodeur relatif, typiquement ±1..128).
+    GuitarParamDelta(usize, f32),
 }
 
 /// Données du séquenceur pour mettre à jour les LEDs du contrôleur physique
@@ -1698,6 +1702,14 @@ impl HardwareMapper {
 
     fn handle_plugin_knobs(&mut self, idx: usize, delta: i32) -> Vec<MapperAction> {
         let mut actions = Vec::new();
+        // Page 2 (left_tab=4, plugin_page=2) = AMPLI GUITARE :
+        // Les 8 encodeurs d'écran pilotent les 8 paramètres de l'ampli en temps réel.
+        if self.plugin_page == 2 {
+            // Sensibilité : 1 cran = 0.5% de variation normalisée.
+            let norm_delta = delta as f32 * 0.005;
+            actions.push(MapperAction::GuitarParamDelta(idx, norm_delta));
+            return actions;
+        }
         if self.plugin_page == 1
             || self.has_kick_synth
             || self.has_wavetable_synth

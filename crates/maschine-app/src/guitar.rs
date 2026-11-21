@@ -104,6 +104,14 @@ impl SpscRing {
     }
 }
 
+/// Canal d'entrée sélectionné pour la capture guitare.
+/// 0 = Line In 1 (AUX0 / gauche) — défaut pour la guitare sur MK3.
+/// 1 = Line In 2 (AUX1 / droite).
+/// 2 = Stéréo (moyenne L+R).
+pub const INPUT_CHANNEL_LINE1: u32 = 0;
+pub const INPUT_CHANNEL_LINE2: u32 = 1;
+pub const INPUT_CHANNEL_STEREO: u32 = 2;
+
 /// Audio-thread controls published by the GUI. All values are atomics.
 pub struct GuitarControl {
     pub enabled: AtomicBool,
@@ -119,16 +127,19 @@ pub struct GuitarControl {
     pub sag: AtomicF32,
     pub master: AtomicF32,
     pub monitor_gain: AtomicF32,
+    /// Canal d'entrée sélectionné (0=LINE1, 1=LINE2, 2=STEREO).
+    pub input_channel: AtomicU32,
 }
 
 impl Default for GuitarControl {
     fn default() -> Self {
         let settings = AmpSettings::default();
         Self {
-            // L'ampli ne doit jamais démarrer tout seul : l'utilisateur
-            // active explicitement ACTIF et MONITOR depuis la vue guitare.
-            enabled: AtomicBool::new(false),
-            monitor: AtomicBool::new(false),
+            // L'ampli démarre actif et en écoute dès que l'entrée est disponible :
+            // le monitoring n'est audible que si enabled ET monitor sont vrais.
+            // L'utilisateur peut couper via ACTIF ou MONITOR depuis la vue guitare ou MK3.
+            enabled: AtomicBool::new(true),
+            monitor: AtomicBool::new(true),
             bypass: AtomicBool::new(false),
             model: AtomicU32::new(0),
             cab_model: AtomicU32::new(0),
@@ -140,6 +151,8 @@ impl Default for GuitarControl {
             sag: AtomicF32::new(settings.sag),
             master: AtomicF32::new(settings.master),
             monitor_gain: AtomicF32::new(0.8),
+            // Par défaut, Line In 1 (AUX0) = prise jack guitare de la MK3.
+            input_channel: AtomicU32::new(INPUT_CHANNEL_LINE1),
         }
     }
 }
@@ -301,6 +314,7 @@ impl GuitarRuntime {
             enabled: c.enabled.load(Ordering::Relaxed),
             monitor: c.monitor.load(Ordering::Relaxed),
             bypass: c.bypass.load(Ordering::Relaxed),
+            input_channel: c.input_channel.load(Ordering::Relaxed) as u8,
             params: [
                 c.gain.load(Ordering::Relaxed),
                 c.bass.load(Ordering::Relaxed),
@@ -342,6 +356,10 @@ impl GuitarRuntime {
 
     /// Applique une action de soft key de la page ampli (1..8).
     /// La touche 8 (« PAGE SND ») est gérée par la GUI.
+    ///
+    /// Layout des 8 touches :
+    ///   1: AMP <   2: AMP >   3: CAB <   4: CAB >
+    ///   5: ACTIF   6: MONITOR  7: BYPASS  8: INPUT+
     pub fn soft_key(&self, key: u8) {
         match key {
             1 => {
@@ -370,21 +388,39 @@ impl GuitarRuntime {
                     Ordering::Relaxed,
                 );
             }
+            // 5 : ACTIF — allume/coupe le traitement DSP complet.
             5 => {
-                let v = self.control.bypass.load(Ordering::Relaxed);
-                self.control.bypass.store(!v, Ordering::Relaxed);
+                let v = self.control.enabled.load(Ordering::Relaxed);
+                self.control.enabled.store(!v, Ordering::Relaxed);
             }
+            // 6 : MONITOR — allume/coupe l'écoute dans la sortie MK3.
             6 => {
                 let v = self.control.monitor.load(Ordering::Relaxed);
                 self.control.monitor.store(!v, Ordering::Relaxed);
             }
+            // 7 : BYPASS — court-circuite le DSP (signal sec passthrough).
             7 => {
-                let defaults = GuitarControl::default();
-                for param in GuitarParam::ALL {
-                    self.control.set_norm(param, defaults.get_norm(param));
-                }
+                let v = self.control.bypass.load(Ordering::Relaxed);
+                self.control.bypass.store(!v, Ordering::Relaxed);
+            }
+            // 8 : cycle canal d'entrée LINE1 → LINE2 → STEREO → LINE1
+            8 => {
+                let v = self.control.input_channel.load(Ordering::Relaxed);
+                self.control
+                    .input_channel
+                    .store((v + 1).rem_euclid(3), Ordering::Relaxed);
             }
             _ => {}
+        }
+    }
+
+    /// Ajuste un paramètre continu depuis un encodeur hardware.
+    /// `param_idx` : 0=Gain 1=Bass 2=Mid 3=Treble 4=Presence 5=Sag 6=Master 7=MonitorGain.
+    /// `delta` : variation normalisée (typiquement ±0.01 à ±0.05 par cran).
+    pub fn adjust_param(&self, param_idx: usize, delta: f32) {
+        if let Some(&param) = GuitarParam::ALL.get(param_idx) {
+            let v = (self.control.get_norm(param) + delta).clamp(0.0, 1.0);
+            self.control.set_norm(param, v);
         }
     }
 }
@@ -481,7 +517,7 @@ impl GuitarProcessor {
 
         let enabled = self.runtime.control.enabled.load(Ordering::Relaxed);
         let monitor = self.runtime.control.monitor.load(Ordering::Relaxed);
-        if !enabled || !monitor {
+        if !enabled {
             self.runtime.input_ring.clear();
             return;
         }
@@ -504,20 +540,23 @@ impl GuitarProcessor {
             &self.ctx,
         );
 
-        // Analysis runs on the raw guitar signal.
+        // Analysis runs on the raw guitar signal (l'accordeur et le spectre fonctionnent
+        // même en mode silencieux / bypass pour un accordage discret sur scène).
         for &s in &self.in_buf[..frames] {
             self.tuner.process(s);
             #[cfg(feature = "analysis-dsp")]
             self.spectrum.process(s);
         }
 
-        let monitor_gain = c.monitor_gain.load(Ordering::Relaxed);
-        for (i, &value) in self.out_buf[..frames].iter().enumerate() {
-            let sample = value * monitor_gain;
-            let base = i * channels;
-            for ch in 0..channels {
-                let factor = if ch < 2 { 1.0 } else { hp_vol };
-                out[base + ch] += sample * factor;
+        if monitor {
+            let monitor_gain = c.monitor_gain.load(Ordering::Relaxed);
+            for (i, &value) in self.out_buf[..frames].iter().enumerate() {
+                let sample = value * monitor_gain;
+                let base = i * channels;
+                for ch in 0..channels {
+                    let factor = if ch < 2 { 1.0 } else { hp_vol };
+                    out[base + ch] += sample * factor;
+                }
             }
         }
 
@@ -565,6 +604,7 @@ mod tests {
     #[test]
     fn engine_output_is_untouched_when_amp_is_off() {
         let runtime = Arc::new(GuitarRuntime::default());
+        runtime.control.enabled.store(false, Ordering::Relaxed);
         let mut proc = GuitarProcessor::new(48000, runtime.clone());
         // Instrument du pattern déjà rendu dans `out`.
         let mut out = vec![0.25_f32; 256 * 2];
@@ -580,13 +620,18 @@ mod tests {
     }
 
     #[test]
-    fn amp_is_off_by_default() {
+    fn amp_is_on_by_default() {
         let runtime = GuitarRuntime::default();
-        assert!(!runtime.control.enabled.load(Ordering::Relaxed));
-        assert!(!runtime.control.monitor.load(Ordering::Relaxed));
+        assert!(runtime.control.enabled.load(Ordering::Relaxed));
+        assert!(runtime.control.monitor.load(Ordering::Relaxed));
+        assert_eq!(
+            runtime.control.input_channel.load(Ordering::Relaxed),
+            INPUT_CHANNEL_LINE1
+        );
         let data = runtime.screen_data();
-        assert!(!data.enabled);
-        assert!(!data.monitor);
+        assert!(data.enabled);
+        assert!(data.monitor);
+        assert_eq!(data.input_channel, INPUT_CHANNEL_LINE1 as u8);
     }
 
     #[test]
@@ -620,14 +665,66 @@ mod tests {
         assert_eq!(runtime.control.model.load(Ordering::Relaxed), 0);
         runtime.soft_key(4);
         assert_eq!(runtime.control.cab_model.load(Ordering::Relaxed), 1);
+        // Touche 5 : ACTIF (démarre à true, passe à false puis true)
+        assert!(runtime.control.enabled.load(Ordering::Relaxed));
         runtime.soft_key(5);
-        assert!(runtime.control.bypass.load(Ordering::Relaxed));
-        // MONITOR démarre éteint : la touche 6 l'allume, un second appui l'éteint.
-        assert!(!runtime.control.monitor.load(Ordering::Relaxed));
-        runtime.soft_key(6);
+        assert!(!runtime.control.enabled.load(Ordering::Relaxed));
+        runtime.soft_key(5);
+        assert!(runtime.control.enabled.load(Ordering::Relaxed));
+        // Touche 6 : MONITOR (démarre à true, passe à false puis true)
         assert!(runtime.control.monitor.load(Ordering::Relaxed));
         runtime.soft_key(6);
         assert!(!runtime.control.monitor.load(Ordering::Relaxed));
+        runtime.soft_key(6);
+        assert!(runtime.control.monitor.load(Ordering::Relaxed));
+        // Touche 7 : BYPASS (démarre à false, passe à true)
+        assert!(!runtime.control.bypass.load(Ordering::Relaxed));
+        runtime.soft_key(7);
+        assert!(runtime.control.bypass.load(Ordering::Relaxed));
+        // Touche 8 : INPUT+ (0 -> 1 -> 2 -> 0)
+        assert_eq!(
+            runtime.control.input_channel.load(Ordering::Relaxed),
+            INPUT_CHANNEL_LINE1
+        );
+        runtime.soft_key(8);
+        assert_eq!(
+            runtime.control.input_channel.load(Ordering::Relaxed),
+            INPUT_CHANNEL_LINE2
+        );
+        runtime.soft_key(8);
+        assert_eq!(
+            runtime.control.input_channel.load(Ordering::Relaxed),
+            INPUT_CHANNEL_STEREO
+        );
+        runtime.soft_key(8);
+        assert_eq!(
+            runtime.control.input_channel.load(Ordering::Relaxed),
+            INPUT_CHANNEL_LINE1
+        );
+    }
+
+    #[test]
+    fn adjust_param_modifies_control_values() {
+        let runtime = GuitarRuntime::default();
+        let initial_gain = runtime.control.get_norm(GuitarParam::Gain);
+        runtime.adjust_param(0, 0.1);
+        assert!((runtime.control.get_norm(GuitarParam::Gain) - (initial_gain + 0.1)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn silent_tuning_does_not_alter_output_when_monitor_off() {
+        let runtime = Arc::new(GuitarRuntime::default());
+        runtime.control.enabled.store(true, Ordering::Relaxed);
+        runtime.control.monitor.store(false, Ordering::Relaxed);
+        let mut proc = GuitarProcessor::new(48000, runtime.clone());
+        let mut out = vec![0.5_f32; 256 * 2];
+        let tone: Vec<f32> = (0..256)
+            .map(|i| 0.8 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48000.0).sin())
+            .collect();
+        runtime.input_ring.write(&tone);
+        proc.process_output(&mut out, 2, 48000, 1.0);
+        // La sortie reste strictement inchangée lorsque le monitoring est coupé
+        assert!(out.iter().all(|s| (*s - 0.5).abs() < 1e-6));
     }
 
     #[test]

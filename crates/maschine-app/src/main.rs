@@ -1688,19 +1688,17 @@ fn cmd_daemon(
                         snap.left_tab == 4 && snap.plugin_page == 2
                     };
                     if guitar_page {
-                        if n == 8 {
-                            // "PAGE SND" : retour à la page plugin normale.
-                            let mut eng = engine.lock();
-                            let _ = eng.handle_event(EngineEvent::SetPluginPage(1));
-                            let _ = eng.handle_event(EngineEvent::NavigateView(4));
-                        } else {
-                            guitar.soft_key(n);
-                        }
+                        // Toutes les touches 1..8 sont gérées par l'ampli.
+                        // La touche 8 (INPUT+) cycle le canal d'entrée.
+                        guitar.soft_key(n);
                     } else {
                         // Action contextuelle décidée par l'Engine : exactement
                         // ce que le label affiché sous l'écran annonce.
                         let _ = engine.lock().handle_event(EngineEvent::SoftKey(n));
                     }
+                }
+                MapperAction::GuitarParamDelta(param_idx, norm_delta) => {
+                    guitar.adjust_param(param_idx, norm_delta);
                 }
                 MapperAction::SaveProject => {
                     let mut settings = settings::AppSettings::load();

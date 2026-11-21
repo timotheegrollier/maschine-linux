@@ -6380,7 +6380,7 @@ pub fn render_chords_right(snap: &EngineSnapshot) -> DisplayFrame {
 /// Libellés des 8 soft keys de la page ampli guitare (identiques dans
 /// l'engine et dans le miroir GUI).
 pub const GUITAR_SOFT_LABELS: [&str; 8] = [
-    "AMP <", "AMP >", "CAB <", "CAB >", "BYPASS", "MONITOR", "RESET", "PAGE SND",
+    "AMP <", "AMP >", "CAB <", "CAB >", "ACTIF", "MONITOR", "BYPASS", "INPUT+",
 ];
 
 const GUITAR_AMP_NAMES: [&str; 4] = ["VOX AC30", "FENDER BF", "TWEED", "HIGH GAIN"];
@@ -6397,6 +6397,8 @@ pub struct GuitarScreenData {
     pub enabled: bool,
     pub monitor: bool,
     pub bypass: bool,
+    /// Canal d'entrée sélectionné : 0=LINE1, 1=LINE2, 2=STEREO.
+    pub input_channel: u8,
     /// Valeurs normalisées 0..1 : gain, bass, mid, treble, presence, sag,
     /// master, monitor.
     pub params: [f32; 8],
@@ -6420,6 +6422,7 @@ impl Default for GuitarScreenData {
             enabled: true,
             monitor: true,
             bypass: false,
+            input_channel: 0,
             params: [0.5; 8],
             input_db: -120.0,
             output_db: -120.0,
@@ -6435,7 +6438,7 @@ impl Default for GuitarScreenData {
 
 fn guitar_soft_active(g: &GuitarScreenData) -> [bool; 8] {
     [
-        false, false, false, false, g.bypass, g.monitor, false, false,
+        false, false, false, false, g.enabled, g.monitor, g.bypass, false,
     ]
 }
 
@@ -6460,7 +6463,6 @@ pub fn render_guitar_amp_left(snap: &EngineSnapshot, g: &GuitarScreenData) -> Di
         "GUITAR AMP | PREAMP",
         &format!("{} | {}", model, if g.bypass { "BYPASS" } else { "ON" }),
     );
-
     // Courbe de saturation du préampli (tanh asymétrique).
     panel(&mut frame, &p, 8, 28, 226, 150);
     draw_text(
@@ -6532,18 +6534,24 @@ pub fn render_guitar_amp_left(snap: &EngineSnapshot, g: &GuitarScreenData) -> Di
         p.cyan,
         p.panel,
     );
-    pill(&mut frame, &p, 252, 104, 66, "ACTIF", p.green, g.enabled);
-    pill(&mut frame, &p, 324, 104, 66, "MON", p.cyan, g.monitor);
-    pill(&mut frame, &p, 396, 104, 70, "BYPASS", p.red, g.bypass);
+    pill(&mut frame, &p, 252, 104, 54, "ACTIF", p.green, g.enabled);
+    pill(&mut frame, &p, 312, 104, 54, "MON", p.cyan, g.monitor);
+    pill(&mut frame, &p, 372, 104, 54, "BYP", p.red, g.bypass);
+    // Canal d'entrée sélectionné
+    let input_label = match g.input_channel {
+        0 => "IN: LINE 1",
+        1 => "IN: LINE 2",
+        _ => "IN: STEREO",
+    };
+    draw_text(&mut frame, 432, 107, input_label, p.accent, p.panel);
     draw_text(
         &mut frame,
         252,
-        132,
-        "SOFT KEYS 1-4 : AMP/CAB",
+        136,
+        "5:ACTIF 6:MON 7:BYP 8:IN+",
         p.muted,
         p.panel,
     );
-    draw_text(&mut frame, 252, 148, "5-8 : DIAG & PAGES", p.muted, p.panel);
 
     let slots = [
         Some((
@@ -6974,8 +6982,10 @@ mod tests {
     fn guitar_soft_labels_match_the_app_actions() {
         assert_eq!(GUITAR_SOFT_LABELS[0], "AMP <");
         assert_eq!(GUITAR_SOFT_LABELS[1], "AMP >");
-        assert_eq!(GUITAR_SOFT_LABELS[6], "RESET");
-        assert_eq!(GUITAR_SOFT_LABELS[7], "PAGE SND");
+        assert_eq!(GUITAR_SOFT_LABELS[4], "ACTIF");
+        assert_eq!(GUITAR_SOFT_LABELS[5], "MONITOR");
+        assert_eq!(GUITAR_SOFT_LABELS[6], "BYPASS");
+        assert_eq!(GUITAR_SOFT_LABELS[7], "INPUT+");
         let eng = Engine::new_demo(48000);
         let mut eng = eng;
         let _ = eng.handle_event(EngineEvent::SetLeftTab(4));

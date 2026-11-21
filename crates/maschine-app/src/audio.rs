@@ -87,6 +87,7 @@ impl AudioOutput {
         guitar: Arc<GuitarRuntime>,
     ) -> anyhow::Result<Self> {
         auto_configure_djm_routing();
+        auto_configure_mk3_input();
         let host = cpal::default_host();
         log::info!("cpal host: {:?}", host.id());
 
@@ -328,6 +329,45 @@ fn guitar_latency_ms(cfg: &cpal::StreamConfig) -> f32 {
     ms * 2.0 + 2.0
 }
 
+fn get_input_candidates(host: &cpal::Host) -> Vec<cpal::Device> {
+    let mut candidates = Vec::new();
+    let mut seen_names = Vec::new();
+
+    // 1. Device MK3 dédié (carte matérielle ALSA directe)
+    if let Some(dev) = find_mk3_input_device(host) {
+        if let Ok(name) = dev.name() {
+            seen_names.push(name);
+        }
+        candidates.push(dev);
+    }
+
+    // 2. PipeWire / Pulse / Default (connecté au graphe PipeWire avec node MK3 comme default source)
+    if let Ok(devices) = host.input_devices() {
+        for dev in devices {
+            if let Ok(name) = dev.name() {
+                let lower = name.to_lowercase();
+                if (lower == "pipewire" || lower == "pulse" || lower == "default")
+                    && !seen_names.iter().any(|n| n == &name)
+                {
+                    seen_names.push(name);
+                    candidates.push(dev);
+                }
+            }
+        }
+    }
+
+    // 3. Périphérique par défaut de l'hôte
+    if let Some(def) = host.default_input_device() {
+        if let Ok(name) = def.name() {
+            if !seen_names.iter().any(|n| n == &name) {
+                candidates.push(def);
+            }
+        }
+    }
+
+    candidates
+}
+
 /// Ouvre le flux de capture de la MK3 (ou du device par défaut) et écrit les
 /// échantillons mono dans le ring buffer de l'ampli. L'échec est non fatal :
 /// l'application continue sans monitoring guitare.
@@ -336,70 +376,109 @@ fn build_guitar_input_stream(
     sample_rate: u32,
     guitar: Arc<GuitarRuntime>,
 ) -> Option<cpal::Stream> {
-    let device = find_mk3_input_device(host).or_else(|| host.default_input_device())?;
-    let name = device.name().unwrap_or_else(|_| "unknown".to_string());
-    log::info!("Entrée guitare sélectionnée: {name}");
-    *guitar.input_device_name.lock() = Some(name.clone());
+    for device in get_input_candidates(host) {
+        let name = device.name().unwrap_or_else(|_| "unknown".to_string());
+        log::info!("Tentative ouverture entrée guitare: {name}");
 
-    let input_format = device
-        .default_input_config()
-        .map(|c| c.sample_format())
-        .unwrap_or(cpal::SampleFormat::F32);
+        let input_format = device
+            .default_input_config()
+            .map(|c| c.sample_format())
+            .unwrap_or(cpal::SampleFormat::F32);
 
-    for channels in [2u16, 1] {
-        let cfg = cpal::StreamConfig {
-            channels,
-            sample_rate: cpal::SampleRate(sample_rate),
-            buffer_size: cpal::BufferSize::Default,
-        };
-        let rt = guitar.clone();
-        let attempt = match input_format {
-            cpal::SampleFormat::F32 => device.build_input_stream(
-                &cfg,
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    push_input_frames(&rt.input_ring, &rt.dropped, data, channels as usize);
-                },
-                |e| log::warn!("Input stream error: {e}"),
-                None,
-            ),
-            cpal::SampleFormat::I16 => device.build_input_stream(
-                &cfg,
-                move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                    let mut converted = [0.0f32; 1024];
-                    for chunk in data.chunks(1024) {
-                        for (i, &s) in chunk.iter().enumerate() {
-                            converted[i] = s as f32 / i16::MAX as f32;
-                        }
+        for channels in [2u16, 1] {
+            let cfg = cpal::StreamConfig {
+                channels,
+                sample_rate: cpal::SampleRate(sample_rate),
+                buffer_size: cpal::BufferSize::Default,
+            };
+            let rt = guitar.clone();
+            let attempt = match input_format {
+                cpal::SampleFormat::F32 => device.build_input_stream(
+                    &cfg,
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        let ch_mode = rt.control.input_channel.load(Ordering::Relaxed);
                         push_input_frames(
                             &rt.input_ring,
                             &rt.dropped,
-                            &converted[..chunk.len()],
+                            data,
                             channels as usize,
+                            ch_mode,
                         );
-                    }
-                },
-                |e| log::warn!("Input stream error: {e}"),
-                None,
-            ),
-            other => {
-                log::warn!("Format d'entrée non supporté: {other:?}");
-                return None;
+                    },
+                    |e| log::warn!("Input stream error: {e}"),
+                    None,
+                ),
+                cpal::SampleFormat::I16 => device.build_input_stream(
+                    &cfg,
+                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                        let ch_mode = rt.control.input_channel.load(Ordering::Relaxed);
+                        let mut converted = [0.0f32; 1024];
+                        for chunk in data.chunks(1024) {
+                            for (i, &s) in chunk.iter().enumerate() {
+                                converted[i] = s as f32 / i16::MAX as f32;
+                            }
+                            push_input_frames(
+                                &rt.input_ring,
+                                &rt.dropped,
+                                &converted[..chunk.len()],
+                                channels as usize,
+                                ch_mode,
+                            );
+                        }
+                    },
+                    |e| log::warn!("Input stream error: {e}"),
+                    None,
+                ),
+                cpal::SampleFormat::I32 => device.build_input_stream(
+                    &cfg,
+                    move |data: &[i32], _: &cpal::InputCallbackInfo| {
+                        let ch_mode = rt.control.input_channel.load(Ordering::Relaxed);
+                        let mut converted = [0.0f32; 1024];
+                        for chunk in data.chunks(1024) {
+                            for (i, &s) in chunk.iter().enumerate() {
+                                converted[i] = s as f32 / i32::MAX as f32;
+                            }
+                            push_input_frames(
+                                &rt.input_ring,
+                                &rt.dropped,
+                                &converted[..chunk.len()],
+                                channels as usize,
+                                ch_mode,
+                            );
+                        }
+                    },
+                    |e| log::warn!("Input stream error: {e}"),
+                    None,
+                ),
+                other => {
+                    log::warn!("Format d'entrée non supporté sur '{name}': {other:?}");
+                    continue;
+                }
+            };
+            match attempt {
+                Ok(stream) => {
+                    log::info!(
+                        "✓ Entrée guitare configurée sur '{name}' ({channels}ch, format={input_format:?})"
+                    );
+                    *guitar.input_device_name.lock() = Some(name);
+                    return Some(stream);
+                }
+                Err(e) => log::debug!("Config entrée refusée sur '{name}' ({channels}ch): {e}"),
             }
-        };
-        match attempt {
-            Ok(stream) => return Some(stream),
-            Err(e) => log::debug!("Config entrée refusée ({channels}ch): {e}"),
         }
     }
     None
 }
 
-/// Convertit un bloc entrelacé en mono et l'écrit dans le ring buffer.
+/// Convertit un bloc entrelacé en mono selon le canal sélectionné et l'écrit dans le ring buffer.
+///
+/// `channel_mode` : 0 = Line In 1 (AUX0/gauche), 1 = Line In 2 (AUX1/droite), 2+ = mix stéréo.
 fn push_input_frames(
     ring: &crate::guitar::SpscRing,
     dropped: &std::sync::atomic::AtomicU64,
     data: &[f32],
     channels: usize,
+    channel_mode: u32,
 ) {
     let channels = channels.max(1);
     let frames = data.len() / channels;
@@ -411,11 +490,33 @@ fn push_input_frames(
     while base < frames {
         let n = (frames - base).min(mono.len());
         for i in 0..n {
-            let mut sum = 0.0;
-            for ch in 0..channels {
-                sum += data[(base + i) * channels + ch];
-            }
-            mono[i] = sum / channels as f32;
+            mono[i] = match channel_mode {
+                // Line In 1 : AUX0 = canal 0 (gauche/première prise TRS)
+                crate::guitar::INPUT_CHANNEL_LINE1 => data[(base + i) * channels],
+                // Line In 2 : AUX1 = canal 1 (droite/deuxième prise TRS)
+                crate::guitar::INPUT_CHANNEL_LINE2 => {
+                    if channels >= 2 {
+                        data[(base + i) * channels + 1]
+                    } else {
+                        data[(base + i) * channels]
+                    }
+                }
+                // Stéréo : moyenne de tous les canaux disponibles
+                crate::guitar::INPUT_CHANNEL_STEREO => {
+                    let mut sum = 0.0;
+                    for ch in 0..channels {
+                        sum += data[(base + i) * channels + ch];
+                    }
+                    sum / channels as f32
+                }
+                _ => {
+                    let mut sum = 0.0;
+                    for ch in 0..channels {
+                        sum += data[(base + i) * channels + ch];
+                    }
+                    sum / channels as f32
+                }
+            };
         }
         let written = ring.write(&mono[..n]);
         if written < n {
@@ -883,6 +984,51 @@ pub fn auto_configure_djm_routing() {
                             .args(["-c", card_id, "sset", "Output 3", "Aux"])
                             .output();
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Détecte et configure automatiquement la source d'entrée audio de la Maschine MK3 sous PipeWire.
+/// Si PipeWire est actif et que la MK3 est connectée en mode pro-audio, s'assure que
+/// la source d'entrée de la MK3 (prises Line In 1/2 TRS) est configurée comme source par défaut
+/// ou prête à être capturée par le flux guitare.
+pub fn auto_configure_mk3_input() {
+    let Ok(output) = std::process::Command::new("wpctl").arg("status").output() else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut in_sources = false;
+    for line in text.lines() {
+        if line.contains("Sources:") {
+            in_sources = true;
+            continue;
+        }
+        if in_sources
+            && (line.contains("Filters:")
+                || line.contains("Streams:")
+                || line.contains("Devices:")
+                || line.contains("Sinks:"))
+        {
+            in_sources = false;
+        }
+        if in_sources && line.to_lowercase().contains("maschine") {
+            let clean = line.replace(['│', '*'], "");
+            let trimmed = clean.trim();
+            if let Some(node_str) = trimmed.split('.').next() {
+                let node_id = node_str.trim();
+                if node_id.chars().all(|c| c.is_ascii_digit()) && !node_id.is_empty() {
+                    log::info!(
+                        "Maschine MK3 source audio détectée (node {node_id}) — définition comme source par défaut wpctl"
+                    );
+                    let _ = std::process::Command::new("wpctl")
+                        .args(["set-default", node_id])
+                        .output();
+                    break;
                 }
             }
         }

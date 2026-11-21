@@ -161,6 +161,49 @@ impl Default for KickParams {
 }
 
 impl KickParams {
+    /// Adapte intelligemment la fréquence de coupure et la résonance lors d'un changement
+    /// de mode de filtre afin d'offrir une plage sonore immédiatement musicale et efficace.
+    pub fn set_filter_mode(&mut self, mode: KickFilterMode) {
+        if self.filter_mode == mode {
+            return;
+        }
+        self.filter_mode = mode;
+        match mode {
+            KickFilterMode::HighPass => {
+                if self.filter_cutoff_hz > 350.0 {
+                    self.filter_cutoff_hz = 55.0;
+                }
+                if self.filter_reso < 0.15 {
+                    self.filter_reso = 0.25;
+                }
+            }
+            KickFilterMode::BandPass => {
+                if self.filter_cutoff_hz > 800.0 || self.filter_cutoff_hz < 40.0 {
+                    self.filter_cutoff_hz = 120.0;
+                }
+                if self.filter_reso < 0.2 {
+                    self.filter_reso = 0.35;
+                }
+            }
+            KickFilterMode::LowPass => {
+                if self.filter_cutoff_hz < 500.0 {
+                    self.filter_cutoff_hz = 6500.0;
+                }
+            }
+            KickFilterMode::Notch => {
+                if self.filter_cutoff_hz > 1000.0 {
+                    self.filter_cutoff_hz = 240.0;
+                }
+            }
+            KickFilterMode::Peak => {
+                if self.filter_cutoff_hz > 1000.0 {
+                    self.filter_cutoff_hz = 85.0;
+                }
+            }
+            KickFilterMode::Off => {}
+        }
+    }
+
     /// Preset 1 : Techno Berlin — sub profond, pitch drop rapide, drive chaud et percutant.
     #[must_use]
     pub fn preset_techno_berlin() -> Self {
@@ -676,9 +719,14 @@ impl KickSynth {
 
         // Paramètres du filtre SVF
         let f_mode = p.filter_mode;
-        let f_cut = p.filter_cutoff_hz.clamp(20.0, sr * 0.48);
+        // Adapte la plage effective de coupure selon le mode pour garantir un résultat musical
+        let eff_cut = match f_mode {
+            KickFilterMode::HighPass => p.filter_cutoff_hz.clamp(20.0, 1500.0),
+            KickFilterMode::BandPass => p.filter_cutoff_hz.clamp(25.0, 3500.0),
+            _ => p.filter_cutoff_hz.clamp(20.0, sr * 0.48),
+        };
         let f_reso = p.filter_reso.clamp(0.0, 0.95);
-        let g = (PI * f_cut / sr).tan();
+        let g = (PI * eff_cut / sr).tan();
         let k = 2.0 * (1.0 - f_reso);
         let a1 = 1.0 / (1.0 + g * (g + k));
         let a2 = g * a1;
@@ -823,13 +871,19 @@ impl KickSynth {
             };
 
             // Filtre de brillance / tonalité post-saturation (one-pole)
-            let tone_coeff = (p.drive_tone * 0.85 + 0.1).clamp(0.05, 0.95);
-            self.tone_state += tone_coeff * (saturated - self.tone_state);
-            let post_tone = self.tone_state;
+            // Ne filtre que si de la distorsion est présente, évitant de couper les harmoniques du kick clair
+            let post_tone = if p.drive > 0.01 {
+                let tone_coeff = (p.drive_tone * 0.85 + 0.1).clamp(0.05, 0.95);
+                self.tone_state += tone_coeff * (saturated - self.tone_state);
+                self.tone_state
+            } else {
+                saturated
+            };
 
-            // Étage de Filtre Résonant Multimode (SVF)
+            // Étage de Filtre Résonant Multimode (SVF à saturation non-linéaire analogique)
             let filtered = if f_mode != KickFilterMode::Off {
-                let v3 = post_tone - self.filter_ic2;
+                // Saturation non-linéaire interne façon diode/FET analogique
+                let v3 = (post_tone - self.filter_ic2).tanh();
                 let v1 = a1 * self.filter_ic1 + a2 * v3;
                 let v2 = self.filter_ic2 + a2 * self.filter_ic1 + a3 * v3;
                 self.filter_ic1 = 2.0 * v1 - self.filter_ic1;
@@ -837,10 +891,21 @@ impl KickSynth {
 
                 match f_mode {
                     KickFilterMode::LowPass => v2,
-                    KickFilterMode::HighPass => post_tone - k * v1 - v2,
-                    KickFilterMode::BandPass => v1,
-                    KickFilterMode::Notch => post_tone - k * v1,
-                    KickFilterMode::Peak => (2.0 * v2 + k * v1 - post_tone).clamp(-2.0, 2.0),
+                    KickFilterMode::HighPass => {
+                        // HighPass 12dB/oct avec bosse résonante analogique au cutoff et saturation chaude
+                        let hp_clean = post_tone - k * v1 - v2;
+                        let reso_boost = v1 * (f_reso * 1.5);
+                        (hp_clean + reso_boost).tanh()
+                    }
+                    KickFilterMode::BandPass => {
+                        // BandPass normalisé 0 dB à tout Q avec compensation de punch et présence d'impact
+                        let bp_norm = k.max(0.25) * v1;
+                        let reso_boost = v1 * (f_reso * 2.0);
+                        // Préservation subtile de l'impact d'attaque (transient) pour garder le punch du kick
+                        ((bp_norm + reso_boost) * 1.5 + post_tone * 0.12).tanh()
+                    }
+                    KickFilterMode::Notch => (post_tone - k * v1).tanh(),
+                    KickFilterMode::Peak => (2.0 * v2 + k * v1 - post_tone).tanh(),
                     KickFilterMode::Off => post_tone,
                 }
             } else {

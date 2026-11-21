@@ -94,6 +94,8 @@ fn render_header(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::En
         }
         let inst_label = if is_kick {
             "SYNTH : KICK MODELER"
+        } else if is_wt {
+            "SYNTH : NEXUS / SERUM"
         } else if is_acid {
             "SYNTH : TB-303 ACID"
         } else {
@@ -1519,7 +1521,7 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                         params.filter_mode == KickFilterMode::Off,
                         c.text_dim,
                     ) {
-                        params.filter_mode = KickFilterMode::Off;
+                        params.set_filter_mode(KickFilterMode::Off);
                         changed = true;
                     }
                     if chip(
@@ -1528,7 +1530,7 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                         params.filter_mode == KickFilterMode::LowPass,
                         c.accent,
                     ) {
-                        params.filter_mode = KickFilterMode::LowPass;
+                        params.set_filter_mode(KickFilterMode::LowPass);
                         changed = true;
                     }
                     if chip(
@@ -1537,7 +1539,7 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                         params.filter_mode == KickFilterMode::HighPass,
                         c.accent_cyan,
                     ) {
-                        params.filter_mode = KickFilterMode::HighPass;
+                        params.set_filter_mode(KickFilterMode::HighPass);
                         changed = true;
                     }
                     if chip(
@@ -1546,7 +1548,7 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                         params.filter_mode == KickFilterMode::BandPass,
                         c.warning,
                     ) {
-                        params.filter_mode = KickFilterMode::BandPass;
+                        params.set_filter_mode(KickFilterMode::BandPass);
                         changed = true;
                     }
                     if chip(
@@ -1555,7 +1557,7 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                         params.filter_mode == KickFilterMode::Notch,
                         c.accent_cyan,
                     ) {
-                        params.filter_mode = KickFilterMode::Notch;
+                        params.set_filter_mode(KickFilterMode::Notch);
                         changed = true;
                     }
                     if chip(
@@ -1564,7 +1566,7 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                         params.filter_mode == KickFilterMode::Peak,
                         c.accent,
                     ) {
-                        params.filter_mode = KickFilterMode::Peak;
+                        params.set_filter_mode(KickFilterMode::Peak);
                         changed = true;
                     }
                 });
@@ -1593,11 +1595,19 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
                 changed = true;
             }
 
+            let (cut_label, min_cut, max_cut, def_cut) = match params.filter_mode {
+                KickFilterMode::HighPass => ("CUTOFF (HP)", 20.0, 1500.0, 55.0),
+                KickFilterMode::BandPass => ("CUTOFF (BP)", 25.0, 3500.0, 120.0),
+                KickFilterMode::Notch => ("CUTOFF (NOTCH)", 40.0, 4000.0, 240.0),
+                KickFilterMode::Peak => ("CUTOFF (PEAK)", 30.0, 3000.0, 85.0),
+                _ => ("CUTOFF", 20.0, 18000.0, 6500.0),
+            };
+
             if let Some(v) = knob(
                 ui,
                 "kick_flt_cut",
-                params.filter_cutoff_hz,
-                &KnobSpec::log("CUTOFF", " Hz", 40.0, 18000.0, 3500.0),
+                params.filter_cutoff_hz.clamp(min_cut, max_cut),
+                &KnobSpec::log(cut_label, " Hz", min_cut, max_cut, def_cut),
             ) {
                 params.filter_cutoff_hz = v;
                 changed = true;
@@ -1736,6 +1746,7 @@ fn render_wavetable_page(
                     .clicked()
                 {
                     app.send(EngineEvent::WavetableSetPreset(idx));
+                    return;
                 }
             }
         });
@@ -1886,7 +1897,7 @@ fn render_wavetable_page(
                         params.filter_mode == WavetableFilterMode::LowPass24,
                         c.warning,
                     ) {
-                        params.filter_mode = WavetableFilterMode::LowPass24;
+                        params.set_filter_mode(WavetableFilterMode::LowPass24);
                         changed = true;
                     }
                     if chip(
@@ -1895,7 +1906,7 @@ fn render_wavetable_page(
                         params.filter_mode == WavetableFilterMode::LowPass12,
                         c.warning,
                     ) {
-                        params.filter_mode = WavetableFilterMode::LowPass12;
+                        params.set_filter_mode(WavetableFilterMode::LowPass12);
                         changed = true;
                     }
                     if chip(
@@ -1904,7 +1915,7 @@ fn render_wavetable_page(
                         params.filter_mode == WavetableFilterMode::HighPass,
                         c.accent_cyan,
                     ) {
-                        params.filter_mode = WavetableFilterMode::HighPass;
+                        params.set_filter_mode(WavetableFilterMode::HighPass);
                         changed = true;
                     }
                     if chip(
@@ -1913,7 +1924,7 @@ fn render_wavetable_page(
                         params.filter_mode == WavetableFilterMode::BandPass,
                         c.accent,
                     ) {
-                        params.filter_mode = WavetableFilterMode::BandPass;
+                        params.set_filter_mode(WavetableFilterMode::BandPass);
                         changed = true;
                     }
                     if chip(
@@ -1922,7 +1933,7 @@ fn render_wavetable_page(
                         params.filter_mode == WavetableFilterMode::Off,
                         c.text_dim,
                     ) {
-                        params.filter_mode = WavetableFilterMode::Off;
+                        params.set_filter_mode(WavetableFilterMode::Off);
                         changed = true;
                     }
                 });
@@ -1930,11 +1941,17 @@ fn render_wavetable_page(
 
             ui.separator();
 
+            let (cut_label, min_cut, max_cut, def_cut) = match params.filter_mode {
+                WavetableFilterMode::HighPass => ("CUTOFF (HP)", 20.0, 3500.0, 220.0),
+                WavetableFilterMode::BandPass => ("CUTOFF (BP)", 40.0, 8000.0, 1200.0),
+                _ => ("CUTOFF", 20.0, 20000.0, 4500.0),
+            };
+
             if let Some(v) = knob(
                 ui,
                 "wt_cutoff",
-                params.filter_cutoff,
-                &KnobSpec::log("CUTOFF", " Hz", 20.0, 20000.0, 4500.0),
+                params.filter_cutoff.clamp(min_cut, max_cut),
+                &KnobSpec::log(cut_label, " Hz", min_cut, max_cut, def_cut),
             ) {
                 params.filter_cutoff = v;
                 changed = true;
@@ -1957,6 +1974,16 @@ fn render_wavetable_page(
                 &KnobSpec::linear("ENV AMT", "", -1.0, 1.0, 0.3),
             ) {
                 params.filter_env_amt = v;
+                changed = true;
+            }
+
+            if let Some(v) = knob(
+                ui,
+                "wt_drive",
+                params.filter_drive,
+                &KnobSpec::linear("DRIVE", "", 0.0, 1.0, 0.0),
+            ) {
+                params.filter_drive = v;
                 changed = true;
             }
 

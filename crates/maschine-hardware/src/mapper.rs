@@ -2110,13 +2110,11 @@ impl HardwareMapper {
                 note,
                 velocity: 0,
             }));
-            if self.mode == ControllerMode::Pad {
-                actions.push(MapperAction::PadTrigger {
-                    pad: p.pad,
-                    velocity: 0,
-                    pressed: false,
-                });
-            }
+            actions.push(MapperAction::PadTrigger {
+                pad: p.pad,
+                velocity: 0,
+                pressed: false,
+            });
         }
         actions
     }

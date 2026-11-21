@@ -2,6 +2,14 @@
 
 All notable changes.
 
+## [0.10.5] - 2026-11-21
+
+### Fixes & Improvements
+
+- **Synth pad sustain on hold**: fixed pad pressure tracking and inter-burst stream silence timeout in hardware mapper so sustained pad presses (TB-303, Wavetable, Sampler) sound continuously for the entire duration of the press ("tout le long de l'appui") matching official Maschine behavior. Added pointer press & hold support in the GUI Keyboard view.
+- **Enhanced Kick Synth BP & HP filters**: completely redesigned the Band-Pass and High-Pass filters in the kick modeler with analog state-variable filter non-linear saturation (`tanh`), rich resonant punch, Q-normalized unity gain, transient preservation, intelligent cutoff/reso initialization by filter mode (`set_filter_mode`), and adaptive cutoff knob frequency ranges in GUI and hardware.
+- **Improved Nexus / Wavetable Synth filters & parameter persistence**: fixed parameter persistence so changes immediately write to the active sound in the project, updated audio target routing, removed artificial sustain floor clamping (`min_sus`), enhanced SVF HighPass and BandPass DSP with analog warmth, saturation and gain normalization, added `set_filter_mode` for smooth musical transitions, and added a filter Drive knob and adaptive cutoff in the GUI.
+
 ## [0.10.4] - 2026-11-21
 
 ### Fixes

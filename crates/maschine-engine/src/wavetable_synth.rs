@@ -155,6 +155,46 @@ impl Default for WavetableParams {
 }
 
 impl WavetableParams {
+    /// Alterne le mode de filtre et adapte intelligemment la coupure et la résonance
+    /// pour garantir une musicalité maximale et éviter tout dropout / silence.
+    pub fn set_filter_mode(&mut self, mode: WavetableFilterMode) {
+        if self.filter_mode == mode {
+            return;
+        }
+        self.filter_mode = mode;
+        match mode {
+            WavetableFilterMode::HighPass => {
+                // En passe-haut, si la fréquence de coupure était élevée (> 1800 Hz),
+                // cela couperait l'intégralité du spectre fondamental et harmonique.
+                // On initialise une coupure musicale propre (220 Hz) et une résonance analogique.
+                if self.filter_cutoff > 1800.0 {
+                    self.filter_cutoff = 220.0;
+                }
+                if self.filter_reso < 0.15 {
+                    self.filter_reso = 0.25;
+                }
+            }
+            WavetableFilterMode::BandPass => {
+                // En passe-bande, on centre sur la zone médium vocale / lead (1200 Hz)
+                // avec une résonance punchy et expressive.
+                if self.filter_cutoff > 4000.0 || self.filter_cutoff < 400.0 {
+                    self.filter_cutoff = 1200.0;
+                }
+                if self.filter_reso < 0.35 {
+                    self.filter_reso = 0.45;
+                }
+            }
+            WavetableFilterMode::LowPass12 | WavetableFilterMode::LowPass24 => {
+                // Si la coupure était restée très basse (ex: réglage HP à 80-250 Hz),
+                // on restaure une coupure passe-bas ouverte.
+                if self.filter_cutoff < 600.0 {
+                    self.filter_cutoff = 6500.0;
+                }
+            }
+            WavetableFilterMode::Off => {}
+        }
+    }
+
     // ==========================================
     //            PRESETS : PIANOS
     // ==========================================
@@ -1687,7 +1727,8 @@ impl SvfFilter {
 
         let cutoff = cutoff_hz.clamp(20.0, sample_rate * 0.48);
         let g = (PI * cutoff / sample_rate).tan();
-        let k = 2.0 * (1.0 - reso.clamp(0.0, 0.98));
+        let reso_clamped = reso.clamp(0.0, 0.98);
+        let k = 2.0 * (1.0 - reso_clamped);
         let a1 = 1.0 / (1.0 + g * (g + k));
         let a2 = g * a1;
         let a3 = g * a2;
@@ -1695,16 +1736,27 @@ impl SvfFilter {
         let v3 = input - self.ic2eq;
         let v1 = a1 * self.ic1eq + a2 * v3;
         let v2 = self.ic2eq + a2 * self.ic1eq + a3 * v3;
-        self.ic1eq = 2.0 * v1 - self.ic1eq;
-        self.ic2eq = 2.0 * v2 - self.ic2eq;
+        // Saturation douce non-linéaire des intégrateurs pour éviter tout décrochage
+        self.ic1eq = (2.0 * v1 - self.ic1eq).clamp(-8.0, 8.0);
+        self.ic2eq = (2.0 * v2 - self.ic2eq).clamp(-8.0, 8.0);
 
         match mode {
-            WavetableFilterMode::LowPass12 => v2,
-            WavetableFilterMode::HighPass => input - k * v1 - v2,
-            WavetableFilterMode::BandPass => v1,
+            WavetableFilterMode::LowPass12 => (v2 * (1.0 + reso_clamped * 0.15)).tanh(),
+            WavetableFilterMode::HighPass => {
+                // Passe-haut 12 dB/oct avec résonance analogique saturée
+                let hp_res = v1 * (reso_clamped * 1.6);
+                let hp = (input - k * v1 - v2 + hp_res).tanh();
+                hp * (1.0 + reso_clamped * 0.25)
+            }
+            WavetableFilterMode::BandPass => {
+                // Passe-bande avec normalisation de gain (0 dB), résonance chantante et maintien de corps
+                let bp =
+                    ((k.max(0.32) * v1 * 1.8 + v1 * (reso_clamped * 1.8)) + input * 0.08).tanh();
+                bp * 1.15
+            }
             WavetableFilterMode::LowPass24 => {
-                // Modélisation 4 pôles par adoucissement non linéaire
-                (v2 * 1.2).tanh() * 0.95
+                // Modélisation 4 pôles cascade avec saturation analogique chaude
+                (v2 * 1.35 + v1 * (reso_clamped * 0.4)).tanh() * 0.96
             }
             WavetableFilterMode::Off => input,
         }
@@ -2011,40 +2063,26 @@ impl WavetableSynth {
                 }
 
                 // Progression d'amplitude ADSR
-                let mut amp = voice.amp_env.process(
+                let amp = voice.amp_env.process(
                     dt,
                     p.amp_attack_ms,
                     p.amp_decay_ms,
                     p.amp_sustain,
                     p.amp_release_ms,
                 );
-                // Si la note est maintenue (pad/touche enfoncée), garantir un niveau de sustain audible
-                // afin que la note ne coupe jamais tant que le doigt reste posé.
-                if voice.gate_held && voice.amp_env.stage == AdsrStage::Sustain {
-                    let min_sus = p.amp_sustain.max(0.35);
-                    if amp < min_sus {
-                        amp = min_sus;
-                    }
-                }
                 if !voice.amp_env.is_active() {
                     voice.active = false;
                     continue;
                 }
 
                 // Progression de filtre ADSR
-                let mut filt_env = voice.filter_env.process(
+                let filt_env = voice.filter_env.process(
                     dt,
                     p.filter_attack_ms,
                     p.filter_decay_ms,
                     p.filter_sustain,
                     p.filter_release_ms,
                 );
-                if voice.gate_held && voice.filter_env.stage == AdsrStage::Sustain {
-                    let min_filt = p.filter_sustain.max(0.30);
-                    if filt_env < min_filt {
-                        filt_env = min_filt;
-                    }
-                }
 
                 // Portamento / Glide de fréquence
                 if p.glide_time_ms > 1.0 && (voice.current_freq - voice.target_freq).abs() > 0.01 {
@@ -2275,5 +2313,51 @@ mod tests {
             active_count, MAX_VOICES,
             "Doit allouer exactement 16 voix sans déborder"
         );
+    }
+
+    #[test]
+    fn test_wavetable_filter_modes_and_switching() {
+        let mut p = WavetableParams {
+            filter_cutoff: 16000.0,
+            ..Default::default()
+        };
+        p.set_filter_mode(WavetableFilterMode::HighPass);
+        assert_eq!(p.filter_mode, WavetableFilterMode::HighPass);
+        assert!(
+            p.filter_cutoff <= 1800.0,
+            "Cutoff HP doit être ajusté pour éviter le silence"
+        );
+        assert!(p.filter_reso >= 0.20, "Résonance HP minimale assurée");
+
+        p.set_filter_mode(WavetableFilterMode::BandPass);
+        assert_eq!(p.filter_mode, WavetableFilterMode::BandPass);
+        assert_eq!(p.filter_cutoff, 1200.0, "Cutoff BP centré sur les médiums");
+        assert!(p.filter_reso >= 0.35, "Résonance BP punchy");
+
+        p.filter_cutoff = 80.0;
+        p.set_filter_mode(WavetableFilterMode::LowPass12);
+        assert_eq!(p.filter_mode, WavetableFilterMode::LowPass12);
+        assert!(
+            p.filter_cutoff >= 6000.0,
+            "Cutoff LP restauré quand il venait de basses fréquences"
+        );
+    }
+
+    #[test]
+    fn test_wavetable_hp_and_bp_audio_rendered() {
+        let mut synth = WavetableSynth::new(48000);
+        synth.params.set_filter_mode(WavetableFilterMode::HighPass);
+        synth.note_on(60, 100);
+        let mut buf = vec![0.0f32; 1024];
+        synth.render(&mut buf);
+        let amp_hp = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(amp_hp > 0.01, "HighPass doit être clair et audible");
+
+        synth.params.set_filter_mode(WavetableFilterMode::BandPass);
+        synth.note_on(64, 100);
+        buf.fill(0.0);
+        synth.render(&mut buf);
+        let amp_bp = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(amp_bp > 0.01, "BandPass doit être riche et audible");
     }
 }

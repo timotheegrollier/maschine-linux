@@ -171,16 +171,61 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                                 .min_size(egui::vec2(74.0, 52.0))
                                 .fill(if snap.pad_activity[pad] > 0.1 { c.widget_bg } else { c.panel }),
                             );
-                            if resp.clicked() {
+                            let is_down = resp.is_pointer_button_down_on();
+                            if is_down && app.pad_down != Some(pad as u8) {
+                                if let Some(prev_pad) = app.pad_down.take() {
+                                    let prev_notes = if snap.controller_mode == 2 {
+                                        kb.chord_notes(prev_pad)
+                                    } else {
+                                        vec![kb.keyboard_note(prev_pad)]
+                                    };
+                                    for prev_n in prev_notes {
+                                        app.send(EngineEvent::KeyboardTrigger {
+                                            note: prev_n,
+                                            velocity: 0,
+                                            pressed: false,
+                                        });
+                                    }
+                                }
+                                app.pad_down = Some(pad as u8);
                                 for &n in &notes {
-                                    app.send(EngineEvent::KeyboardTrigger { note: n, velocity: 108, pressed: true });
-                                    app.send(EngineEvent::KeyboardTrigger { note: n, velocity: 0, pressed: false });
+                                    app.send(EngineEvent::KeyboardTrigger {
+                                        note: n,
+                                        velocity: 108,
+                                        pressed: true,
+                                    });
+                                }
+                            } else if !is_down && app.pad_down == Some(pad as u8) {
+                                app.pad_down = None;
+                                for &n in &notes {
+                                    app.send(EngineEvent::KeyboardTrigger {
+                                        note: n,
+                                        velocity: 0,
+                                        pressed: false,
+                                    });
                                 }
                             }
                         }
                         ui.end_row();
                     }
                 });
+
+                if ui.input(|i| i.pointer.any_released()) {
+                    if let Some(prev_pad) = app.pad_down.take() {
+                        let prev_notes = if snap.controller_mode == 2 {
+                            kb.chord_notes(prev_pad)
+                        } else {
+                            vec![kb.keyboard_note(prev_pad)]
+                        };
+                        for prev_n in prev_notes {
+                            app.send(EngineEvent::KeyboardTrigger {
+                                note: prev_n,
+                                velocity: 0,
+                                pressed: false,
+                            });
+                        }
+                    }
+                }
             });
         });
 }

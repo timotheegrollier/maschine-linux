@@ -144,6 +144,22 @@ fn xtalk_cfg() -> (f32, u64, u64, u16) {
     })
 }
 
+/// Timeout de silence sur le flux 0x02 pour considérer un pad relâché si le firmware
+/// s'arrête d'émettre sans envoyer d'événement de levée explicite.
+/// Doit être supérieur à l'écart maximal entre deux rafales d'un appui maintenu (gap_ms, défaut 100ms)
+/// afin de ne jamais relâcher prématurément une note tenue par le musicien (sustain).
+fn stream_silence_timeout_ms() -> u64 {
+    static CACHED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let (_, _, gap_ms, _) = xtalk_cfg();
+        std::env::var("MASCHINE_PAD_SILENCE_TIMEOUT_MS")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .unwrap_or(gap_ms + 25)
+            .max(125)
+    })
+}
+
 /// Pic rival le plus fort pour le pad `idx` : pics courants des autres pads
 /// armés DANS LA MÊME RAFALE **et dont la pression monte** (`rise >= rise_min`).
 /// Seule la simultanéité + une vraie montée prouve la diaphonie (vibration) :
@@ -290,10 +306,19 @@ impl PadTracker {
             self.last_raw[idx] = raw;
         }
         let stuck_n = stuck_run_threshold();
-        // Un capteur bloqué au repos a une lecture constante proche du seuil (bruit fantôme < 0x4280).
-        // Un appui franc et maintenu par un musicien (raw >= 0x4280) ne doit JAMAIS être considéré comme
-        // un capteur bloqué afin de permettre les tenues longues sans coupure intempestive.
-        if stuck_n > 0 && self.same_run[idx] >= stuck_n && self.base[idx] != raw && raw < 0x4280 {
+        let (_, _, _, gap_rise) = xtalk_cfg();
+        // Un capteur bloqué au repos a une lecture constante proche du seuil (bruit fantôme < 0x4280)
+        // et n'a jamais eu de vraie montée dynamique (rise < gap_rise).
+        // Une vraie frappe d'un musicien (même tenue à pression constante < 0x4280) a eu une vraie
+        // montée et ne doit JAMAIS être considérée comme un capteur bloqué (sustain).
+        let is_real_hit = self.prev_pressed[idx]
+            && self.arm_pmax[idx].saturating_sub(self.arm_pmin[idx]) >= gap_rise;
+        if !is_real_hit
+            && stuck_n > 0
+            && self.same_run[idx] >= stuck_n
+            && self.base[idx] != raw
+            && raw < 0x4280
+        {
             log::warn!(
                 "pad {idx} capteur bloqué suspecté (0x{raw:04X} constant) — baseline adaptée"
             );
@@ -423,17 +448,17 @@ impl PadTracker {
                     out.extend(self.flush(i, 0x4080, now));
                 }
             }
-            // Stream 0x02 silencieux pour ce pad depuis 30ms.
+            // Stream 0x02 silencieux pour ce pad depuis stream_silence_timeout_ms.
             // (`last_seen` est rafraîchi dès que le pad est PRÉSENT dans un
             // report, même sous le seuil ON : un appui maintenu dont la pression
             // retombe dans la bande d'hystérésis ne doit PAS relâcher/re-déclencher
             // en boucle.)
-            if self.prev_pressed[i]
-                && now.duration_since(self.last_seen[i]) > Duration::from_millis(30)
-            {
+            let silence_timeout = Duration::from_millis(stream_silence_timeout_ms());
+            if self.prev_pressed[i] && now.duration_since(self.last_seen[i]) > silence_timeout {
                 let held = self.hold_since[i].map(|t| now.duration_since(t).as_millis());
                 log::debug!(
-                    "pad {i} release (stream 0x02 silencieux depuis 30ms, tenue {held:?}ms)"
+                    "pad {i} release (stream 0x02 silencieux depuis {:?}, tenue {held:?}ms)",
+                    silence_timeout
                 );
                 self.prev_pressed[i] = false;
                 self.peak_vel[i] = 0;
@@ -499,6 +524,7 @@ impl PadTracker {
                 "pad {idx} continuation de tenue (rafale plate, montée={rise}) — press supprimé"
             );
             self.arming[idx] = None;
+            self.prev_pressed[idx] = true;
             return out;
         }
         if ratio > 0.0 {
@@ -1008,8 +1034,8 @@ mod tests {
     }
 
     /// Scénario du log : appui maintenu en RAFALES plates entrecoupées de
-    /// silences (firmware par rafales). Avant le fix : un PRESS par rafale
-    /// (boucle). Après : un seul PRESS au total.
+    /// silences (firmware par rafales). La tenue doit continuer de sonner
+    /// (sustain) tout le long de l'appui sans coupure intempestive entre les rafales.
     #[test]
     fn replay_bursty_hold_emits_single_press() {
         let mut r = Replay::new();
@@ -1019,14 +1045,21 @@ mod tests {
         }
         r.idle(12); // flush -> PRESS #1
         assert_eq!(r.presses.len(), 1, "la 1re rafale doit jouer une fois");
-        // Fin de rafale : silence 40ms -> timeout-release + gap.
+        // Fin de rafale : silence 40ms entre les rafales d'une même tenue.
+        // La tenue ne doit PAS être relâchée prématurément pendant l'appui maintenu !
         r.idle(52);
-        assert!(r.releases.contains(&0));
-        // Rafale 2 (même tenue, plate) : aucun nouveau press.
+        assert_eq!(
+            r.releases.len(),
+            0,
+            "le pad reste enfoncé et soutenu entre les rafales"
+        );
+        // Rafale 2 (même tenue, plate) : aucun nouveau press, toujours maintenu.
         for t in 55..67u64 {
             r.present(t, 0, 0x44A6 + (t as u16 % 3) * 4);
         }
         r.idle(67);
+        assert_eq!(r.presses.len(), 1);
+        assert_eq!(r.releases.len(), 0);
         // Rafale 3 idem.
         r.idle(100);
         for t in 103..115u64 {
@@ -1034,11 +1067,57 @@ mod tests {
         }
         r.idle(115);
         r.idle(150);
+        assert_eq!(r.presses.len(), 1);
+        assert_eq!(r.releases.len(), 0, "toujours maintenu à t=150");
+        // Fin de la tenue : le silence dépasse le stream timeout (>125ms après t=115 -> t=245).
+        r.idle(245);
         assert_eq!(
             r.presses.len(),
             1,
             "l'appui maintenu en rafales ne doit jouer qu'une fois, presses={:?}",
             r.presses
+        );
+        assert_eq!(
+            r.releases.len(),
+            1,
+            "un seul release à la fin effective de la tenue"
+        );
+    }
+
+    /// Appui doux maintenu (pression modérée < 0x4280) : ne doit JAMAIS être
+    /// considéré comme un capteur bloqué tant que le pad est pressé.
+    #[test]
+    fn replay_soft_hold_sustains_indefinitely() {
+        let mut r = Replay::new();
+        // Montée douce puis maintien constant à 0x4150 (inférieur au seuil 0x4280)
+        for t in 0..10u64 {
+            r.present(t, 1, 0x4080 + (t as u16) * 20);
+        }
+        r.idle(12);
+        assert_eq!(r.presses.len(), 1, "frappe douce initiale détectée");
+        assert_eq!(r.releases.len(), 0);
+
+        // Maintien constant sur plus de 100 lectures consécutives (>> 32)
+        for t in 13..150u64 {
+            r.present(t, 1, 0x4150);
+        }
+        r.idle(150);
+        assert_eq!(r.presses.len(), 1);
+        assert_eq!(
+            r.releases.len(),
+            0,
+            "la note douce maintenue doit continuer de sonner sans coupure"
+        );
+
+        // Levée explicite (chute de pression à 0x4000)
+        for dt in 0..100u64 {
+            r.present(151 + dt, 1, 0x4000);
+            r.idle(151 + dt);
+        }
+        assert_eq!(
+            r.releases.len(),
+            1,
+            "le release n'intervient qu'à la levée réelle du doigt"
         );
     }
 
@@ -1110,7 +1189,7 @@ mod tests {
         assert_eq!(r.presses.len(), 1);
         // Levée explicite (report vide) + sweeps pour confirmer le release.
         r.empty_report(30);
-        r.idle(50);
+        r.idle(95);
         assert_eq!(r.releases.len(), 1);
         // Frappe 2, 200ms plus tard : rejoue.
         for (i, t) in (200..212u64).enumerate() {
@@ -1190,7 +1269,7 @@ mod tests {
             p += 90;
         }
         // Vraie fin : chute persistante.
-        for dt in 0..30u64 {
+        for dt in 0..150u64 {
             r.idle(t + dt);
         }
         assert_eq!(

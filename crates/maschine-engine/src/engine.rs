@@ -2968,16 +2968,18 @@ impl Engine {
             }
             EngineEvent::KickSetParams(params) => {
                 self.kick_synth.params = params.clone();
+                self.kick_sound_target = Some((self.group_focus, self.active_sound));
                 let mut guard = self.project.write();
                 let proj = project_mut(&mut guard);
-                if let Some(s) = proj
-                    .groups
-                    .get_mut(self.group_focus as usize)
-                    .and_then(|g| g.sounds.get_mut(self.active_sound as usize))
-                    .and_then(|s| s.as_mut())
-                {
-                    s.kick_synth = Some(params);
+                if let Some(g) = proj.groups.get_mut(self.group_focus as usize) {
+                    let snd = g.sounds[self.active_sound as usize].get_or_insert_with(|| {
+                        crate::project::Sound::new(&format!("Kick {}", self.active_sound + 1), 6)
+                    });
+                    snd.kick_synth = Some(params);
+                    snd.synth = None;
+                    snd.wavetable_synth = None;
                 }
+                self.revision = self.revision.wrapping_add(1);
             }
             EngineEvent::KickSetPreset(idx) => {
                 let presets = crate::kick_synth::KickParams::all_presets();
@@ -3087,13 +3089,18 @@ impl Engine {
                         }
                     }
                 };
-                p.filter_mode = next;
+                p.set_filter_mode(next);
                 let _ = self.handle_event(EngineEvent::KickSetParams(p));
             }
             EngineEvent::KickFilterCutoffDelta(delta) => {
                 let mut p = self.kick_synth.params.clone();
                 let factor = 1.05f32.powf(delta * 0.1);
-                p.filter_cutoff_hz = (p.filter_cutoff_hz * factor).clamp(20.0, 18000.0);
+                let (min_hz, max_hz) = match p.filter_mode {
+                    crate::kick_synth::KickFilterMode::HighPass => (20.0, 1500.0),
+                    crate::kick_synth::KickFilterMode::BandPass => (25.0, 3500.0),
+                    _ => (20.0, 18000.0),
+                };
+                p.filter_cutoff_hz = (p.filter_cutoff_hz * factor).clamp(min_hz, max_hz);
                 let _ = self.handle_event(EngineEvent::KickSetParams(p));
             }
             EngineEvent::KickFilterResoDelta(delta) => {
@@ -3145,15 +3152,16 @@ impl Engine {
             }
             EngineEvent::WavetableSetParams(params) => {
                 self.wavetable_synth.params = params.clone();
+                self.wavetable_sound_target = Some((self.group_focus, self.active_sound));
                 let mut guard = self.project.write();
                 let proj = project_mut(&mut guard);
-                if let Some(s) = proj
-                    .groups
-                    .get_mut(self.group_focus as usize)
-                    .and_then(|g| g.sounds.get_mut(self.active_sound as usize))
-                    .and_then(|s| s.as_mut())
-                {
-                    s.wavetable_synth = Some(params);
+                if let Some(g) = proj.groups.get_mut(self.group_focus as usize) {
+                    let snd = g.sounds[self.active_sound as usize].get_or_insert_with(|| {
+                        crate::project::Sound::new(&format!("Nexus {}", self.active_sound + 1), 78)
+                    });
+                    snd.wavetable_synth = Some(params);
+                    snd.synth = None;
+                    snd.kick_synth = None;
                 }
                 self.revision = self.revision.wrapping_add(1);
             }
@@ -3196,13 +3204,18 @@ impl Engine {
                     std::time::Instant::now() + std::time::Duration::from_millis(2500);
             }
             EngineEvent::WavetableCutoffDelta(delta) => {
-                let base = if self.wavetable_synth.params.filter_cutoff <= 20.0 {
-                    20000.0
-                } else {
-                    self.wavetable_synth.params.filter_cutoff
+                let (min_hz, max_hz) = match self.wavetable_synth.params.filter_mode {
+                    crate::wavetable_synth::WavetableFilterMode::HighPass => (20.0, 3500.0),
+                    crate::wavetable_synth::WavetableFilterMode::BandPass => (40.0, 8000.0),
+                    _ => (20.0, 20000.0),
                 };
+                let base = self
+                    .wavetable_synth
+                    .params
+                    .filter_cutoff
+                    .clamp(min_hz, max_hz);
                 let factor = 2.0f32.powf(delta * 0.08);
-                self.wavetable_synth.params.filter_cutoff = (base * factor).clamp(20.0, 20000.0);
+                self.wavetable_synth.params.filter_cutoff = (base * factor).clamp(min_hz, max_hz);
                 self.save_wavetable_params_to_active_sound();
             }
             EngineEvent::WavetableResoDelta(delta) => {
@@ -3255,7 +3268,7 @@ impl Engine {
                     WavetableFilterMode::HighPass => WavetableFilterMode::BandPass,
                     WavetableFilterMode::BandPass => WavetableFilterMode::Off,
                 };
-                self.wavetable_synth.params.filter_mode = next;
+                self.wavetable_synth.params.set_filter_mode(next);
                 self.status_message = Some(format!("Filter Mode: {:?}", next));
                 self.status_expires_at =
                     std::time::Instant::now() + std::time::Duration::from_millis(1500);
@@ -5395,6 +5408,7 @@ impl Engine {
     pub fn sync_kick_from_active_sound(&mut self) {
         if let Some(params) = self.focus_sound_kick_params() {
             self.kick_synth.params = params;
+            self.kick_sound_target = Some((self.group_focus, self.active_sound));
         }
     }
 
@@ -5402,20 +5416,22 @@ impl Engine {
     pub fn sync_wavetable_from_active_sound(&mut self) {
         if let Some(params) = self.focus_sound_wavetable_params() {
             self.wavetable_synth.params = params;
+            self.wavetable_sound_target = Some((self.group_focus, self.active_sound));
         }
     }
 
     /// Enregistre les paramètres Wavetable courants dans le Sound actif du projet.
     pub fn save_wavetable_params_to_active_sound(&mut self) {
+        self.wavetable_sound_target = Some((self.group_focus, self.active_sound));
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
-        if let Some(snd) = proj
-            .groups
-            .get_mut(self.group_focus as usize)
-            .and_then(|g| g.sounds.get_mut(self.active_sound as usize))
-            .and_then(|s| s.as_mut())
-        {
+        if let Some(g) = proj.groups.get_mut(self.group_focus as usize) {
+            let snd = g.sounds[self.active_sound as usize].get_or_insert_with(|| {
+                crate::project::Sound::new(&format!("Nexus {}", self.active_sound + 1), 78)
+            });
             snd.wavetable_synth = Some(self.wavetable_synth.params.clone());
+            snd.synth = None;
+            snd.kick_synth = None;
         }
         self.revision = self.revision.wrapping_add(1);
     }
@@ -5509,6 +5525,9 @@ impl Engine {
                     self.status_message = Some("Plugin chargé : Sampler Kit 808".to_string());
                 }
             }
+            if group == self.group_focus && sound == self.active_sound {
+                self.plugin_page = if plugin_idx <= 2 { 1 } else { 0 };
+            }
             self.status_expires_at =
                 std::time::Instant::now() + std::time::Duration::from_millis(3000);
             self.revision = self.revision.wrapping_add(1);
@@ -5567,6 +5586,7 @@ impl Engine {
     fn sync_acid_from_active_sound(&mut self) {
         if let Some(params) = self.focus_sound_synth_params() {
             self.acid_synth.params = params;
+            self.acid_sound_target = Some((self.group_focus, self.active_sound));
         }
     }
 
@@ -6991,7 +7011,10 @@ mod tests {
         // Ajuste filter cutoff & reso
         eng.handle_event(EngineEvent::KickFilterCutoffDelta(5.0))
             .unwrap();
-        assert!(eng.kick_synth.params.filter_cutoff_hz > 500.0);
+        assert!(
+            eng.kick_synth.params.filter_cutoff_hz > 50.0
+                && eng.kick_synth.params.filter_cutoff_hz < 1500.0
+        );
         eng.handle_event(EngineEvent::KickFilterResoDelta(3.0))
             .unwrap();
         assert!(eng.kick_synth.params.filter_reso > 0.0);

@@ -685,6 +685,10 @@ pub enum FilterKind {
     HighPass,
     /// BandPass
     BandPass,
+    /// Notch (Coupe-bande / Réjecteur)
+    Notch,
+    /// Peak (Filtre en cloche / Résonance ciblée)
+    Peak,
 }
 
 /// Zone multi-sample.

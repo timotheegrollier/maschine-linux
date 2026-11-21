@@ -61,6 +61,10 @@ pub enum WavetableFilterMode {
     HighPass,
     /// Passe-bande 12dB / octave
     BandPass,
+    /// Coupe-bande (Notch)
+    Notch,
+    /// Filtre en cloche résonant (Peak EQ)
+    Peak,
 }
 
 /// Destination du LFO de modulation.
@@ -189,6 +193,16 @@ impl WavetableParams {
                 // on restaure une coupure passe-bas ouverte.
                 if self.filter_cutoff < 600.0 {
                     self.filter_cutoff = 6500.0;
+                }
+            }
+            WavetableFilterMode::Notch => {
+                if self.filter_cutoff > 4000.0 || self.filter_cutoff < 100.0 {
+                    self.filter_cutoff = 800.0;
+                }
+            }
+            WavetableFilterMode::Peak => {
+                if self.filter_cutoff > 4000.0 || self.filter_cutoff < 100.0 {
+                    self.filter_cutoff = 1500.0;
                 }
             }
             WavetableFilterMode::Off => {}
@@ -1754,6 +1768,14 @@ impl SvfFilter {
                     ((k.max(0.32) * v1 * 1.8 + v1 * (reso_clamped * 1.8)) + input * 0.08).tanh();
                 bp * 1.15
             }
+            WavetableFilterMode::Notch => {
+                let notch = input - k * v1;
+                (notch * 1.05).tanh()
+            }
+            WavetableFilterMode::Peak => {
+                let peak = 2.0 * v2 + k * v1 - input;
+                (peak * 1.1).tanh()
+            }
             WavetableFilterMode::LowPass24 => {
                 // Modélisation 4 pôles cascade avec saturation analogique chaude
                 (v2 * 1.35 + v1 * (reso_clamped * 0.4)).tanh() * 0.96
@@ -2359,5 +2381,19 @@ mod tests {
         synth.render(&mut buf);
         let amp_bp = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         assert!(amp_bp > 0.01, "BandPass doit être riche et audible");
+
+        synth.params.set_filter_mode(WavetableFilterMode::Notch);
+        synth.note_on(67, 100);
+        buf.fill(0.0);
+        synth.render(&mut buf);
+        let amp_notch = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(amp_notch > 0.01, "Notch doit rendre du son");
+
+        synth.params.set_filter_mode(WavetableFilterMode::Peak);
+        synth.note_on(72, 100);
+        buf.fill(0.0);
+        synth.render(&mut buf);
+        let amp_peak = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        assert!(amp_peak > 0.01, "Peak doit rendre du son");
     }
 }

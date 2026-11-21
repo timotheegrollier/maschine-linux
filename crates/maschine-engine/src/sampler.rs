@@ -636,13 +636,16 @@ impl Sampler {
                         if sample_len - pos < end_fade {
                             s *= ((sample_len - pos) / end_fade) as f32;
                         }
-                        // Filtre lowpass résonant biquad (Direct Form II Transposed)
+                        // Filtre résonant biquad multimode (Direct Form II Transposed) avec saturation analogique
                         if voice.filter_enabled {
                             let out_f = voice.filter_b0 * s + voice.filter_s1;
-                            voice.filter_s1 =
-                                voice.filter_b1 * s - voice.filter_a1 * out_f + voice.filter_s2;
-                            voice.filter_s2 = voice.filter_b2 * s - voice.filter_a2 * out_f;
-                            s = out_f;
+                            let sat_out = (out_f * 0.96).tanh() * 1.04;
+                            voice.filter_s1 = (voice.filter_b1 * s - voice.filter_a1 * sat_out
+                                + voice.filter_s2)
+                                .clamp(-16.0, 16.0);
+                            voice.filter_s2 =
+                                (voice.filter_b2 * s - voice.filter_a2 * sat_out).clamp(-16.0, 16.0);
+                            s = sat_out;
                         }
                         // ADSR complète (A/D/S/R du Sound)
                         let env = match voice.adsr_phase {
@@ -879,9 +882,11 @@ impl Sampler {
     /// Calcule les coefficients du filtre actif (LP / HP / BP) biquad (RBJ).
     ///
     /// - `LowPass` : filtre passe-bas (numerateur `(1 + z^-1)^2`).
-    /// - `HighPass` : filtre passe-haut (numerateur `(1 - z^-1)^2`).
-    /// - `BandPass` : filtre bande passante (numerateur `1 - 2*cos(w0)*z^-1 + z^-2`).
-    /// - `Off` : bypass (signal non filtre).
+    /// - `HighPass` : filtre passe-haut RBJ biquad normalisé.
+    /// - `BandPass` : filtre passe-bande RBJ biquad à gain crête 0 dB.
+    /// - `Notch` : filtre coupe-bande / réjecteur RBJ biquad.
+    /// - `Peak` : filtre résonant en cloche (Peak EQ).
+    /// - `Off` : bypass (signal non filtré).
     fn calc_biquad(
         sr: f32,
         cutoff_hz: f32,
@@ -894,7 +899,14 @@ impl Sampler {
             v.filter_enabled = false;
             return;
         }
-        if cutoff_hz < 19500.0 || v.resonance > 0.05 {
+        let always_active = matches!(
+            kind,
+            crate::project::FilterKind::HighPass
+                | crate::project::FilterKind::BandPass
+                | crate::project::FilterKind::Notch
+                | crate::project::FilterKind::Peak
+        );
+        if cutoff_hz < 19500.0 || v.resonance > 0.05 || always_active {
             let fc = (cutoff_hz / sr).clamp(0.0005, 0.49);
             let w0 = 2.0 * std::f32::consts::PI * fc;
             let cos_w0 = w0.cos();
@@ -912,9 +924,8 @@ impl Sampler {
                     v.filter_a2 = (1.0 - alpha) / a0;
                 }
                 crate::project::FilterKind::HighPass => {
-                    // Filtre passe-haut : double zero en z = +1 (numerateur (1 - z^-1)^2),
-                    // denormalisant du design LPF (meme cutoff/resonance).
-                    let b = (1.0 - cos_w0) / (2.0 * a0);
+                    // Filtre passe-haut RBJ biquad normalisé
+                    let b = (1.0 + cos_w0) / (2.0 * a0);
                     v.filter_b0 = b;
                     v.filter_b1 = -2.0 * b;
                     v.filter_b2 = b;
@@ -922,13 +933,30 @@ impl Sampler {
                     v.filter_a2 = (1.0 - alpha) / a0;
                 }
                 crate::project::FilterKind::BandPass => {
-                    // Filtre bande passante : zero en e^{+j*w0} et e^{-j*w0}
-                    // (numerateur 1 - 2*cos(w0)*z^-1 + z^-2).
-                    v.filter_b0 = 1.0;
-                    v.filter_b1 = -2.0 * cos_w0;
-                    v.filter_b2 = 1.0;
+                    // Filtre passe-bande RBJ biquad (gain crête 0 dB)
+                    v.filter_b0 = alpha / a0;
+                    v.filter_b1 = 0.0;
+                    v.filter_b2 = -alpha / a0;
                     v.filter_a1 = (-2.0 * cos_w0) / a0;
                     v.filter_a2 = (1.0 - alpha) / a0;
+                }
+                crate::project::FilterKind::Notch => {
+                    // Filtre coupe-bande (Notch)
+                    v.filter_b0 = 1.0 / a0;
+                    v.filter_b1 = (-2.0 * cos_w0) / a0;
+                    v.filter_b2 = 1.0 / a0;
+                    v.filter_a1 = (-2.0 * cos_w0) / a0;
+                    v.filter_a2 = (1.0 - alpha) / a0;
+                }
+                crate::project::FilterKind::Peak => {
+                    // Filtre résonant en cloche (Peak EQ)
+                    let a_gain = 1.0 + v.resonance * 2.5;
+                    let a0_p = 1.0 + alpha / a_gain;
+                    v.filter_b0 = (1.0 + alpha * a_gain) / a0_p;
+                    v.filter_b1 = (-2.0 * cos_w0) / a0_p;
+                    v.filter_b2 = (1.0 - alpha * a_gain) / a0_p;
+                    v.filter_a1 = (-2.0 * cos_w0) / a0_p;
+                    v.filter_a2 = (1.0 - alpha / a_gain) / a0_p;
                 }
                 crate::project::FilterKind::Off => {
                     v.filter_enabled = false;
@@ -1472,5 +1500,76 @@ mod tests {
             .voices
             .iter()
             .any(|v| v.sound == 1 && v.adsr_phase != AdsrPhase::Release));
+    }
+
+    #[test]
+    fn test_sampler_all_filter_kinds_rendered() {
+        let mut s = Sampler::new(48000);
+        s.add_zone(
+            0,
+            ZoneMapping {
+                sample: Some(dummy_sample()),
+                sample_rate: 48000,
+                root_key: 60,
+                ..Default::default()
+            },
+        );
+
+        for kind in [
+            crate::project::FilterKind::Off,
+            crate::project::FilterKind::LowPass,
+            crate::project::FilterKind::HighPass,
+            crate::project::FilterKind::BandPass,
+            crate::project::FilterKind::Notch,
+            crate::project::FilterKind::Peak,
+        ] {
+            let mut voice = SamplerVoice {
+                sample: std::sync::Arc::new(vec![]),
+                pos: 0.0,
+                increment: 1.0,
+                gain: 1.0,
+                pan: 0.0,
+                zone_pan: 0.0,
+                sound_pan: 0.0,
+                group_pan: 0.0,
+                adsr_phase: AdsrPhase::Attack,
+                phase_samples: 0,
+                attack_samples: 1,
+                decay_samples: 100,
+                sustain_level: 0.8,
+                release_samples: 100,
+                resonance: 0.0,
+                filter_enabled: false,
+                filter_b0: 1.0,
+                filter_b1: 0.0,
+                filter_b2: 0.0,
+                filter_a1: 0.0,
+                filter_a2: 0.0,
+                filter_s1: 0.0,
+                filter_s2: 0.0,
+                env_level: 0.0,
+                release_from: 1.0,
+                start_frame: 0,
+                end_fade: 1.0,
+                note: 60,
+                velocity: 100,
+                choke_group: None,
+                age: 0,
+                is_one_shot: false,
+                sound: 0,
+                group: u8::MAX,
+            };
+            Sampler::calc_biquad(48000.0, 1000.0, 0.4, kind, &mut voice);
+            if kind == crate::project::FilterKind::Off {
+                assert!(!voice.filter_enabled);
+            } else {
+                assert!(voice.filter_enabled);
+                assert!(voice.filter_b0.is_finite());
+                assert!(voice.filter_b1.is_finite());
+                assert!(voice.filter_b2.is_finite());
+                assert!(voice.filter_a1.is_finite());
+                assert!(voice.filter_a2.is_finite());
+            }
+        }
     }
 }

@@ -3221,6 +3221,8 @@ pub fn render_sampler_left(snap: &EngineSnapshot) -> DisplayFrame {
         crate::project::FilterKind::LowPass => "LP",
         crate::project::FilterKind::HighPass => "HP",
         crate::project::FilterKind::BandPass => "BP",
+        crate::project::FilterKind::Notch => "NOTCH",
+        crate::project::FilterKind::Peak => "PEAK",
         crate::project::FilterKind::Off => "OFF",
     };
     fill_rect(&mut frame, 242, 124, 230, 62, p.panel);
@@ -3346,6 +3348,8 @@ pub fn render_sampler_right(snap: &EngineSnapshot) -> DisplayFrame {
         crate::project::FilterKind::LowPass => "LP",
         crate::project::FilterKind::HighPass => "HP",
         crate::project::FilterKind::BandPass => "BP",
+        crate::project::FilterKind::Notch => "NOTCH",
+        crate::project::FilterKind::Peak => "PEAK",
         crate::project::FilterKind::Off => "OFF",
     };
     draw_text(
@@ -3404,6 +3408,8 @@ pub fn render_sampler_right(snap: &EngineSnapshot) -> DisplayFrame {
         crate::project::FilterKind::LowPass => active[4] = true,
         crate::project::FilterKind::HighPass => active[5] = true,
         crate::project::FilterKind::BandPass => active[6] = true,
+        crate::project::FilterKind::Notch => {} // pas de softkey dédiée — aucun highlight
+        crate::project::FilterKind::Peak => {}  // idem
         crate::project::FilterKind::Off => active[7] = true,
     }
     footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);

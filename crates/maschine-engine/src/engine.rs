@@ -384,6 +384,36 @@ pub enum EngineEvent {
     KickFilterCutoffDelta(f32),
     /// Ajuste la résonance du filtre du Kick Synth
     KickFilterResoDelta(f32),
+    /// Ajuste la tonalité de saturation du Kick Synth
+    KickToneDelta(f32),
+    /// Ajuste la forme d'onde du Kick Synth
+    KickWaveformDelta(i32),
+    /// Ajuste la modulation FM du Kick Synth
+    KickFmAmtDelta(f32),
+    /// Ajuste le drive du Kick Synth
+    KickDriveDelta(f32),
+    /// Ajuste l'accordage (tune) du Kick Synth
+    KickTuneDelta(f32),
+    /// Ajuste le déclin (decay) du Kick Synth
+    KickDecayDelta(f32),
+    /// Ajuste le snap / punch du Kick Synth
+    KickSnapDelta(f32),
+    /// Ajuste le sweep time du Kick Synth
+    KickSweepDelta(f32),
+    /// Ajuste le click d'attaque du Kick Synth
+    KickClickDelta(f32),
+    /// Ajuste le niveau de sub du Kick Synth
+    KickSubDelta(f32),
+    /// Ajuste le volume de sortie du Kick Synth
+    KickVolumeDelta(f32),
+    /// Définit directement le type de distorsion du Kick Synth
+    KickSetDriveType(crate::kick_synth::KickDriveType),
+    /// Définit directement le mode de filtre du Kick Synth
+    KickSetFilterMode(crate::kick_synth::KickFilterMode),
+    /// Bascule la sous-page de paramètres synthé (ex: Page 1 Main <-> Page 2 Filtre & Disto)
+    ToggleSynthParamPage,
+    /// Définit la sous-page de paramètres synthé (0: Main, 1: Filtre & Disto)
+    SetSynthParamPage(u8),
     /// Supprime définitivement le projet sélectionné dans le navigateur
     DeleteSelectedProject,
     /// Annule la confirmation de suppression de projet
@@ -621,6 +651,8 @@ pub struct EngineSnapshot {
     pub lock_active: bool,
     /// Chaîne de patterns active par groupe
     pub pattern_chains: [Option<Vec<usize>>; 8],
+    /// Sous-page active de paramètres synthé (0: Main, 1: Filtre & Disto).
+    pub synth_param_page: u8,
     /// Compteur de révision : change dès qu'un état a bougé (repaint UI/écrans).
     pub revision: u64,
 }
@@ -652,6 +684,8 @@ pub struct HardwareSnapshot {
     pub delete_project_confirm: bool,
     /// Page PLUGIN (0: Sound, 1: TB-303) — routage des knobs hardware.
     pub plugin_page: u8,
+    /// Sous-page active de paramètres synthé (0: Main, 1: Filtre & Disto).
+    pub synth_param_page: u8,
     pub controller_mode: u8,
     pub keyboard: crate::keyboard::KeyboardState,
     pub is_playing: bool,
@@ -726,6 +760,8 @@ pub struct Engine {
     nav_serial: u64,
     /// Page de l'éditeur PLUGIN (0: Sound, 1: TB-303)
     pub plugin_page: u8,
+    /// Sous-page de paramètres synthé (0: Main, 1: Filtre & Disto)
+    pub synth_param_page: u8,
     /// Son actif
     pub active_sound: u8,
     /// Mesure sélectionnée pour l'édition et l'affichage (0..pattern_bars-1)
@@ -1021,6 +1057,7 @@ impl Engine {
             nav_view: 0,
             nav_serial: 0,
             plugin_page: 0,
+            synth_param_page: 0,
             active_sound: 0,
             selected_bar: 0,
             step_cursor: 0,
@@ -1402,6 +1439,7 @@ impl Engine {
             shift_held: self.shift_held,
             lock_active: self.lock_active,
             pattern_chains: self.pattern_chains.clone(),
+            synth_param_page: self.synth_param_page,
             revision: self.revision,
         }
     }
@@ -1480,6 +1518,7 @@ impl Engine {
             has_wavetable_synth: self.focus_sound_has_wavetable(),
             delete_project_confirm: self.delete_project_confirm,
             plugin_page: self.plugin_page,
+            synth_param_page: self.synth_param_page,
             controller_mode: self.controller_mode,
             keyboard: self.keyboard,
             is_playing: playing,
@@ -3109,6 +3148,141 @@ impl Engine {
                 p.filter_reso = (p.filter_reso + delta * 0.02).clamp(0.0, 0.95);
                 let _ = self.handle_event(EngineEvent::KickSetParams(p));
             }
+            EngineEvent::KickToneDelta(delta) => {
+                let mut p = self.kick_synth.params.clone();
+                p.drive_tone = (p.drive_tone + delta).clamp(0.0, 1.0);
+                let _ = self.handle_event(EngineEvent::KickSetParams(p));
+            }
+            EngineEvent::KickWaveformDelta(delta) => {
+                let mut p = self.kick_synth.params.clone();
+                // Cycle: Sine → Triangle → SatSine → Parabolic → Ramp → SquareSub → NoiseTransient → Sine
+                let next = match p.waveform {
+                    crate::kick_synth::KickWaveform::Sine => {
+                        if delta > 0 {
+                            crate::kick_synth::KickWaveform::Triangle
+                        } else {
+                            crate::kick_synth::KickWaveform::NoiseTransient
+                        }
+                    }
+                    crate::kick_synth::KickWaveform::Triangle => {
+                        if delta > 0 {
+                            crate::kick_synth::KickWaveform::SatSine
+                        } else {
+                            crate::kick_synth::KickWaveform::Sine
+                        }
+                    }
+                    crate::kick_synth::KickWaveform::SatSine => {
+                        if delta > 0 {
+                            crate::kick_synth::KickWaveform::Parabolic
+                        } else {
+                            crate::kick_synth::KickWaveform::Triangle
+                        }
+                    }
+                    crate::kick_synth::KickWaveform::Parabolic => {
+                        if delta > 0 {
+                            crate::kick_synth::KickWaveform::Ramp
+                        } else {
+                            crate::kick_synth::KickWaveform::SatSine
+                        }
+                    }
+                    crate::kick_synth::KickWaveform::Ramp => {
+                        if delta > 0 {
+                            crate::kick_synth::KickWaveform::SquareSub
+                        } else {
+                            crate::kick_synth::KickWaveform::Parabolic
+                        }
+                    }
+                    crate::kick_synth::KickWaveform::SquareSub => {
+                        if delta > 0 {
+                            crate::kick_synth::KickWaveform::NoiseTransient
+                        } else {
+                            crate::kick_synth::KickWaveform::Ramp
+                        }
+                    }
+                    crate::kick_synth::KickWaveform::NoiseTransient => {
+                        if delta > 0 {
+                            crate::kick_synth::KickWaveform::Sine
+                        } else {
+                            crate::kick_synth::KickWaveform::SquareSub
+                        }
+                    }
+                };
+                p.waveform = next;
+                let _ = self.handle_event(EngineEvent::KickSetParams(p));
+            }
+            EngineEvent::KickFmAmtDelta(delta) => {
+                let mut p = self.kick_synth.params.clone();
+                p.fm_amount = (p.fm_amount + delta).clamp(0.0, 1.0);
+                let _ = self.handle_event(EngineEvent::KickSetParams(p));
+            }
+            EngineEvent::KickDriveDelta(delta) => {
+                let mut p = self.kick_synth.params.clone();
+                p.drive = (p.drive + delta * 0.02).clamp(0.0, 1.0);
+                let _ = self.handle_event(EngineEvent::KickSetParams(p));
+            }
+            EngineEvent::KickTuneDelta(delta) => {
+                let mut p = self.kick_synth.params.clone();
+                p.tune_hz = (p.tune_hz + delta * 0.5).clamp(30.0, 90.0);
+                let _ = self.handle_event(EngineEvent::KickSetParams(p));
+            }
+            EngineEvent::KickDecayDelta(delta) => {
+                let mut p = self.kick_synth.params.clone();
+                p.decay_ms = (p.decay_ms + delta * 15.0).clamp(40.0, 2000.0);
+                let _ = self.handle_event(EngineEvent::KickSetParams(p));
+            }
+            EngineEvent::KickSnapDelta(delta) => {
+                let mut p = self.kick_synth.params.clone();
+                p.snap = (p.snap + delta * 0.02).clamp(0.0, 1.0);
+                let _ = self.handle_event(EngineEvent::KickSetParams(p));
+            }
+            EngineEvent::KickSweepDelta(delta) => {
+                let mut p = self.kick_synth.params.clone();
+                p.sweep_time_ms = (p.sweep_time_ms + delta * 1.5).clamp(5.0, 120.0);
+                let _ = self.handle_event(EngineEvent::KickSetParams(p));
+            }
+            EngineEvent::KickClickDelta(delta) => {
+                let mut p = self.kick_synth.params.clone();
+                p.click = (p.click + delta * 0.02).clamp(0.0, 1.0);
+                let _ = self.handle_event(EngineEvent::KickSetParams(p));
+            }
+            EngineEvent::KickSubDelta(delta) => {
+                let mut p = self.kick_synth.params.clone();
+                p.sub = (p.sub + delta * 0.02).clamp(0.0, 1.0);
+                let _ = self.handle_event(EngineEvent::KickSetParams(p));
+            }
+            EngineEvent::KickVolumeDelta(delta) => {
+                let mut p = self.kick_synth.params.clone();
+                p.volume_db = (p.volume_db + delta * 0.5).clamp(-60.0, 12.0);
+                let _ = self.handle_event(EngineEvent::KickSetParams(p));
+            }
+            EngineEvent::KickSetDriveType(drive_type) => {
+                let mut p = self.kick_synth.params.clone();
+                p.drive_type = drive_type;
+                let _ = self.handle_event(EngineEvent::KickSetParams(p));
+            }
+            EngineEvent::KickSetFilterMode(mode) => {
+                let mut p = self.kick_synth.params.clone();
+                p.set_filter_mode(mode);
+                let _ = self.handle_event(EngineEvent::KickSetParams(p));
+            }
+            EngineEvent::ToggleSynthParamPage => {
+                self.synth_param_page = if self.synth_param_page == 0 { 1 } else { 0 };
+                self.status_message = Some(format!(
+                    "Page Paramètres Synthé : {}",
+                    if self.synth_param_page == 1 {
+                        "2 (Filtre & Disto)"
+                    } else {
+                        "1 (Main Engine)"
+                    }
+                ));
+                self.status_expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_millis(2000);
+                self.revision = self.revision.wrapping_add(1);
+            }
+            EngineEvent::SetSynthParamPage(page) => {
+                self.synth_param_page = page.min(1);
+                self.revision = self.revision.wrapping_add(1);
+            }
             EngineEvent::CycleSoundFilterKind { group, sound } => {
                 let mut guard = self.project.write();
                 let proj = project_mut(&mut guard);
@@ -3124,7 +3298,9 @@ impl Engine {
                         crate::project::FilterKind::HighPass => {
                             crate::project::FilterKind::BandPass
                         }
-                        crate::project::FilterKind::BandPass => crate::project::FilterKind::Off,
+                        crate::project::FilterKind::BandPass => crate::project::FilterKind::Notch,
+                        crate::project::FilterKind::Notch => crate::project::FilterKind::Peak,
+                        crate::project::FilterKind::Peak => crate::project::FilterKind::Off,
                     };
                     let kind = snd.filter.kind;
                     self.status_message =
@@ -3267,7 +3443,9 @@ impl Engine {
                     WavetableFilterMode::LowPass12 => WavetableFilterMode::LowPass24,
                     WavetableFilterMode::LowPass24 => WavetableFilterMode::HighPass,
                     WavetableFilterMode::HighPass => WavetableFilterMode::BandPass,
-                    WavetableFilterMode::BandPass => WavetableFilterMode::Off,
+                    WavetableFilterMode::BandPass => WavetableFilterMode::Notch,
+                    WavetableFilterMode::Notch => WavetableFilterMode::Peak,
+                    WavetableFilterMode::Peak => WavetableFilterMode::Off,
                 };
                 self.wavetable_synth.params.set_filter_mode(next);
                 self.status_message = Some(format!("Filter Mode: {:?}", next));
@@ -4445,9 +4623,17 @@ impl Engine {
                             "VOLUME",
                         ];
                     } else if self.focus_sound_has_kick() {
-                        return [
-                            "DRV TYP", "FLT MOD", "LP", "HP", "BP", "OFF", "PRESETS", "BROWSER",
-                        ];
+                        let is_page2 = (self.synth_param_page == 1) ^ true;
+                        if is_page2 {
+                            return [
+                                "PAGE 1/2", "DRV TYP", "WAVE", "OFF", "LP", "HP", "BP", "NOTCH",
+                            ];
+                        } else {
+                            return [
+                                "PAGE 1/2", "PRESETS", "TECHNO", "909", "HARDCORE", "808 SUB",
+                                "INDUSTRIAL", "BROWSER",
+                            ];
+                        }
                     } else if self.focus_sound_has_acid() {
                         return [
                             "WAVE", "CUTOFF", "RESO", "ENV AMT", "DECAY", "ACCENT", "DRIVE",
@@ -4532,16 +4718,23 @@ impl Engine {
             ],
             4 => {
                 if self.focus_sound_has_kick() {
-                    [
-                        "DRV TYPE",
-                        "FLT MODE",
-                        "TECHNO",
-                        "909",
-                        "HARDCORE",
-                        "808 SUB",
-                        "INDUSTRIAL",
-                        "BROWSER",
-                    ]
+                    let is_page2 = self.synth_param_page == 1;
+                    if is_page2 {
+                        [
+                            "PAGE 1/2", "DRV TYP", "WAVE", "OFF", "LP", "HP", "BP", "NOTCH",
+                        ]
+                    } else {
+                        [
+                            "PAGE 1/2",
+                            "PRESETS",
+                            "TECHNO",
+                            "909",
+                            "HARDCORE",
+                            "808 SUB",
+                            "INDUSTRIAL",
+                            "BROWSER",
+                        ]
+                    }
                 } else if self.focus_sound_has_acid() {
                     [
                         "SAW/SQR", "OCT -", "OCT +", "SLIDE", "CLASSIC", "SQUELCH", "DUB",
@@ -4805,38 +4998,7 @@ impl Engine {
             };
         }
         if self.left_tab == 4 && self.focus_sound_has_kick() {
-            return match idx {
-                0 => self.handle_event(EngineEvent::KickDriveTypeDelta(1)),
-                1 => self.handle_event(EngineEvent::KickFilterModeDelta(1)),
-                2 => {
-                    self.kick_synth.params.filter_mode = crate::kick_synth::KickFilterMode::LowPass;
-                    self.status_message = Some("Kick Filter: LowPass".to_string());
-                    Ok(())
-                }
-                3 => {
-                    self.kick_synth.params.filter_mode =
-                        crate::kick_synth::KickFilterMode::HighPass;
-                    self.status_message = Some("Kick Filter: HighPass".to_string());
-                    Ok(())
-                }
-                4 => {
-                    self.kick_synth.params.filter_mode =
-                        crate::kick_synth::KickFilterMode::BandPass;
-                    self.status_message = Some("Kick Filter: BandPass".to_string());
-                    Ok(())
-                }
-                5 => {
-                    self.kick_synth.params.filter_mode = crate::kick_synth::KickFilterMode::Off;
-                    self.status_message = Some("Kick Filter: Off".to_string());
-                    Ok(())
-                }
-                6 => self.handle_event(EngineEvent::KickSetPreset(0)),
-                _ => {
-                    self.left_tab = 3;
-                    self.browser_kind = 2;
-                    Ok(())
-                }
-            };
+            return self.handle_soft_key_synth(idx);
         }
         if self.left_tab == 4 && self.focus_sound_has_acid() {
             return match idx {
@@ -5179,18 +5341,46 @@ impl Engine {
 
     fn handle_soft_key_synth(&mut self, idx: usize) -> crate::Result<()> {
         if self.focus_sound_has_kick() {
-            match idx {
-                0 => self.handle_event(EngineEvent::KickDriveTypeDelta(1)),
-                1 => self.handle_event(EngineEvent::KickFilterModeDelta(1)),
-                2 => self.handle_event(EngineEvent::KickSetPreset(0)),
-                3 => self.handle_event(EngineEvent::KickSetPreset(1)),
-                4 => self.handle_event(EngineEvent::KickSetPreset(2)),
-                5 => self.handle_event(EngineEvent::KickSetPreset(3)),
-                6 => self.handle_event(EngineEvent::KickSetPreset(5)),
-                _ => {
-                    self.left_tab = 3;
-                    self.browser_kind = 2;
-                    Ok(())
+            let is_page2 = (self.synth_param_page == 1) ^ self.shift_held;
+            if idx == 0 {
+                return self.handle_event(EngineEvent::ToggleSynthParamPage);
+            }
+            if is_page2 {
+                match idx {
+                    1 => self.handle_event(EngineEvent::KickDriveTypeDelta(1)),
+                    2 => self.handle_event(EngineEvent::KickWaveformDelta(1)),
+                    3 => self.handle_event(EngineEvent::KickSetFilterMode(
+                        crate::kick_synth::KickFilterMode::Off,
+                    )),
+                    4 => self.handle_event(EngineEvent::KickSetFilterMode(
+                        crate::kick_synth::KickFilterMode::LowPass,
+                    )),
+                    5 => self.handle_event(EngineEvent::KickSetFilterMode(
+                        crate::kick_synth::KickFilterMode::HighPass,
+                    )),
+                    6 => self.handle_event(EngineEvent::KickSetFilterMode(
+                        crate::kick_synth::KickFilterMode::BandPass,
+                    )),
+                    _ => self.handle_event(EngineEvent::KickSetFilterMode(
+                        crate::kick_synth::KickFilterMode::Notch,
+                    )),
+                }
+            } else {
+                match idx {
+                    1 => {
+                        let next_preset = (self.browser_preset_idx + 1) % 6;
+                        self.handle_event(EngineEvent::KickSetPreset(next_preset))
+                    }
+                    2 => self.handle_event(EngineEvent::KickSetPreset(0)),
+                    3 => self.handle_event(EngineEvent::KickSetPreset(1)),
+                    4 => self.handle_event(EngineEvent::KickSetPreset(2)),
+                    5 => self.handle_event(EngineEvent::KickSetPreset(3)),
+                    6 => self.handle_event(EngineEvent::KickSetPreset(5)),
+                    _ => {
+                        self.left_tab = 3;
+                        self.browser_kind = 2;
+                        Ok(())
+                    }
                 }
             }
         } else if self.focus_sound_has_acid() {

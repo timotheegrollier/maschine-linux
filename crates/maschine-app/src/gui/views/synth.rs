@@ -299,12 +299,16 @@ fn render_sound_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine
                         FilterKind::LowPass => "Low-pass",
                         FilterKind::HighPass => "High-pass",
                         FilterKind::BandPass => "Band-pass",
+                        FilterKind::Notch => "Notch",
+                        FilterKind::Peak => "Peak (cloche)",
                     })
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut kind, FilterKind::Off, "Off");
                         ui.selectable_value(&mut kind, FilterKind::LowPass, "Low-pass");
                         ui.selectable_value(&mut kind, FilterKind::HighPass, "High-pass");
                         ui.selectable_value(&mut kind, FilterKind::BandPass, "Band-pass");
+                        ui.selectable_value(&mut kind, FilterKind::Notch, "Notch");
+                        ui.selectable_value(&mut kind, FilterKind::Peak, "Peak (cloche)");
                     });
             });
             ui.horizontal(|ui| {
@@ -319,6 +323,12 @@ fn render_sound_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine
                 }
                 if chip(ui, "BP", filter_kind == FilterKind::BandPass, c.warning) {
                     kind = FilterKind::BandPass;
+                }
+                if chip(ui, "NOTCH", filter_kind == FilterKind::Notch, c.accent_cyan) {
+                    kind = FilterKind::Notch;
+                }
+                if chip(ui, "PEAK", filter_kind == FilterKind::Peak, c.accent) {
+                    kind = FilterKind::Peak;
                 }
             });
             if kind != filter_kind {

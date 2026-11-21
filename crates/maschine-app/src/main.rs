@@ -2800,6 +2800,7 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             shift_held: false,
             lock_active: false,
             pattern_chains: [None, None, None, None, None, None, None, None],
+            synth_param_page: 0,
         };
         snap.transport.state = maschine_engine::transport::TransportState::Playing;
 

@@ -594,9 +594,13 @@ fn cmd_daemon(
         }
     };
     let hardware_connected = hidraw_path.is_some();
+    // Retour visuel immédiat sur la MK3 pendant le chargement.
+    let mut boot = BootScreen::open(hardware_connected);
+    boot.show("Chargement du projet", 0.15);
 
     // Engine partagé (pour audio thread + main loop)
     let engine = Arc::new(Mutex::new(Engine::new(proj, 48000)));
+    boot.show("Synthèse du kit 808", 0.35);
     engine
         .lock()
         .set_recordings_dir(projects::data_dir().join("recordings"));
@@ -605,10 +609,12 @@ fn cmd_daemon(
         engine.lock().load_default_808_kit();
     }
     if let Some(path) = project_path.as_deref() {
+        boot.show("Chargement des samples", 0.5);
         engine.lock().restore_project_samples(path)?;
     }
 
     // Audio — cpal
+    boot.show("Ouverture de l'audio", 0.65);
     let settings = settings::AppSettings::load();
     #[cfg(feature = "audio")]
     let has_explicit_audio_device = audio_device.is_some();
@@ -789,6 +795,8 @@ fn cmd_daemon(
     // Display bulk (optionnel, feature usb)
     #[cfg(feature = "usb")]
     let mut display_handle = if hardware_connected {
+        boot.show("Prêt", 1.0);
+        boot.finish();
         match display_thread::spawn_display_thread(
             engine.clone(),
             display_activity.clone(),
@@ -1601,6 +1609,9 @@ fn cmd_daemon(
                         .lock()
                         .handle_event(EngineEvent::PluginSlotStep(step));
                 }
+                MapperAction::ToggleCountIn => {
+                    let _ = engine.lock().handle_event(EngineEvent::ToggleCountIn);
+                }
                 MapperAction::EventStep(step) => {
                     let _ = engine.lock().handle_event(EngineEvent::EventStep(step));
                 }
@@ -1768,6 +1779,9 @@ fn cmd_daemon(
             soft_present: snap.soft_present,
             soft_active: snap.soft_active,
             page_nav: snap.page_nav,
+            group_colors: snap.group_colors,
+            pending_scene: snap.pending_scene,
+            pending_pattern: snap.pending_pattern,
         };
         mapper.update_leds(&led_info);
     }
@@ -2562,6 +2576,53 @@ fn install_standby_service() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Écrans de démarrage de la MK3 : tenus pendant le chargement (étape et
+/// progression), puis rendus au thread d'affichage. Sans MK3 ou sans USB,
+/// ne fait rien.
+struct BootScreen {
+    #[cfg(feature = "usb")]
+    bulk: Option<maschine_hardware::usb::BulkHandle>,
+}
+
+impl BootScreen {
+    fn open(hardware: bool) -> Self {
+        #[cfg(feature = "usb")]
+        {
+            let bulk = hardware
+                .then(maschine_hardware::usb::BulkHandle::open)
+                .and_then(Result::ok);
+            Self { bulk }
+        }
+        #[cfg(not(feature = "usb"))]
+        {
+            let _ = hardware;
+            Self {}
+        }
+    }
+
+    fn show(&mut self, step: &str, progress: f32) {
+        log::info!("Démarrage : {step}");
+        #[cfg(feature = "usb")]
+        if let Some(bulk) = self.bulk.as_mut() {
+            let (left, right) =
+                maschine_engine::display_render::render_boot_screens(step, progress);
+            if bulk.send_frame(&left).is_err() || bulk.send_frame(&right).is_err() {
+                self.bulk = None;
+            }
+        }
+        #[cfg(not(feature = "usb"))]
+        let _ = progress;
+    }
+
+    /// Libère l'interface des écrans pour le thread d'affichage.
+    fn finish(self) {
+        #[cfg(feature = "usb")]
+        if let Some(mut bulk) = self.bulk {
+            bulk.release_interface();
+        }
+    }
+}
+
 /// Écran de veille au branchement. Ne fait jamais échouer le service : MK3
 /// absente ou écrans déjà pris par l'application → rien à faire.
 fn cmd_standby() {
@@ -2777,6 +2838,8 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             sample_range: (0.0, 1.0),
             slice_points: Vec::new(),
             record: None,
+            pending_scene: None,
+            pending_patterns: [None; 8],
             focus_group_fx: Vec::new(),
             mixer_mode: 0,
             browser_plugin_idx: 0,

@@ -435,6 +435,8 @@ pub enum EngineEvent {
     PluginSlotStep(i8),
     /// Mode EVENTS : événement précédent / suivant (4D).
     EventStep(i32),
+    /// Pré-compte d'une mesure avant l'enregistrement (SHIFT + REC).
+    ToggleCountIn,
     /// Éditeur de sample (SAMPLING) : knob `knob` tourné de `delta` ticks
     /// bruts (paramètres de la page RECORD / EDIT / SLICE / ZONE).
     SampleKnob { knob: u8, delta: i32 },
@@ -690,6 +692,9 @@ pub struct EngineSnapshot {
     pub sample_range: (f32, f32),
     pub slice_points: Vec<f32>,
     pub record: Option<RecordView>,
+    /// Scène et patterns (par groupe) qui démarreront à la mesure suivante.
+    pub pending_scene: Option<usize>,
+    pub pending_patterns: [Option<usize>; 8],
     /// Mode mixer (0: Pads 1-8, 1: Pads 9-16, 2: Groupes A-H, 3: Master).
     pub mixer_mode: u8,
     /// Index plugin sélectionné dans le browser (0..3).
@@ -785,6 +790,11 @@ pub struct HardwareSnapshot {
     /// Pages PLUGIN : page précédente / suivante disponibles (LED Page ◄ ►),
     /// `None` hors des pages d'un plugin.
     pub page_nav: Option<[bool; 2]>,
+    /// Couleurs (palette des LEDs) des 8 groupes, 0 = groupe vide.
+    pub group_colors: [u8; 8],
+    /// Lancements en attente : scène, pattern du groupe focalisé.
+    pub pending_scene: Option<usize>,
+    pub pending_pattern: Option<usize>,
 }
 
 /// Convertit un gain en décibels en multiplicateur linéaire.
@@ -915,6 +925,7 @@ impl ZoneFields {
 }
 
 /// Lettre d'un groupe (A–H).
+#[cfg(feature = "sampler")]
 fn group_letter_char(group: u8) -> char {
     (b'A' + group % 8) as char
 }
@@ -953,6 +964,50 @@ fn note_label(pitch: u8) -> String {
         NAMES[pitch as usize % 12],
         i32::from(pitch) / 12 - 2
     )
+}
+
+/// Une instance de synthé par Sound (groupe × slot), comme dans le logiciel
+/// officiel : chaque groupe joue ses synthés en même temps que les autres,
+/// avec son volume, son pan, ses mutes et ses effets. Instances créées et
+/// mises à jour hors du thread audio (`Engine::sync_synth_rack`).
+struct SynthRack {
+    acid: Vec<Option<RackSlot<crate::acid_synth::AcidSynth>>>,
+    kick: Vec<Option<RackSlot<crate::kick_synth::KickSynth>>>,
+    wavetable: Vec<Option<RackSlot<crate::wavetable_synth::WavetableSynth>>>,
+}
+
+/// Un synthé du rack ; s'il reste silencieux quelques blocs, son rendu est
+/// suspendu jusqu'à la note suivante.
+struct RackSlot<T> {
+    synth: Box<T>,
+    idle_blocks: u32,
+}
+
+impl<T> RackSlot<T> {
+    fn new(synth: T) -> Self {
+        Self {
+            synth: Box::new(synth),
+            idle_blocks: 0,
+        }
+    }
+}
+
+/// Blocs silencieux avant suspension du rendu (≈ 0,4 s à 1024 trames).
+const RACK_IDLE_BLOCKS: u32 = 20;
+
+/// Index d'un Sound dans le rack.
+const fn rack_index(group: u8, sound: u8) -> usize {
+    (group as usize % 8) * 16 + sound as usize % 16
+}
+
+impl SynthRack {
+    fn new() -> Self {
+        Self {
+            acid: (0..128).map(|_| None).collect(),
+            kick: (0..128).map(|_| None).collect(),
+            wavetable: (0..128).map(|_| None).collect(),
+        }
+    }
 }
 
 /// Propriétaire d'une chaîne d'effets d'insert.
@@ -1110,6 +1165,15 @@ pub struct Engine {
     fx_buses: Vec<(FxOwner, crate::fx::FxChainProcessor)>,
     /// Inserts du Master, appliqués à la somme de tous les groupes.
     master_fx: crate::fx::FxChainProcessor,
+    /// Synthés de lecture : une instance par Sound (voir `SynthRack`).
+    rack: SynthRack,
+    /// Lancements en attente pendant la lecture : la scène ou le pattern
+    /// choisi démarre au début de la mesure suivante, comme sur la MK3.
+    pending_scene: Option<usize>,
+    pending_patterns: [Option<usize>; 8],
+    /// Patterns lancés par le séquenceur, reportés dans la scène du projet
+    /// hors du thread audio (`commit_launches`).
+    launched_patterns: [Option<usize>; 8],
     /// Limiteur de sortie (après le volume Master).
     master_limiter: crate::limiter::MasterLimiter,
     /// Emplacement sélectionné dans la chaîne de plugins (mode PLUGIN) et
@@ -1242,6 +1306,28 @@ fn ensure_active_scene(project: &mut Project, active_scene: &mut Option<usize>) 
         }
     }
     scene_idx
+}
+
+/// Pattern du groupe joué dans la scène active ; s'il n'y en a pas, un
+/// pattern vide est créé (longueur des autres groupes) et placé dans la scène.
+fn ensure_group_pattern(
+    project: &mut Project,
+    active_scene: &mut Option<usize>,
+    group: usize,
+) -> Option<usize> {
+    if group >= project.groups.len() {
+        return None;
+    }
+    if let Some(i) = project.active_pattern_index(group, *active_scene) {
+        return Some(i);
+    }
+    let length = new_pattern_length(project, group, *active_scene);
+    let g = &mut project.groups[group];
+    let idx = g.patterns.len();
+    g.patterns
+        .push(Pattern::new(&format!("Pattern {}", idx + 1), length));
+    assign_pattern_to_active_scene(project, active_scene, group, idx);
+    Some(idx)
 }
 
 /// Assigne un pattern du groupe à la scène active (créée au besoin).
@@ -1427,6 +1513,10 @@ impl Engine {
             wavetable_synth: crate::wavetable_synth::WavetableSynth::new(sample_rate),
             fx_buses: Vec::new(),
             master_fx: crate::fx::FxChainProcessor::new(sample_rate),
+            rack: SynthRack::new(),
+            pending_scene: None,
+            pending_patterns: [None; 8],
+            launched_patterns: [None; 8],
             master_limiter: crate::limiter::MasterLimiter::new(sample_rate),
             plugin_slot: 0,
             plugin_slot_focus: (0, 0),
@@ -1489,6 +1579,9 @@ impl Engine {
             pattern_clipboard: None,
         };
         eng.rescan_local_projects();
+        // Synthés et bus d'effets du projet chargé, prêts avant la lecture.
+        eng.sync_synth_rack();
+        eng.sync_fx_buses();
         eng
     }
 
@@ -1824,6 +1917,8 @@ impl Engine {
             sample_params: self.sample_param_views(),
             sample_range: self.focus_range(),
             slice_points: self.slice_points(),
+            pending_scene: self.pending_scene,
+            pending_patterns: self.pending_patterns,
             record: self.recorder.as_ref().map(|r| RecordView {
                 waiting: r.waiting,
                 secs: r.buf.len() as f32 / self.transport.sample_rate.max(1) as f32,
@@ -1958,6 +2053,17 @@ impl Engine {
             soft_present,
             soft_active,
             page_nav,
+            group_colors: std::array::from_fn(|g| {
+                project.groups.get(g).map_or(0, |grp| {
+                    if grp.sounds.iter().any(Option::is_some) {
+                        grp.color
+                    } else {
+                        0
+                    }
+                })
+            }),
+            pending_scene: self.pending_scene,
+            pending_pattern: self.pending_patterns[self.group_focus as usize % 8],
         }
     }
 
@@ -2197,6 +2303,8 @@ impl Engine {
         self.fx_buses.clear();
         self.master_fx = crate::fx::FxChainProcessor::new(rate);
         self.master_limiter = crate::limiter::MasterLimiter::new(rate);
+        self.rack = SynthRack::new();
+        self.sync_synth_rack();
         self.sync_fx_buses();
         self.click_accent = Self::metronome_click(rate, 1760.0);
         self.click_normal = Self::metronome_click(rate, 880.0);
@@ -2289,24 +2397,43 @@ impl Engine {
             })
             .unwrap_or((1.0, 0.0, crate::sampler::VoiceParams::default()));
         drop(guard);
+        // Synthés : l'instance de ce Sound dans le rack (créée au besoin, ce
+        // n'est pas le thread audio) ; le synthé « édition » suit le Sound joué.
+        let i = rack_index(self.group_focus, pad);
         if is_kick_sound {
             self.kick_sound_target = Some((self.group_focus, pad));
             if let Some(p) = kick_params {
-                self.kick_synth.params = p;
+                self.kick_synth.params = p.clone();
+                let sr = self.transport.sample_rate;
+                let slot = self.rack.kick[i]
+                    .get_or_insert_with(|| RackSlot::new(crate::kick_synth::KickSynth::new(sr)));
+                slot.synth.params = p;
+                slot.idle_blocks = 0;
+                slot.synth.trigger(note, velocity);
             }
-            self.kick_synth.trigger(note, velocity);
         } else if is_synth_sound {
             self.acid_sound_target = Some((self.group_focus, pad));
             if let Some(p) = synth_params {
-                self.acid_synth.params = p;
+                self.acid_synth.params = p.clone();
+                let sr = self.transport.sample_rate;
+                let slot = self.rack.acid[i]
+                    .get_or_insert_with(|| RackSlot::new(crate::acid_synth::AcidSynth::new(sr)));
+                slot.synth.params = p;
+                slot.idle_blocks = 0;
+                slot.synth.note_on(note, velocity);
             }
-            self.acid_synth.note_on(note, velocity);
         } else if is_wavetable_sound {
             self.wavetable_sound_target = Some((self.group_focus, pad));
             if let Some(p) = wavetable_params {
-                self.wavetable_synth.params = p;
+                self.wavetable_synth.params = p.clone();
+                let sr = self.transport.sample_rate;
+                let slot = self.rack.wavetable[i].get_or_insert_with(|| {
+                    RackSlot::new(crate::wavetable_synth::WavetableSynth::new(sr))
+                });
+                slot.synth.params = p;
+                slot.idle_blocks = 0;
+                slot.synth.note_on(note, velocity);
             }
-            self.wavetable_synth.note_on(note, velocity);
         } else if let Some(idx) = self.sampler.note_on(sound, note, velocity, note) {
             self.sampler.set_voice_gain(idx, group_gain * snd_gain);
             self.sampler.set_voice_pan(idx, snd_pan);
@@ -2319,26 +2446,20 @@ impl Engine {
     /// Relâche la note pour les synthétiseurs et le sampler.
     pub fn release_sound_voice(&mut self, pad: u8, note: u8) {
         let sound = sampler_sound_id(self.group_focus, pad);
-        // Les synthés sont partagés : seul le pad qui les joue les relâche,
-        // sinon un autre pad (ou touche) de même hauteur coupe la note tenue.
-        // Focus de groupe changé entre-temps : relâche par hauteur, comme avant.
-        let owns = |target: Option<(u8, u8)>| {
-            target.is_none_or(|(g, s)| s == pad || g != self.group_focus)
-        };
-        if owns(self.acid_sound_target) {
-            self.acid_synth.note_off(note);
+        // Chaque Sound a son propre synthé : relâcher ce pad ne coupe que lui.
+        let i = rack_index(self.group_focus, pad);
+        if let Some(slot) = self.rack.acid[i].as_mut() {
+            slot.synth.note_off(note);
         }
-        if owns(self.wavetable_sound_target) {
-            self.wavetable_synth.note_off(note);
+        if let Some(slot) = self.rack.wavetable[i].as_mut() {
+            slot.synth.note_off(note);
         }
         self.sampler.note_off(sound, note);
     }
 
     /// Déclenche un son de pad (Kick Synth, TB-303, Wavetable ou Sampler)
     pub fn trigger_pad_voice(&mut self, pad: u8, velocity: u8) {
-        if self.muted_groups & (1 << self.group_focus) != 0
-            || self.is_sound_muted(self.group_focus, pad)
-        {
+        if !self.group_audible(self.group_focus) || self.is_sound_muted(self.group_focus, pad) {
             return;
         }
         self.trigger_sound_voice(pad, 36 + pad, velocity);
@@ -2346,9 +2467,11 @@ impl Engine {
 
     /// Traite un `EngineEvent`.
     pub fn handle_event(&mut self, ev: EngineEvent) -> crate::Result<()> {
+        self.commit_launches();
         let result = self.apply_event(ev);
-        // Chaînes d'effets modifiées (ajout, chargement, undo…) : bus à jour.
+        // Chaînes d'effets et synthés modifiés (ajout, chargement, undo…).
         self.sync_fx_buses();
+        self.sync_synth_rack();
         result
     }
 
@@ -2423,7 +2546,22 @@ impl Engine {
                     self.transport.record();
                 }
                 if stop {
+                    // STOP déjà à l'arrêt : retour au début (comme la MK3).
+                    if !self.transport.is_playing() {
+                        self.transport.tick = 0;
+                        self.transport.tick_fraction = 0.0;
+                        self.selected_bar = 0;
+                    }
                     self.transport.stop();
+                    // Plus de mesure suivante : les lancements prennent effet.
+                    if let Some(sc) = self.pending_scene.take() {
+                        self.active_scene = Some(sc);
+                    }
+                    for g in 0..8 {
+                        if let Some(p) = self.pending_patterns[g].take() {
+                            self.launched_patterns[g] = Some(p);
+                        }
+                    }
                 }
             }
             EngineEvent::Bpm(bpm) => {
@@ -2442,7 +2580,14 @@ impl Engine {
             EngineEvent::Scene(s) => {
                 let len = self.project.read().scenes.len();
                 if s < len {
-                    self.active_scene = Some(s);
+                    if self.transport.is_playing() && self.active_scene != Some(s) {
+                        // En lecture : la scène démarre à la mesure suivante.
+                        self.pending_scene = Some(s);
+                        self.show_status(format!("Scène {} à la prochaine mesure", s + 1));
+                    } else {
+                        self.pending_scene = None;
+                        self.active_scene = Some(s);
+                    }
                 }
             }
             EngineEvent::AddScene => {
@@ -2599,11 +2744,22 @@ impl Engine {
                     .get(group_idx)
                     .map(|g| pattern < g.patterns.len())
                     .unwrap_or(false);
-                if valid {
+                let playing_other = self.transport.is_playing()
+                    && proj.active_pattern_index(group_idx, self.active_scene) != Some(pattern);
+                if valid && playing_other && group_idx < 8 {
+                    // En lecture : le pattern démarre au début de la mesure
+                    // suivante (lancement quantifié, comme sur la MK3).
+                    self.pending_patterns[group_idx] = Some(pattern);
+                    drop(guard);
+                    self.show_status(format!("Pattern {} à la prochaine mesure", pattern + 1));
+                } else if valid {
                     // Workflow officiel Maschine : le pattern sélectionné remplace
                     // uniquement la référence du Groupe dans la scène active. Les
                     // autres Groupes gardent leur propre pattern, et ré-appuyer sur
                     // le pad du pattern courant ne le désactive pas.
+                    if group_idx < 8 {
+                        self.pending_patterns[group_idx] = None;
+                    }
                     assign_pattern_to_active_scene(
                         proj,
                         &mut self.active_scene,
@@ -3859,6 +4015,18 @@ impl Engine {
             }
             EngineEvent::SelectPluginSlot(index) => self.select_plugin_slot(index),
             EngineEvent::EventStep(step) => self.step_event_cursor(step),
+            EngineEvent::ToggleCountIn => {
+                let on = self.transport.count_in_bars == 0;
+                self.transport.count_in_bars = u8::from(on);
+                self.show_status(
+                    if on {
+                        "Pré-compte : 1 mesure"
+                    } else {
+                        "Pré-compte coupé"
+                    }
+                    .to_string(),
+                );
+            }
             EngineEvent::SampleKnob { knob, delta } => self.turn_sample_knob(knob as usize, delta),
             EngineEvent::EventKnob { knob, delta } => self.turn_event_knob(knob as usize, delta),
             EngineEvent::CycleSoundFilterKind { group, sound } => {
@@ -4632,11 +4800,26 @@ impl Engine {
             }
         }
 
+        // Lancements en attente : ils prennent effet au début de la mesure
+        // (sans écrire le projet ici : `commit_launches` s'en charge).
+        if new_tick / 3840 > prev_tick / 3840 || prev_tick == 0 {
+            if let Some(s) = self.pending_scene.take() {
+                self.active_scene = Some(s);
+                self.launched_patterns = [None; 8];
+            }
+            for g in 0..8 {
+                if let Some(p) = self.pending_patterns[g].take() {
+                    self.launched_patterns[g] = Some(p);
+                }
+            }
+        }
         if let Some(scene_idx) = self.active_scene {
             if let Some(scene) = proj.scenes.get(scene_idx) {
                 for (gi, pat_opt) in scene.patterns.iter().enumerate() {
-                    // Respecte le mute par groupe
-                    if (self.muted_groups & (1 << gi)) != 0 {
+                    let launched = self.launched_patterns.get(gi).copied().flatten();
+                    let pat_opt = &launched.or(*pat_opt);
+                    // Respecte MUTE et SOLO par groupe.
+                    if !self.group_audible(gi as u8) {
                         continue;
                     }
                     if proj.groups.get(gi).map(|g| g.muted).unwrap_or(false) {
@@ -4710,9 +4893,7 @@ impl Engine {
                                 eff_prev,
                                 eff_new,
                                 &mut self.sampler,
-                                &mut self.acid_synth,
-                                &mut self.kick_synth,
-                                &mut self.wavetable_synth,
+                                &mut self.rack,
                                 gi as u8,
                                 gain,
                                 group.pan,
@@ -4734,6 +4915,31 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// Reporte dans la scène du projet les patterns lancés par le séquenceur
+    /// (appelé hors du thread audio : à chaque événement et par les boucles
+    /// de l'interface).
+    pub fn commit_launches(&mut self) {
+        if self.launched_patterns.iter().all(Option::is_none) {
+            return;
+        }
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
+        for g in 0..8 {
+            if let Some(p) = self.launched_patterns[g].take() {
+                assign_pattern_to_active_scene(proj, &mut self.active_scene, g, p);
+            }
+        }
+        drop(guard);
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Un groupe s'entend-il ? Ni muet (MUTE), ni écarté par un SOLO.
+    #[must_use]
+    pub fn group_audible(&self, group: u8) -> bool {
+        let bit = 1u8 << (group % 8);
+        self.muted_groups & bit == 0 && (self.soloed_groups == 0 || self.soloed_groups & bit != 0)
     }
 
     #[must_use]
@@ -4765,9 +4971,7 @@ impl Engine {
         prev_tick: u64,
         new_tick: u64,
         sampler: &mut Sampler,
-        acid_synth: &mut crate::acid_synth::AcidSynth,
-        kick_synth: &mut crate::kick_synth::KickSynth,
-        wavetable_synth: &mut crate::wavetable_synth::WavetableSynth,
+        rack: &mut SynthRack,
         group: u8,
         group_gain: f32,
         group_pan: f32,
@@ -4833,12 +5037,22 @@ impl Engine {
                     let is_acid = is_synth.get(sound as usize).copied().unwrap_or(false);
                     let is_k = is_kick.get(sound as usize).copied().unwrap_or(false);
                     let is_wt = is_wavetable.get(sound as usize).copied().unwrap_or(false);
+                    let ri = rack_index(group, sound);
                     if is_k {
-                        kick_synth.trigger(note, ev.velocity);
+                        if let Some(slot) = rack.kick[ri].as_mut() {
+                            slot.idle_blocks = 0;
+                            slot.synth.trigger(note, ev.velocity);
+                        }
                     } else if is_acid {
-                        acid_synth.note_on_at(note, ev.velocity, start_frame);
+                        if let Some(slot) = rack.acid[ri].as_mut() {
+                            slot.idle_blocks = 0;
+                            slot.synth.note_on_at(note, ev.velocity, start_frame);
+                        }
                     } else if is_wt {
-                        wavetable_synth.note_on(note, ev.velocity);
+                        if let Some(slot) = rack.wavetable[ri].as_mut() {
+                            slot.idle_blocks = 0;
+                            slot.synth.note_on(note, ev.velocity);
+                        }
                     } else if let Some(idx) = sampler.note_on_at(
                         sampler_sound_id(group, sound),
                         note,
@@ -4874,10 +5088,15 @@ impl Engine {
             };
             // évite de couper la note à t=0 et seulement si la note a déjà sonné
             if off_triggered && end_tick > tick && tick <= new_tick {
+                let ri = rack_index(group, ev.pad);
                 if is_synth.get(ev.pad as usize).copied().unwrap_or(false) {
-                    acid_synth.note_off(ev.pitch);
+                    if let Some(slot) = rack.acid[ri].as_mut() {
+                        slot.synth.note_off(ev.pitch);
+                    }
                 } else if is_wavetable.get(ev.pad as usize).copied().unwrap_or(false) {
-                    wavetable_synth.note_off(ev.pitch);
+                    if let Some(slot) = rack.wavetable[ri].as_mut() {
+                        slot.synth.note_off(ev.pitch);
+                    }
                 } else {
                     sampler.note_off(sampler_sound_id(group, ev.pad), ev.pitch);
                 }
@@ -4893,15 +5112,9 @@ impl Engine {
         let focus = self.group_focus as usize;
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
-        if let Some(group) = proj.groups.get_mut(focus) {
-            if group.patterns.is_empty() {
-                group.patterns.push(crate::project::Pattern::new(
-                    "Recorded",
-                    BarsBeatsTicks::new(1, 0, 0),
-                ));
-            }
-        }
-        let pat_idx = proj.active_pattern_index(focus, self.active_scene);
+        // Comme le logiciel officiel : enregistrer sur un groupe sans pattern
+        // dans la scène en crée un et l'y place (sinon les notes se perdaient).
+        let pat_idx = ensure_group_pattern(proj, &mut self.active_scene, focus);
         if let Some(group) = proj.groups.get_mut(focus) {
             if let Some(idx) = pat_idx {
                 if let Some(pat) = group.patterns.get_mut(idx) {
@@ -4924,37 +5137,6 @@ impl Engine {
         }
     }
 
-    fn find_synth_location<F>(
-        &self,
-        target: Option<(u8, u8)>,
-        proj: &Project,
-        predicate: F,
-    ) -> Option<(u8, u8)>
-    where
-        F: Fn(&crate::project::Sound) -> bool,
-    {
-        // La cible mémorisée peut être devenue invalide (Sound vide, projet
-        // démo réorganisé) : on la valide avant de s'en servir.
-        let valid_target = target.filter(|(g, s)| {
-            proj.groups
-                .get(*g as usize)
-                .and_then(|grp| grp.sounds.get(*s as usize))
-                .and_then(|snd| snd.as_ref())
-                .map(&predicate)
-                .unwrap_or(false)
-        });
-        valid_target.or_else(|| {
-            for (g, grp) in proj.groups.iter().enumerate() {
-                for (s, snd) in grp.sounds.iter().enumerate() {
-                    if snd.as_ref().map(&predicate).unwrap_or(false) {
-                        return Some((g as u8, s as u8));
-                    }
-                }
-            }
-            None
-        })
-    }
-
     fn mix_synth_buffer(
         &mut self,
         out: &mut [f32],
@@ -4963,7 +5145,7 @@ impl Engine {
         bus: Option<u8>,
         proj: &Project,
     ) {
-        let is_muted = (self.muted_groups & (1 << (group % 8))) != 0
+        let is_muted = !self.group_audible(group)
             || proj
                 .groups
                 .get(group as usize)
@@ -5040,6 +5222,16 @@ impl Engine {
         }
     }
 
+    /// Compteur de silence d'un synthé du rack après son bloc de rendu.
+    fn note_idle(&self, idle: u32, out_len: usize) -> u32 {
+        let silent = self.synth_buf[..out_len].iter().all(|v| v.abs() < 1e-5);
+        if silent {
+            idle + 1
+        } else {
+            0
+        }
+    }
+
     /// Render audio stéréo — à appeler depuis callback cpal/jack.
     pub fn render_audio(&mut self, out: &mut [f32]) {
         let out_len = out.len();
@@ -5071,36 +5263,39 @@ impl Engine {
 
         let proj = Arc::clone(&*self.project.read());
 
-        // 1. Kick Synth
-        if let Some((kg, ks)) = self.find_synth_location(self.kick_sound_target, &proj, |snd| {
-            snd.kick_synth.is_some()
-        }) {
-            self.synth_buf[..out_len].fill(0.0);
-            self.kick_synth.render(&mut self.synth_buf[..out_len]);
-            let bus = route[kg as usize % 8][ks as usize % 16];
-            self.mix_synth_buffer(out, out_len, (kg, ks), bus, &proj);
-        }
-
-        // 2. TB-303 Acid Synth
-        if let Some((ag, asnd)) =
-            self.find_synth_location(self.acid_sound_target, &proj, |snd| snd.synth.is_some())
-        {
-            self.synth_buf[..out_len].fill(0.0);
-            self.acid_synth.render(&mut self.synth_buf[..out_len]);
-            let bus = route[ag as usize % 8][asnd as usize % 16];
-            self.mix_synth_buffer(out, out_len, (ag, asnd), bus, &proj);
-        }
-
-        // 3. Wavetable / Nexus Synth
-        if let Some((wg, ws)) =
-            self.find_synth_location(self.wavetable_sound_target, &proj, |snd| {
-                snd.wavetable_synth.is_some()
-            })
-        {
-            self.synth_buf[..out_len].fill(0.0);
-            self.wavetable_synth.render(&mut self.synth_buf[..out_len]);
-            let bus = route[wg as usize % 8][ws as usize % 16];
-            self.mix_synth_buffer(out, out_len, (wg, ws), bus, &proj);
+        // Synthés du rack : chaque Sound rend son instance, mixée avec son
+        // volume, son pan, ses mutes et ses effets. Les instances muettes
+        // depuis un moment ne sont plus rendues (jusqu'à la note suivante).
+        for i in 0..128usize {
+            let (g, s) = ((i / 16) as u8, (i % 16) as u8);
+            let bus = route[g as usize][s as usize];
+            if let Some(mut slot) = self.rack.kick[i].take() {
+                if slot.idle_blocks < RACK_IDLE_BLOCKS {
+                    self.synth_buf[..out_len].fill(0.0);
+                    slot.synth.render(&mut self.synth_buf[..out_len]);
+                    slot.idle_blocks = self.note_idle(slot.idle_blocks, out_len);
+                    self.mix_synth_buffer(out, out_len, (g, s), bus, &proj);
+                }
+                self.rack.kick[i] = Some(slot);
+            }
+            if let Some(mut slot) = self.rack.acid[i].take() {
+                if slot.idle_blocks < RACK_IDLE_BLOCKS {
+                    self.synth_buf[..out_len].fill(0.0);
+                    slot.synth.render(&mut self.synth_buf[..out_len]);
+                    slot.idle_blocks = self.note_idle(slot.idle_blocks, out_len);
+                    self.mix_synth_buffer(out, out_len, (g, s), bus, &proj);
+                }
+                self.rack.acid[i] = Some(slot);
+            }
+            if let Some(mut slot) = self.rack.wavetable[i].take() {
+                if slot.idle_blocks < RACK_IDLE_BLOCKS {
+                    self.synth_buf[..out_len].fill(0.0);
+                    slot.synth.render(&mut self.synth_buf[..out_len]);
+                    slot.idle_blocks = self.note_idle(slot.idle_blocks, out_len);
+                    self.mix_synth_buffer(out, out_len, (g, s), bus, &proj);
+                }
+                self.rack.wavetable[i] = Some(slot);
+            }
         }
 
         // Inserts : chaque Sound passe dans sa chaîne puis rejoint le bus de
@@ -6604,7 +6799,10 @@ impl Engine {
             }
         }
         #[cfg(not(feature = "sampler"))]
-        self.show_status("Enregistrement indisponible (sampler désactivé)".to_string());
+        {
+            let _ = rec.target;
+            self.show_status("Enregistrement indisponible (sampler désactivé)".to_string());
+        }
     }
 
     /// Index (dans le pattern actif) des événements parcourus en mode EVENTS,
@@ -6779,6 +6977,51 @@ impl Engine {
             "NUDGE <" => self.edit_selected_event(|e, _| e.tick = e.tick.saturating_sub(60)),
             "NUDGE >" => self.edit_selected_event(|e, len| e.tick = (e.tick + 60).min(len - 1)),
             _ => {}
+        }
+    }
+
+    /// Crée, met à jour ou retire les synthés du rack d'après le projet : une
+    /// instance par Sound qui porte un TB-303, un Kick Synth ou un Nexus.
+    /// Appelé hors du thread audio (allocations ici seulement).
+    fn sync_synth_rack(&mut self) {
+        let proj = Arc::clone(&*self.project.read());
+        let sr = self.transport.sample_rate;
+        for g in 0..8u8 {
+            for s in 0..16u8 {
+                let i = rack_index(g, s);
+                let snd = proj
+                    .groups
+                    .get(g as usize)
+                    .and_then(|grp| grp.sounds.get(s as usize))
+                    .and_then(Option::as_ref);
+                match snd.and_then(|snd| snd.synth.as_ref()) {
+                    Some(p) => {
+                        let slot = self.rack.acid[i].get_or_insert_with(|| {
+                            RackSlot::new(crate::acid_synth::AcidSynth::new(sr))
+                        });
+                        slot.synth.params = p.clone();
+                    }
+                    None => self.rack.acid[i] = None,
+                }
+                match snd.and_then(|snd| snd.kick_synth.as_ref()) {
+                    Some(p) => {
+                        let slot = self.rack.kick[i].get_or_insert_with(|| {
+                            RackSlot::new(crate::kick_synth::KickSynth::new(sr))
+                        });
+                        slot.synth.params = p.clone();
+                    }
+                    None => self.rack.kick[i] = None,
+                }
+                match snd.and_then(|snd| snd.wavetable_synth.as_ref()) {
+                    Some(p) => {
+                        let slot = self.rack.wavetable[i].get_or_insert_with(|| {
+                            RackSlot::new(crate::wavetable_synth::WavetableSynth::new(sr))
+                        });
+                        slot.synth.params = p.clone();
+                    }
+                    None => self.rack.wavetable[i] = None,
+                }
+            }
         }
     }
 
@@ -7846,7 +8089,7 @@ impl Engine {
         let group_idx = self.group_focus as usize;
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
-        let pat_idx = proj.active_pattern_index(group_idx, self.active_scene);
+        let pat_idx = ensure_group_pattern(proj, &mut self.active_scene, group_idx);
         if let (Some(group), Some(pi)) = (proj.groups.get_mut(group_idx), pat_idx) {
             if let Some(pat) = group.patterns.get_mut(pi) {
                 f(pat);
@@ -10258,5 +10501,124 @@ mod tests {
             assert!(name.ends_with("#3"), "{name}");
         }
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn every_group_plays_at_once_with_its_own_synths_and_meters() {
+        let mut eng = Engine::new_demo(48000);
+        // Lecture du projet démo : A (kick) et B (caisse claire) ensemble,
+        // chacun avec son VU.
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: false,
+            stop: false,
+        })
+        .unwrap();
+        let mut buf = vec![0.0f32; 2048];
+        let mut peaks = [0.0f32; 8];
+        for _ in 0..120 {
+            eng.advance(1024);
+            eng.render_audio(&mut buf);
+            for (g, p) in eng.sampler.group_peaks().iter().enumerate() {
+                peaks[g] = peaks[g].max(*p);
+            }
+        }
+        assert!(
+            peaks[0] > 0.05 && peaks[1] > 0.05,
+            "A et B jouent : {peaks:?}"
+        );
+
+        // Deux TB-303 de deux groupes : deux instances, aucune ne coupe l'autre.
+        let mut eng = Engine::new_demo(48000);
+        let acid = |eng: &Engine| {
+            (0..8u8)
+                .flat_map(|g| (0..16u8).map(move |s| (g, s)))
+                .filter(|&(g, s)| eng.rack.acid[rack_index(g, s)].is_some())
+                .collect::<Vec<_>>()
+        };
+        let sounds = acid(&eng);
+        let (a, b) = (
+            sounds[0],
+            *sounds.iter().find(|x| x.0 != sounds[0].0).unwrap(),
+        );
+        for (g, s, note) in [(a.0, a.1, 48), (b.0, b.1, 36)] {
+            eng.handle_event(EngineEvent::GroupFocus(g)).unwrap();
+            eng.trigger_sound_voice(s, note, 110);
+        }
+        let loud = |eng: &mut Engine| {
+            let mut buf = vec![0.0f32; 2048];
+            eng.render_audio(&mut buf);
+            buf.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+        };
+        assert!(loud(&mut eng) > 0.01);
+        // Groupe de A muet : B sonne toujours, et inversement.
+        eng.muted_groups = 1 << a.0;
+        assert!(loud(&mut eng) > 0.01, "le synthé de B joue seul");
+        eng.muted_groups = (1 << a.0) | (1 << b.0);
+        for _ in 0..4 {
+            loud(&mut eng);
+        }
+        assert!(loud(&mut eng) < 1e-3, "les deux groupes muets");
+    }
+
+    #[test]
+    fn launches_wait_for_the_next_bar_and_solo_mute_and_record_work_per_group() {
+        let mut eng = Engine::new_demo(48000);
+        // Un second pattern pour A, puis lecture.
+        eng.handle_event(EngineEvent::GroupFocus(0)).unwrap();
+        eng.handle_event(EngineEvent::AddPattern { group: 0 })
+            .unwrap();
+        eng.handle_event(EngineEvent::PatternSelect {
+            group: 0,
+            pattern: 0,
+        })
+        .unwrap();
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: false,
+            stop: false,
+        })
+        .unwrap();
+        eng.advance(1024);
+        // En lecture : le choix attend la mesure suivante.
+        eng.handle_event(EngineEvent::PatternSelect {
+            group: 0,
+            pattern: 1,
+        })
+        .unwrap();
+        assert_eq!(eng.snapshot().pending_patterns[0], Some(1));
+        assert_eq!(eng.active_pattern_for_focus(), Some(0), "pas encore lancé");
+        let bar: u64 = 3840 * 48_000 * 60 / (960 * 120);
+        let mut done = 0;
+        while done < bar + 1024 {
+            eng.advance(1024);
+            done += 1024;
+        }
+        eng.commit_launches();
+        assert_eq!(eng.active_pattern_for_focus(), Some(1), "lancé à la mesure");
+        assert_eq!(eng.snapshot().pending_patterns[0], None);
+
+        // SOLO sur B : A n'est plus audible ; MUTE sur B : plus rien.
+        eng.handle_event(EngineEvent::Solo(1)).unwrap();
+        assert!(!eng.group_audible(0) && eng.group_audible(1));
+        eng.handle_event(EngineEvent::Mute(1)).unwrap();
+        assert!(!eng.group_audible(1));
+
+        // Enregistrer sur un groupe sans pattern dans la scène : un pattern
+        // est créé et placé dans la scène, la note n'est pas perdue.
+        let mut eng = Engine::new_demo(48000);
+        let g = 7u8;
+        {
+            let mut guard = eng.project.write();
+            let proj = project_mut(&mut guard);
+            proj.scenes[0].patterns[g as usize] = None;
+        }
+        eng.handle_event(EngineEvent::GroupFocus(g)).unwrap();
+        eng.record_note_event(2, 38, 100);
+        let proj = eng.project.read().clone();
+        let pi = proj
+            .active_pattern_index(g as usize, eng.active_scene)
+            .expect("pattern placé");
+        assert_eq!(proj.groups[g as usize].patterns[pi].events.len(), 1);
     }
 }

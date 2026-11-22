@@ -68,6 +68,8 @@ pub struct GuiApp {
     /// Pont MK3 replié automatiquement (fenêtre trop basse) ; revient quand
     /// la fenêtre regrandit, sauf si l'utilisateur l'a rouvert entre-temps.
     deck_auto_hidden: bool,
+    /// Début de l'interface : courte apparition en fondu (pas de surgissement).
+    started_at: std::time::Instant,
     last_window_h: f32,
     /// Largeurs du rail et du panneau MK3 en proportion de la fenêtre.
     nav_frac: f32,
@@ -158,6 +160,7 @@ impl GuiApp {
             last_window_w: 0.0,
             nav_auto_hidden: false,
             deck_auto_hidden: false,
+            started_at: std::time::Instant::now(),
             last_window_h: 0.0,
             nav_frac: 0.12,
             pattern_name_buf: String::new(),
@@ -221,6 +224,7 @@ impl GuiApp {
             last_window_w: 0.0,
             nav_auto_hidden: false,
             deck_auto_hidden: false,
+            started_at: std::time::Instant::now(),
             last_window_h: 0.0,
             nav_frac: 0.12,
             pattern_name_buf: String::new(),
@@ -1445,14 +1449,61 @@ impl eframe::App for GuiApp {
                                 egui::FontId::proportional(14.5),
                                 fg,
                             );
-                            if muted {
-                                painter.text(
-                                    egui::pos2(rect.right() - 8.0, rect.center().y),
-                                    egui::Align2::RIGHT_CENTER,
-                                    "M",
-                                    egui::FontId::new(12.0, crate::gui::theme::bold_family()),
-                                    c.warning,
+                            // MUTE / SOLO du groupe, un par un, comme MUTE + bouton
+                            // de groupe sur la MK3.
+                            let soloed = snap.soloed_groups & (1 << g) != 0;
+                            let mut toggled = false;
+                            for (k, (text, on, color)) in
+                                [("S", soloed, c.accent_cyan), ("M", muted, c.warning)]
+                                    .into_iter()
+                                    .enumerate()
+                            {
+                                let chip_rect = egui::Rect::from_center_size(
+                                    egui::pos2(
+                                        rect.right() - 14.0 - k as f32 * 24.0,
+                                        rect.center().y,
+                                    ),
+                                    egui::vec2(20.0, 18.0),
                                 );
+                                let chip_resp = ui
+                                    .interact(
+                                        chip_rect,
+                                        ui.id().with(("grp_ms", g, k)),
+                                        egui::Sense::click(),
+                                    )
+                                    .on_hover_text(if k == 0 {
+                                        "Solo du groupe"
+                                    } else {
+                                        "Mute du groupe"
+                                    });
+                                let fill = if on {
+                                    color
+                                } else if chip_resp.hovered() {
+                                    c.border_active
+                                } else {
+                                    c.surface
+                                };
+                                let painter = ui.painter();
+                                painter.rect_filled(chip_rect, 4.0, fill);
+                                painter.text(
+                                    chip_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    text,
+                                    egui::FontId::new(12.0, crate::gui::theme::bold_family()),
+                                    if on {
+                                        crate::gui::theme::ink_on(color)
+                                    } else {
+                                        c.text_dim
+                                    },
+                                );
+                                if chip_resp.clicked() {
+                                    toggled = true;
+                                    self.send(if k == 0 {
+                                        EngineEvent::Solo(g as u8)
+                                    } else {
+                                        EngineEvent::Mute(g as u8)
+                                    });
+                                }
                             }
                             let resp = resp
                                 .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -1460,7 +1511,7 @@ impl eframe::App for GuiApp {
                                     "Groupe {} : {name}",
                                     crate::gui::views::group_char(g)
                                 ));
-                            if resp.clicked() {
+                            if resp.clicked() && !toggled {
                                 self.send(EngineEvent::GroupFocus(g as u8));
                             }
                         }
@@ -1561,6 +1612,27 @@ impl eframe::App for GuiApp {
                     .auto_shrink([false, false])
                     .show(ui, |ui| self.render_deck(ui, &snap));
             });
+        }
+
+        // Apparition en fondu : l'interface se révèle sous le mot-symbole au
+        // lieu de surgir d'un coup.
+        let t = self.started_at.elapsed().as_secs_f32();
+        if t < 0.7 {
+            let alpha = (1.0 - t / 0.7).powi(2);
+            let rect = ctx.screen_rect();
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("startup_fade"),
+            ));
+            painter.rect_filled(rect, 0.0, MachColors::dark().bg.gamma_multiply(alpha));
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "MASCHINE",
+                egui::FontId::new(34.0, crate::gui::theme::bold_family()),
+                MachColors::dark().text_dim.gamma_multiply(alpha),
+            );
+            ctx.request_repaint();
         }
 
         // Fenêtre réglages audio (HEAD).

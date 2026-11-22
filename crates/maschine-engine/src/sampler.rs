@@ -842,11 +842,10 @@ impl Sampler {
                         pos += inc;
                     }
                     voice.pos = pos;
-                    let peak = (voice.group < 8 && voice.sound < 16).then_some((
-                        voice.group as usize,
-                        voice.sound as usize,
-                        voice_peak,
-                    ));
+                    // Le SoundId porte le groupe (octet haut) et le slot (octet
+                    // bas) : tous les groupes ont leurs VU, pas seulement A.
+                    let (vg, vs) = ((voice.sound >> 8) as usize, (voice.sound & 0xFF) as usize);
+                    let peak = (vg < 8 && vs < 16).then_some((vg, vs, voice_peak));
                     (finished || voice.adsr_phase == AdsrPhase::Off, peak)
                 }
             };

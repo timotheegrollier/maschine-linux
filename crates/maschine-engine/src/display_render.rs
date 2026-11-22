@@ -6447,6 +6447,39 @@ pub fn render_screens(snap: &EngineSnapshot) -> (DisplayFrame, DisplayFrame) {
     render_screens_with_guitar(snap, None)
 }
 
+/// Écrans de démarrage : même mot-symbole que la veille, l'étape en cours
+/// et une barre de progression — la MK3 réagit dès le lancement au lieu de
+/// rester figée sur le logo du firmware pendant le chargement.
+#[must_use]
+pub fn render_boot_screens(step: &str, progress: f32) -> (DisplayFrame, DisplayFrame) {
+    let (mut left, mut right) = render_shutdown_screens();
+    let accent = DisplayPixel::from_rgb(255, 154, 31);
+    let track = DisplayPixel::from_rgb(36, 39, 46);
+    let dim = DisplayPixel::from_rgb(140, 146, 158);
+    // Barre de progression à cheval sur les deux écrans, sous le mot-symbole.
+    let y = SCR_H as f32 / 2.0 + 44.0;
+    let total = 2.0 * SCR_W as f32 - 2.0 * 120.0;
+    let filled = total * progress.clamp(0.0, 1.0);
+    for (frame, x0) in [(&mut left, 120.0f32), (&mut right, -(SCR_W as f32) + 120.0)] {
+        screen_vector::fill_round_rect(
+            frame,
+            x0.max(0.0),
+            y,
+            (total + x0.min(0.0)).min(SCR_W as f32 - x0.max(0.0)),
+            4.0,
+            2.0,
+            track,
+        );
+        let w = (filled + x0.min(0.0)).clamp(0.0, SCR_W as f32 - x0.max(0.0));
+        if w > 0.5 {
+            screen_vector::fill_round_rect(frame, x0.max(0.0), y, w, 4.0, 2.0, accent);
+        }
+    }
+    let step = fit_text(step, screen_text::Face::Sans, 15.0, SCR_W as f32 - 140.0);
+    label(&mut left, 120.0, y + 30.0, &step, 15.0, dim, 1.0);
+    (left, right)
+}
+
 /// Écrans de veille, envoyés à la fermeture (et en cas de plantage) avant
 /// de libérer l'interface USB : presque noirs, un seul mot-symbole sobre à
 /// cheval sur les deux écrans (« MASCHINE » | « MK3 »), faiblement éclairé —

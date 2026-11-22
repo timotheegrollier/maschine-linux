@@ -283,6 +283,9 @@ fn fuzz_full_workflow_no_panic() {
             soft_present: snap.soft_labels.map(|label| !label.is_empty()),
             soft_active: snap.soft_active,
             page_nav: None,
+            group_colors: [0; 8],
+            pending_scene: None,
+            pending_pattern: None,
         };
         mapper.update_leds(&info);
         let ls = mapper.led_state().clone();

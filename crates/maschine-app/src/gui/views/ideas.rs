@@ -15,7 +15,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
     let c = MachColors::dark();
     let active_scene = snap.active_scene;
 
-    egui::ScrollArea::vertical()
+    egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             if snap.scene_mode {

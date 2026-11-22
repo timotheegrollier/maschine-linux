@@ -2399,10 +2399,12 @@ dependencies = [
 name = "maschine-engine"
 version = "0.12.0"
 dependencies = [
+ "ab_glyph",
  "anyhow",
  "cpal",
  "crossbeam-channel",
  "env_logger",
+ "epaint_default_fonts",
  "hound",
  "log",
  "maschine-proto",

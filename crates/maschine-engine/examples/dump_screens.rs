@@ -140,6 +140,48 @@ fn main() -> std::io::Result<()> {
         .unwrap();
     dump(&eng, "scenes")?;
 
+    // PLUGIN : toutes les pages de chaque instrument (Page ◄ ►).
+    use maschine_engine::EngineEvent as E;
+    eng.handle_event(E::SetSceneMode(false)).unwrap();
+    eng.handle_event(E::SetLeftTab(4)).unwrap();
+    eng.handle_event(E::SetPluginPage(1)).unwrap();
+    eng.handle_event(E::GroupFocus(0)).unwrap();
+    for (name, pad) in [("sampler", 1u8), ("kick", 0), ("wavetable", 5), ("acid", 6)] {
+        eng.handle_event(E::SelectSound(pad)).unwrap();
+        match name {
+            "kick" => eng.handle_event(E::KickSetPreset(0)).unwrap(),
+            "wavetable" => eng.handle_event(E::WavetableSetPreset(0)).unwrap(),
+            "acid" => {
+                // Le TB-303 du projet démo (Groupe C « Synth »).
+                eng.handle_event(E::GroupFocus(2)).unwrap();
+                for pad in 0..16 {
+                    eng.handle_event(E::SelectSound(pad)).unwrap();
+                    if eng.snapshot().focus_sound_acid.is_some() {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+        let pages = eng.plugin_instrument().map_or(1, |i| i.page_count());
+        for page in 0..pages {
+            eng.handle_event(E::SetSynthParamPage(page as u8)).unwrap();
+            let mut snap = eng.snapshot();
+            snap.page_flash = 0.0;
+            let (left, right) = display_render::render_screens(&snap);
+            write_ppm(&dir.join(format!("plugin_{name}_{page}_left.ppm")), &left)?;
+            write_ppm(&dir.join(format!("plugin_{name}_{page}_right.ppm")), &right)?;
+        }
+    }
+    // Transition : bandeau juste après un changement de page.
+    eng.handle_event(E::PluginPageStep(-1)).unwrap();
+    dump(&eng, "plugin_transition")?;
+
+    // Écran de veille (fermeture / plantage).
+    let (left, right) = display_render::render_shutdown_screens();
+    write_ppm(&dir.join("standby_left.ppm"), &left)?;
+    write_ppm(&dir.join("standby_right.ppm"), &right)?;
+
     println!("écrans exportés dans {}", dir.display());
     Ok(())
 }

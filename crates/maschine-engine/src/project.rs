@@ -638,6 +638,9 @@ pub struct MasterChannel {
     pub volume_db: f32,
     /// Pan -1..1
     pub pan: f32,
+    /// Effets d'insert du Master (après tous les groupes).
+    #[serde(default)]
+    pub fx_chain: Vec<crate::fx::FxSlot>,
 }
 
 /// Group — 16 Sounds fixes.

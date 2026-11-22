@@ -424,8 +424,17 @@ pub enum EngineEvent {
     KickSetFilterMode(crate::kick_synth::KickFilterMode),
     /// Bascule la sous-page de paramètres synthé (ex: Page 1 Main <-> Page 2 Filtre & Disto)
     ToggleSynthParamPage,
-    /// Définit la sous-page de paramètres synthé (0: Main, 1: Filtre & Disto)
+    /// Définit la page de paramètres du plugin affiché.
     SetSynthParamPage(u8),
+    /// Rotation d'un knob en mode PLUGIN : paramètre de la page affichée
+    /// (`delta` en ticks bruts, 1024 par tour ; Shift = réglage fin).
+    PluginKnob { knob: u8, delta: i32 },
+    /// Page de paramètres précédente / suivante (boutons Page ◄ ►).
+    PluginPageStep(i8),
+    /// Emplacement précédent / suivant de la chaîne de plugins (4D).
+    PluginSlotStep(i8),
+    /// Sélectionne un emplacement de la chaîne de plugins (GUI).
+    SelectPluginSlot(usize),
     /// Supprime définitivement le projet sélectionné dans le navigateur
     DeleteSelectedProject,
     /// Annule la confirmation de suppression de projet
@@ -631,6 +640,8 @@ pub struct EngineSnapshot {
     pub soft_labels: [&'static str; 8],
     /// Boutons d'écran allumés (voir `Engine::soft_key_active`).
     pub soft_active: [bool; 8],
+    /// Bandeau de changement de page : 1 juste après, 0 au bout de 0,9 s.
+    pub page_flash: f32,
     /// Enveloppe (min,max) du sample du Sound actif — waveform des écrans.
     pub waveform: Option<Arc<[(f32, f32)]>>,
     /// Durée du sample du Sound actif (secondes).
@@ -651,6 +662,12 @@ pub struct EngineSnapshot {
     pub focus_sound_fx: Vec<crate::fx::FxSlot>,
     /// Chaîne d'effets du Group focus.
     pub focus_group_fx: Vec<crate::fx::FxSlot>,
+    /// Chaîne parcourue au 4D en mode PLUGIN (instrument, effets Sound,
+    /// Group, Master) et emplacement sélectionné.
+    pub plugin_slots: Vec<PluginSlotView>,
+    pub plugin_slot: usize,
+    /// Effet sélectionné (pages de paramètres de l'effet).
+    pub plugin_fx: Option<crate::fx::FxSlot>,
     /// Mode mixer (0: Pads 1-8, 1: Pads 9-16, 2: Groupes A-H, 3: Master).
     pub mixer_mode: u8,
     /// Index plugin sélectionné dans le browser (0..3).
@@ -743,6 +760,9 @@ pub struct HardwareSnapshot {
     pub soft_present: [bool; 8],
     /// Boutons d'écran allumés (LED pleine), comme sur les écrans.
     pub soft_active: [bool; 8],
+    /// Pages PLUGIN : page précédente / suivante disponibles (LED Page ◄ ►),
+    /// `None` hors des pages d'un plugin.
+    pub page_nav: Option<[bool; 2]>,
 }
 
 /// Convertit un gain en décibels en multiplicateur linéaire.
@@ -750,6 +770,90 @@ pub struct HardwareSnapshot {
 pub fn db_to_linear(db: f32) -> f32 {
     10.0f32.powf(db / 20.0)
 }
+
+/// Propriétaire d'une chaîne d'effets d'insert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FxOwner {
+    Sound(u8, u8),
+    Group(u8),
+    Master,
+}
+
+impl FxOwner {
+    /// Chaîne d'effets de ce propriétaire dans le projet.
+    #[must_use]
+    pub fn chain(self, proj: &Project) -> &[crate::fx::FxSlot] {
+        match self {
+            Self::Sound(g, s) => proj
+                .groups
+                .get(g as usize)
+                .and_then(|grp| grp.sounds.get(s as usize))
+                .and_then(Option::as_ref)
+                .map_or(&[], |snd| snd.fx_chain.as_slice()),
+            Self::Group(g) => proj
+                .groups
+                .get(g as usize)
+                .map_or(&[], |grp| grp.fx_chain.as_slice()),
+            Self::Master => proj.master.fx_chain.as_slice(),
+        }
+    }
+
+    /// Niveau affiché : 0 = Sound, 1 = Group, 2 = Master.
+    #[must_use]
+    pub fn level(self) -> u8 {
+        match self {
+            Self::Sound(..) => 0,
+            Self::Group(_) => 1,
+            Self::Master => 2,
+        }
+    }
+
+    /// Chaîne modifiable ; `create` crée le Sound s'il n'existe pas encore.
+    fn chain_mut(self, proj: &mut Project, create: bool) -> Option<&mut Vec<crate::fx::FxSlot>> {
+        match self {
+            Self::Sound(g, s) => {
+                let slot = proj
+                    .groups
+                    .get_mut(g as usize)?
+                    .sounds
+                    .get_mut(s as usize)?;
+                if create && slot.is_none() {
+                    *slot = Some(crate::project::Sound::new(&format!("Sound {}", s + 1), 78));
+                }
+                Some(&mut slot.as_mut()?.fx_chain)
+            }
+            Self::Group(g) => Some(&mut proj.groups.get_mut(g as usize)?.fx_chain),
+            Self::Master => Some(&mut proj.master.fx_chain),
+        }
+    }
+}
+
+/// Emplacement de la chaîne de plugins parcourue en mode PLUGIN (4D).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginSlot {
+    /// Instrument du Sound focalisé (sampler ou synthé).
+    Instrument,
+    /// Effet `index` de la chaîne d'un propriétaire.
+    Fx(FxOwner, usize),
+    /// Emplacement libre en fin de chaîne : insertion d'un effet.
+    Add(FxOwner),
+}
+
+/// Ligne de la chaîne affichée (écrans MK3, GUI).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginSlotView {
+    /// 0 = Sound, 1 = Group, 2 = Master.
+    pub level: u8,
+    pub name: String,
+    /// Effet présent mais contourné (BYPASS).
+    pub bypassed: bool,
+    /// Emplacement libre « + effet ».
+    pub empty: bool,
+}
+
+/// Taille des tampons de bus d'effets (échantillons entrelacés) : couvre les
+/// blocs de 1024 trames du callback ; un bloc plus long contourne les effets.
+const FX_BUS_LEN: usize = 4096;
 
 /// Engine principal.
 pub struct Engine {
@@ -786,8 +890,14 @@ pub struct Engine {
     nav_serial: u64,
     /// Page de l'éditeur PLUGIN (0: Sound, 1: TB-303)
     pub plugin_page: u8,
-    /// Sous-page de paramètres synthé (0: Main, 1: Filtre & Disto)
+    /// Page de paramètres du plugin affiché (voir `plugin_pages`).
     pub synth_param_page: u8,
+    /// Crans accumulés par knob pour les paramètres entiers et à choix.
+    plugin_knob_accum: [i32; 8],
+    /// Dernier preset TB-303 choisi (boutons PRESET ◄ ►).
+    acid_preset: u8,
+    /// Dernier changement de page (bandeau de transition des écrans).
+    page_changed_at: Option<std::time::Instant>,
     /// Son actif
     pub active_sound: u8,
     /// Mesure sélectionnée pour l'édition et l'affichage (0..pattern_bars-1)
@@ -812,7 +922,18 @@ pub struct Engine {
     /// Synthétiseur polyphonique Wavetable / Nexus.
     pub wavetable_synth: crate::wavetable_synth::WavetableSynth,
     /// Processeur d'effets temps réel.
-    pub fx_processor: crate::fx::FxChainProcessor,
+    /// Bus d'effets actifs (Sounds puis groupes) : propriétaire et état DSP.
+    fx_buses: Vec<(FxOwner, crate::fx::FxChainProcessor)>,
+    /// Inserts du Master, appliqués à la somme de tous les groupes.
+    master_fx: crate::fx::FxChainProcessor,
+    /// Limiteur de sortie (après le volume Master).
+    master_limiter: crate::limiter::MasterLimiter,
+    /// Emplacement sélectionné dans la chaîne de plugins (mode PLUGIN) et
+    /// Sound pour lequel il a été choisi (un autre Sound repart de l'instrument).
+    plugin_slot: usize,
+    plugin_slot_focus: (u8, u8),
+    /// Tampons de mixage des bus, préalloués hors du thread audio.
+    fx_bus_bufs: Vec<Vec<f32>>,
     /// Entrées du navigateur de projets.
     pub project_entries: Vec<ProjectFileEntry>,
     /// Entrée projet sélectionnée.
@@ -1088,6 +1209,9 @@ impl Engine {
             nav_serial: 0,
             plugin_page: 0,
             synth_param_page: 0,
+            plugin_knob_accum: [0; 8],
+            acid_preset: 0,
+            page_changed_at: None,
             active_sound: 0,
             selected_bar: 0,
             step_cursor: 0,
@@ -1099,7 +1223,12 @@ impl Engine {
             browser_fx_idx: 0,
             kick_synth: crate::kick_synth::KickSynth::new(sample_rate),
             wavetable_synth: crate::wavetable_synth::WavetableSynth::new(sample_rate),
-            fx_processor: crate::fx::FxChainProcessor::new(sample_rate),
+            fx_buses: Vec::new(),
+            master_fx: crate::fx::FxChainProcessor::new(sample_rate),
+            master_limiter: crate::limiter::MasterLimiter::new(sample_rate),
+            plugin_slot: 0,
+            plugin_slot_focus: (0, 0),
+            fx_bus_bufs: Vec::new(),
             project_entries: Vec::new(),
             project_selected: 0,
             current_project_path: None,
@@ -1449,6 +1578,9 @@ impl Engine {
             master_peak: self.master_peak_hold,
             soft_labels: self.soft_key_labels(),
             soft_active: self.soft_key_active(),
+            page_flash: self.page_changed_at.map_or(0.0, |t| {
+                (1.0 - t.elapsed().as_secs_f32() / 0.9).clamp(0.0, 1.0)
+            }),
             waveform: self
                 .sampler
                 .waveform_envelope(sampler_sound_id(self.group_focus, self.active_sound), 512),
@@ -1463,6 +1595,9 @@ impl Engine {
             focus_sound_wavetable: self.focus_sound_wavetable_params(),
             focus_sound_fx: self.focus_sound_fx(),
             focus_group_fx: self.focus_group_fx(),
+            plugin_slots: self.plugin_slot_views(),
+            plugin_slot: self.plugin_slot_index(),
+            plugin_fx: self.selected_fx().map(|(_, _, slot)| slot),
             mixer_mode: self.mixer_mode,
             browser_plugin_idx: self.browser_plugin_idx,
             browser_fx_idx: self.browser_fx_idx,
@@ -1484,6 +1619,10 @@ impl Engine {
         // Avant de verrouiller le projet : ces calculs le relisent eux-mêmes.
         let soft_present = self.soft_key_labels().map(|label| !label.is_empty());
         let soft_active = self.soft_key_active();
+        let page_nav = self.plugin_instrument().map(|inst| {
+            let page = self.plugin_page_index();
+            [page > 0, page + 1 < inst.page_count()]
+        });
         let project = self.project.read();
         let playing = self.transport.is_playing();
         let recording = self.transport.state == TransportState::Recording;
@@ -1586,6 +1725,7 @@ impl Engine {
             lock_active: self.lock_active,
             soft_present,
             soft_active,
+            page_nav,
         }
     }
 
@@ -1820,6 +1960,11 @@ impl Engine {
             return;
         }
         self.align_sample_rate_clock(rate);
+        // Inserts recréés au nouveau taux (temps de délai, coefficients).
+        self.fx_buses.clear();
+        self.master_fx = crate::fx::FxChainProcessor::new(rate);
+        self.master_limiter = crate::limiter::MasterLimiter::new(rate);
+        self.sync_fx_buses();
         self.click_accent = Self::metronome_click(rate, 1760.0);
         self.click_normal = Self::metronome_click(rate, 880.0);
         for i in 0..16usize {
@@ -1941,8 +2086,18 @@ impl Engine {
     /// Relâche la note pour les synthétiseurs et le sampler.
     pub fn release_sound_voice(&mut self, pad: u8, note: u8) {
         let sound = sampler_sound_id(self.group_focus, pad);
-        self.acid_synth.note_off(note);
-        self.wavetable_synth.note_off(note);
+        // Les synthés sont partagés : seul le pad qui les joue les relâche,
+        // sinon un autre pad (ou touche) de même hauteur coupe la note tenue.
+        // Focus de groupe changé entre-temps : relâche par hauteur, comme avant.
+        let owns = |target: Option<(u8, u8)>| {
+            target.is_none_or(|(g, s)| s == pad || g != self.group_focus)
+        };
+        if owns(self.acid_sound_target) {
+            self.acid_synth.note_off(note);
+        }
+        if owns(self.wavetable_sound_target) {
+            self.wavetable_synth.note_off(note);
+        }
         self.sampler.note_off(sound, note);
     }
 
@@ -1958,6 +2113,13 @@ impl Engine {
 
     /// Traite un `EngineEvent`.
     pub fn handle_event(&mut self, ev: EngineEvent) -> crate::Result<()> {
+        let result = self.apply_event(ev);
+        // Chaînes d'effets modifiées (ajout, chargement, undo…) : bus à jour.
+        self.sync_fx_buses();
+        result
+    }
+
+    fn apply_event(&mut self, ev: EngineEvent) -> crate::Result<()> {
         let records_history = matches!(
             &ev,
             EngineEvent::ClearPattern { .. }
@@ -3438,23 +3600,30 @@ impl Engine {
                 let _ = self.handle_event(EngineEvent::KickSetParams(p));
             }
             EngineEvent::ToggleSynthParamPage => {
-                self.synth_param_page = if self.synth_param_page == 0 { 1 } else { 0 };
-                self.status_message = Some(format!(
-                    "Page Paramètres Synthé : {}",
-                    if self.synth_param_page == 1 {
-                        "2 (Filtre & Disto)"
-                    } else {
-                        "1 (Main Engine)"
-                    }
-                ));
-                self.status_expires_at =
-                    std::time::Instant::now() + std::time::Duration::from_millis(2000);
-                self.revision = self.revision.wrapping_add(1);
+                // Page suivante, en boucle (ancien bouton PAGE 1/2).
+                let count = self.plugin_instrument().map_or(1, |i| i.page_count());
+                let next = (self.plugin_page_index() + 1) % count;
+                self.set_plugin_page(next);
             }
             EngineEvent::SetSynthParamPage(page) => {
-                self.synth_param_page = page.min(1);
-                self.revision = self.revision.wrapping_add(1);
+                self.set_plugin_page(page as usize);
             }
+            EngineEvent::PluginPageStep(step) => {
+                let count = self.plugin_page_count();
+                let page = (self.plugin_page_index() as i32 + i32::from(step))
+                    .clamp(0, count as i32 - 1) as usize;
+                if page != self.plugin_page_index() {
+                    self.set_plugin_page(page);
+                }
+            }
+            EngineEvent::PluginKnob { knob, delta } => {
+                self.turn_plugin_knob(knob as usize, delta)?;
+            }
+            EngineEvent::PluginSlotStep(step) => {
+                let next = self.plugin_slot_index() as i32 + i32::from(step);
+                self.select_plugin_slot(next.max(0) as usize);
+            }
+            EngineEvent::SelectPluginSlot(index) => self.select_plugin_slot(index),
             EngineEvent::CycleSoundFilterKind { group, sound } => {
                 let mut guard = self.project.write();
                 let proj = project_mut(&mut guard);
@@ -4026,6 +4195,7 @@ impl Engine {
                     _ => {}
                 }
                 if idx <= 3 {
+                    self.acid_preset = idx;
                     // En page TB, appliquer le preset au Sound actif (créé synthé si besoin).
                     if self.left_tab == 4 && self.plugin_page == 1 {
                         self.ensure_active_sound_synth();
@@ -4552,8 +4722,8 @@ impl Engine {
         &mut self,
         out: &mut [f32],
         out_len: usize,
-        group: u8,
-        sound: u8,
+        (group, sound): (u8, u8),
+        bus: Option<u8>,
         proj: &Project,
     ) {
         let is_muted = (self.muted_groups & (1 << (group % 8))) != 0
@@ -4604,12 +4774,18 @@ impl Engine {
         let pan_l = (1.0 - total_pan).min(1.0) * total_gain;
         let pan_r = (1.0 + total_pan).min(1.0) * total_gain;
 
+        let dst: &mut [f32] = match bus.map(usize::from) {
+            Some(b) if self.fx_bus_bufs.get(b).is_some_and(|v| v.len() >= out_len) => {
+                &mut self.fx_bus_bufs[b]
+            }
+            _ => &mut *out,
+        };
         let mut peak = 0.0f32;
         for f in 0..out_len / 2 {
             let l = self.synth_buf[f * 2] * pan_l;
             let r = self.synth_buf[f * 2 + 1] * pan_r;
-            out[f * 2] += l;
-            out[f * 2 + 1] += r;
+            dst[f * 2] += l;
+            dst[f * 2 + 1] += r;
             let p = l.abs().max(r.abs());
             if p > peak {
                 peak = p;
@@ -4629,10 +4805,29 @@ impl Engine {
 
     /// Render audio stéréo — à appeler depuis callback cpal/jack.
     pub fn render_audio(&mut self, out: &mut [f32]) {
-        self.sampler.render(out);
+        let out_len = out.len();
+        // Routage vers les inserts : bus du Sound, sinon bus de son groupe.
+        let mut route = [[None::<u8>; 16]; 8];
+        if out_len <= FX_BUS_LEN {
+            for buf in &mut self.fx_bus_bufs {
+                buf[..out_len].fill(0.0);
+            }
+            for (i, (owner, _)) in self.fx_buses.iter().enumerate() {
+                match *owner {
+                    FxOwner::Group(g) => {
+                        for slot in &mut route[g as usize % 8] {
+                            slot.get_or_insert(i as u8);
+                        }
+                    }
+                    FxOwner::Sound(g, s) => route[g as usize % 8][s as usize % 16] = Some(i as u8),
+                    FxOwner::Master => {}
+                }
+            }
+        }
+        self.sampler
+            .render_routed(out, &route, &mut self.fx_bus_bufs);
 
         // Rendu des synthétiseurs avec application des volumes, panoramiques et mutes par pad/groupe
-        let out_len = out.len();
         if self.synth_buf.len() < out_len {
             self.synth_buf.resize(out_len, 0.0);
         }
@@ -4645,7 +4840,8 @@ impl Engine {
         }) {
             self.synth_buf[..out_len].fill(0.0);
             self.kick_synth.render(&mut self.synth_buf[..out_len]);
-            self.mix_synth_buffer(out, out_len, kg, ks, &proj);
+            let bus = route[kg as usize % 8][ks as usize % 16];
+            self.mix_synth_buffer(out, out_len, (kg, ks), bus, &proj);
         }
 
         // 2. TB-303 Acid Synth
@@ -4654,7 +4850,8 @@ impl Engine {
         {
             self.synth_buf[..out_len].fill(0.0);
             self.acid_synth.render(&mut self.synth_buf[..out_len]);
-            self.mix_synth_buffer(out, out_len, ag, asnd, &proj);
+            let bus = route[ag as usize % 8][asnd as usize % 16];
+            self.mix_synth_buffer(out, out_len, (ag, asnd), bus, &proj);
         }
 
         // 3. Wavetable / Nexus Synth
@@ -4665,14 +4862,40 @@ impl Engine {
         {
             self.synth_buf[..out_len].fill(0.0);
             self.wavetable_synth.render(&mut self.synth_buf[..out_len]);
-            self.mix_synth_buffer(out, out_len, wg, ws, &proj);
+            let bus = route[wg as usize % 8][ws as usize % 16];
+            self.mix_synth_buffer(out, out_len, (wg, ws), bus, &proj);
         }
-        drop(proj);
 
-        let group_fx = self.focus_group_fx();
-        if !group_fx.is_empty() {
-            self.fx_processor.process(out, &group_fx);
+        // Inserts : chaque Sound passe dans sa chaîne puis rejoint le bus de
+        // son groupe (traité ensuite : les Sounds précèdent les groupes) ou
+        // la sortie ; chaque groupe passe dans la sienne puis sort.
+        if out_len <= FX_BUS_LEN {
+            for i in 0..self.fx_buses.len() {
+                let owner = self.fx_buses[i].0;
+                self.fx_buses[i]
+                    .1
+                    .process(&mut self.fx_bus_bufs[i][..out_len], owner.chain(&proj));
+                let group_bus = match owner {
+                    FxOwner::Sound(g, _) => self
+                        .fx_buses
+                        .iter()
+                        .position(|(o, _)| *o == FxOwner::Group(g))
+                        .filter(|&gb| gb > i),
+                    FxOwner::Group(_) | FxOwner::Master => None,
+                };
+                let (src, rest) = self.fx_bus_bufs.split_at_mut(i + 1);
+                let wet = &src[i][..out_len];
+                let dst: &mut [f32] = match group_bus {
+                    Some(gb) => &mut rest[gb - i - 1][..out_len],
+                    None => &mut *out,
+                };
+                for (d, w) in dst.iter_mut().zip(wet) {
+                    *d += *w;
+                }
+            }
         }
+        self.master_fx.process(out, &proj.master.fx_chain);
+        drop(proj);
         // VU-mètres : crêtes par groupe du sampler, attaque immédiate / release
         // exponentiel par bloc (≈ -20 dB en 300 ms), peak hold plus lent (~1,7 s).
         let peaks = self.sampler.group_peaks();
@@ -4717,21 +4940,12 @@ impl Engine {
         // écrêtée durement (clamp ±1) : kick + snare + clap (~1,7) distordaient.
         // Ici la réponse reste linéaire sous -3 dB puis sature en douceur.
         let mv = self.master_volume;
-        let mut peak = 0.0f32;
         for s in out.iter_mut() {
-            let x = *s * mv;
-            let a = x.abs();
-            let y = if a <= 0.7 {
-                x
-            } else {
-                x.signum() * (0.7 + 0.3 * ((a - 0.7) / 0.3).tanh())
-            };
-            *s = y;
-            let a = y.abs();
-            if a > peak {
-                peak = a;
-            }
+            *s *= mv;
         }
+        // Limiteur transparent sous -1 dBFS (plus de saturation du Master).
+        self.master_limiter.process(out);
+        let peak = out.iter().fold(0.0f32, |m, s| m.max(s.abs()));
         self.master_meter = if peak > self.master_meter {
             peak
         } else {
@@ -4776,6 +4990,11 @@ impl Engine {
     pub fn soft_key_labels(&self) -> [&'static str; 8] {
         if self.note_repeat_enabled {
             return ["1/32", "1/16", "1/8", "1/4", "1/2", "1/16T", "1/8T", "LOCK"];
+        }
+        // Mode PLUGIN : 4 boutons d'instrument + 4 boutons de la page affichée.
+        // Shift n'y change pas les boutons (Shift + knob = réglage fin).
+        if let Some(inst) = self.plugin_instrument() {
+            return self.plugin_soft_labels(inst);
         }
         if self.shift_held {
             if self.scene_mode {
@@ -4822,52 +5041,8 @@ impl Engine {
                         "REVERSE", "LOOP", "NORMLZ", "CYC FLT", "LP/HP/BP", "NOTCH", "PEAK", "OFF",
                     ];
                 }
-                4 if self.plugin_page == 2 => {
-                    return crate::display_render::GUITAR_SOFT_LABELS;
-                }
                 4 => {
-                    if self.focus_sound_has_wavetable() {
-                        let is_page2 = (self.synth_param_page == 1) ^ self.shift_held;
-                        if is_page2 {
-                            return [
-                                "PAGE 1/2", "FLT MOD", "UNISON", "OSC1 WV", "OSC2 WV", "CHORUS",
-                                "DELAY", "REVERB",
-                            ];
-                        } else {
-                            return [
-                                "PAGE 1/2", "PRES <", "PRES >", "PIANO", "M1 PIANO", "808 SUB",
-                                "REESE", "BROWSER",
-                            ];
-                        }
-                    } else if self.focus_sound_has_kick() {
-                        let is_page2 = (self.synth_param_page == 1) ^ self.shift_held;
-                        if is_page2 {
-                            return [
-                                "PAGE 1/2", "DRV TYP", "WAVE", "FLT MOD", "LP", "HP", "BP",
-                                "NTCH/PK",
-                            ];
-                        } else {
-                            return [
-                                "PAGE 1/2",
-                                "PRESETS",
-                                "TECHNO",
-                                "909",
-                                "HARDCORE",
-                                "808 SUB",
-                                "INDUSTRIAL",
-                                "BROWSER",
-                            ];
-                        }
-                    } else if self.focus_sound_has_acid() {
-                        return [
-                            "WAVE", "CUTOFF", "RESO", "ENV AMT", "DECAY", "ACCENT", "DRIVE",
-                            "DELAY",
-                        ];
-                    } else {
-                        return [
-                            "REVERSE", "LOOP", "NORMLZ", "CYC FLT", "LP", "HP", "BP", "OFF",
-                        ];
-                    }
+                    return crate::display_render::GUITAR_SOFT_LABELS;
                 }
                 _ => {
                     return [
@@ -4940,49 +5115,6 @@ impl Engine {
             3 => [
                 "PRES <", "PRES >", "SND <", "SND >", "ECOUTE", "CHARGER", "PLUGINS", "PROJETS",
             ],
-            4 => {
-                if self.focus_sound_has_kick() {
-                    let is_page2 = self.synth_param_page == 1;
-                    if is_page2 {
-                        [
-                            "PAGE 1/2", "DRV TYP", "WAVE", "FLT MOD", "LP", "HP", "BP", "NTCH/PK",
-                        ]
-                    } else {
-                        [
-                            "PAGE 1/2",
-                            "PRESETS",
-                            "TECHNO",
-                            "909",
-                            "HARDCORE",
-                            "808 SUB",
-                            "INDUSTRIAL",
-                            "BROWSER",
-                        ]
-                    }
-                } else if self.focus_sound_has_acid() {
-                    [
-                        "SAW/SQR", "OCT -", "OCT +", "SLIDE", "CLASSIC", "SQUELCH", "DUB",
-                        "BROWSER",
-                    ]
-                } else if self.focus_sound_has_wavetable() {
-                    let is_page2 = self.synth_param_page == 1;
-                    if is_page2 {
-                        [
-                            "PAGE 1/2", "FLT MOD", "UNISON", "OSC1 WV", "OSC2 WV", "CHORUS",
-                            "DELAY", "REVERB",
-                        ]
-                    } else {
-                        [
-                            "PAGE 1/2", "PRES <", "PRES >", "PIANO", "M1 PIANO", "808 SUB",
-                            "REESE", "BROWSER",
-                        ]
-                    }
-                } else {
-                    [
-                        "SND <", "SND >", "ECOUTE", "CYC FLT", "LP/HP/BP", "NOTCH", "PEAK", "OFF",
-                    ]
-                }
-            }
             _ => [
                 "BAR 1", "BAR 2", "BAR 3", "BAR 4", "1 MES", "2 MES", "4 MES", "8 MES",
             ],
@@ -5022,7 +5154,11 @@ impl Engine {
         let group_soloed = self.soloed_groups & (1u8 << (self.group_focus % 8)) != 0;
         // Même ordre que `NOTE_REPEAT_TICKS` et les libellés NOTE REPEAT.
         const RATES: [&str; 7] = ["1/32", "1/16", "1/8", "1/4", "1/2", "1/16T", "1/8T"];
+        let fx = self.selected_fx().map(|(_, _, fx)| fx);
         self.soft_key_labels().map(|label| {
+            if let Some(fx) = fx.as_ref().filter(|_| !self.note_repeat_enabled) {
+                return self.fx_soft_key_lit(fx, label);
+            }
             if self.note_repeat_enabled {
                 return RATES.get(self.note_repeat_rate as usize) == Some(&label)
                     || (label == "LOCK" && self.lock_active);
@@ -5057,11 +5193,693 @@ impl Engine {
                 "COUNT-IN" => self.transport.count_in_bars > 0,
                 "PAGE 1/2" => self.synth_param_page == 1,
                 "SLIDE" => self.acid_synth.params.slide_time_ms > 1.0,
+                "OSC 2" => self
+                    .focus_sound_wavetable_params()
+                    .is_some_and(|p| p.osc2_enabled),
                 "CHROMA" => self.keyboard.scale == 0,
                 "MINOR" => self.keyboard.scale == 2,
                 _ => false,
             }
         })
+    }
+
+    /// Instrument affiché en mode PLUGIN (onglet 4 hors ampli guitare).
+    #[must_use]
+    pub fn plugin_instrument(&self) -> Option<crate::plugin_pages::Instrument> {
+        crate::plugin_pages::instrument_for(
+            self.left_tab,
+            self.plugin_page,
+            self.focus_sound_has_kick(),
+            self.focus_sound_has_wavetable(),
+            self.focus_sound_has_acid(),
+        )
+    }
+
+    /// Page de paramètres affichée, bornée au nombre de pages de l'instrument.
+    #[must_use]
+    pub fn plugin_page_index(&self) -> usize {
+        if self.current_plugin_slot() != PluginSlot::Instrument {
+            return 0;
+        }
+        self.plugin_instrument().map_or(0, |i| {
+            (self.synth_param_page as usize).min(i.page_count() - 1)
+        })
+    }
+
+    /// Nombre de pages de l'emplacement affiché (instrument ou effet).
+    #[must_use]
+    pub fn plugin_page_count(&self) -> usize {
+        match self.current_plugin_slot() {
+            PluginSlot::Instrument => self.plugin_instrument().map_or(1, |i| i.page_count()),
+            PluginSlot::Fx(..) | PluginSlot::Add(_) => 1,
+        }
+    }
+
+    /// Chaîne parcourue au 4D en mode PLUGIN : instrument du Sound, puis
+    /// effets du Sound, du Group et du Master, chaque chaîne suivie d'un
+    /// emplacement libre pour insérer un effet.
+    fn plugin_slots(&self) -> Vec<PluginSlot> {
+        let proj = Arc::clone(&*self.project.read());
+        let mut slots = vec![PluginSlot::Instrument];
+        for owner in [
+            FxOwner::Sound(self.group_focus, self.active_sound),
+            FxOwner::Group(self.group_focus),
+            FxOwner::Master,
+        ] {
+            slots.extend((0..owner.chain(&proj).len()).map(|i| PluginSlot::Fx(owner, i)));
+            slots.push(PluginSlot::Add(owner));
+        }
+        slots
+    }
+
+    /// Index de l'emplacement sélectionné (0 = instrument).
+    #[must_use]
+    pub fn plugin_slot_index(&self) -> usize {
+        if self.plugin_slot_focus != (self.group_focus, self.active_sound) {
+            return 0;
+        }
+        self.plugin_slot.min(self.plugin_slots().len() - 1)
+    }
+
+    /// Emplacement sélectionné.
+    #[must_use]
+    pub fn current_plugin_slot(&self) -> PluginSlot {
+        self.plugin_slots()[self.plugin_slot_index()]
+    }
+
+    fn select_plugin_slot(&mut self, index: usize) {
+        if self.plugin_instrument().is_none() {
+            return;
+        }
+        let index = index.min(self.plugin_slots().len() - 1);
+        if index == self.plugin_slot_index() {
+            return;
+        }
+        self.plugin_slot = index;
+        self.plugin_slot_focus = (self.group_focus, self.active_sound);
+        self.plugin_knob_accum = [0; 8];
+        self.page_changed_at = Some(std::time::Instant::now());
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Chaîne affichée (écrans, GUI).
+    fn plugin_slot_views(&self) -> Vec<PluginSlotView> {
+        let proj = Arc::clone(&*self.project.read());
+        let instrument = crate::plugin_pages::instrument_for(
+            4,
+            0,
+            self.focus_sound_has_kick(),
+            self.focus_sound_has_wavetable(),
+            self.focus_sound_has_acid(),
+        )
+        .map_or("Sampler", |i| i.label());
+        self.plugin_slots()
+            .into_iter()
+            .map(|slot| match slot {
+                PluginSlot::Instrument => PluginSlotView {
+                    level: 0,
+                    name: instrument.to_string(),
+                    bypassed: false,
+                    empty: false,
+                },
+                PluginSlot::Fx(owner, i) => {
+                    let fx = &owner.chain(&proj)[i];
+                    PluginSlotView {
+                        level: owner.level(),
+                        name: fx.fx_type.label().to_string(),
+                        bypassed: !fx.enabled,
+                        empty: false,
+                    }
+                }
+                PluginSlot::Add(owner) => PluginSlotView {
+                    level: owner.level(),
+                    name: "+ effet".to_string(),
+                    bypassed: false,
+                    empty: true,
+                },
+            })
+            .collect()
+    }
+
+    /// Effet sélectionné en mode PLUGIN : propriétaire, index et réglages.
+    #[must_use]
+    pub fn selected_fx(&self) -> Option<(FxOwner, usize, crate::fx::FxSlot)> {
+        self.plugin_instrument()?;
+        let PluginSlot::Fx(owner, i) = self.current_plugin_slot() else {
+            return None;
+        };
+        let proj = Arc::clone(&*self.project.read());
+        owner
+            .chain(&proj)
+            .get(i)
+            .cloned()
+            .map(|slot| (owner, i, slot))
+    }
+
+    /// Modifie un effet (knobs, boutons d'écran).
+    fn edit_fx(&mut self, owner: FxOwner, index: usize, f: impl FnOnce(&mut crate::fx::FxSlot)) {
+        let mut guard = self.project.write();
+        if let Some(slot) = owner
+            .chain_mut(project_mut(&mut guard), false)
+            .and_then(|c| c.get_mut(index))
+        {
+            f(slot);
+        }
+        drop(guard);
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Insère un effet en fin de chaîne et le sélectionne en mode PLUGIN.
+    fn insert_fx(&mut self, owner: FxOwner, fx_type: crate::fx::FxType) {
+        self.push_project_history();
+        let mut guard = self.project.write();
+        let len = owner.chain_mut(project_mut(&mut guard), true).map(|chain| {
+            chain.push(crate::fx::FxSlot::default_for(fx_type));
+            chain.len()
+        });
+        drop(guard);
+        let Some(len) = len else { return };
+        let target = match owner {
+            FxOwner::Sound(_, s) => format!("Sound {}", s + 1),
+            FxOwner::Group(g) => format!("Groupe {}", (b'A' + g % 8) as char),
+            FxOwner::Master => "Master".to_string(),
+        };
+        self.show_status(format!("{} ajouté — {target}", fx_type.label()));
+        if let Some(pos) = self
+            .plugin_slots()
+            .iter()
+            .position(|s| *s == PluginSlot::Fx(owner, len - 1))
+        {
+            if self.plugin_instrument().is_some() {
+                self.plugin_slot = pos;
+                self.plugin_slot_focus = (self.group_focus, self.active_sound);
+                self.page_changed_at = Some(std::time::Instant::now());
+            }
+        }
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    fn remove_fx(&mut self, owner: FxOwner, index: usize) {
+        self.push_project_history();
+        let mut guard = self.project.write();
+        let removed = owner
+            .chain_mut(project_mut(&mut guard), false)
+            .filter(|c| index < c.len())
+            .map(|c| c.remove(index));
+        drop(guard);
+        if let Some(fx) = removed {
+            self.show_status(format!("{} supprimé", fx.fx_type.label()));
+        }
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    fn show_status(&mut self, message: String) {
+        self.status_message = Some(message);
+        self.status_expires_at = std::time::Instant::now() + std::time::Duration::from_millis(2500);
+    }
+
+    /// Boutons d'écran d'un effet : type, bypass, suppression puis les
+    /// raccourcis de sa page ; emplacement libre : les effets à insérer.
+    fn fx_soft_labels(&self) -> Option<[&'static str; 8]> {
+        match self.current_plugin_slot() {
+            PluginSlot::Instrument => None,
+            PluginSlot::Add(_) => Some(["FILTER", "DISTO", "COMP", "", "DELAY", "REVERB", "", ""]),
+            PluginSlot::Fx(..) => {
+                let (_, _, fx) = self.selected_fx()?;
+                let b = crate::plugin_pages::fx_pages(fx.fx_type)[0].buttons;
+                Some([
+                    "< TYPE", "TYPE >", "BYPASS", "SUPPR", b[0], b[1], b[2], b[3],
+                ])
+            }
+        }
+    }
+
+    /// Temps de delay (ms) d'une division de noire au tempo courant.
+    fn synced_delay_ms(&self, label: &str) -> Option<f32> {
+        let beat = 60_000.0 / self.transport.bpm.max(20.0);
+        match label {
+            "1/16" => Some(beat / 4.0),
+            "1/8" => Some(beat / 2.0),
+            "1/4" => Some(beat),
+            _ => None,
+        }
+    }
+
+    /// Bouton d'écran allumé pour l'effet sélectionné.
+    fn fx_soft_key_lit(&self, fx: &crate::fx::FxSlot, label: &str) -> bool {
+        use crate::fx::FxType as T;
+        match (fx.fx_type, label) {
+            (_, "BYPASS") => !fx.enabled,
+            (T::Filter, "LP") => fx.p3.round() as i32 == 0,
+            (T::Filter, "HP") => fx.p3.round() as i32 == 1,
+            (T::Filter, "BP") => fx.p3.round() as i32 == 2,
+            (T::Distortion, "SOFT") => fx.p3 <= 0.5,
+            (T::Distortion, "HARD") => fx.p3 > 0.5,
+            (T::Delay, "PING-PONG") => fx.p4 > 0.5,
+            (T::Delay, l) => self
+                .synced_delay_ms(l)
+                .is_some_and(|ms| (fx.p1 - ms).abs() < 0.5),
+            _ => false,
+        }
+    }
+
+    fn handle_fx_soft_key(&mut self, label: &str) -> crate::Result<()> {
+        use crate::fx::{FxSlot, FxType as T};
+        match self.current_plugin_slot() {
+            PluginSlot::Instrument => {}
+            PluginSlot::Add(owner) => {
+                if let Some(t) = T::ALL.into_iter().find(|t| t.name() == label) {
+                    self.insert_fx(owner, t);
+                }
+            }
+            PluginSlot::Fx(owner, i) => {
+                let Some((_, _, fx)) = self.selected_fx() else {
+                    return Ok(());
+                };
+                let synced = self.synced_delay_ms(label);
+                match label {
+                    "SUPPR" => self.remove_fx(owner, i),
+                    "BYPASS" => self.edit_fx(owner, i, |s| s.enabled = !s.enabled),
+                    "< TYPE" | "TYPE >" => {
+                        let all = T::ALL;
+                        let cur = all.iter().position(|t| *t == fx.fx_type).unwrap_or(0) as i32;
+                        let dir = if label == "< TYPE" { -1 } else { 1 };
+                        let next = all[(cur + dir).rem_euclid(all.len() as i32) as usize];
+                        self.edit_fx(owner, i, |s| {
+                            *s = FxSlot {
+                                enabled: s.enabled,
+                                ..FxSlot::default_for(next)
+                            }
+                        });
+                    }
+                    _ => self.edit_fx(owner, i, |s| match (s.fx_type, label) {
+                        (T::Filter, "LP") => s.p3 = 0.0,
+                        (T::Filter, "HP") => s.p3 = 1.0,
+                        (T::Filter, "BP") => s.p3 = 2.0,
+                        (T::Distortion, "SOFT") => s.p3 = 0.0,
+                        (T::Distortion, "HARD") => s.p3 = 1.0,
+                        (T::Compressor, "DOUX") => {
+                            (s.p1, s.p2, s.p3, s.p4) = (-12.0, 2.0, 20.0, 250.0)
+                        }
+                        (T::Compressor, "PUNCH") => {
+                            (s.p1, s.p2, s.p3, s.p4) = (-18.0, 4.0, 12.0, 90.0)
+                        }
+                        (T::Compressor, "SQUASH") => {
+                            (s.p1, s.p2, s.p3, s.p4) = (-32.0, 12.0, 0.5, 60.0)
+                        }
+                        (T::Delay, "PING-PONG") => s.p4 = if s.p4 > 0.5 { 0.0 } else { 1.0 },
+                        (T::Delay, _) if synced.is_some() => s.p1 = synced.unwrap_or(s.p1),
+                        (T::Reverb, "PIÈCE") => (s.p1, s.p2, s.p3, s.p4) = (0.35, 0.55, 4.0, 0.7),
+                        (T::Reverb, "SALLE") => (s.p1, s.p2, s.p3, s.p4) = (0.65, 0.4, 14.0, 0.9),
+                        (T::Reverb, "HALL") => (s.p1, s.p2, s.p3, s.p4) = (0.88, 0.25, 30.0, 1.0),
+                        _ => {}
+                    }),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn set_plugin_page(&mut self, page: usize) {
+        let count = self.plugin_page_count();
+        self.synth_param_page = page.min(count - 1) as u8;
+        self.plugin_knob_accum = [0; 8];
+        self.page_changed_at = Some(std::time::Instant::now());
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    fn focus_sound(&self) -> Option<crate::project::Sound> {
+        let proj = Arc::clone(&*self.project.read());
+        proj.groups
+            .get(self.group_focus as usize)?
+            .sounds
+            .get(self.active_sound as usize)?
+            .clone()
+    }
+
+    /// Knob `knob` en mode PLUGIN : règle le paramètre affiché au-dessus.
+    fn turn_plugin_knob(&mut self, knob: usize, delta: i32) -> crate::Result<()> {
+        use crate::plugin_pages::{self as pp, Instrument};
+        let Some(inst) = self.plugin_instrument() else {
+            return Ok(());
+        };
+        let page = self.plugin_page_index();
+        let knob = knob.min(7);
+        if let Some((owner, i, mut fx)) = self.selected_fx() {
+            let pages = pp::fx_pages(fx.fx_type);
+            let mut steps = 0;
+            if pp::is_stepped(pages, 0, knob) {
+                let acc = self.plugin_knob_accum[knob] + delta;
+                steps = acc / pp::DETENT_TICKS;
+                self.plugin_knob_accum[knob] = acc - steps * pp::DETENT_TICKS;
+                if steps == 0 {
+                    return Ok(());
+                }
+            }
+            if pp::turn(pages, 0, knob, &mut fx, delta, steps, self.shift_held) {
+                self.edit_fx(owner, i, |s| *s = fx);
+            }
+            return Ok(());
+        }
+        let stepped = match inst {
+            Instrument::Sampler => pp::is_stepped(&pp::SAMPLER_PAGES, page, knob),
+            Instrument::Acid => pp::is_stepped(&pp::ACID_PAGES, page, knob),
+            Instrument::Kick => pp::is_stepped(&pp::KICK_PAGES, page, knob),
+            Instrument::Wavetable => pp::is_stepped(&pp::WAVETABLE_PAGES, page, knob),
+        };
+        // Entiers et choix : un pas par cran, les ticks intermédiaires s'accumulent.
+        let mut steps = 0;
+        if stepped {
+            let acc = self.plugin_knob_accum[knob] + delta;
+            steps = acc / pp::DETENT_TICKS;
+            self.plugin_knob_accum[knob] = acc - steps * pp::DETENT_TICKS;
+            if steps == 0 {
+                return Ok(());
+            }
+        }
+        let fine = self.shift_held;
+        match inst {
+            Instrument::Kick => {
+                let mut p = self.focus_sound_kick_params().unwrap_or_default();
+                if pp::turn(&pp::KICK_PAGES, page, knob, &mut p, delta, steps, fine) {
+                    self.handle_event(EngineEvent::KickSetParams(p))?;
+                }
+            }
+            Instrument::Wavetable => {
+                let mut p = self.focus_sound_wavetable_params().unwrap_or_default();
+                if pp::turn(&pp::WAVETABLE_PAGES, page, knob, &mut p, delta, steps, fine) {
+                    self.handle_event(EngineEvent::WavetableSetParams(p))?;
+                }
+            }
+            Instrument::Acid => {
+                let mut p = self.acid_synth.params.clone();
+                if pp::turn(&pp::ACID_PAGES, page, knob, &mut p, delta, steps, fine) {
+                    self.handle_event(EngineEvent::AcidSetParams(p))?;
+                }
+            }
+            Instrument::Sampler => {
+                let Some(before) = self.focus_sound() else {
+                    return Ok(());
+                };
+                let mut after = before.clone();
+                if pp::turn(
+                    &pp::SAMPLER_PAGES,
+                    page,
+                    knob,
+                    &mut after,
+                    delta,
+                    steps,
+                    fine,
+                ) {
+                    self.apply_sound_edit(&before, &after)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Envoie les événements correspondant aux réglages modifiés d'un Sound
+    /// (ils atteignent aussi les voix en cours de lecture).
+    fn apply_sound_edit(
+        &mut self,
+        a: &crate::project::Sound,
+        b: &crate::project::Sound,
+    ) -> crate::Result<()> {
+        let (group, sound) = (self.group_focus, self.active_sound);
+        let moved = |x: f32, y: f32| x.to_bits() != y.to_bits();
+        if moved(a.volume_db, b.volume_db) {
+            self.handle_event(EngineEvent::SoundVolume {
+                group,
+                sound,
+                volume_db: b.volume_db,
+            })?;
+        }
+        if moved(a.pan, b.pan) {
+            self.handle_event(EngineEvent::SoundPan {
+                group,
+                sound,
+                pan: b.pan,
+            })?;
+        }
+        if moved(a.filter.cutoff_hz, b.filter.cutoff_hz) {
+            self.handle_event(EngineEvent::SoundFilterCutoff {
+                group,
+                sound,
+                cutoff_hz: b.filter.cutoff_hz,
+            })?;
+        }
+        if moved(a.filter.resonance, b.filter.resonance) {
+            self.handle_event(EngineEvent::SoundFilterReso {
+                group,
+                sound,
+                resonance: b.filter.resonance,
+            })?;
+        }
+        if a.filter.kind != b.filter.kind {
+            self.handle_event(EngineEvent::SetSoundFilterKind {
+                group,
+                sound,
+                kind: b.filter.kind,
+            })?;
+        }
+        let (x, y) = (&a.adsr, &b.adsr);
+        if moved(x.attack_ms, y.attack_ms)
+            || moved(x.decay_ms, y.decay_ms)
+            || moved(x.sustain, y.sustain)
+            || moved(x.release_ms, y.release_ms)
+        {
+            self.handle_event(EngineEvent::SoundAdsr {
+                group,
+                sound,
+                attack_ms: y.attack_ms,
+                decay_ms: y.decay_ms,
+                sustain: y.sustain,
+                release_ms: y.release_ms,
+            })?;
+        }
+        if a.polyphony != b.polyphony {
+            self.handle_event(EngineEvent::SoundPolyphony {
+                group,
+                sound,
+                polyphony: b.polyphony,
+            })?;
+        }
+        if a.choke_group != b.choke_group {
+            self.handle_event(EngineEvent::SoundChoke {
+                group,
+                sound,
+                choke_group: b.choke_group,
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Boutons d'écran du mode PLUGIN : 1–4 pour l'instrument (presets,
+    /// écoute, browser), 5–8 propres à la page affichée.
+    fn plugin_soft_labels(&self, inst: crate::plugin_pages::Instrument) -> [&'static str; 8] {
+        use crate::plugin_pages::{self as pp, Instrument};
+        if let Some(labels) = self.fx_soft_labels() {
+            return labels;
+        }
+        let page = self.plugin_page_index();
+        let right = match inst {
+            Instrument::Sampler => pp::SAMPLER_PAGES[page].buttons,
+            Instrument::Acid => pp::ACID_PAGES[page].buttons,
+            Instrument::Kick => pp::KICK_PAGES[page].buttons,
+            Instrument::Wavetable => pp::WAVETABLE_PAGES[page].buttons,
+        };
+        let left = if inst == Instrument::Sampler {
+            ["SND <", "SND >", "ECOUTE", "BROWSER"]
+        } else {
+            ["PRESET <", "PRESET >", "ECOUTE", "BROWSER"]
+        };
+        [
+            left[0], left[1], left[2], left[3], right[0], right[1], right[2], right[3],
+        ]
+    }
+
+    /// Action d'un bouton d'écran en mode PLUGIN, choisie d'après le libellé
+    /// affiché : le bouton fait toujours ce que son texte annonce.
+    fn handle_plugin_soft_key(
+        &mut self,
+        inst: crate::plugin_pages::Instrument,
+        idx: usize,
+    ) -> crate::Result<()> {
+        use crate::kick_synth::KickFilterMode as K;
+        use crate::plugin_pages::Instrument as I;
+        use crate::project::FilterKind as F;
+        let label = self.plugin_soft_labels(inst)[idx.min(7)];
+        if self.current_plugin_slot() != PluginSlot::Instrument {
+            return self.handle_fx_soft_key(label);
+        }
+        let (group, sound) = (self.group_focus, self.active_sound);
+        let sound_filter = |kind| EngineEvent::SetSoundFilterKind { group, sound, kind };
+        match (inst, label) {
+            (_, "SND <") => self.handle_event(EngineEvent::SelectSound(sound.saturating_sub(1))),
+            (_, "SND >") => self.handle_event(EngineEvent::SelectSound((sound + 1).min(15))),
+            (_, "ECOUTE") => {
+                self.handle_event(EngineEvent::Pad {
+                    pad: sound,
+                    velocity: 110,
+                    pressed: true,
+                })?;
+                // Synthés : relâcher aussitôt, sinon la note resterait tenue.
+                if inst == I::Sampler {
+                    return Ok(());
+                }
+                self.handle_event(EngineEvent::Pad {
+                    pad: sound,
+                    velocity: 0,
+                    pressed: false,
+                })
+            }
+            (_, "BROWSER") => {
+                self.left_tab = 3;
+                self.browser_kind = 2;
+                self.revision = self.revision.wrapping_add(1);
+                Ok(())
+            }
+            (_, "PRESET <") => self.step_plugin_preset(inst, -1),
+            (_, "PRESET >") => self.step_plugin_preset(inst, 1),
+            (I::Sampler, "LP/HP/BP") => self.handle_soft_key_sampler(4),
+            (I::Sampler, "CYC FLT") => self.handle_soft_key_sampler(3),
+            (I::Sampler, "NOTCH") => self.handle_event(sound_filter(F::Notch)),
+            (I::Sampler, "PEAK") => self.handle_event(sound_filter(F::Peak)),
+            (I::Sampler, "OFF") => self.handle_event(sound_filter(F::Off)),
+            (I::Sampler, "REVERSE") => self.sample_tool(0),
+            (I::Sampler, "LOOP") => self.sample_tool(1),
+            (I::Sampler, "NORMLZ") => self.sample_tool(2),
+            (I::Kick, "TECHNO") => self.handle_event(EngineEvent::KickSetPreset(0)),
+            (I::Kick, "909") => self.handle_event(EngineEvent::KickSetPreset(1)),
+            (I::Kick, "HARDCORE") => self.handle_event(EngineEvent::KickSetPreset(2)),
+            (I::Kick, "808 SUB") => self.handle_event(EngineEvent::KickSetPreset(3)),
+            (I::Kick, "INDUSTRIAL") => self.handle_event(EngineEvent::KickSetPreset(5)),
+            (I::Kick, "LP") => self.handle_event(EngineEvent::KickSetFilterMode(K::LowPass)),
+            (I::Kick, "HP") => self.handle_event(EngineEvent::KickSetFilterMode(K::HighPass)),
+            (I::Kick, "BP") => self.handle_event(EngineEvent::KickSetFilterMode(K::BandPass)),
+            (I::Kick, "OFF") => self.handle_event(EngineEvent::KickSetFilterMode(K::Off)),
+            (I::Kick, "NOTCH") => self.handle_event(EngineEvent::KickSetFilterMode(K::Notch)),
+            (I::Kick, "PEAK") => self.handle_event(EngineEvent::KickSetFilterMode(K::Peak)),
+            (I::Acid, "CLASSIC") => self.handle_event(EngineEvent::AcidSelectPreset(0)),
+            (I::Acid, "SQUELCH") => self.handle_event(EngineEvent::AcidSelectPreset(1)),
+            (I::Acid, "DUB") => self.handle_event(EngineEvent::AcidSelectPreset(3)),
+            (I::Acid, "SAW/SQR") => self.handle_event(EngineEvent::AcidWaveformToggle),
+            (I::Acid, "OCT -") => self.handle_event(EngineEvent::AcidOctaveDelta(-1)),
+            (I::Acid, "OCT +") => self.handle_event(EngineEvent::AcidOctaveDelta(1)),
+            (I::Acid, "SLIDE") => {
+                let slide = if self.acid_synth.params.slide_time_ms > 1.0 {
+                    -250.0
+                } else {
+                    60.0
+                };
+                self.handle_event(EngineEvent::AcidSlideDelta(slide))
+            }
+            (I::Wavetable, "PIANO") => self.handle_event(EngineEvent::WavetableSetPreset(0)),
+            (I::Wavetable, "M1 PIANO") => self.handle_event(EngineEvent::WavetableSetPreset(1)),
+            (I::Wavetable, "808 SUB") => self.handle_event(EngineEvent::WavetableSetPreset(4)),
+            (I::Wavetable, "REESE") => self.handle_event(EngineEvent::WavetableSetPreset(5)),
+            (I::Wavetable, "OSC 2") => {
+                let mut p = self.focus_sound_wavetable_params().unwrap_or_default();
+                p.osc2_enabled = !p.osc2_enabled;
+                self.handle_event(EngineEvent::WavetableSetParams(p))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Preset précédent / suivant de l'instrument affiché.
+    fn step_plugin_preset(
+        &mut self,
+        inst: crate::plugin_pages::Instrument,
+        dir: i32,
+    ) -> crate::Result<()> {
+        use crate::plugin_pages::Instrument as I;
+        match inst {
+            I::Kick => {
+                let presets = crate::kick_synth::KickParams::all_presets();
+                let name = self.focus_sound_kick_params().map(|p| p.preset_name);
+                let cur = presets
+                    .iter()
+                    .position(|p| Some(&p.preset_name) == name.as_ref())
+                    .unwrap_or(0) as i32;
+                let next = (cur + dir).rem_euclid(presets.len() as i32);
+                self.handle_event(EngineEvent::KickSetPreset(next as u8))
+            }
+            I::Wavetable if dir < 0 => self.handle_event(EngineEvent::WavetablePrevPreset),
+            I::Wavetable => self.handle_event(EngineEvent::WavetableNextPreset),
+            I::Acid => {
+                let next = (i32::from(self.acid_preset) + dir).rem_euclid(4) as u8;
+                self.handle_event(EngineEvent::AcidSelectPreset(next))
+            }
+            I::Sampler => Ok(()),
+        }
+    }
+
+    /// Outils du sample du Sound actif : 0 = REVERSE, 1 = LOOP, 2 = NORMLZ.
+    fn sample_tool(&mut self, tool: usize) -> crate::Result<()> {
+        let sound_id = sampler_sound_id(self.group_focus, self.active_sound);
+        let (ok, done, missing) = match tool {
+            0 => (
+                self.sampler.reverse_sound(sound_id),
+                "Sample inversé (Reverse)",
+                "Aucun sample chargé à inverser",
+            ),
+            1 => (
+                self.sampler.toggle_sound_one_shot(sound_id),
+                "Mode One-Shot / Boucle basculé",
+                "Aucun sample chargé",
+            ),
+            _ => (
+                self.sampler.normalize_sound(sound_id),
+                "Sample normalisé à 0 dBFS",
+                "Aucun sample chargé à normaliser",
+            ),
+        };
+        self.status_message = Some(if ok { done } else { missing }.to_string());
+        self.revision = self.revision.wrapping_add(1);
+        Ok(())
+    }
+
+    /// Crée ou retire les bus d'effets d'après les chaînes du projet. Appelé
+    /// hors du thread audio : toutes les allocations des inserts ont lieu ici.
+    fn sync_fx_buses(&mut self) {
+        let proj = Arc::clone(&*self.project.read());
+        let mut owners = Vec::new();
+        for (g, group) in proj.groups.iter().enumerate().take(8) {
+            for (s, snd) in group.sounds.iter().enumerate().take(16) {
+                if snd.as_ref().is_some_and(|snd| !snd.fx_chain.is_empty()) {
+                    owners.push(FxOwner::Sound(g as u8, s as u8));
+                }
+            }
+        }
+        for (g, group) in proj.groups.iter().enumerate().take(8) {
+            if !group.fx_chain.is_empty() {
+                owners.push(FxOwner::Group(g as u8));
+            }
+        }
+        if !owners.iter().eq(self.fx_buses.iter().map(|(o, _)| o)) {
+            let rate = self.transport.sample_rate;
+            let mut old = std::mem::take(&mut self.fx_buses);
+            self.fx_buses = owners
+                .into_iter()
+                .map(|owner| match old.iter().position(|(o, _)| *o == owner) {
+                    // Les queues de réverbe / délai survivent à l'ajout d'un autre bus.
+                    Some(i) => old.swap_remove(i),
+                    None => (owner, crate::fx::FxChainProcessor::new(rate)),
+                })
+                .collect();
+            self.fx_bus_bufs = vec![vec![0.0; FX_BUS_LEN]; self.fx_buses.len()];
+        }
+        // États DSP slot par slot (ajout, suppression, changement de type).
+        for (owner, processor) in &mut self.fx_buses {
+            let chain = owner.chain(&proj);
+            if !processor.is_prepared_for(chain) {
+                processor.prepare(chain);
+            }
+        }
+        if !self.master_fx.is_prepared_for(&proj.master.fx_chain) {
+            self.master_fx.prepare(&proj.master.fx_chain);
+        }
     }
 
     /// Index du pattern actif pour le groupe focus dans la scène active.
@@ -5268,39 +6086,7 @@ impl Engine {
         }
         if self.left_tab == 2 {
             return match idx {
-                0 => {
-                    let sound_id = sampler_sound_id(self.group_focus, self.active_sound);
-                    let ok = self.sampler.reverse_sound(sound_id);
-                    self.status_message = Some(if ok {
-                        "Sample inversé (Reverse)".to_string()
-                    } else {
-                        "Aucun sample chargé à inverser".to_string()
-                    });
-                    self.revision = self.revision.wrapping_add(1);
-                    Ok(())
-                }
-                1 => {
-                    let sound_id = sampler_sound_id(self.group_focus, self.active_sound);
-                    let ok = self.sampler.toggle_sound_one_shot(sound_id);
-                    self.status_message = Some(if ok {
-                        "Mode One-Shot / Boucle basculé".to_string()
-                    } else {
-                        "Aucun sample chargé".to_string()
-                    });
-                    self.revision = self.revision.wrapping_add(1);
-                    Ok(())
-                }
-                2 => {
-                    let sound_id = sampler_sound_id(self.group_focus, self.active_sound);
-                    let ok = self.sampler.normalize_sound(sound_id);
-                    self.status_message = Some(if ok {
-                        "Sample normalisé à 0 dBFS".to_string()
-                    } else {
-                        "Aucun sample chargé à normaliser".to_string()
-                    });
-                    self.revision = self.revision.wrapping_add(1);
-                    Ok(())
-                }
+                0..=2 => self.sample_tool(idx),
                 3 => self.handle_event(EngineEvent::CycleSoundFilterKind {
                     group: self.group_focus,
                     sound: self.active_sound,
@@ -5347,27 +6133,6 @@ impl Engine {
                     kind: crate::project::FilterKind::Off,
                 }),
             };
-        }
-        if self.left_tab == 4 && self.focus_sound_has_wavetable() {
-            return self.handle_soft_key_synth(idx);
-        }
-        if self.left_tab == 4 && self.focus_sound_has_kick() {
-            return self.handle_soft_key_synth(idx);
-        }
-        if self.left_tab == 4 && self.focus_sound_has_acid() {
-            return match idx {
-                0 => self.handle_event(EngineEvent::AcidWaveformToggle),
-                1 => self.handle_event(EngineEvent::AcidCutoffDelta(50.0)),
-                2 => self.handle_event(EngineEvent::AcidResoDelta(0.05)),
-                3 => self.handle_event(EngineEvent::AcidEnvModDelta(0.05)),
-                4 => self.handle_event(EngineEvent::AcidDecayDelta(50.0)),
-                5 => self.handle_event(EngineEvent::AcidAccentDelta(0.1)),
-                6 => self.handle_event(EngineEvent::AcidDriveDelta(0.1)),
-                _ => self.handle_event(EngineEvent::AcidDelayMixDelta(0.1)),
-            };
-        }
-        if self.left_tab == 4 {
-            return self.handle_soft_key_sampler(idx);
         }
         match idx {
             0 => {
@@ -5714,116 +6479,13 @@ impl Engine {
         }
     }
 
-    fn handle_soft_key_synth(&mut self, idx: usize) -> crate::Result<()> {
-        if self.focus_sound_has_kick() {
-            let is_page2 = (self.synth_param_page == 1) ^ self.shift_held;
-            if idx == 0 {
-                return self.handle_event(EngineEvent::ToggleSynthParamPage);
-            }
-            if is_page2 {
-                match idx {
-                    1 => self.handle_event(EngineEvent::KickDriveTypeDelta(1)),
-                    2 => self.handle_event(EngineEvent::KickWaveformDelta(1)),
-                    3 => self.handle_event(EngineEvent::KickFilterModeDelta(1)),
-                    4 => self.handle_event(EngineEvent::KickSetFilterMode(
-                        crate::kick_synth::KickFilterMode::LowPass,
-                    )),
-                    5 => self.handle_event(EngineEvent::KickSetFilterMode(
-                        crate::kick_synth::KickFilterMode::HighPass,
-                    )),
-                    6 => self.handle_event(EngineEvent::KickSetFilterMode(
-                        crate::kick_synth::KickFilterMode::BandPass,
-                    )),
-                    _ => {
-                        let cur = self.kick_synth.params.filter_mode;
-                        let next = if cur == crate::kick_synth::KickFilterMode::Notch {
-                            crate::kick_synth::KickFilterMode::Peak
-                        } else {
-                            crate::kick_synth::KickFilterMode::Notch
-                        };
-                        self.handle_event(EngineEvent::KickSetFilterMode(next))
-                    }
-                }
-            } else {
-                match idx {
-                    1 => {
-                        let next_preset = (self.browser_preset_idx + 1) % 6;
-                        self.handle_event(EngineEvent::KickSetPreset(next_preset))
-                    }
-                    2 => self.handle_event(EngineEvent::KickSetPreset(0)),
-                    3 => self.handle_event(EngineEvent::KickSetPreset(1)),
-                    4 => self.handle_event(EngineEvent::KickSetPreset(2)),
-                    5 => self.handle_event(EngineEvent::KickSetPreset(3)),
-                    6 => self.handle_event(EngineEvent::KickSetPreset(5)),
-                    _ => {
-                        self.left_tab = 3;
-                        self.browser_kind = 2;
-                        Ok(())
-                    }
-                }
-            }
-        } else if self.focus_sound_has_acid() {
-            match idx {
-                0 => self.handle_event(EngineEvent::AcidWaveformToggle),
-                1 => self.handle_event(EngineEvent::AcidOctaveDelta(-1)),
-                2 => self.handle_event(EngineEvent::AcidOctaveDelta(1)),
-                3 => {
-                    let slide = if self.acid_synth.params.slide_time_ms > 1.0 {
-                        -100.0
-                    } else {
-                        60.0
-                    };
-                    self.handle_event(EngineEvent::AcidSlideDelta(slide))
-                }
-                4 => self.handle_event(EngineEvent::AcidSelectPreset(0)),
-                5 => self.handle_event(EngineEvent::AcidSelectPreset(1)),
-                6 => self.handle_event(EngineEvent::AcidSelectPreset(3)),
-                _ => {
-                    self.left_tab = 3;
-                    self.browser_kind = 2;
-                    Ok(())
-                }
-            }
-        } else if self.focus_sound_has_wavetable() {
-            let is_page2 = (self.synth_param_page == 1) ^ self.shift_held;
-            if idx == 0 {
-                return self.handle_event(EngineEvent::ToggleSynthParamPage);
-            }
-            if is_page2 {
-                match idx {
-                    1 => self.handle_event(EngineEvent::WavetableFilterModeCycle),
-                    2 => self.handle_event(EngineEvent::WavetableUnisonVoicesDelta(1)),
-                    3 => self.handle_event(EngineEvent::WavetableOsc1WaveCycle),
-                    4 => self.handle_event(EngineEvent::WavetableOsc2WaveCycle),
-                    5 => self.handle_event(EngineEvent::WavetableChorusDelta(0.1)),
-                    6 => self.handle_event(EngineEvent::WavetableDelayDelta(0.1)),
-                    _ => self.handle_event(EngineEvent::WavetableReverbDelta(0.1)),
-                }
-            } else {
-                match idx {
-                    1 => self.handle_event(EngineEvent::WavetablePrevPreset),
-                    2 => self.handle_event(EngineEvent::WavetableNextPreset),
-                    3 => self.handle_event(EngineEvent::WavetableSetPreset(0)),
-                    4 => self.handle_event(EngineEvent::WavetableSetPreset(1)),
-                    5 => self.handle_event(EngineEvent::WavetableSetPreset(4)),
-                    6 => self.handle_event(EngineEvent::WavetableSetPreset(5)),
-                    _ => {
-                        self.left_tab = 3;
-                        self.browser_kind = 2;
-                        Ok(())
-                    }
-                }
-            }
-        } else {
-            self.handle_soft_key_sampler(idx)
-        }
-    }
-
-    /// Exécute l'action contextuelle d'une soft key d'écran (1..8).
     fn handle_soft_key(&mut self, n: u8) -> crate::Result<()> {
         let idx = (n.saturating_sub(1) as usize).min(7);
         if self.note_repeat_enabled {
             return self.handle_soft_key_note_repeat(idx);
+        }
+        if let Some(inst) = self.plugin_instrument() {
+            return self.handle_plugin_soft_key(inst, idx);
         }
         if self.shift_held {
             return self.handle_soft_key_shift(idx);
@@ -5865,7 +6527,8 @@ impl Engine {
             1 => self.handle_soft_key_mixer(idx),
             2 => self.handle_soft_key_sampler(idx),
             3 => self.handle_soft_key_browser(idx),
-            4 => self.handle_soft_key_synth(idx),
+            // Page ampli guitare : touches gérées par l'application.
+            4 => Ok(()),
             _ => match idx {
                 0..=3 => self.handle_event(EngineEvent::SelectBar(idx)),
                 4 => self.handle_event(EngineEvent::SetPatternBars(1)),
@@ -6144,49 +6807,20 @@ impl Engine {
         Ok(())
     }
 
-    /// Ajoute un effet au pad actif.
+    /// Ajoute un effet à un Sound.
     pub fn add_fx_to_sound(
         &mut self,
         group: u8,
         sound: u8,
         fx_type: crate::fx::FxType,
     ) -> crate::Result<()> {
-        let mut guard = self.project.write();
-        let project = project_mut(&mut guard);
-        if let Some(grp) = project.groups.get_mut(group as usize) {
-            let target_sound = grp.sounds[sound as usize].get_or_insert_with(|| {
-                crate::project::Sound::new(&format!("Sound {}", sound + 1), 78)
-            });
-            let slot = crate::fx::FxSlot::default_for(fx_type);
-            target_sound.fx_chain.push(slot);
-            self.status_message = Some(format!(
-                "Effet {} ajouté au Pad {}",
-                fx_type.name(),
-                sound + 1
-            ));
-            self.status_expires_at =
-                std::time::Instant::now() + std::time::Duration::from_millis(3000);
-            self.revision = self.revision.wrapping_add(1);
-        }
+        self.insert_fx(FxOwner::Sound(group, sound), fx_type);
         Ok(())
     }
 
-    /// Ajoute un effet au groupe focus.
+    /// Ajoute un effet au bus d'un groupe.
     pub fn add_fx_to_group(&mut self, group: u8, fx_type: crate::fx::FxType) -> crate::Result<()> {
-        let mut guard = self.project.write();
-        let project = project_mut(&mut guard);
-        if let Some(grp) = project.groups.get_mut(group as usize) {
-            let slot = crate::fx::FxSlot::default_for(fx_type);
-            grp.fx_chain.push(slot);
-            self.status_message = Some(format!(
-                "Effet {} ajouté au Groupe {}",
-                fx_type.name(),
-                (b'A' + group) as char
-            ));
-            self.status_expires_at =
-                std::time::Instant::now() + std::time::Duration::from_millis(3000);
-            self.revision = self.revision.wrapping_add(1);
-        }
+        self.insert_fx(FxOwner::Group(group), fx_type);
         Ok(())
     }
 
@@ -7199,9 +7833,11 @@ mod tests {
         }
         let (block, pos) = first.expect("kick non entendu");
         assert_eq!(block, 4, "kick déclenché dans le mauvais bloc");
+        // Le limiteur Master ajoute une latence fixe (anticipation de 1 ms).
+        let expected = 800 + eng.master_limiter.latency_frames() as i64;
         assert!(
-            (pos as i64 - 800).abs() < 32,
-            "kick à la frame {pos} au lieu de 800 (position dans le bloc)"
+            (pos as i64 - expected).abs() < 32,
+            "kick à la frame {pos} au lieu de {expected} (position dans le bloc)"
         );
     }
 
@@ -8094,7 +8730,9 @@ mod tests {
 
         let mut out2 = vec![0.0f32; 1024];
         eng.render_audio(&mut out2);
-        let max_amp2 = out2.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        // Les premières trames sortent encore de l'anticipation du limiteur.
+        let skip = eng.master_limiter.latency_frames() * 2;
+        let max_amp2 = out2[skip..].iter().map(|s| s.abs()).fold(0.0f32, f32::max);
         assert!(
             max_amp2 < max_amp1 * 0.1,
             "L'atténuation du mixeur doit impacter le synthé"
@@ -8467,5 +9105,88 @@ mod tests {
                 .name,
             original_sound
         );
+    }
+
+    /// Rend `blocks` blocs après un coup de pad et renvoie la crête.
+    fn pad_peak(eng: &mut Engine, pad: u8) -> f32 {
+        eng.handle_event(EngineEvent::Pad {
+            pad,
+            velocity: 120,
+            pressed: true,
+        })
+        .unwrap();
+        let mut buf = vec![0.0f32; 1024 * 2];
+        let mut peak = 0.0f32;
+        for _ in 0..6 {
+            eng.render_audio(&mut buf);
+            peak = buf.iter().fold(peak, |m, s| m.max(s.abs()));
+        }
+        peak
+    }
+
+    #[test]
+    fn plugin_chain_inserts_edits_and_bypasses_effects_from_soft_keys() {
+        let mut eng = Engine::new_demo(48000);
+        eng.handle_event(EngineEvent::SelectSound(0)).unwrap();
+        eng.handle_event(EngineEvent::SetLeftTab(4)).unwrap();
+        assert_eq!(eng.current_plugin_slot(), PluginSlot::Instrument);
+        // 4D : de l'instrument à l'emplacement libre du Sound.
+        eng.handle_event(EngineEvent::PluginSlotStep(1)).unwrap();
+        let owner = FxOwner::Sound(eng.group_focus, 0);
+        assert_eq!(eng.current_plugin_slot(), PluginSlot::Add(owner));
+        assert_eq!(eng.soft_key_labels()[0], "FILTER");
+        eng.handle_event(EngineEvent::SoftKey(1)).unwrap();
+        assert_eq!(eng.current_plugin_slot(), PluginSlot::Fx(owner, 0));
+        let labels = eng.soft_key_labels();
+        assert_eq!(&labels[..5], &["< TYPE", "TYPE >", "BYPASS", "SUPPR", "LP"]);
+        assert!(eng.soft_key_active()[4], "LP allumé (mode courant)");
+        // Knob 2 = CUTOFF, affiché et piloté depuis la même table.
+        let before = eng.selected_fx().unwrap().2.p1;
+        eng.handle_event(EngineEvent::PluginKnob {
+            knob: 1,
+            delta: -300,
+        })
+        .unwrap();
+        assert!(eng.selected_fx().unwrap().2.p1 < before);
+        assert_eq!(
+            eng.snapshot().plugin_fx.unwrap().p1,
+            eng.selected_fx().unwrap().2.p1
+        );
+        // BYPASS : contourné, bouton allumé ; SUPPR : la chaîne se vide.
+        eng.handle_event(EngineEvent::SoftKey(3)).unwrap();
+        assert!(!eng.selected_fx().unwrap().2.enabled);
+        assert!(eng.soft_key_active()[2]);
+        let views = eng.snapshot().plugin_slots;
+        assert!(views[1].bypassed && views[1].name == "Filter");
+        eng.handle_event(EngineEvent::SoftKey(4)).unwrap();
+        assert_eq!(eng.focus_sound_fx().len(), 0);
+        // Un autre Sound repart de son instrument.
+        eng.handle_event(EngineEvent::PluginSlotStep(2)).unwrap();
+        eng.handle_event(EngineEvent::SelectSound(1)).unwrap();
+        assert_eq!(eng.current_plugin_slot(), PluginSlot::Instrument);
+    }
+
+    #[test]
+    fn sound_group_and_master_inserts_process_the_audio() {
+        let quiet = |eng: &mut Engine, owner: FxOwner| {
+            eng.insert_fx(owner, crate::fx::FxType::Distortion);
+            let i = owner.chain(&eng.project.read()).len() - 1;
+            eng.edit_fx(owner, i, |s| {
+                s.p1 = 0.0;
+                s.p4 = -24.0;
+            });
+            eng.sync_fx_buses();
+        };
+        for owner in [FxOwner::Sound(0, 0), FxOwner::Group(0), FxOwner::Master] {
+            let mut eng = Engine::new_demo(48000);
+            eng.handle_event(EngineEvent::GroupFocus(0)).unwrap();
+            let dry = pad_peak(&mut eng, 0);
+            assert!(dry > 0.05, "le pad 1 sonne : {dry}");
+            let mut eng = Engine::new_demo(48000);
+            eng.handle_event(EngineEvent::GroupFocus(0)).unwrap();
+            quiet(&mut eng, owner);
+            let wet = pad_peak(&mut eng, 0);
+            assert!(wet < dry * 0.2, "{owner:?} : {wet} vs {dry}");
+        }
     }
 }

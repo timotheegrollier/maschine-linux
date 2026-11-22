@@ -569,11 +569,29 @@ impl GuiApp {
         }
     }
 
+    /// Appui + relâchement d'un bouton du contrôleur, traités par la boucle
+    /// matérielle exactement comme un appui physique.
+    fn press_hardware_button(&self, id: maschine_proto::ButtonId) {
+        for pressed in [true, false] {
+            let _ = self
+                .mirror
+                .events
+                .send(maschine_hardware::events::HardwareEvent::Button {
+                    id,
+                    pressed,
+                    ts_ns: 0,
+                });
+        }
+    }
+
     /// Met à jour les textures des 2 écrans (mêmes pixels que la MK3).
     fn refresh_screens(&mut self, ctx: &egui::Context, snap: &maschine_engine::EngineSnapshot) {
         let now = Instant::now();
         // L'ampli vit dans des atomiques : son écran bouge sans `revision`.
-        let changed = snap.revision != self.mirror_revision || self.view == StudioView::Guitar;
+        // Bandeau de changement de page : animé sans nouvelle `revision`.
+        let changed = snap.revision != self.mirror_revision
+            || self.view == StudioView::Guitar
+            || snap.page_flash > 0.0;
         let due = changed && now.duration_since(self.mirror_last) >= Duration::from_millis(28);
         if self.left_tex.is_some() && !due {
             return;
@@ -692,6 +710,26 @@ impl GuiApp {
                     .size(12.0)
                     .color(c.text_dim),
             );
+            // Boutons Page ◄ ► du contrôleur, allumés comme leurs LEDs.
+            let leds = self.mirror.leds.lock().button_leds;
+            for (text, id, led) in [
+                (
+                    "◀ PAGE",
+                    maschine_proto::ButtonId::Left,
+                    maschine_proto::hid_output::offsets::LEFT,
+                ),
+                (
+                    "PAGE ▶",
+                    maschine_proto::ButtonId::Right,
+                    maschine_proto::hid_output::offsets::RIGHT,
+                ),
+            ] {
+                let lit = leds[led - 1] > 2;
+                let tip = "Pages de paramètres (boutons Page ◄ ► de la MK3)";
+                if crate::gui::widgets::chip_tooltip(ui, text, lit, c.text_dim, tip) {
+                    self.press_hardware_button(id);
+                }
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if crate::gui::widgets::chip(ui, "PADS", self.mk3_pads, c.accent) {
                     self.mk3_pads = !self.mk3_pads;
@@ -996,15 +1034,20 @@ impl GuiApp {
             } else if snap.controller_mode == 3 {
                 let tick = (snap.selected_bar as u32 * 3840) + (pad as u32 * 240);
                 self.toggle_step(snap.active_sound, tick);
+            } else if snap.controller_mode == 1 || snap.controller_mode == 2 {
+                // KEYBOARD / CHORDS : notes de la gamme, comme les pads MK3.
+                self.pad_down = Some(pad);
+                for note in keyboard_notes(snap, pad) {
+                    self.send(EngineEvent::KeyboardTrigger {
+                        note,
+                        velocity,
+                        pressed: true,
+                    });
+                }
             } else {
-                let trigger = if snap.controller_mode == 1 {
-                    snap.active_sound
-                } else {
-                    pad
-                };
-                self.pad_down = Some(trigger);
+                self.pad_down = Some(pad);
                 self.send(EngineEvent::Pad {
-                    pad: trigger,
+                    pad,
                     velocity,
                     pressed: true,
                 });
@@ -1012,11 +1055,21 @@ impl GuiApp {
         }
         if release.is_some() {
             if let Some(down) = self.pad_down.take() {
-                self.send(EngineEvent::Pad {
-                    pad: down,
-                    velocity: 0,
-                    pressed: false,
-                });
+                if snap.controller_mode == 1 || snap.controller_mode == 2 {
+                    for note in keyboard_notes(snap, down) {
+                        self.send(EngineEvent::KeyboardTrigger {
+                            note,
+                            velocity: 0,
+                            pressed: false,
+                        });
+                    }
+                } else {
+                    self.send(EngineEvent::Pad {
+                        pad: down,
+                        velocity: 0,
+                        pressed: false,
+                    });
+                }
             }
         }
     }
@@ -1097,11 +1150,14 @@ impl eframe::App for GuiApp {
         }
 
         // ── Barre d'application : vues rapides + panneaux + états latchés ──
+        // Fenêtre étroite : la barre passe à la ligne au lieu de rogner.
+        let narrow = window_w < 1100.0;
         egui::TopBottomPanel::top("appbar")
-            .exact_height(38.0)
+            .min_height(38.0)
             .show(ctx, |ui| {
                 let c = MachColors::dark();
-                ui.horizontal_centered(|ui| {
+                let row = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(narrow);
+                ui.with_layout(row, |ui| {
                     // Bascules de panneaux allumées en blanc, comme les boutons MK3.
                     let lit = c.text_dim;
                     if crate::gui::widgets::chip_tooltip(
@@ -1153,7 +1209,12 @@ impl eframe::App for GuiApp {
                         }
                     }
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let tail = if narrow {
+                        egui::Layout::left_to_right(egui::Align::Center)
+                    } else {
+                        egui::Layout::right_to_left(egui::Align::Center)
+                    };
+                    ui.with_layout(tail, |ui| {
                         if crate::gui::widgets::chip_tooltip(
                             ui,
                             "MK3",
@@ -1308,7 +1369,7 @@ impl eframe::App for GuiApp {
                 .default_width(mk3_w)
                 .width_range(380.0..=mk3_max)
                 .show_animated(ctx, self.show_mk3, |ui| {
-                    egui::ScrollArea::vertical()
+                    egui::ScrollArea::both()
                         .auto_shrink([false, false])
                         .show(ui, |ui| self.render_mk3(ui, &snap));
                 });
@@ -1317,7 +1378,7 @@ impl eframe::App for GuiApp {
             });
         } else if self.show_mk3 {
             egui::CentralPanel::default().show(ctx, |ui| {
-                egui::ScrollArea::vertical()
+                egui::ScrollArea::both()
                     .auto_shrink([false, false])
                     .show(ui, |ui| self.render_mk3(ui, &snap));
             });
@@ -1555,6 +1616,15 @@ impl eframe::App for GuiApp {
     }
 }
 
+/// Notes jouées par un pad en mode KEYBOARD (une note) ou CHORDS (accord).
+fn keyboard_notes(snap: &maschine_engine::EngineSnapshot, pad: u8) -> Vec<u8> {
+    if snap.controller_mode == 2 {
+        snap.keyboard.chord_notes(pad)
+    } else {
+        vec![snap.keyboard.keyboard_note(pad)]
+    }
+}
+
 /// Largeur d'un panneau latéral en proportion de la fenêtre : elle suit
 /// chaque redimensionnement de la fenêtre et retient la proportion choisie
 /// quand l'utilisateur tire la poignée du panneau.
@@ -1595,7 +1665,7 @@ pub fn run_native_gui(
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1560.0, 960.0])
-            .with_min_inner_size([1180.0, 760.0]),
+            .with_min_inner_size([640.0, 480.0]),
         ..Default::default()
     };
     eframe::run_native(
@@ -1623,7 +1693,7 @@ pub fn run_native_gui(
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1560.0, 960.0])
-            .with_min_inner_size([1180.0, 760.0]),
+            .with_min_inner_size([640.0, 480.0]),
         ..Default::default()
     };
     eframe::run_native(

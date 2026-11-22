@@ -282,6 +282,7 @@ fn fuzz_full_workflow_no_panic() {
             shift_held: false,
             soft_present: snap.soft_labels.map(|label| !label.is_empty()),
             soft_active: snap.soft_active,
+            page_nav: None,
         };
         mapper.update_leds(&info);
         let ls = mapper.led_state().clone();

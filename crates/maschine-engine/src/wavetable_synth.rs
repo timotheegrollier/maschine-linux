@@ -1785,6 +1785,21 @@ impl SvfFilter {
     }
 }
 
+/// Correction PolyBLEP d'une discontinuité de +2 à la phase 0 (`t`, `dt`
+/// normalisés 0..1) : arrondit l'arête sur deux échantillons.
+#[inline]
+fn poly_blep(t: f32, dt: f32) -> f32 {
+    if t < dt {
+        let x = t / dt;
+        x + x - x * x - 1.0
+    } else if t > 1.0 - dt {
+        let x = (t - 1.0) / dt;
+        x * x + x + x + 1.0
+    } else {
+        0.0
+    }
+}
+
 /// Une voix de polyphonie individuelle du synthétiseur.
 #[derive(Debug, Clone)]
 struct Voice {
@@ -1970,7 +1985,11 @@ impl WavetableSynth {
 
     /// Génère un échantillon pour une forme d'onde donnée à une phase normalisée (0..2*PI).
     #[inline]
-    fn evaluate_waveform(wave: WavetableWaveform, phase: f32, seed: &mut u32) -> f32 {
+    fn evaluate_waveform(wave: WavetableWaveform, phase: f32, inc: f32, seed: &mut u32) -> f32 {
+        // Dent de scie et carré anti-repliés (PolyBLEP) : sans correction,
+        // leurs arêtes replient des harmoniques inharmoniques dans les aigus.
+        let t = phase / (2.0 * PI);
+        let dt = (inc / (2.0 * PI)).clamp(1e-6, 0.5);
         match wave {
             WavetableWaveform::Sine => phase.sin(),
             WavetableWaveform::Triangle => {
@@ -1981,16 +2000,10 @@ impl WavetableSynth {
                     3.0 - 4.0 * norm
                 }
             }
-            WavetableWaveform::Saw => {
-                let norm = phase / (2.0 * PI);
-                2.0 * norm - 1.0
-            }
+            WavetableWaveform::Saw => 2.0 * t - 1.0 - poly_blep(t, dt),
             WavetableWaveform::Square => {
-                if phase < PI {
-                    1.0
-                } else {
-                    -1.0
-                }
+                let naive = if t < 0.5 { 1.0 } else { -1.0 };
+                naive + poly_blep(t, dt) - poly_blep((t + 0.5).fract(), dt)
             }
             WavetableWaveform::Supersaw => {
                 // Émulation compacte Supersaw Roland JP-8000 / Access Virus
@@ -2128,9 +2141,12 @@ impl WavetableSynth {
                 let freq1 = freq * 2.0f32.powf(osc1_semi / 12.0);
                 let phase_inc1 = 2.0 * PI * freq1 / sr;
                 voice.phase1 = (voice.phase1 + phase_inc1) % (2.0 * PI);
-                let osc1_sample =
-                    Self::evaluate_waveform(p.osc1_wave, voice.phase1, &mut voice.noise_seed)
-                        * p.osc1_level;
+                let osc1_sample = Self::evaluate_waveform(
+                    p.osc1_wave,
+                    voice.phase1,
+                    phase_inc1,
+                    &mut voice.noise_seed,
+                ) * p.osc1_level;
 
                 // --- Oscillateur 2 (optionnel) ---
                 let osc2_sample = if p.osc2_enabled {
@@ -2138,8 +2154,12 @@ impl WavetableSynth {
                     let freq2 = freq * 2.0f32.powf(osc2_semi / 12.0);
                     let phase_inc2 = 2.0 * PI * freq2 / sr;
                     voice.phase2 = (voice.phase2 + phase_inc2) % (2.0 * PI);
-                    Self::evaluate_waveform(p.osc2_wave, voice.phase2, &mut voice.noise_seed)
-                        * p.osc2_level
+                    Self::evaluate_waveform(
+                        p.osc2_wave,
+                        voice.phase2,
+                        phase_inc2,
+                        &mut voice.noise_seed,
+                    ) * p.osc2_level
                 } else {
                     0.0
                 };
@@ -2159,6 +2179,7 @@ impl WavetableSynth {
                         let s = Self::evaluate_waveform(
                             p.osc1_wave,
                             voice.unison_phases[i],
+                            u_inc,
                             &mut voice.noise_seed,
                         );
                         let pan_pos = ((i as f32 / (n_unison - 1) as f32) - 0.5) * p.unison_spread;

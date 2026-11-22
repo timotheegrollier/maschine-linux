@@ -36,7 +36,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
         _ => "PAD",
     };
 
-    egui::ScrollArea::vertical()
+    egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -169,7 +169,10 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                                         .color(c.text),
                                 )
                                 .min_size(egui::vec2(74.0, 52.0))
-                                .fill(if snap.pad_activity[pad] > 0.1 { c.widget_bg } else { c.panel }),
+                                .fill(if snap.pad_activity[pad] > 0.1 { c.widget_bg } else { c.panel })
+                                // Un simple clic expire après 0,8 s : la note
+                                // doit tenir tant que le bouton reste enfoncé.
+                                .sense(egui::Sense::click_and_drag()),
                             );
                             let is_down = resp.is_pointer_button_down_on();
                             if is_down && app.pad_down != Some(pad as u8) {

@@ -144,6 +144,9 @@ fn xtalk_cfg() -> (f32, u64, u64, u16) {
     })
 }
 
+/// Silence maximal d'un pad tenu fermement avant relâchement de sécurité.
+const HELD_SILENCE_FALLBACK: Duration = Duration::from_secs(60);
+
 /// Timeout de silence sur le flux 0x02 pour considérer un pad relâché si le firmware
 /// s'arrête d'émettre sans envoyer d'événement de levée explicite.
 /// Doit être supérieur à l'écart maximal entre deux rafales d'un appui maintenu (gap_ms, défaut 100ms)
@@ -260,6 +263,10 @@ struct PadTracker {
     rel_pending: [Option<(Instant, u16)>; 16],
     /// Début de la tenue en cours par pad (front montant hors release).
     hold_since: [Option<Instant>; 16],
+    /// Le dernier report qui listait ce pad le disait pressé : sans nouveau
+    /// report, le doigt est toujours posé (le firmware se tait tant que la
+    /// pression ne change pas), la note doit tenir.
+    last_report_pressed: [bool; 16],
     /// Mémoire de rivaux co-armés (pic, instant) : quand un pad qui MONTE
     /// flushe, il laisse son pic aux pads armés au même moment — pour que la
     /// suppression ne dépende pas de l'ordre de flush. TTL court
@@ -285,6 +292,7 @@ impl PadTracker {
             same_run: [0; 16],
             rel_pending: [None; 16],
             hold_since: [None; 16],
+            last_report_pressed: [false; 16],
             rival_mem: [(0, None); 16],
         }
     }
@@ -354,6 +362,7 @@ impl PadTracker {
     ) -> Vec<PadAction> {
         let mut out = Vec::new();
         self.last_seen[idx] = now;
+        self.last_report_pressed[idx] = pressed;
         let prev = self.prev_pressed[idx];
         if pressed {
             // Pression revenue/confimée : annule toute confirmation de release
@@ -421,6 +430,7 @@ impl PadTracker {
     /// Ne fait rien si le pad n'était pas pressé.
     fn absent(&mut self, idx: usize, now: Instant) -> Vec<PadAction> {
         let out = Vec::new();
+        self.last_report_pressed[idx] = false;
         if !self.prev_pressed[idx] {
             return out;
         }
@@ -453,7 +463,14 @@ impl PadTracker {
             // report, même sous le seuil ON : un appui maintenu dont la pression
             // retombe dans la bande d'hystérésis ne doit PAS relâcher/re-déclencher
             // en boucle.)
-            let silence_timeout = Duration::from_millis(stream_silence_timeout_ms());
+            // Un appui ferme ne se relâche que sur un report de chute ou
+            // d'absence ; le long délai n'est qu'un filet contre une note
+            // bloquée si une levée n'arrivait jamais.
+            let silence_timeout = if self.last_report_pressed[i] {
+                HELD_SILENCE_FALLBACK
+            } else {
+                Duration::from_millis(stream_silence_timeout_ms())
+            };
             if self.prev_pressed[i] && now.duration_since(self.last_seen[i]) > silence_timeout {
                 let held = self.hold_since[i].map(|t| now.duration_since(t).as_millis());
                 log::debug!(
@@ -1069,8 +1086,12 @@ mod tests {
         r.idle(150);
         assert_eq!(r.presses.len(), 1);
         assert_eq!(r.releases.len(), 0, "toujours maintenu à t=150");
-        // Fin de la tenue : le silence dépasse le stream timeout (>125ms après t=115 -> t=245).
+        // Silence après une rafale ferme : le doigt est toujours posé.
         r.idle(245);
+        assert_eq!(r.releases.len(), 0, "pas de levée sans report de chute");
+        // Levée : le firmware rapporte la chute de pression.
+        r.present(246, 0, 0x4000);
+        r.idle(400);
         assert_eq!(
             r.presses.len(),
             1,
@@ -1082,6 +1103,23 @@ mod tests {
             1,
             "un seul release à la fin effective de la tenue"
         );
+    }
+
+    /// Pad tenu sans bouger : le firmware ne renvoie plus rien, la note des
+    /// synthés doit tenir (bug « la note s'arrête au bout de quelques secondes »).
+    #[test]
+    fn replay_firm_hold_without_reports_keeps_the_note() {
+        let mut r = Replay::new();
+        for t in 0..10u64 {
+            r.present(t, 4, 0x4200 + (t as u16) * 60);
+        }
+        r.idle(12);
+        assert_eq!(r.presses.len(), 1);
+        r.idle(5000);
+        assert_eq!(r.releases.len(), 0, "toujours tenu après 5 s de silence");
+        r.present(5001, 4, 0x4000);
+        r.idle(5200);
+        assert_eq!(r.releases.len(), 1, "la levée rapportée relâche");
     }
 
     /// Appui doux maintenu (pression modérée < 0x4280) : ne doit JAMAIS être

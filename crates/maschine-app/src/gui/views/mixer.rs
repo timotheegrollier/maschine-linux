@@ -7,13 +7,16 @@ use crate::gui::theme::MachColors;
 use crate::gui::widgets::{chip, fader_db, pan_control, vu_meter};
 use eframe::egui;
 
+/// Marges et contour (jusqu'à 2 px) d'une tranche autour de sa largeur utile.
+const CHROME: f32 = crate::gui::theme::CARD_CHROME + 2.0;
+
 use maschine_engine::EngineEvent;
 
 pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::EngineSnapshot) {
     let c = MachColors::dark();
     let focus = snap.group_focus as usize;
 
-    egui::ScrollArea::vertical()
+    egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -59,12 +62,13 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
 
             // Groupes A-H (niveaux groupe, mute/solo, focus).
             ui.label(egui::RichText::new("GROUPES").strong().color(c.accent_cyan));
-            egui::ScrollArea::horizontal().id_salt("mixer_groups").show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    for g in 0..8usize {
+            // Tranches qui passent à la ligne plutôt que de sortir de la vue.
+            ui.with_layout(crate::gui::theme::card_row(), |ui| {
+                for g in 0..8usize {
+                    ui.allocate_ui(egui::vec2(74.0 + CHROME, 0.0), |ui| {
                         group_strip(ui, app, snap, g, g == focus, &c);
-                    }
-                });
+                    });
+                }
             });
 
             ui.add_space(10.0);
@@ -96,14 +100,12 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
             });
             ui.add_space(6.0);
 
-            crate::gui::theme::card(ui, |ui| {
-                egui::ScrollArea::horizontal().id_salt("mixer_sounds").show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        for s in 0..16usize {
-                            sound_strip(ui, app, snap, focus, s, s == snap.active_sound as usize, &c);
-                        }
+            ui.with_layout(crate::gui::theme::card_row(), |ui| {
+                for s in 0..16usize {
+                    ui.allocate_ui(egui::vec2(80.0 + CHROME, 0.0), |ui| {
+                        sound_strip(ui, app, snap, focus, s, s == snap.active_sound as usize, &c);
                     });
-                });
+                }
             });
 
             ui.add_space(10.0);

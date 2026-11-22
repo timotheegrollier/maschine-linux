@@ -84,9 +84,26 @@ impl Default for AmpSettings {
     }
 }
 
-/// Fixed output trim that makes a quiet line input audible without forcing
-/// the preamp into permanent saturation.
-const OUTPUT_TRIM: f32 = 1.6;
+/// Niveau de sortie : un signal guitare typique (-16 dBFS crête) ressort
+/// vers -8 dBFS au réglage par défaut, sans jamais saturer la sortie.
+const OUTPUT_TRIM: f32 = 1.2;
+
+/// Plage du GAIN (dB de préampli) : 0 = -6 dB (clair), 1 = +36 dB.
+const DRIVE_DB: (f32, f32) = (-6.0, 36.0);
+/// Crête d'un jeu de guitare typique : référence de la compensation.
+const NOMINAL_INPUT: f32 = 0.15;
+
+/// Garde-fou de sortie : linéaire jusqu'à 0,8, arrondi au-delà, jamais > 1.
+/// Avec le gain compensé, un jeu normal ne l'atteint pas.
+#[inline]
+fn output_guard(x: f32) -> f32 {
+    let a = x.abs();
+    if a <= 0.8 {
+        x
+    } else {
+        x.signum() * (0.8 + 0.2 * ((a - 0.8) / 0.2).tanh())
+    }
+}
 
 /// Configuration of a single preamp gain stage.
 #[derive(Clone, Copy)]
@@ -123,19 +140,19 @@ fn model_config(model: AmpModel) -> ModelConfig {
         AmpModel::VoxAc30 => ModelConfig {
             stages: [
                 StageConfig {
-                    gain: 1.5,
+                    gain: 1.2,
                     bias: 0.16,
                     hp_hz: 70.0,
                     lp_hz: 12000.0,
                 },
                 StageConfig {
-                    gain: 1.8,
+                    gain: 1.4,
                     bias: 0.13,
                     hp_hz: 90.0,
                     lp_hz: 9000.0,
                 },
                 StageConfig {
-                    gain: 1.3,
+                    gain: 1.1,
                     bias: 0.10,
                     hp_hz: 120.0,
                     lp_hz: 7000.0,
@@ -151,13 +168,13 @@ fn model_config(model: AmpModel) -> ModelConfig {
         AmpModel::FenderBlackface => ModelConfig {
             stages: [
                 StageConfig {
-                    gain: 1.3,
+                    gain: 1.0,
                     bias: 0.11,
                     hp_hz: 80.0,
                     lp_hz: 14000.0,
                 },
                 StageConfig {
-                    gain: 1.6,
+                    gain: 1.0,
                     bias: 0.09,
                     hp_hz: 100.0,
                     lp_hz: 11000.0,
@@ -179,19 +196,19 @@ fn model_config(model: AmpModel) -> ModelConfig {
         AmpModel::FenderTweed => ModelConfig {
             stages: [
                 StageConfig {
-                    gain: 1.4,
+                    gain: 1.2,
                     bias: 0.18,
                     hp_hz: 90.0,
                     lp_hz: 10000.0,
                 },
                 StageConfig {
-                    gain: 1.7,
+                    gain: 1.4,
                     bias: 0.15,
                     hp_hz: 110.0,
                     lp_hz: 8000.0,
                 },
                 StageConfig {
-                    gain: 1.3,
+                    gain: 1.1,
                     bias: 0.12,
                     hp_hz: 140.0,
                     lp_hz: 6500.0,
@@ -207,19 +224,19 @@ fn model_config(model: AmpModel) -> ModelConfig {
         AmpModel::HighGain => ModelConfig {
             stages: [
                 StageConfig {
-                    gain: 1.8,
+                    gain: 1.6,
                     bias: 0.09,
                     hp_hz: 35.0,
                     lp_hz: 16000.0,
                 },
                 StageConfig {
-                    gain: 2.4,
+                    gain: 2.2,
                     bias: 0.07,
                     hp_hz: 45.0,
                     lp_hz: 13000.0,
                 },
                 StageConfig {
-                    gain: 2.0,
+                    gain: 1.8,
                     bias: 0.06,
                     hp_hz: 60.0,
                     lp_hz: 10000.0,
@@ -284,8 +301,10 @@ impl Oversampler {
             up_sum += up_taps[n];
             down_sum += down_taps[n];
         }
+        // Chaque phase de l'interpolateur doit avoir un gain unité : le
+        // zéro-bourrage divise l'énergie par OVERSAMPLE (-12 dB sinon).
         for tap in &mut up_taps {
-            *tap /= up_sum;
+            *tap *= OVERSAMPLE as f32 / up_sum;
         }
         for tap in &mut down_taps {
             *tap /= down_sum;
@@ -307,8 +326,10 @@ impl Oversampler {
         let mut out = [0.0; OVERSAMPLE];
         for (r, out_r) in out.iter_mut().enumerate() {
             let mut acc = 0.0;
+            // Polyphase : la phase r applique h[r + k·L] à x[n − k] (k
+            // échantillons d'entrée en arrière, pas k·L).
             for k in 0..TAPS_PER_PHASE {
-                let idx = (self.up_pos + FIR_TAPS - k * OVERSAMPLE) % FIR_TAPS;
+                let idx = (self.up_pos + FIR_TAPS - k) % FIR_TAPS;
                 acc += self.up_taps[r + k * OVERSAMPLE] * self.up_buf[idx];
             }
             *out_r = acc;
@@ -493,9 +514,14 @@ impl TubeAmp {
 
     /// Process a block of samples at the base sample rate.
     pub fn process(&mut self, input: &[f32], output: &mut [f32]) {
-        // 1..=5 linear drive range: at the default 0.30 the preamp adds only
-        // ~2.2x, so a line-level guitar signal stays clean and audible.
-        let pre_gain = 1.0 + self.settings.gain.clamp(0.0, 1.0) * 4.0;
+        // GAIN en dB comme un vrai préampli ; la compensation garde le même
+        // volume perçu : le GAIN change le grain, MASTER règle le niveau.
+        let gain = self.settings.gain.clamp(0.0, 1.0);
+        let pre_gain = 10f32.powf((DRIVE_DB.0 + gain * (DRIVE_DB.1 - DRIVE_DB.0)) / 20.0);
+        // Niveau du préampli pour un jeu nominal : linéaire tant qu'il ne
+        // sature pas, plafonné ensuite ; on le ramène toujours à ~0,5.
+        let stages: f32 = self.config.stages.iter().map(|s| s.gain).product();
+        let makeup = 0.5 / (NOMINAL_INPUT * pre_gain * stages).tanh().max(1e-3);
         let headroom = self.config.power_headroom;
 
         for (x, y) in input.iter().zip(output.iter_mut()) {
@@ -529,10 +555,7 @@ impl TubeAmp {
                 let smooth = self.power_lp.process(power);
                 acc += self.oversampler.downsample(smooth).unwrap_or(0.0);
             }
-            // Output trim + softlimiter: quiet line input becomes audible,
-            // loud peaks are rounded instead of hard-clipped by the backend.
-            let out = acc * self.settings.master * OUTPUT_TRIM;
-            *y = out.tanh();
+            *y = output_guard(acc * makeup * self.settings.master * OUTPUT_TRIM);
         }
     }
 
@@ -557,6 +580,54 @@ impl TubeAmp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversampler_round_trip_is_transparent() {
+        let mut os = Oversampler::new(48000.0);
+        let mut out = Vec::new();
+        for i in 0..4800 {
+            let x = 0.5 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 48000.0).sin();
+            for hi in os.upsample(x) {
+                if let Some(y) = os.downsample(hi) {
+                    out.push(y);
+                }
+            }
+        }
+        let peak = out[2400..].iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!((peak - 0.5).abs() < 0.02, "gain aller-retour : {peak}");
+    }
+
+    #[test]
+    fn gain_changes_the_grain_not_the_volume_and_never_clips() {
+        // Guitare chaude (-12 dBFS crête) : chaque modèle, du clair au saturé.
+        let input: Vec<f32> = (0..9600)
+            .map(|i| 0.25 * (2.0 * std::f32::consts::PI * 196.0 * i as f32 / 48000.0).sin())
+            .collect();
+        for model in AmpModel::ALL {
+            let peaks: Vec<f32> = [0.0, 0.3, 0.6, 1.0]
+                .iter()
+                .map(|&gain| {
+                    let mut amp = TubeAmp::new(model, 48000.0);
+                    amp.set_settings(AmpSettings {
+                        gain,
+                        ..AmpSettings::default()
+                    });
+                    let mut out = vec![0.0; input.len()];
+                    amp.process(&input, &mut out);
+                    out[4800..].iter().fold(0.0f32, |m, s| m.max(s.abs()))
+                })
+                .collect();
+            let (lo, hi) = peaks
+                .iter()
+                .fold((f32::MAX, 0.0f32), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+            assert!(hi <= 1.0, "{model:?} sature la sortie : {peaks:?}");
+            assert!(lo > 0.05, "{model:?} trop faible : {peaks:?}");
+            assert!(
+                hi / lo < 4.0,
+                "{model:?} : écart de volume > 12 dB {peaks:?}"
+            );
+        }
+    }
 
     #[test]
     fn all_models_run_without_nan() {

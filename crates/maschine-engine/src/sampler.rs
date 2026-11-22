@@ -12,6 +12,24 @@ use serde::{Deserialize, Serialize};
 /// Identifiant d'un Sound runtime, encodé par [`sound_id`].
 pub type SoundId = u16;
 
+/// Interpolation cubique de Hermite (4 points) : un sample transposé garde
+/// ses aigus sans le grain métallique de l'interpolation linéaire ; à
+/// hauteur d'origine (`frac` = 0) l'échantillon est rendu tel quel.
+#[inline]
+fn hermite(sample: &[f32], i: usize, frac: f32) -> f32 {
+    let at = |j: usize| sample.get(j).copied().unwrap_or(0.0);
+    let (xm1, x0, x1, x2) = (
+        if i > 0 { at(i - 1) } else { at(i) },
+        at(i),
+        at(i + 1),
+        at(i + 2),
+    );
+    let c1 = 0.5 * (x1 - xm1);
+    let c2 = xm1 - 2.5 * x0 + 2.0 * x1 - 0.5 * x2;
+    let c3 = 0.5 * (x2 - xm1) + 1.5 * (x0 - x1);
+    ((c3 * frac + c2) * frac + c1) * frac + x0
+}
+
 /// Clé distincte par Group et slot Sound (chaque slot va de 0 à 15).
 #[must_use]
 pub const fn sound_id(group: u8, sound: u8) -> SoundId {
@@ -584,6 +602,19 @@ impl Sampler {
     /// Render `frames` samples stéréo interleaved dans `out` (out.len() == frames*2).
     /// Retourne le nombre de voix actives après render.
     pub fn render(&mut self, out: &mut [f32]) {
+        self.render_routed(out, &[[None; 16]; 8], &mut []);
+    }
+
+    /// Rendu avec routage : la voix d'un Sound (groupe `g`, slot `s`) va dans
+    /// `buses[route[g][s]]` (bus d'effets du Sound ou du groupe) si défini,
+    /// sinon dans `out`. Les bus doivent couvrir `out.len()` échantillons et
+    /// sont remis à zéro par l'appelant.
+    pub fn render_routed(
+        &mut self,
+        out: &mut [f32],
+        route: &[[Option<u8>; 16]; 8],
+        buses: &mut [Vec<f32>],
+    ) {
         // out = [L,R,L,R,...]
         let frames = out.len() / 2;
         // zero
@@ -614,6 +645,17 @@ impl Sampler {
                 } else {
                     let first = voice.start_frame;
                     voice.start_frame = 0;
+                    let bus = route
+                        .get(voice.group as usize)
+                        .and_then(|g| g.get(voice.sound as usize))
+                        .copied()
+                        .flatten()
+                        .map(usize::from)
+                        .filter(|&b| buses.get(b).is_some_and(|buf| buf.len() >= frames * 2));
+                    let dst: &mut [f32] = match bus {
+                        Some(b) => &mut buses[b],
+                        None => &mut *out,
+                    };
                     let mut pos = voice.pos;
                     let inc = voice.increment;
                     let sample = &voice.sample;
@@ -626,12 +668,9 @@ impl Sampler {
                             finished = true;
                             break;
                         }
-                        // linear interp
                         let i = pos as usize;
                         let frac = (pos - i as f64) as f32;
-                        let s0 = sample[i];
-                        let s1 = sample.get(i + 1).copied().unwrap_or(0.0);
-                        let mut s = s0 * (1.0 - frac) + s1 * frac;
+                        let mut s = hermite(sample, i, frac);
                         // Fondu anti-clic sur la fin du sample (queue tronquée).
                         if sample_len - pos < end_fade {
                             s *= ((sample_len - pos) / end_fade) as f32;
@@ -706,8 +745,8 @@ impl Sampler {
                         let (lg, rg) = pan_gains(voice.pan, g);
                         let l = s * lg;
                         let r = s * rg;
-                        out[frame * 2] += l;
-                        out[frame * 2 + 1] += r;
+                        dst[frame * 2] += l;
+                        dst[frame * 2 + 1] += r;
                         let mag = l.abs().max(r.abs());
                         if mag > voice_peak {
                             voice_peak = mag;
@@ -1237,6 +1276,19 @@ fn pan_gains(pan: f32, gain: f32) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hermite_is_exact_on_samples_and_smooth_between() {
+        let ramp = [0.0, 1.0, 2.0, 3.0, 4.0];
+        assert_eq!(hermite(&ramp, 2, 0.0), 2.0);
+        assert!(
+            (hermite(&ramp, 1, 0.5) - 1.5).abs() < 1e-6,
+            "droite conservée"
+        );
+        let sine: Vec<f32> = (0..64).map(|i| (i as f32 * 0.3).sin()).collect();
+        let mid = hermite(&sine, 10, 0.5);
+        assert!((mid - (10.5f32 * 0.3).sin()).abs() < 2e-3);
+    }
 
     fn dummy_sample() -> Arc<Vec<f32>> {
         // 100ms sine 440Hz @48k

@@ -265,6 +265,7 @@ pub fn spawn_display_thread(
 ) -> anyhow::Result<DisplayThreadHandle> {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = stop.clone();
+    *ACTIVE_STOP.lock() = Some(stop.clone());
     let join = std::thread::Builder::new()
         .name("maschine-display".to_string())
         .spawn(move || {
@@ -505,6 +506,25 @@ pub fn spawn_display_thread(
         join: Some(join),
         stop,
     })
+}
+
+/// Drapeau d'arrêt du thread écrans en cours : un plantage s'en sert pour
+/// afficher l'écran de veille avant que le processus ne disparaisse.
+static ACTIVE_STOP: parking_lot::Mutex<Option<Arc<AtomicBool>>> = parking_lot::Mutex::new(None);
+
+/// En cas de panique, demande l'écran de veille et laisse au thread écrans
+/// le temps de l'envoyer et de rendre l'interface (sinon les écrans restent
+/// figés sur la dernière image). Le message d'erreur d'origine est conservé.
+pub fn install_standby_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let stop = ACTIVE_STOP.lock().clone();
+        if let Some(stop) = stop {
+            stop.store(true, Ordering::Relaxed);
+            std::thread::sleep(Duration::from_millis(600));
+        }
+        previous(info);
+    }));
 }
 
 #[cfg(all(test, feature = "usb"))]

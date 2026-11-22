@@ -29,7 +29,7 @@ const CATEGORIES: &[(&str, &[usize])] = &[
 
 pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::EngineSnapshot) {
     let c = MachColors::dark();
-    egui::ScrollArea::vertical()
+    egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {

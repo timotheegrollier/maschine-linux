@@ -1,487 +1,9 @@
 //! Rendu de texte et éléments UI pour les 2 écrans 480×272 de la MK3.
 
+use crate::screen_text;
 use maschine_proto::display::{DisplayFrame, DisplayId, DisplayPixel};
 
-/// Police 8×16 bitmap simple pour ASCII 32..126
-const FONT_8X16_BASIC: [[u8; 16]; 95] = [
-    // 32 ' '
-    [
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 33 '!'
-    [
-        0x00, 0x00, 0x18, 0x3c, 0x3c, 0x3c, 0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 34 '"'
-    [
-        0x00, 0x66, 0x66, 0x66, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 35 '#'
-    [
-        0x00, 0x00, 0x36, 0x36, 0x7f, 0x36, 0x36, 0x36, 0x7f, 0x36, 0x36, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 36 '$'
-    [
-        0x00, 0x18, 0x3e, 0x63, 0x60, 0x3e, 0x03, 0x06, 0x7c, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 37 '%'
-    [
-        0x00, 0x00, 0x61, 0x63, 0x36, 0x1c, 0x08, 0x38, 0x6c, 0x66, 0x46, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 38 '&'
-    [
-        0x00, 0x00, 0x1c, 0x36, 0x30, 0x1c, 0x36, 0x66, 0x6e, 0x3b, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 39 '\''
-    [
-        0x00, 0x18, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 40 '('
-    [
-        0x00, 0x00, 0x0e, 0x1c, 0x18, 0x18, 0x18, 0x18, 0x18, 0x1c, 0x0e, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 41 ')'
-    [
-        0x00, 0x00, 0x70, 0x38, 0x18, 0x18, 0x18, 0x18, 0x18, 0x38, 0x70, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 42 '*'
-    [
-        0x00, 0x00, 0x00, 0x66, 0x3c, 0xff, 0x3c, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 43 '+'
-    [
-        0x00, 0x00, 0x00, 0x18, 0x18, 0x7e, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 44 ','
-    [
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x18, 0x30, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 45 '-'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x7e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 46 '.'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 47 '/'
-    [
-        0x00, 0x00, 0x03, 0x06, 0x0c, 0x18, 0x30, 0x60, 0xc0, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 48 '0'
-    [
-        0x00, 0x00, 0x3c, 0x66, 0x6e, 0x76, 0x66, 0x66, 0x66, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 49 '1'
-    [
-        0x00, 0x00, 0x18, 0x38, 0x18, 0x18, 0x18, 0x18, 0x18, 0x7e, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 50 '2'
-    [
-        0x00, 0x00, 0x3c, 0x66, 0x06, 0x0c, 0x18, 0x30, 0x60, 0x7e, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 51 '3'
-    [
-        0x00, 0x00, 0x3c, 0x66, 0x06, 0x1c, 0x06, 0x06, 0x66, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 52 '4'
-    [
-        0x00, 0x00, 0x0c, 0x1c, 0x3c, 0x6c, 0xfe, 0x0c, 0x0c, 0x1e, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 53 '5'
-    [
-        0x00, 0x00, 0x7e, 0x60, 0x7c, 0x06, 0x06, 0x06, 0x66, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 54 '6'
-    [
-        0x00, 0x00, 0x1c, 0x30, 0x60, 0x7c, 0x66, 0x66, 0x66, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 55 '7'
-    [
-        0x00, 0x00, 0x7e, 0x66, 0x0c, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 56 '8'
-    [
-        0x00, 0x00, 0x3c, 0x66, 0x66, 0x3c, 0x66, 0x66, 0x66, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 57 '9'
-    [
-        0x00, 0x00, 0x3c, 0x66, 0x66, 0x66, 0x3e, 0x06, 0x0c, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 58 ':'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 59 ';'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00, 0x00, 0x18, 0x18, 0x18, 0x30, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 60 '<'
-    [
-        0x00, 0x00, 0x0e, 0x1c, 0x38, 0x70, 0x38, 0x1c, 0x0e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 61 '='
-    [
-        0x00, 0x00, 0x00, 0x7e, 0x00, 0x00, 0x7e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 62 '>'
-    [
-        0x00, 0x00, 0x70, 0x38, 0x1c, 0x0e, 0x1c, 0x38, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 63 '?'
-    [
-        0x00, 0x00, 0x3c, 0x66, 0x06, 0x0c, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 64 '@'
-    [
-        0x00, 0x00, 0x3c, 0x66, 0x6e, 0x6e, 0x60, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 65 'A'
-    [
-        0x00, 0x00, 0x18, 0x3c, 0x66, 0x66, 0x7e, 0x66, 0x66, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 66 'B'
-    [
-        0x00, 0x00, 0x7c, 0x66, 0x66, 0x7c, 0x66, 0x66, 0x66, 0x7c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 67 'C'
-    [
-        0x00, 0x00, 0x3c, 0x66, 0x60, 0x60, 0x60, 0x60, 0x66, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 68 'D'
-    [
-        0x00, 0x00, 0x78, 0x6c, 0x66, 0x66, 0x66, 0x66, 0x6c, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 69 'E'
-    [
-        0x00, 0x00, 0x7e, 0x60, 0x60, 0x78, 0x60, 0x60, 0x60, 0x7e, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 70 'F'
-    [
-        0x00, 0x00, 0x7e, 0x60, 0x60, 0x78, 0x60, 0x60, 0x60, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 71 'G'
-    [
-        0x00, 0x00, 0x3c, 0x66, 0x60, 0x6e, 0x66, 0x66, 0x66, 0x3e, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 72 'H'
-    [
-        0x00, 0x00, 0x66, 0x66, 0x66, 0x7e, 0x66, 0x66, 0x66, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 73 'I'
-    [
-        0x00, 0x00, 0x3e, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3e, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 74 'J'
-    [
-        0x00, 0x00, 0x1e, 0x0c, 0x0c, 0x0c, 0x0c, 0x0c, 0x6c, 0x38, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 75 'K'
-    [
-        0x00, 0x00, 0x66, 0x6c, 0x78, 0x70, 0x78, 0x6c, 0x66, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 76 'L'
-    [
-        0x00, 0x00, 0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x7e, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 77 'M'
-    [
-        0x00, 0x00, 0x63, 0x77, 0x7f, 0x6b, 0x63, 0x63, 0x63, 0x63, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 78 'N'
-    [
-        0x00, 0x00, 0x66, 0x76, 0x7e, 0x7e, 0x6e, 0x66, 0x66, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 79 'O'
-    [
-        0x00, 0x00, 0x3c, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 80 'P'
-    [
-        0x00, 0x00, 0x7c, 0x66, 0x66, 0x7c, 0x60, 0x60, 0x60, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 81 'Q'
-    [
-        0x00, 0x00, 0x3c, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3c, 0x0e, 0x06, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 82 'R'
-    [
-        0x00, 0x00, 0x7c, 0x66, 0x66, 0x7c, 0x78, 0x6c, 0x66, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 83 'S'
-    [
-        0x00, 0x00, 0x3c, 0x66, 0x60, 0x3c, 0x06, 0x06, 0x66, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 84 'T'
-    [
-        0x00, 0x00, 0x7e, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 85 'U'
-    [
-        0x00, 0x00, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 86 'V'
-    [
-        0x00, 0x00, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3c, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 87 'W'
-    [
-        0x00, 0x00, 0x63, 0x63, 0x63, 0x6b, 0x7f, 0x77, 0x63, 0x63, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 88 'X'
-    [
-        0x00, 0x00, 0x66, 0x66, 0x3c, 0x18, 0x18, 0x3c, 0x66, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 89 'Y'
-    [
-        0x00, 0x00, 0x66, 0x66, 0x66, 0x3c, 0x18, 0x18, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 90 'Z'
-    [
-        0x00, 0x00, 0x7e, 0x06, 0x0c, 0x18, 0x30, 0x60, 0x60, 0x7e, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 91 '['
-    [
-        0x00, 0x00, 0x1e, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x1e, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 92 '\'
-    [
-        0x00, 0x00, 0x80, 0xc0, 0x60, 0x30, 0x18, 0x0c, 0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 93 ']'
-    [
-        0x00, 0x00, 0x78, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 94 '^'
-    [
-        0x00, 0x18, 0x3c, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 95 '_'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 96 '`'
-    [
-        0x00, 0x30, 0x18, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 97 'a'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x3c, 0x06, 0x3e, 0x66, 0x66, 0x3e, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 98 'b'
-    [
-        0x00, 0x60, 0x60, 0x60, 0x7c, 0x66, 0x66, 0x66, 0x66, 0x7c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 99 'c'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x3c, 0x66, 0x60, 0x60, 0x66, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 100 'd'
-    [
-        0x00, 0x06, 0x06, 0x06, 0x3e, 0x66, 0x66, 0x66, 0x66, 0x3e, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 101 'e'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x3c, 0x66, 0x7e, 0x60, 0x66, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 102 'f'
-    [
-        0x00, 0x1c, 0x30, 0x30, 0x7c, 0x30, 0x30, 0x30, 0x30, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 103 'g'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x3e, 0x66, 0x66, 0x3e, 0x06, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 104 'h'
-    [
-        0x00, 0x60, 0x60, 0x60, 0x7c, 0x66, 0x66, 0x66, 0x66, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 105 'i'
-    [
-        0x00, 0x18, 0x18, 0x00, 0x38, 0x18, 0x18, 0x18, 0x18, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 106 'j'
-    [
-        0x00, 0x0c, 0x0c, 0x00, 0x1c, 0x0c, 0x0c, 0x0c, 0x0c, 0x6c, 0x38, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 107 'k'
-    [
-        0x00, 0x60, 0x60, 0x60, 0x66, 0x6c, 0x78, 0x6c, 0x66, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 108 'l'
-    [
-        0x00, 0x38, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 109 'm'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x66, 0x7f, 0x7f, 0x6b, 0x63, 0x63, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 110 'n'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x7c, 0x66, 0x66, 0x66, 0x66, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 111 'o'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x3c, 0x66, 0x66, 0x66, 0x66, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 112 'p'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x7c, 0x66, 0x66, 0x7c, 0x60, 0x60, 0x60, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 113 'q'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x3e, 0x66, 0x66, 0x3e, 0x06, 0x06, 0x0f, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 114 'r'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x6c, 0x76, 0x60, 0x60, 0x60, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 115 's'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x3e, 0x60, 0x3c, 0x06, 0x66, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 116 't'
-    [
-        0x00, 0x10, 0x30, 0x7c, 0x30, 0x30, 0x30, 0x30, 0x34, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 117 'u'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3e, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 118 'v'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x66, 0x66, 0x66, 0x66, 0x3c, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 119 'w'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x63, 0x63, 0x6b, 0x7f, 0x36, 0x36, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 120 'x'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x66, 0x3c, 0x18, 0x18, 0x3c, 0x66, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 121 'y'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x66, 0x66, 0x66, 0x3e, 0x06, 0x3c, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 122 'z'
-    [
-        0x00, 0x00, 0x00, 0x00, 0x7e, 0x0c, 0x18, 0x30, 0x60, 0x7e, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 123 '{'
-    [
-        0x00, 0x0e, 0x18, 0x18, 0x18, 0x70, 0x18, 0x18, 0x18, 0x0e, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 124 '|'
-    [
-        0x00, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 125 '}'
-    [
-        0x00, 0x70, 0x18, 0x18, 0x18, 0x0e, 0x18, 0x18, 0x18, 0x70, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-    // 126 '~'
-    [
-        0x00, 0x3b, 0x6e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
-    ],
-];
-
-/// Dessine un caractère 8×16
+/// Dessine un caractère dans sa cellule 8×16 (fond `bg`, glyphe lissé).
 pub fn draw_char(
     frame: &mut DisplayFrame,
     x: usize,
@@ -490,36 +12,13 @@ pub fn draw_char(
     fg: DisplayPixel,
     bg: DisplayPixel,
 ) {
-    let ascii = c as usize;
-    let glyph = if (32..=126).contains(&ascii) {
-        &FONT_8X16_BASIC[ascii - 32]
-    } else {
-        &FONT_8X16_BASIC[0]
-    };
-
-    let w = frame.w as usize;
-    let h = frame.h as usize;
-
-    for (row, &bits) in glyph.iter().enumerate() {
-        let py = y + row;
-        if py >= h {
-            break;
-        }
-        for col in 0..8 {
-            let px = x + col;
-            if px >= w {
-                break;
-            }
-            let is_set = (bits & (0x80 >> col)) != 0;
-            let idx = py * w + px;
-            if idx < frame.pixels.len() {
-                frame.pixels[idx] = if is_set { fg } else { bg };
-            }
-        }
-    }
+    let mut buf = [0u8; 4];
+    draw_text(frame, x, y, c.encode_utf8(&mut buf), fg, bg);
 }
 
-/// Dessine du texte
+/// Dessine du texte sur la grille historique 8×16 : une cellule de 8 px
+/// par caractère peinte en `bg`, glyphes Hack lissés par-dessus (les mises
+/// en page calculées en `len × 8` restent exactes).
 pub fn draw_text(
     frame: &mut DisplayFrame,
     x: usize,
@@ -528,11 +27,7 @@ pub fn draw_text(
     fg: DisplayPixel,
     bg: DisplayPixel,
 ) {
-    let mut cx = x;
-    for c in text.chars() {
-        draw_char(frame, cx, y, c, fg, bg);
-        cx += 8;
-    }
+    draw_text_scaled(frame, x, y, text, 1, fg, bg);
 }
 
 /// Remplis un rectangle
@@ -572,14 +67,6 @@ pub fn draw_rect_outline(
     fill_rect(frame, x, y + h - 1, w, 1, color);
     fill_rect(frame, x, y, 1, h, color);
     fill_rect(frame, x + w - 1, y, 1, h, color);
-}
-
-/// Écrit un pixel unique dans le DisplayFrame avec vérification des bornes.
-#[inline]
-fn set_pixel(frame: &mut DisplayFrame, x: usize, y: usize, color: DisplayPixel) {
-    if x < SCR_W && y < SCR_H {
-        frame.pixels[y * SCR_W + x] = color;
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -765,46 +252,7 @@ fn fmt_len(ticks: u32) -> String {
     format!("{ticks}t")
 }
 
-fn draw_char_scaled(
-    frame: &mut DisplayFrame,
-    x: usize,
-    y: usize,
-    c: char,
-    scale: usize,
-    fg: DisplayPixel,
-    bg: DisplayPixel,
-) {
-    let ascii = c as usize;
-    let glyph = if (32..=126).contains(&ascii) {
-        &FONT_8X16_BASIC[ascii - 32]
-    } else {
-        &FONT_8X16_BASIC[0]
-    };
-    let fw = frame.w as usize;
-    let fh = frame.h as usize;
-    for (row, &bits) in glyph.iter().enumerate() {
-        for col in 0..8 {
-            let color = if (bits & (0x80 >> col)) != 0 { fg } else { bg };
-            for sy in 0..scale {
-                let py = y + row * scale + sy;
-                if py >= fh {
-                    continue;
-                }
-                for sx in 0..scale {
-                    let px = x + col * scale + sx;
-                    if px >= fw {
-                        continue;
-                    }
-                    let idx = py * fw + px;
-                    if idx < frame.pixels.len() {
-                        frame.pixels[idx] = color;
-                    }
-                }
-            }
-        }
-    }
-}
-
+/// Texte sur la grille 8×16 agrandie `scale` fois (titres, gros chiffres).
 fn draw_text_scaled(
     frame: &mut DisplayFrame,
     x: usize,
@@ -814,9 +262,21 @@ fn draw_text_scaled(
     fg: DisplayPixel,
     bg: DisplayPixel,
 ) {
-    for (i, c) in text.chars().enumerate() {
-        draw_char_scaled(frame, x + i * 8 * scale, y, c, scale, fg, bg);
-    }
+    let scale = scale.max(1);
+    let cells = text.chars().count();
+    fill_rect(frame, x, y, cells * 8 * scale, 16 * scale, bg);
+    let px = screen_text::mono_px(8.0 * scale as f32);
+    let baseline = y as f32 + screen_text::ascent(screen_text::Face::Mono, px);
+    screen_text::draw(
+        frame,
+        x as f32,
+        baseline,
+        text,
+        screen_text::Face::Mono,
+        px,
+        fg,
+        1.15,
+    );
 }
 
 /// Tracé de segment (Bresenham).
@@ -856,27 +316,40 @@ fn line(frame: &mut DisplayFrame, mut x0: i32, mut y0: i32, x1: i32, y1: i32, co
 /// droite, ruban d'activité des 16 pads (flashs du jeu + du séquenceur) et
 /// mini VU master (niveau + peak).
 fn header(frame: &mut DisplayFrame, p: &Pal, snap: &EngineSnapshot, title: &str, right: &str) {
+    header_colored(frame, p, snap, title, right, p.accent);
+}
+
+/// Bandeau titre dont le liseré gauche prend une couleur (Sound, groupe).
+fn header_colored(
+    frame: &mut DisplayFrame,
+    p: &Pal,
+    snap: &EngineSnapshot,
+    title: &str,
+    right: &str,
+    color: DisplayPixel,
+) {
+    use screen_text::Face;
     const H: usize = 26;
     fill_rect(frame, 0, 0, SCR_W, H, p.panel);
-    fill_rect(frame, 0, 0, 4, H, p.accent);
-    draw_text(frame, 10, 5, title, p.white, p.panel);
-    let mut left_end = 10 + title.chars().count() * 8;
+    fill_rect(frame, 0, 0, 4, H, color);
+    let title = fit_text(title, Face::Sans, 17.0, 300.0);
+    let mut left_end = 12.0 + label(frame, 12.0, 19.0, &title, 17.0, p.white, 1.8);
 
     // Vélocité fixe : niveau visible en permanence quand FIXED VEL est actif
     // (réglable au 4D sur la MK3).
     if snap.fixed_velocity {
-        let label = format!("VEL {} FIXE", snap.fixed_velocity_level);
-        draw_text(frame, left_end + 8, 5, &label, p.accent, p.panel);
-        left_end += 8 + label.len() * 8;
+        let text = format!("VEL {} FIXE", snap.fixed_velocity_level);
+        left_end += 10.0 + label(frame, left_end + 10.0, 18.0, &text, 13.0, p.accent, 1.6);
     }
 
     // Feedback temporaire (sauvegarde/chargement) — prioritaire et visible.
     if let Some(msg) = snap.status_message.as_deref() {
-        let msg = trunc(msg, 22);
-        let mw = msg.len() * 8 + 10;
-        let mx = SCR_W.saturating_sub(mw + 6);
-        fill_rect(frame, mx, 2, mw, H - 4, p.accent);
-        draw_text(frame, mx + 4, 5, &msg, p.bg, p.accent);
+        let msg = fit_text(msg, Face::Sans, 14.0, 250.0);
+        let w = screen_text::width(&msg, Face::Sans, 14.0).ceil() as usize + 16;
+        let mx = SCR_W.saturating_sub(w + 6);
+        fill_rect(frame, mx, 3, w, H - 6, p.accent);
+        label(frame, mx as f32 + 8.0, 18.0, &msg, 14.0, p.bg, 1.7);
+        fill_rect(frame, 0, H, SCR_W, 1, p.border);
         return;
     }
 
@@ -919,11 +392,49 @@ fn header(frame: &mut DisplayFrame, p: &Pal, snap: &EngineSnapshot, title: &str,
     );
 
     // Le contexte cède la place au titre : jamais de chevauchement.
-    let avail = vu_x.saturating_sub(left_end + 10 + 12) / 8;
-    let txt = trunc(right, avail);
-    let l = txt.chars().count() * 8;
-    draw_text(frame, vu_x - 10 - l, 5, &txt, p.dim, p.panel);
+    let room = (vu_x as f32 - 10.0 - (left_end + 14.0)).max(0.0);
+    let txt = fit_text(right, Face::Sans, 14.0, room);
+    let w = screen_text::width(&txt, Face::Sans, 14.0);
+    label(frame, vu_x as f32 - 10.0 - w, 18.0, &txt, 14.0, p.dim, 1.5);
     fill_rect(frame, 0, H, SCR_W, 1, p.border);
+}
+
+/// Texte Ubuntu lissé (titres, libellés) ; renvoie la largeur dessinée.
+fn label(
+    frame: &mut DisplayFrame,
+    x: f32,
+    baseline: f32,
+    text: &str,
+    px: f32,
+    color: DisplayPixel,
+    weight: f32,
+) -> f32 {
+    screen_text::draw(
+        frame,
+        x,
+        baseline,
+        text,
+        screen_text::Face::Sans,
+        px,
+        color,
+        weight,
+    )
+}
+
+/// Tronque `text` (avec « … ») pour tenir dans `max_w` pixels.
+fn fit_text(text: &str, face: screen_text::Face, px: f32, max_w: f32) -> String {
+    if screen_text::width(text, face, px) <= max_w {
+        return text.to_string();
+    }
+    let mut out: String = text.to_string();
+    while !out.is_empty() && screen_text::width(&format!("{out}…"), face, px) > max_w {
+        out.pop();
+    }
+    if out.is_empty() {
+        String::new()
+    } else {
+        format!("{}…", out.trim_end())
+    }
 }
 
 /// Convertit un pixel RGB565 en (r, g, b) 8 bits.
@@ -963,17 +474,35 @@ fn finish_soft_keys(
     fill_rect(frame, 0, y - 2, SCR_W, SOFT_KEYS_H, p.bg);
     for i in 0..4 {
         let idx = start + i;
-        let x = i * 120 + 3;
-        let w = 114;
-        let h = FOOTER_H - 4;
+        let x = i * 120;
+        // Repère discret entre deux boutons.
+        if i > 0 {
+            fill_rect(frame, x, y + 4, 1, FOOTER_H - 12, p.border);
+        }
+        let text = labels[idx];
+        // Bouton sans fonction : rien d'affiché (et LED éteinte).
+        if text.is_empty() {
+            continue;
+        }
         let on = active.get(idx).copied().unwrap_or(false);
-        let bg = if on { p.accent } else { p.panel };
-        let fg = if on { p.bg } else { p.dim };
-        fill_rect(frame, x, y, w, h, bg);
-        draw_rect_outline(frame, x, y, w, h, if on { p.white } else { p.border });
-        let label = labels[idx];
-        let tx = x + (w.saturating_sub(label.len() * 8)) / 2;
-        draw_text(frame, tx, y + 2, label, fg, bg);
+        let (bg, fg) = if on {
+            (p.accent, p.bg)
+        } else {
+            (p.panel, p.dim)
+        };
+        fill_rect(frame, x + 3, y, 114, FOOTER_H - 4, bg);
+        let text = fit_text(text, screen_text::Face::Sans, 15.0, 106.0);
+        let w = screen_text::width(&text, screen_text::Face::Sans, 15.0);
+        let weight = if on { 1.9 } else { 1.5 };
+        label(
+            frame,
+            x as f32 + 60.0 - w / 2.0,
+            y as f32 + 15.0,
+            &text,
+            15.0,
+            fg,
+            weight,
+        );
     }
     frame.pixels.rotate_right(SOFT_KEYS_H * SCR_W);
 }
@@ -1106,21 +635,56 @@ pub fn knob_slot_center(i: usize) -> usize {
     8 + i * 116 + 55
 }
 
-/// Rangée de 4 encodeurs (bas de chaque écran, au-dessus des knobs).
+/// Rangée de 4 encodeurs (bas de chaque écran, au-dessus des knobs) : nom du
+/// paramètre, valeur en grand, barre fine — comme les écrans de la MK3.
 fn encoder_row(frame: &mut DisplayFrame, p: &Pal, slots: &[EncSlot<'_>; 4]) {
     let y = SCR_H - FOOTER_H - ENC_H - 6;
+    fill_rect(frame, 0, y, SCR_W, ENC_H, p.bg);
     for (i, slot) in slots.iter().enumerate() {
         let x = knob_slot_center(i) - 55;
-        let (label, value, norm, color) = match slot {
-            Some((l, v, n, c)) => (*l, v.as_str(), *n, *c),
-            None => ("--", "", 0.0, p.border),
+        if i > 0 {
+            fill_rect(frame, x - 3, y + 6, 1, ENC_H - 12, p.border);
+        }
+        let Some((name, value, norm, color)) = slot else {
+            continue;
         };
-        panel(frame, p, x, y, 110, ENC_H);
-        // Encoche accent en haut du slot (repère d'encodeur physique).
-        fill_rect(frame, x, y, 3, 10, color);
-        draw_text(frame, x + 8, y + 3, &trunc(label, 12), p.muted, p.panel);
-        draw_text(frame, x + 8, y + 20, &trunc(value, 12), p.white, p.panel);
-        bar_h(frame, p, x + 6, y + ENC_H - 10, 98, 5, norm, color);
+        // Le numéro de knob (« 1: ») n'est pas affiché : le knob est dessous.
+        let name = name.split_once(':').map_or(*name, |(_, n)| n);
+        fill_rect(frame, x, y + 3, 3, 12, *color);
+        let name = fit_text(name, screen_text::Face::Sans, 13.0, 100.0);
+        label(
+            frame,
+            x as f32 + 8.0,
+            y as f32 + 14.0,
+            &name,
+            13.0,
+            p.dim,
+            1.5,
+        );
+        let value = fit_text(value, screen_text::Face::Sans, 19.0, 104.0);
+        label(
+            frame,
+            x as f32 + 6.0,
+            y as f32 + 35.0,
+            &value,
+            19.0,
+            p.white,
+            1.5,
+        );
+        let bw = 104usize;
+        fill_rect(frame, x + 3, y + 41, bw, 3, p.track);
+        let f = (norm.clamp(0.0, 1.0) * bw as f32) as usize;
+        if f > 0 {
+            fill_rect(frame, x + 3, y + 41, f.min(bw), 3, *color);
+            fill_rect(
+                frame,
+                x + 3 + f.min(bw).saturating_sub(2),
+                y + 40,
+                2,
+                5,
+                p.white,
+            );
+        }
     }
 }
 
@@ -3494,1275 +3058,9 @@ pub fn render_sampler_right(snap: &EngineSnapshot) -> DisplayFrame {
 
 // ── KICK SYNTH (TECHNO MODELER) ─────────────────────────────────────────
 
-/// Écran gauche — vue KICK SYNTH : Pitch Envelope, Tune, Attack & Snap.
-#[must_use]
-pub fn render_kick_synth_left(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
-    let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
-    let s_name = sound_name(snap, snap.active_sound as usize);
-    let kp = snap.focus_sound_kick.as_ref().unwrap_or(&snap.kick_params);
-    let is_page2 = (snap.synth_param_page == 1) ^ snap.shift_held;
-
-    if is_page2 {
-        let wave_name = match kp.waveform {
-            crate::kick_synth::KickWaveform::Sine => "SINE",
-            crate::kick_synth::KickWaveform::Triangle => "TRI",
-            crate::kick_synth::KickWaveform::SatSine => "SAT SINE",
-            crate::kick_synth::KickWaveform::Parabolic => "PARABOLIC",
-            crate::kick_synth::KickWaveform::Ramp => "RAMP",
-            crate::kick_synth::KickWaveform::SquareSub => "SQR SUB",
-            crate::kick_synth::KickWaveform::NoiseTransient => "NOISE",
-        };
-        header(
-            &mut frame,
-            &p,
-            snap,
-            "KICK SYNTH | ONDES & FM (P.2/2)",
-            &format!(
-                "GRP {} | SND {:02} | ONDE: {}",
-                group_letter(snap.group_focus),
-                snap.active_sound + 1,
-                wave_name
-            ),
-        );
-
-        // Panneau Forme d'onde (226 x 92)
-        panel(&mut frame, &p, 8, 28, 226, 92);
-        draw_text(&mut frame, 14, 32, "FORME D'ONDE DE BASE", p.dim, p.panel);
-        let w_x = 18usize;
-        let w_y = 44usize;
-        let w_w = 204usize;
-        let w_h = 56usize;
-        fill_rect(&mut frame, w_x, w_y, w_w, w_h, p.track);
-        let mid_y = w_y + w_h / 2;
-        for x in 0..w_w {
-            let t = (x as f32 / w_w as f32) * 2.0 * std::f32::consts::PI;
-            let val = match kp.waveform {
-                crate::kick_synth::KickWaveform::Sine => t.sin(),
-                crate::kick_synth::KickWaveform::Triangle => {
-                    (t.sin()).asin() * (2.0 / std::f32::consts::PI)
-                }
-                crate::kick_synth::KickWaveform::SatSine => (t.sin() * 2.5).tanh(),
-                crate::kick_synth::KickWaveform::Parabolic => {
-                    1.0 - 2.0 * ((t / std::f32::consts::PI - 1.0).fract().powi(2))
-                }
-                crate::kick_synth::KickWaveform::Ramp => 1.0 - 2.0 * (x as f32 / w_w as f32),
-                crate::kick_synth::KickWaveform::SquareSub => {
-                    if (t / (2.0 * std::f32::consts::PI)).fract() < 0.5 {
-                        0.85
-                    } else {
-                        -0.85
-                    }
-                }
-                crate::kick_synth::KickWaveform::NoiseTransient => {
-                    let n = (((x * 1103515245 + 12345) >> 16) & 0xFF) as f32 / 128.0 - 1.0;
-                    n * (-(x as f32 / 30.0)).exp() + t.sin() * 0.4
-                }
-            };
-            let py = (mid_y as f32 - val * (w_h as f32 * 0.38))
-                .clamp((w_y + 2) as f32, (w_y + w_h - 4) as f32) as usize;
-            fill_rect(&mut frame, w_x + x, py, 1, 2, p.accent);
-        }
-        draw_text(
-            &mut frame,
-            w_x + 6,
-            w_y + 6,
-            &format!("ONDE : {}", wave_name),
-            p.white,
-            p.track,
-        );
-        draw_text(
-            &mut frame,
-            w_x + 6,
-            w_y + 20,
-            &format!("TONE : {:.0}%", kp.drive_tone * 100.0),
-            p.green,
-            p.track,
-        );
-
-        // Panneau FM Modulation (226 x 92)
-        panel(&mut frame, &p, 246, 28, 226, 92);
-        draw_text(&mut frame, 252, 32, "MODULATION FM & RATIO", p.dim, p.panel);
-        let f_x = 256usize;
-        let f_y = 44usize;
-        let f_w = 204usize;
-        let f_h = 56usize;
-        fill_rect(&mut frame, f_x, f_y, f_w, f_h, p.track);
-        let fm_mid_y = f_y + f_h / 2;
-        for x in 0..f_w {
-            let t = (x as f32 / f_w as f32) * 4.0 * std::f32::consts::PI;
-            let mod_sig = (t * kp.fm_ratio).sin() * kp.fm_amount * 2.0;
-            let val = (t + mod_sig).sin();
-            let py = (fm_mid_y as f32 - val * (f_h as f32 * 0.38))
-                .clamp((f_y + 2) as f32, (f_y + f_h - 4) as f32) as usize;
-            fill_rect(&mut frame, f_x + x, py, 1, 2, p.cyan);
-        }
-        draw_text(
-            &mut frame,
-            f_x + 6,
-            f_y + 6,
-            &format!("FM AMT : {:.0}%", kp.fm_amount * 100.0),
-            p.cyan,
-            p.track,
-        );
-        draw_text(
-            &mut frame,
-            f_x + 6,
-            f_y + 20,
-            &format!("RATIO : {:.2}x", kp.fm_ratio),
-            p.yellow,
-            p.track,
-        );
-
-        let slots = [
-            Some(("1:WAVE", wave_name.to_string(), 0.5, p.accent)),
-            Some((
-                "2:FM AMT",
-                format!("{:.0}%", kp.fm_amount * 100.0),
-                kp.fm_amount,
-                p.cyan,
-            )),
-            Some((
-                "3:RATIO",
-                format!("{:.2}x", kp.fm_ratio),
-                (kp.fm_ratio - 0.25) / 7.75,
-                p.yellow,
-            )),
-            Some((
-                "4:TONE",
-                format!("{:.0}%", kp.drive_tone * 100.0),
-                kp.drive_tone,
-                p.green,
-            )),
-        ];
-        encoder_row(&mut frame, &p, &slots);
-
-        finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
-        return frame;
-    }
-
-    header(
-        &mut frame,
-        &p,
-        snap,
-        "KICK SYNTH | TECHNO",
-        &format!(
-            "GRP {} | SND {:02} {} | {}",
-            group_letter(snap.group_focus),
-            snap.active_sound + 1,
-            trunc(&s_name, 10),
-            kp.preset_name
-        ),
-    );
-
-    // Panneau Pitch Envelope / Sweep
-    panel(&mut frame, &p, 8, 28, 226, 92);
-    draw_text(&mut frame, 14, 32, "PITCH DROP & TUNE", p.dim, p.panel);
-    let p_x = 18usize;
-    let p_y = 44usize;
-    let p_w = 204usize;
-    let p_h = 56usize;
-    fill_rect(&mut frame, p_x, p_y, p_w, p_h, p.track);
-    for x in 0..p_w {
-        let t = x as f32 / p_w as f32;
-        let drop = (-t * 3.5).exp();
-        let py = p_y + p_h - 4 - ((drop * (p_h - 8) as f32) as usize);
-        fill_rect(&mut frame, p_x + x, py, 1, 2, p.accent);
-    }
-    draw_text(
-        &mut frame,
-        p_x + 6,
-        p_y + 6,
-        &format!("{:.1} Hz", kp.tune_hz),
-        p.white,
-        p.track,
-    );
-
-    // Panneau Click & Snap
-    panel(&mut frame, &p, 246, 28, 226, 92);
-    draw_text(&mut frame, 252, 32, "ATTAQUE & TRANSIENT", p.dim, p.panel);
-    let c_x = 256usize;
-    let c_y = 44usize;
-    let c_w = 204usize;
-    let c_h = 56usize;
-    fill_rect(&mut frame, c_x, c_y, c_w, c_h, p.track);
-    for x in 0..c_w {
-        let h = if x < 15 {
-            let env = 1.0 - (x as f32 / 15.0);
-            (env * kp.click * (c_h - 10) as f32) as usize
-        } else {
-            0
-        };
-        if h > 0 {
-            fill_rect(&mut frame, c_x + x, c_y + c_h - 4 - h, 1, h, p.yellow);
-        }
-    }
-    draw_text(
-        &mut frame,
-        c_x + 6,
-        c_y + 6,
-        &format!("SNAP {:.0}%", kp.snap * 100.0),
-        p.white,
-        p.track,
-    );
-
-    let slots = [
-        Some((
-            "1:TUNE",
-            format!("{:.1}Hz", kp.tune_hz),
-            (kp.tune_hz - 30.0) / 60.0,
-            p.cyan,
-        )),
-        Some((
-            "2:DECAY",
-            format!("{:.0}ms", kp.decay_ms),
-            (kp.decay_ms - 40.0) / 1960.0,
-            p.cyan,
-        )),
-        Some((
-            "3:PUNCH",
-            format!("{:.0}%", kp.snap * 100.0),
-            kp.snap,
-            p.green,
-        )),
-        Some((
-            "4:SWEEP",
-            format!("{:.0}ms", kp.sweep_time_ms),
-            (kp.sweep_time_ms - 5.0) / 115.0,
-            p.green,
-        )),
-    ];
-    encoder_row(&mut frame, &p, &slots);
-
-    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
-    frame
-}
-
-/// Écran droit — vue KICK SYNTH : Overdrive, Sub & Sortie.
-#[must_use]
-pub fn render_kick_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
-    let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
-    let kp = snap.focus_sound_kick.as_ref().unwrap_or(&snap.kick_params);
-    let is_page2 = (snap.synth_param_page == 1) ^ snap.shift_held;
-
-    if is_page2 {
-        let drv_str = match kp.drive_type {
-            crate::kick_synth::KickDriveType::AnalogTanh => "TANH",
-            crate::kick_synth::KickDriveType::HardClip => "HARD",
-            crate::kick_synth::KickDriveType::Wavefolder => "FOLD",
-            crate::kick_synth::KickDriveType::TubeDrive => "TUBE",
-            crate::kick_synth::KickDriveType::Bitcrush => "CRUSH",
-            crate::kick_synth::KickDriveType::Fuzz => "FUZZ",
-            crate::kick_synth::KickDriveType::Rectifier => "RECT",
-        };
-        let flt_str = match kp.filter_mode {
-            crate::kick_synth::KickFilterMode::Off => "OFF",
-            crate::kick_synth::KickFilterMode::LowPass => "LP",
-            crate::kick_synth::KickFilterMode::HighPass => "HP",
-            crate::kick_synth::KickFilterMode::BandPass => "BP",
-            crate::kick_synth::KickFilterMode::Notch => "NOTCH",
-            crate::kick_synth::KickFilterMode::Peak => "PEAK",
-        };
-        header(
-            &mut frame,
-            &p,
-            snap,
-            "KICK SYNTH | DISTO & FILTRE (P.2/2)",
-            &format!(
-                "DISTO: {} ({:.0}%) | FLT: {}",
-                drv_str,
-                kp.drive * 100.0,
-                flt_str
-            ),
-        );
-
-        // Panneau Distorsion Multi-Types (226 x 92)
-        panel(&mut frame, &p, 8, 28, 226, 92);
-        draw_text(&mut frame, 14, 32, "DISTORSION MULTI-TYPES", p.dim, p.panel);
-        let d_x = 18usize;
-        let d_y = 44usize;
-        let d_w = 204usize;
-        let d_h = 56usize;
-        fill_rect(&mut frame, d_x, d_y, d_w, d_h, p.track);
-        let d_mid_y = d_y + d_h / 2;
-        let drive_amt = 1.0 + kp.drive * 6.0;
-        for x in 0..d_w {
-            let t = (x as f32 / d_w as f32) * 2.0 * std::f32::consts::PI;
-            let raw = t.sin() * drive_amt;
-            let val = match kp.drive_type {
-                crate::kick_synth::KickDriveType::AnalogTanh => raw.tanh(),
-                crate::kick_synth::KickDriveType::HardClip => raw.clamp(-1.0, 1.0),
-                crate::kick_synth::KickDriveType::Wavefolder => {
-                    let mut s = raw;
-                    while s > 1.0 || s < -1.0 {
-                        if s > 1.0 {
-                            s = 2.0 - s;
-                        } else if s < -1.0 {
-                            s = -2.0 - s;
-                        }
-                    }
-                    s
-                }
-                crate::kick_synth::KickDriveType::TubeDrive => {
-                    if raw > 0.0 {
-                        raw.tanh()
-                    } else {
-                        raw * 0.8 / (1.0 + raw.abs() * 0.5)
-                    }
-                }
-                crate::kick_synth::KickDriveType::Bitcrush => (raw * 4.0).round() / 4.0,
-                crate::kick_synth::KickDriveType::Fuzz => {
-                    if raw > 0.0 {
-                        1.0 - (-raw * 2.0).exp()
-                    } else {
-                        -1.0 + (raw * 2.0).exp()
-                    }
-                }
-                crate::kick_synth::KickDriveType::Rectifier => raw.abs() * 2.0 - 1.0,
-            };
-            let py = (d_mid_y as f32 - val.clamp(-1.2, 1.2) * (d_h as f32 * 0.38))
-                .clamp((d_y + 2) as f32, (d_y + d_h - 4) as f32) as usize;
-            fill_rect(&mut frame, d_x + x, py, 1, 2, p.red);
-        }
-        draw_text(
-            &mut frame,
-            d_x + 6,
-            d_y + 6,
-            &format!("TYPE : {}", drv_str),
-            p.red,
-            p.track,
-        );
-        draw_text(
-            &mut frame,
-            d_x + 6,
-            d_y + 20,
-            &format!("DRIVE : {:.0}%", kp.drive * 100.0),
-            p.white,
-            p.track,
-        );
-
-        // Panneau Filtre Résonant (226 x 92)
-        panel(&mut frame, &p, 246, 28, 226, 92);
-        draw_text(
-            &mut frame,
-            252,
-            32,
-            "FILTRE RÉSONANT MULTIMODE",
-            p.dim,
-            p.panel,
-        );
-        let fl_x = 256usize;
-        let fl_y = 44usize;
-        let fl_w = 204usize;
-        let fl_h = 56usize;
-        fill_rect(&mut frame, fl_x, fl_y, fl_w, fl_h, p.track);
-        let cut_norm = ((kp.filter_cutoff_hz.max(20.0).log10() - 20.0f32.log10())
-            / (18000.0f32.log10() - 20.0f32.log10()))
-        .clamp(0.05, 0.95);
-        let peak_x = fl_x + (cut_norm * (fl_w as f32)) as usize;
-        let reso_h = kp.filter_reso * 24.0;
-        let base_y = fl_y + fl_h - 12;
-        for x in 0..fl_w {
-            let px = fl_x + x;
-            let dist = px as f32 - peak_x as f32;
-            let py = match kp.filter_mode {
-                crate::kick_synth::KickFilterMode::Off => base_y - 20,
-                crate::kick_synth::KickFilterMode::LowPass => {
-                    let drop = if dist <= 0.0 {
-                        0.0
-                    } else {
-                        (dist / 14.0).powi(2)
-                    };
-                    let bump = reso_h * (-(dist / 18.0).powi(2)).exp();
-                    (base_y as f32 - 20.0 - bump + drop) as usize
-                }
-                crate::kick_synth::KickFilterMode::HighPass => {
-                    let drop = if dist >= 0.0 {
-                        0.0
-                    } else {
-                        (dist / 14.0).powi(2)
-                    };
-                    let bump = reso_h * (-(dist / 18.0).powi(2)).exp();
-                    (base_y as f32 - 20.0 - bump + drop) as usize
-                }
-                crate::kick_synth::KickFilterMode::BandPass => {
-                    let bump = (20.0 + reso_h) * (-(dist / 16.0).powi(2)).exp();
-                    (base_y as f32 - bump) as usize
-                }
-                crate::kick_synth::KickFilterMode::Notch => {
-                    let dip = 30.0 * (-(dist / 12.0).powi(2)).exp();
-                    (base_y as f32 - 25.0 + dip) as usize
-                }
-                crate::kick_synth::KickFilterMode::Peak => {
-                    let bump = (12.0 + reso_h * 1.5) * (-(dist / 15.0).powi(2)).exp();
-                    (base_y as f32 - 18.0 - bump) as usize
-                }
-            };
-            let clamped_y = py.clamp(fl_y + 4, fl_y + fl_h - 4);
-            fill_rect(&mut frame, px, clamped_y, 1, 2, p.cyan);
-        }
-        draw_text(
-            &mut frame,
-            fl_x + 6,
-            fl_y + 6,
-            &format!("MODE : {}", flt_str),
-            p.cyan,
-            p.track,
-        );
-        draw_text(
-            &mut frame,
-            fl_x + 6,
-            fl_y + 20,
-            &format!("CUT : {}", fmt_hz(kp.filter_cutoff_hz)),
-            p.white,
-            p.track,
-        );
-        draw_text(
-            &mut frame,
-            fl_x + 6,
-            fl_y + 34,
-            &format!("RESO : {:.0}%", kp.filter_reso * 100.0),
-            p.yellow,
-            p.track,
-        );
-
-        let slots = [
-            Some(("5:DISTO", drv_str.to_string(), 0.5, p.red)),
-            Some(("6:FILTER", flt_str.to_string(), 0.5, p.cyan)),
-            Some(("7:CUTOFF", fmt_hz(kp.filter_cutoff_hz), cut_norm, p.accent)),
-            Some((
-                "8:RESO",
-                format!("{:.0}%", kp.filter_reso * 100.0),
-                kp.filter_reso,
-                p.yellow,
-            )),
-        ];
-        encoder_row(&mut frame, &p, &slots);
-
-        finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
-        return frame;
-    }
-
-    header(
-        &mut frame,
-        &p,
-        snap,
-        "KICK SYNTH | SHAPING",
-        &format!(
-            "DRIVE {:.0}% | SUB {:.0}%",
-            kp.drive * 100.0,
-            kp.sub * 100.0
-        ),
-    );
-
-    // Panneau Saturation / Overdrive
-    panel(&mut frame, &p, 8, 28, 226, 92);
-    draw_text(&mut frame, 14, 32, "OVERDRIVE ANALOGIQUE", p.dim, p.panel);
-    let d_x = 18usize;
-    let d_y = 44usize;
-    let d_w = 204usize;
-    let d_h = 56usize;
-    fill_rect(&mut frame, d_x, d_y, d_w, d_h, p.track);
-    let drive_gain = 1.0 + kp.drive * 5.0;
-    for x in 0..d_w {
-        let t = (x as f32 / d_w as f32) * 2.0 * std::f32::consts::PI;
-        let s = (t.sin() * drive_gain).tanh();
-        let sy = d_y + d_h / 2 - ((s * (d_h / 2 - 4) as f32) as i32) as usize;
-        fill_rect(&mut frame, d_x + x, sy, 1, 2, p.red);
-    }
-    draw_text(
-        &mut frame,
-        d_x + 6,
-        d_y + 6,
-        &format!("DRIVE {:.0}%", kp.drive * 100.0),
-        p.white,
-        p.track,
-    );
-
-    // Panneau Sub & Volume
-    panel(&mut frame, &p, 246, 28, 226, 92);
-    draw_text(&mut frame, 252, 32, "INFRABASSE & SORTIE", p.dim, p.panel);
-    let s_x = 256usize;
-    let s_y = 44usize;
-    let s_w = 204usize;
-    let s_h = 56usize;
-    fill_rect(&mut frame, s_x, s_y, s_w, s_h, p.track);
-    let drv_str = match kp.drive_type {
-        crate::kick_synth::KickDriveType::AnalogTanh => "TANH",
-        crate::kick_synth::KickDriveType::HardClip => "HARD",
-        crate::kick_synth::KickDriveType::Wavefolder => "FOLD",
-        crate::kick_synth::KickDriveType::TubeDrive => "TUBE",
-        crate::kick_synth::KickDriveType::Bitcrush => "CRUSH",
-        crate::kick_synth::KickDriveType::Fuzz => "FUZZ",
-        crate::kick_synth::KickDriveType::Rectifier => "RECT",
-    };
-    let flt_str = match kp.filter_mode {
-        crate::kick_synth::KickFilterMode::Off => "OFF".to_string(),
-        crate::kick_synth::KickFilterMode::LowPass => format!("LP {:.0}Hz", kp.filter_cutoff_hz),
-        crate::kick_synth::KickFilterMode::HighPass => format!("HP {:.0}Hz", kp.filter_cutoff_hz),
-        crate::kick_synth::KickFilterMode::BandPass => format!("BP {:.0}Hz", kp.filter_cutoff_hz),
-        crate::kick_synth::KickFilterMode::Notch => format!("NOTCH {:.0}Hz", kp.filter_cutoff_hz),
-        crate::kick_synth::KickFilterMode::Peak => format!("PEAK {:.0}Hz", kp.filter_cutoff_hz),
-    };
-    draw_text(
-        &mut frame,
-        s_x + 6,
-        s_y + 4,
-        &format!("DISTO : {} ({:.0}%)", drv_str, kp.drive * 100.0),
-        p.red,
-        p.track,
-    );
-    draw_text(
-        &mut frame,
-        s_x + 6,
-        s_y + 18,
-        &format!("FILTRE : {}", flt_str),
-        p.cyan,
-        p.track,
-    );
-    draw_text(
-        &mut frame,
-        s_x + 6,
-        s_y + 32,
-        &format!("SUB {:.0}% | VOL {:.1}dB", kp.sub * 100.0, kp.volume_db),
-        p.yellow,
-        p.track,
-    );
-    draw_text(
-        &mut frame,
-        s_x + 6,
-        s_y + 44,
-        &format!("PRESET : {}", trunc(&kp.preset_name, 16)),
-        p.white,
-        p.track,
-    );
-
-    let slots = [
-        Some((
-            "5:CLICK",
-            format!("{:.0}%", kp.click * 100.0),
-            kp.click,
-            p.accent,
-        )),
-        Some((
-            "6:DRIVE",
-            format!("{:.0}%", kp.drive * 100.0),
-            kp.drive,
-            p.red,
-        )),
-        Some(("7:SUB", format!("{:.0}%", kp.sub * 100.0), kp.sub, p.cyan)),
-        Some((
-            "8:VOLUME",
-            format!("{:.1}dB", kp.volume_db),
-            db_norm(kp.volume_db),
-            p.yellow,
-        )),
-    ];
-    encoder_row(&mut frame, &p, &slots);
-
-    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
-    frame
-}
-
 // ── WAVETABLE / NEXUS SYNTH ──────────────────────────────────────────────
 
-/// Écran gauche — vue NEXUS / SERUM SYNTH : Tables d'ondes, Unison, Filtre SVF.
-#[must_use]
-pub fn render_wavetable_synth_left(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
-    let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
-    let s_name = sound_name(snap, snap.active_sound as usize);
-    let wp = snap
-        .focus_sound_wavetable
-        .as_ref()
-        .unwrap_or(&snap.wavetable_params);
-    header(
-        &mut frame,
-        &p,
-        snap,
-        "NEXUS / SERUM SYNTH",
-        &format!(
-            "GRP {} | SND {:02} {} | {}",
-            group_letter(snap.group_focus),
-            snap.active_sound + 1,
-            trunc(&s_name, 10),
-            wp.name
-        ),
-    );
-
-    // Panneau Oscillateurs & Unison (226 x 92)
-    panel(&mut frame, &p, 8, 28, 226, 92);
-    draw_text(&mut frame, 14, 32, "OSCILLATEURS & UNISON", p.dim, p.panel);
-    let o_x = 18usize;
-    let o_y = 44usize;
-    let o_w = 204usize;
-    let o_h = 56usize;
-    fill_rect(&mut frame, o_x, o_y, o_w, o_h, p.track);
-    draw_text(
-        &mut frame,
-        o_x + 6,
-        o_y + 6,
-        &format!("OSC1 : {:?} ({:.0}%)", wp.osc1_wave, wp.osc1_level * 100.0),
-        p.cyan,
-        p.track,
-    );
-    draw_text(
-        &mut frame,
-        o_x + 6,
-        o_y + 20,
-        &format!("OSC2 : {:?} ({:.0}%)", wp.osc2_wave, wp.osc2_level * 100.0),
-        p.white,
-        p.track,
-    );
-    draw_text(
-        &mut frame,
-        o_x + 6,
-        o_y + 34,
-        &format!(
-            "UNISON : {}v (detune {:.0}%)",
-            wp.unison_voices,
-            wp.unison_detune * 100.0
-        ),
-        p.yellow,
-        p.track,
-    );
-
-    // Panneau Filtre SVF (226 x 92)
-    panel(&mut frame, &p, 246, 28, 226, 92);
-    draw_text(&mut frame, 252, 32, "FILTRE MULTIMODE SVF", p.dim, p.panel);
-    let f_x = 256usize;
-    let f_y = 44usize;
-    let f_w = 204usize;
-    let f_h = 56usize;
-    fill_rect(&mut frame, f_x, f_y, f_w, f_h, p.track);
-    draw_text(
-        &mut frame,
-        f_x + 6,
-        f_y + 6,
-        &format!("MODE : {:?}", wp.filter_mode),
-        p.accent,
-        p.track,
-    );
-    draw_text(
-        &mut frame,
-        f_x + 6,
-        f_y + 20,
-        &format!("CUTOFF : {:.0} Hz", wp.filter_cutoff),
-        p.white,
-        p.track,
-    );
-    draw_text(
-        &mut frame,
-        f_x + 6,
-        f_y + 34,
-        &format!(
-            "RESO : {:.0}% | ENV : {:.0}%",
-            wp.filter_reso * 100.0,
-            wp.filter_env_amt * 100.0
-        ),
-        p.cyan,
-        p.track,
-    );
-
-    let is_page2 = (snap.synth_param_page == 1) ^ snap.shift_held;
-    let slots = if is_page2 {
-        let flt_str = match wp.filter_mode {
-            crate::wavetable_synth::WavetableFilterMode::Off => "OFF",
-            crate::wavetable_synth::WavetableFilterMode::LowPass12 => "LP12",
-            crate::wavetable_synth::WavetableFilterMode::LowPass24 => "LP24",
-            crate::wavetable_synth::WavetableFilterMode::HighPass => "HP",
-            crate::wavetable_synth::WavetableFilterMode::BandPass => "BP",
-            crate::wavetable_synth::WavetableFilterMode::Notch => "NOTCH",
-            crate::wavetable_synth::WavetableFilterMode::Peak => "PEAK",
-        };
-        [
-            Some((
-                "1:FLT MOD",
-                flt_str.to_string(),
-                match wp.filter_mode {
-                    crate::wavetable_synth::WavetableFilterMode::Off => 0.0,
-                    _ => 0.7,
-                },
-                p.accent,
-            )),
-            Some((
-                "2:UNISON",
-                format!("{} VOICES", wp.unison_voices),
-                (wp.unison_voices as f32 - 1.0) / 6.0,
-                p.yellow,
-            )),
-            Some(("3:OSC1 WV", format!("{:?}", wp.osc1_wave), 0.5, p.cyan)),
-            Some(("4:OSC2 WV", format!("{:?}", wp.osc2_wave), 0.5, p.cyan)),
-        ]
-    } else {
-        [
-            Some((
-                "1:CUTOFF",
-                format!("{:.0}Hz", wp.filter_cutoff),
-                (wp.filter_cutoff / 20000.0).clamp(0.0, 1.0),
-                p.accent,
-            )),
-            Some((
-                "2:RESO",
-                format!("{:.0}%", wp.filter_reso * 100.0),
-                wp.filter_reso.clamp(0.0, 1.0),
-                p.yellow,
-            )),
-            Some((
-                "3:ENV AMT",
-                format!("{:.0}%", wp.filter_env_amt * 100.0),
-                wp.filter_env_amt.abs().clamp(0.0, 1.0),
-                p.cyan,
-            )),
-            Some((
-                "4:DRIVE",
-                format!("{:.0}%", wp.filter_drive * 100.0),
-                wp.filter_drive.clamp(0.0, 1.0),
-                p.red,
-            )),
-        ]
-    };
-    encoder_row(&mut frame, &p, &slots);
-
-    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
-    frame
-}
-
-/// Écran droit — vue NEXUS / SERUM SYNTH : Enveloppes ADSR, Effets & Presets.
-#[must_use]
-pub fn render_wavetable_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
-    let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
-    let wp = snap
-        .focus_sound_wavetable
-        .as_ref()
-        .unwrap_or(&snap.wavetable_params);
-    header(
-        &mut frame,
-        &p,
-        snap,
-        "NEXUS | ENVELOPPES & FX",
-        &format!("CAT : {:?} | {}", wp.category, wp.name),
-    );
-
-    // Panneau Enveloppes (226 x 92)
-    panel(&mut frame, &p, 8, 28, 226, 92);
-    draw_text(
-        &mut frame,
-        14,
-        32,
-        "ENVELOPPE AMPLITUDE (ADSR)",
-        p.dim,
-        p.panel,
-    );
-    let a_x = 18usize;
-    let a_y = 44usize;
-    let a_w = 204usize;
-    let a_h = 56usize;
-    fill_rect(&mut frame, a_x, a_y, a_w, a_h, p.track);
-    draw_text(
-        &mut frame,
-        a_x + 6,
-        a_y + 6,
-        &format!("A: {:.0}ms  D: {:.0}ms", wp.amp_attack_ms, wp.amp_decay_ms),
-        p.accent,
-        p.track,
-    );
-    draw_text(
-        &mut frame,
-        a_x + 6,
-        a_y + 22,
-        &format!(
-            "S: {:.0}%  R: {:.0}ms",
-            wp.amp_sustain * 100.0,
-            wp.amp_release_ms
-        ),
-        p.white,
-        p.track,
-    );
-    draw_text(
-        &mut frame,
-        a_x + 6,
-        a_y + 38,
-        &format!(
-            "LFO : {:.1}Hz ({:.0}%)",
-            wp.lfo_rate_hz,
-            wp.lfo_amount * 100.0
-        ),
-        p.yellow,
-        p.track,
-    );
-
-    // Panneau Rack Effets (226 x 92)
-    panel(&mut frame, &p, 246, 28, 226, 92);
-    draw_text(&mut frame, 252, 32, "RACK D'EFFETS INTÉGRÉ", p.dim, p.panel);
-    let e_x = 256usize;
-    let e_y = 44usize;
-    let e_w = 204usize;
-    let e_h = 56usize;
-    fill_rect(&mut frame, e_x, e_y, e_w, e_h, p.track);
-    draw_text(
-        &mut frame,
-        e_x + 6,
-        e_y + 6,
-        &format!(
-            "CHORUS: {:.0}% | REVERB: {:.0}%",
-            wp.fx_chorus_mix * 100.0,
-            wp.fx_reverb_mix * 100.0
-        ),
-        p.cyan,
-        p.track,
-    );
-    draw_text(
-        &mut frame,
-        e_x + 6,
-        e_y + 22,
-        &format!(
-            "DELAY: {:.0}ms ({:.0}%)",
-            wp.fx_delay_time_ms,
-            wp.fx_delay_mix * 100.0
-        ),
-        p.white,
-        p.track,
-    );
-    draw_text(
-        &mut frame,
-        e_x + 6,
-        e_y + 38,
-        &format!(
-            "DISTO: {:.0}% | VOL: {:.1}dB",
-            wp.fx_distortion * 100.0,
-            wp.master_volume_db
-        ),
-        p.red,
-        p.track,
-    );
-
-    let is_page2 = (snap.synth_param_page == 1) ^ snap.shift_held;
-    let slots = if is_page2 {
-        [
-            Some((
-                "5:CHORUS",
-                format!("{:.0}%", wp.fx_chorus_mix * 100.0),
-                wp.fx_chorus_mix.clamp(0.0, 1.0),
-                p.cyan,
-            )),
-            Some((
-                "6:DELAY",
-                format!("{:.0}%", wp.fx_delay_mix * 100.0),
-                wp.fx_delay_mix.clamp(0.0, 1.0),
-                p.green,
-            )),
-            Some((
-                "7:REVERB",
-                format!("{:.0}%", wp.fx_reverb_mix * 100.0),
-                wp.fx_reverb_mix.clamp(0.0, 1.0),
-                p.accent,
-            )),
-            Some((
-                "8:VOLUME",
-                format!("{:.1}dB", wp.master_volume_db),
-                db_norm(wp.master_volume_db),
-                p.yellow,
-            )),
-        ]
-    } else {
-        [
-            Some((
-                "5:ATTACK",
-                format!("{:.0}ms", wp.amp_attack_ms),
-                (wp.amp_attack_ms / 1000.0).clamp(0.0, 1.0),
-                p.accent,
-            )),
-            Some((
-                "6:DECAY",
-                format!("{:.0}ms", wp.amp_decay_ms),
-                (wp.amp_decay_ms / 3000.0).clamp(0.0, 1.0),
-                p.accent,
-            )),
-            Some((
-                "7:SUSTAIN",
-                format!("{:.0}%", wp.amp_sustain * 100.0),
-                wp.amp_sustain.clamp(0.0, 1.0),
-                p.accent,
-            )),
-            Some((
-                "8:RELEASE",
-                format!("{:.0}ms", wp.amp_release_ms),
-                (wp.amp_release_ms / 3000.0).clamp(0.0, 1.0),
-                p.accent,
-            )),
-        ]
-    };
-    encoder_row(&mut frame, &p, &slots);
-
-    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
-    frame
-}
-
 // ── SYNTH (TB-303 ACID) ──────────────────────────────────────────────────
-
-/// Écran gauche — vue SYNTH : Oscillateur, Filtre résonant, Enveloppes.
-#[must_use]
-pub fn render_synth_left(snap: &EngineSnapshot) -> DisplayFrame {
-    if snap.focus_sound_kick.is_some() {
-        return render_kick_synth_left(snap);
-    }
-    if snap.focus_sound_wavetable.is_some() {
-        return render_wavetable_synth_left(snap);
-    }
-    if snap.focus_sound_acid.is_none() {
-        return render_sampler_left(snap);
-    }
-    let p = Pal::new();
-    let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
-    let s_name = sound_name(snap, snap.active_sound as usize);
-    let wave_str = match snap.acid_params.waveform {
-        crate::acid_synth::AcidWaveform::Saw => "SAW",
-        crate::acid_synth::AcidWaveform::Square => "SQR",
-    };
-    header(
-        &mut frame,
-        &p,
-        snap,
-        "TB-303 ACID SYNTH",
-        &format!(
-            "GRP {} | SND {:02} {} | {}",
-            group_letter(snap.group_focus),
-            snap.active_sound + 1,
-            trunc(&s_name, 10),
-            wave_str
-        ),
-    );
-
-    // 1. Panneau Oscillateur (gauche haut, 226 x 92)
-    fill_rect(&mut frame, 8, 26, 226, 92, p.panel);
-    draw_rect_outline(&mut frame, 8, 26, 226, 92, p.border);
-    draw_text(&mut frame, 14, 30, "OSCILLATEUR TB-303", p.dim, p.panel);
-
-    // Dessin de la forme d'onde (Sawtooth ou Square stylisée)
-    let wave_y_mid = 66;
-    for x in 18..220 {
-        let cycle = (x - 18) % 32;
-        let y = match snap.acid_params.waveform {
-            crate::acid_synth::AcidWaveform::Saw => wave_y_mid + 16 - (cycle * 32 / 32),
-            crate::acid_synth::AcidWaveform::Square => {
-                if cycle < 16 {
-                    wave_y_mid - 14
-                } else {
-                    wave_y_mid + 14
-                }
-            }
-        };
-        set_pixel(&mut frame, x, y, p.accent);
-        set_pixel(&mut frame, x, y + 1, p.accent);
-    }
-
-    draw_text(
-        &mut frame,
-        14,
-        86,
-        &format!("ONDE: {} | OCT: {:+}", wave_str, snap.acid_params.octave),
-        p.white,
-        p.panel,
-    );
-    draw_text(
-        &mut frame,
-        14,
-        102,
-        &format!(
-            "SLIDE: {:.0}ms | ACCORD: {:+.1}st",
-            snap.acid_params.slide_time_ms, snap.acid_params.tuning_semitones
-        ),
-        p.muted,
-        p.panel,
-    );
-
-    // 2. Panneau Filtre Passe-Bas Résonant (droite haut, 230 x 92)
-    fill_rect(&mut frame, 242, 26, 230, 92, p.panel);
-    draw_rect_outline(&mut frame, 242, 26, 230, 92, p.border);
-    draw_text(&mut frame, 248, 30, "FILTRE 24dB + DIODE", p.dim, p.panel);
-
-    // Dessin d'une courbe de réponse fréquentielle passe-bas avec bosse de résonance
-    let cut_norm = ((snap.acid_params.cutoff_hz.log10() - 20.0f32.log10())
-        / (18000.0f32.log10() - 20.0f32.log10()))
-    .clamp(0.05, 0.95);
-    let peak_x = 248 + (cut_norm * 210.0) as usize;
-    let reso_height = (snap.acid_params.resonance * 32.0) as i32;
-
-    for x in 248..464 {
-        let dist = x as i32 - peak_x as i32;
-        let y = if dist < -10 {
-            72 // bande passante plate
-        } else if dist <= 0 {
-            // montée vers le pic de résonance
-            72 - (dist + 10) * reso_height / 10
-        } else if dist <= 30 {
-            // chute raide au-delà de la coupure (24dB/oct)
-            72 - reso_height + (dist * (reso_height + 34) / 30)
-        } else {
-            106 // atténuation maximale
-        };
-        let clamped_y = y.clamp(38, 110);
-        if clamped_y >= 0 {
-            set_pixel(&mut frame, x, clamped_y as usize, p.cyan);
-            set_pixel(&mut frame, x, (clamped_y + 1) as usize, p.cyan);
-        }
-    }
-
-    draw_text(
-        &mut frame,
-        248,
-        86,
-        &format!(
-            "CUT: {} | RESO: {:.0}%",
-            fmt_hz(snap.acid_params.cutoff_hz),
-            snap.acid_params.resonance * 100.0
-        ),
-        p.white,
-        p.panel,
-    );
-    draw_text(
-        &mut frame,
-        248,
-        102,
-        &format!(
-            "ENV MOD: {:.0}% | DECLIN: {}",
-            snap.acid_params.env_mod * 100.0,
-            fmt_ms(snap.acid_params.decay_ms)
-        ),
-        p.muted,
-        p.panel,
-    );
-
-    // 3. Panneau inférieur récapitulatif (464 x 62)
-    fill_rect(&mut frame, 8, 124, 464, 62, p.panel);
-    draw_rect_outline(&mut frame, 8, 124, 464, 62, p.border);
-    draw_text(
-        &mut frame,
-        14,
-        128,
-        "SYNTHETISEUR ACID TB-303 (EMULATION ANALOGIQUE VIRTUELLE)",
-        p.white,
-        p.panel,
-    );
-    draw_text(
-        &mut frame,
-        14,
-        146,
-        &format!(
-            "ACCENT: {:.0}% | PORTAMENTO: {:.0}ms | SORTIE: {}",
-            snap.acid_params.accent * 100.0,
-            snap.acid_params.slide_time_ms,
-            fmt_db(snap.acid_params.volume_db)
-        ),
-        p.dim,
-        p.panel,
-    );
-    draw_text(
-        &mut frame,
-        14,
-        164,
-        "PADS 1-16 : JOUENT LES NOTES DU SYNTHE | ENCODEURS 1-4 : CONTROLES FILTRE",
-        p.accent,
-        p.panel,
-    );
-
-    // 4. Encodeurs 1..4
-    let cut = snap.acid_params.cutoff_hz;
-    let reso = snap.acid_params.resonance;
-    let env_m = snap.acid_params.env_mod;
-    let dec = snap.acid_params.decay_ms;
-    let slots = [
-        Some((
-            "1:CUTOFF",
-            fmt_hz(cut),
-            ((cut - 20.0) / 17980.0).clamp(0.0, 1.0),
-            p.cyan,
-        )),
-        Some(("2:RESO", format!("{:.0}%", reso * 100.0), reso, p.cyan)),
-        Some((
-            "3:ENV MOD",
-            format!("{:.0}%", env_m * 100.0),
-            env_m,
-            p.accent,
-        )),
-        Some((
-            "4:DECAY",
-            fmt_ms(dec),
-            ((dec - 20.0) / 2980.0).clamp(0.0, 1.0),
-            p.accent,
-        )),
-    ];
-    encoder_row(&mut frame, &p, &slots);
-
-    // 5. Soft keys 1..4 sous écran gauche
-    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
-
-    frame
-}
-
-/// Écran droit — vue SYNTH : Distorsion / Overdrive, Delay, Presets rapides.
-#[must_use]
-pub fn render_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
-    if snap.focus_sound_kick.is_some() {
-        return render_kick_synth_right(snap);
-    }
-    if snap.focus_sound_wavetable.is_some() {
-        return render_wavetable_synth_right(snap);
-    }
-    if snap.focus_sound_acid.is_none() {
-        return render_sampler_right(snap);
-    }
-    let p = Pal::new();
-    let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
-    header(
-        &mut frame,
-        &p,
-        snap,
-        "EFFETS ACID & PRESETS",
-        &format!(
-            "DRIVE {:.0}% | DELAY {:.0}%",
-            snap.acid_params.drive * 100.0,
-            snap.acid_params.delay_mix * 100.0
-        ),
-    );
-
-    // 1. Panneau Distorsion (gauche haut, 226 x 92)
-    fill_rect(&mut frame, 8, 26, 226, 92, p.panel);
-    draw_rect_outline(&mut frame, 8, 26, 226, 92, p.border);
-    draw_text(&mut frame, 14, 30, "OVERDRIVE / DISTORSION", p.dim, p.panel);
-
-    // Dessin de la courbe de saturation non-linéaire tanh
-    let drive_val = snap.acid_params.drive;
-    let curve_y_mid = 68;
-    for x in 24..110 {
-        let norm_x = (x as f32 - 67.0) / 38.0; // -1..+1
-        let gain = 1.0 + drive_val * 8.0;
-        let sat_y = (norm_x * gain).tanh();
-        let y = curve_y_mid - (sat_y * 22.0) as i32;
-        if y >= 0 {
-            set_pixel(&mut frame, x, y as usize, p.red);
-            set_pixel(&mut frame, x, (y + 1) as usize, p.red);
-        }
-    }
-
-    draw_text(
-        &mut frame,
-        122,
-        48,
-        &format!("DRV: {:.0}%", drive_val * 100.0),
-        p.white,
-        p.panel,
-    );
-    draw_text(
-        &mut frame,
-        122,
-        64,
-        &format!("TONE: {}", fmt_hz(snap.acid_params.drive_tone)),
-        p.dim,
-        p.panel,
-    );
-    draw_text(
-        &mut frame,
-        122,
-        80,
-        &format!("MIX: {:.0}%", snap.acid_params.drive_mix * 100.0),
-        p.muted,
-        p.panel,
-    );
-
-    // 2. Panneau Delay (droite haut, 230 x 92)
-    fill_rect(&mut frame, 242, 26, 230, 92, p.panel);
-    draw_rect_outline(&mut frame, 242, 26, 230, 92, p.border);
-    draw_text(&mut frame, 248, 30, "ECHO DELAY STEREO", p.dim, p.panel);
-
-    // Dessin de barres d'écho décroissantes
-    let fb = snap.acid_params.delay_feedback;
-    for i in 0..5 {
-        let bar_x = 258 + i * 16;
-        let bar_h = (28.0 * (1.0 - i as f32 * 0.18) * (0.4 + fb * 0.6)) as usize;
-        let bar_y = 78 - bar_h;
-        fill_rect(&mut frame, bar_x, bar_y, 8, bar_h, p.green);
-    }
-
-    draw_text(
-        &mut frame,
-        344,
-        48,
-        &format!("TEMPS: {}", fmt_ms(snap.acid_params.delay_time_ms)),
-        p.white,
-        p.panel,
-    );
-    draw_text(
-        &mut frame,
-        344,
-        64,
-        &format!("FEEDBACK: {:.0}%", fb * 100.0),
-        p.dim,
-        p.panel,
-    );
-    draw_text(
-        &mut frame,
-        344,
-        80,
-        &format!("MIX: {:.0}%", snap.acid_params.delay_mix * 100.0),
-        p.muted,
-        p.panel,
-    );
-
-    // 3. Panneau Presets (464 x 62)
-    fill_rect(&mut frame, 8, 124, 464, 62, p.panel);
-    draw_rect_outline(&mut frame, 8, 124, 464, 62, p.border);
-    draw_text(
-        &mut frame,
-        14,
-        128,
-        "PRESETS RAPIDES : [5] CLASSIC  [6] SQUELCH  [7] DISTORT  [8] DUB 303",
-        p.white,
-        p.panel,
-    );
-    draw_text(
-        &mut frame,
-        14,
-        146,
-        "BOUTONS 5-8 SOUS CET ECRAN : CHARGEMENT INSTANTANE DES PRESETS",
-        p.dim,
-        p.panel,
-    );
-    draw_text(
-        &mut frame,
-        14,
-        164,
-        "ENCODEURS 5-8 : ACCENT / DRIVE / DELAY TIME / DELAY MIX",
-        p.accent,
-        p.panel,
-    );
-
-    // 4. Encodeurs 5..8
-    let acc = snap.acid_params.accent;
-    let drv = snap.acid_params.drive;
-    let dl_t = snap.acid_params.delay_time_ms;
-    let dl_m = snap.acid_params.delay_mix;
-    let slots = [
-        Some(("5:ACCENT", format!("{:.0}%", acc * 100.0), acc, p.yellow)),
-        Some(("6:DRIVE", format!("{:.0}%", drv * 100.0), drv, p.red)),
-        Some((
-            "7:DELAY",
-            fmt_ms(dl_t),
-            (dl_t / 1000.0).clamp(0.0, 1.0),
-            p.green,
-        )),
-        Some(("8:DL MIX", format!("{:.0}%", dl_m * 100.0), dl_m, p.green)),
-    ];
-    encoder_row(&mut frame, &p, &slots);
-
-    // 5. Soft keys 5..8 sous écran droit
-    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
-
-    frame
-}
 
 // ── BROWSER ────────────────────────────────────────────────────────────
 
@@ -6775,6 +5073,611 @@ pub fn render_guitar_amp_right(snap: &EngineSnapshot, g: &GuitarScreenData) -> D
     frame
 }
 
+// ── PLUGIN : pages de paramètres (comme le mode PLUG-IN de la MK3) ──────
+
+use crate::plugin_pages::{self as pp, Instrument, PageView};
+
+/// Instrument affiché, page courante et valeurs de la page (`None` si le
+/// pad focalisé est vide).
+fn plugin_page_view(snap: &EngineSnapshot) -> Option<(Instrument, usize, Option<PageView>)> {
+    let inst = pp::instrument_for(
+        snap.left_tab,
+        snap.plugin_page,
+        snap.focus_sound_kick.is_some(),
+        snap.focus_sound_wavetable.is_some(),
+        snap.focus_sound_acid.is_some(),
+    )?;
+    let page = (snap.synth_param_page as usize).min(inst.page_count() - 1);
+    let view = match inst {
+        Instrument::Kick => snap
+            .focus_sound_kick
+            .as_ref()
+            .map(|k| pp::view(&pp::KICK_PAGES, page, k)),
+        Instrument::Wavetable => snap
+            .focus_sound_wavetable
+            .as_ref()
+            .map(|w| pp::view(&pp::WAVETABLE_PAGES, page, w)),
+        Instrument::Acid => Some(pp::view(&pp::ACID_PAGES, page, &snap.acid_params)),
+        Instrument::Sampler => focus_sound(snap).map(|s| pp::view(&pp::SAMPLER_PAGES, page, s)),
+    };
+    Some((inst, page, view))
+}
+
+/// Les 4 slots d'encodeurs d'une moitié de page (`first` = 0 ou 4).
+fn page_slots<'a>(
+    view: Option<&'a PageView>,
+    first: usize,
+    color: DisplayPixel,
+) -> [EncSlot<'a>; 4] {
+    std::array::from_fn(|i| {
+        let pv = view?.params[first + i].as_ref()?;
+        Some((pv.name, pv.value.clone(), pv.norm, color))
+    })
+}
+
+/// Mélange de deux couleurs (t = 0 → a, 1 → b).
+fn mix(a: DisplayPixel, b: DisplayPixel, t: f32) -> DisplayPixel {
+    let (ar, ag, ab) = rgb565_to_rgb(a);
+    let (br, bg, bb) = rgb565_to_rgb(b);
+    let m = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t.clamp(0.0, 1.0)) as u8;
+    DisplayPixel::from_rgb(m(ar, br), m(ag, bg), m(ab, bb))
+}
+
+/// Titre de section au-dessus d'une rangée de 4 knobs, avec un filet.
+fn section_title(frame: &mut DisplayFrame, p: &Pal, text: &str, color: DisplayPixel) {
+    let y = SCR_H - FOOTER_H - ENC_H - 20;
+    fill_rect(frame, 0, y, SCR_W, 14, p.bg);
+    let w = label(frame, 8.0, y as f32 + 11.0, text, 13.0, color, 1.6);
+    let x = if text.is_empty() {
+        8
+    } else {
+        8 + w as usize + 8
+    };
+    fill_rect(frame, x, y + 6, (SCR_W - 8).saturating_sub(x), 1, p.border);
+}
+
+/// Écran gauche PLUGIN : l'instrument (preset, visuel) et la liste de ses
+/// pages, parcourues avec les boutons Page ◄ ► ; knobs 1–4 de la page.
+#[must_use]
+pub fn render_plugin_left(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
+    let Some((inst, page, view)) = plugin_page_view(snap) else {
+        return render_sampler_left(snap);
+    };
+    let snd = snap.active_sound as usize;
+    let tint = hue_color(snd);
+    header_colored(
+        &mut frame,
+        &p,
+        snap,
+        inst.title(),
+        &format!(
+            "{} {:02} {}",
+            group_letter(snap.group_focus),
+            snd + 1,
+            sound_name(snap, snd)
+        ),
+        tint,
+    );
+
+    // Les « panneaux » de l'instrument, comme les pages du logiciel.
+    label(&mut frame, 10.0, 42.0, "PAGES", 12.0, p.muted, 1.4);
+    for (i, name) in inst.page_names().iter().enumerate() {
+        let y = 48 + i * 21;
+        let on = i == page;
+        if on {
+            fill_rect(&mut frame, 6, y, 134, 19, p.panel2);
+            fill_rect(&mut frame, 6, y, 3, 19, tint);
+        }
+        let text = fit_text(name, screen_text::Face::Sans, 14.0, 112.0);
+        label(
+            &mut frame,
+            14.0,
+            y as f32 + 14.0,
+            &format!("{}", i + 1),
+            14.0,
+            p.muted,
+            1.4,
+        );
+        let (fg, weight) = if on { (p.white, 1.9) } else { (p.dim, 1.4) };
+        label(&mut frame, 28.0, y as f32 + 14.0, &text, 14.0, fg, weight);
+    }
+    label(&mut frame, 10.0, 172.0, "< PAGE >", 12.0, p.muted, 1.3);
+
+    // Identité : preset ou son, puis un visuel propre à l'instrument.
+    let (vx, vy, vw, vh) = (150usize, 70usize, SCR_W - 158, 102usize);
+    let (title, info) = instrument_caption(snap, inst);
+    let title = fit_text(&title, screen_text::Face::Sans, 21.0, vw as f32);
+    label(&mut frame, vx as f32, 47.0, &title, 21.0, p.white, 1.9);
+    let info = fit_text(&info, screen_text::Face::Sans, 13.0, vw as f32);
+    label(&mut frame, vx as f32, 63.0, &info, 13.0, p.dim, 1.4);
+    if view.is_some() {
+        draw_instrument_visual(&mut frame, &p, snap, inst, (vx, vy, vw, vh), tint);
+    } else {
+        fill_rect(&mut frame, vx, vy, vw, vh, p.panel);
+        let msg = "PAD VIDE";
+        let w = screen_text::width(msg, screen_text::Face::Sans, 20.0);
+        label(
+            &mut frame,
+            (vx + vw / 2) as f32 - w / 2.0,
+            (vy + vh / 2 + 7) as f32,
+            msg,
+            20.0,
+            p.muted,
+            1.6,
+        );
+    }
+
+    let section = view.as_ref().map_or("", |v| v.sections[0]);
+    section_title(&mut frame, &p, section, tint);
+    encoder_row(&mut frame, &p, &page_slots(view.as_ref(), 0, tint));
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
+    frame
+}
+
+/// Écran droit PLUGIN : onglets des pages, courbe de la page affichée,
+/// bandeau de transition au changement de page ; knobs 5–8.
+#[must_use]
+pub fn render_plugin_right(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
+    let Some((inst, page, view)) = plugin_page_view(snap) else {
+        return render_sampler_right(snap);
+    };
+    let tint = hue_color(snap.active_sound as usize);
+    let names = inst.page_names();
+    header_colored(
+        &mut frame,
+        &p,
+        snap,
+        names[page],
+        &format!("PAGE {}/{}", page + 1, names.len()),
+        tint,
+    );
+
+    // Onglets : toutes les pages, la page courante en couleur du Sound.
+    let tw = (SCR_W - 16) / names.len().max(1);
+    for (i, name) in names.iter().enumerate() {
+        let x = 8 + i * tw;
+        let on = i == page;
+        fill_rect(
+            &mut frame,
+            x + 1,
+            32,
+            tw - 2,
+            20,
+            if on { tint } else { p.panel },
+        );
+        let text = fit_text(name, screen_text::Face::Sans, 13.0, (tw - 8) as f32);
+        let w = screen_text::width(&text, screen_text::Face::Sans, 13.0);
+        let fg = if on { p.bg } else { p.dim };
+        label(
+            &mut frame,
+            (x + tw / 2) as f32 - w / 2.0,
+            46.0,
+            &text,
+            13.0,
+            fg,
+            1.6,
+        );
+    }
+
+    match view.as_ref() {
+        Some(v) => draw_page_visual(&mut frame, &p, v, (8, 60, SCR_W - 16, 114), tint),
+        None => {
+            let msg = "PAD VIDE : CHARGE UN SON DEPUIS LE BROWSER";
+            let w = screen_text::width(msg, screen_text::Face::Sans, 14.0);
+            label(
+                &mut frame,
+                (SCR_W as f32 - w) / 2.0,
+                120.0,
+                msg,
+                14.0,
+                p.dim,
+                1.5,
+            );
+        }
+    }
+
+    // Transition : le nom de la nouvelle page s'affiche un court instant.
+    if snap.page_flash > 0.3 {
+        let (x, y, w, h) = (110usize, 76usize, 260usize, 72usize);
+        fill_rect(&mut frame, x, y, w, h, p.panel2);
+        draw_rect_outline(&mut frame, x, y, w, h, tint);
+        fill_rect(&mut frame, x, y, w, 3, tint);
+        let name = fit_text(names[page], screen_text::Face::Sans, 26.0, (w - 24) as f32);
+        let nw = screen_text::width(&name, screen_text::Face::Sans, 26.0);
+        label(
+            &mut frame,
+            (x + w / 2) as f32 - nw / 2.0,
+            y as f32 + 38.0,
+            &name,
+            26.0,
+            p.white,
+            1.9,
+        );
+        let n = names.len();
+        let dots_w = n * 14 - 6;
+        for i in 0..n {
+            let dx = x + (w - dots_w) / 2 + i * 14;
+            fill_rect(
+                &mut frame,
+                dx,
+                y + 52,
+                8,
+                8,
+                if i == page { tint } else { p.track },
+            );
+        }
+    }
+
+    let section = view.as_ref().map_or("", |v| v.sections[1]);
+    section_title(&mut frame, &p, section, tint);
+    encoder_row(&mut frame, &p, &page_slots(view.as_ref(), 4, tint));
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
+    frame
+}
+
+/// Grand titre et ligne d'info de l'instrument (preset, forme d'onde…).
+fn instrument_caption(snap: &EngineSnapshot, inst: Instrument) -> (String, String) {
+    match inst {
+        Instrument::Kick => {
+            let kp = snap.focus_sound_kick.clone().unwrap_or_default();
+            let presets = crate::kick_synth::KickParams::all_presets();
+            let idx = presets.iter().position(|p| p.preset_name == kp.preset_name);
+            let pos = idx.map_or("--".to_string(), |i| format!("{}/{}", i + 1, presets.len()));
+            (
+                kp.preset_name.clone(),
+                format!("PRESET {pos}  ·  {:?}", kp.waveform),
+            )
+        }
+        Instrument::Wavetable => {
+            let wp = snap.focus_sound_wavetable.clone().unwrap_or_default();
+            (
+                wp.name.clone(),
+                format!(
+                    "{:?}  ·  OSC {:?} + {:?}",
+                    wp.category, wp.osc1_wave, wp.osc2_wave
+                ),
+            )
+        }
+        Instrument::Acid => {
+            let ap = &snap.acid_params;
+            (
+                "TB-303".to_string(),
+                format!(
+                    "{:?}  ·  OCT {:+}  ·  TUNE {:+.1}",
+                    ap.waveform, ap.octave, ap.tuning_semitones
+                ),
+            )
+        }
+        Instrument::Sampler => {
+            let snd = snap.active_sound as usize;
+            let file = focus_sound(snap)
+                .and_then(|s| s.zones.first())
+                .and_then(|z| z.sample_path.as_deref())
+                .and_then(|f| f.rsplit('/').next())
+                .unwrap_or("synthèse 808")
+                .to_string();
+            (
+                sound_name(snap, snd),
+                format!("{file}  ·  {:.2} s", snap.sample_duration),
+            )
+        }
+    }
+}
+
+/// Visuel propre à l'instrument (gauche) : forme du sample, chute de pitch
+/// du kick, réponse du filtre 303, cycle des oscillateurs wavetable.
+fn draw_instrument_visual(
+    frame: &mut DisplayFrame,
+    p: &Pal,
+    snap: &EngineSnapshot,
+    inst: Instrument,
+    (x, y, w, h): (usize, usize, usize, usize),
+    tint: DisplayPixel,
+) {
+    match inst {
+        Instrument::Sampler => match snap.waveform.as_deref() {
+            Some(buckets) => draw_waveform(frame, p, x, y, w, h, buckets),
+            None => {
+                fill_rect(frame, x, y, w, h, p.panel);
+                label(
+                    frame,
+                    x as f32 + 10.0,
+                    (y + h / 2 + 5) as f32,
+                    "Son de synthèse : pas de forme d'onde",
+                    13.0,
+                    p.muted,
+                    1.4,
+                );
+            }
+        },
+        Instrument::Kick => {
+            let kp = snap.focus_sound_kick.clone().unwrap_or_default();
+            fill_rect(frame, x, y, w, h, p.panel);
+            let total = (kp.hold_ms + kp.decay_ms * 1.2).max(120.0);
+            let mut prev = None;
+            for i in 0..w {
+                let t = i as f32 / w as f32 * total;
+                let amp = if t < kp.hold_ms {
+                    1.0
+                } else {
+                    (-(t - kp.hold_ms) / (kp.decay_ms * 0.35).max(1.0)).exp()
+                };
+                let ah = (amp * (h - 8) as f32) as usize;
+                fill_rect(
+                    frame,
+                    x + i,
+                    y + h - 4 - ah,
+                    1,
+                    ah,
+                    mix(p.panel, tint, 0.45),
+                );
+                let pitch = kp.snap.clamp(0.0, 1.0) * (-t / kp.sweep_time_ms.max(1.0)).exp();
+                let py = (y + h - 6) as i32 - (pitch * 0.8 * (h - 10) as f32) as i32;
+                if let Some((px, qy)) = prev {
+                    line(frame, px, qy, (x + i) as i32, py, p.white);
+                }
+                prev = Some(((x + i) as i32, py));
+            }
+            label(
+                frame,
+                x as f32 + 8.0,
+                y as f32 + 16.0,
+                "PITCH",
+                12.0,
+                p.white,
+                1.5,
+            );
+            label(
+                frame,
+                x as f32 + 8.0,
+                (y + h) as f32 - 8.0,
+                "AMP",
+                12.0,
+                tint,
+                1.5,
+            );
+        }
+        Instrument::Acid => {
+            let ap = &snap.acid_params;
+            draw_filter_curve(
+                frame,
+                p,
+                (x, y, w, h),
+                ap.cutoff_hz,
+                ap.resonance,
+                "LP",
+                tint,
+            );
+            let peak = (ap.cutoff_hz * (1.0 + ap.env_mod * 4.0)).min(18000.0);
+            let fx = x + log_x(peak, w);
+            fill_rect(frame, fx, y + 4, 1, h - 8, mix(p.panel, p.white, 0.45));
+            label(
+                frame,
+                x as f32 + 8.0,
+                y as f32 + 16.0,
+                "FILTRE + ENV MOD",
+                12.0,
+                p.dim,
+                1.4,
+            );
+        }
+        Instrument::Wavetable => {
+            let wp = snap.focus_sound_wavetable.clone().unwrap_or_default();
+            fill_rect(frame, x, y, w, h, p.panel);
+            fill_rect(frame, x, y + h / 2, w, 1, p.track);
+            let waves = [
+                (Some(wp.osc1_wave), tint),
+                (wp.osc2_enabled.then_some(wp.osc2_wave), p.cyan),
+            ];
+            for (wave, color) in waves {
+                let Some(wave) = wave else { continue };
+                let mut prev = None;
+                for i in 0..w {
+                    let v = wave_shape(wave, i as f32 / w as f32 * 2.0);
+                    let py = (y + h / 2) as i32 - (v * (h / 2 - 6) as f32) as i32;
+                    if let Some((px, qy)) = prev {
+                        line(frame, px, qy, (x + i) as i32, py, color);
+                    }
+                    prev = Some(((x + i) as i32, py));
+                }
+            }
+            label(
+                frame,
+                x as f32 + 8.0,
+                y as f32 + 16.0,
+                "OSC 1",
+                12.0,
+                tint,
+                1.5,
+            );
+            if wp.osc2_enabled {
+                label(
+                    frame,
+                    x as f32 + 56.0,
+                    y as f32 + 16.0,
+                    "OSC 2",
+                    12.0,
+                    p.cyan,
+                    1.5,
+                );
+            }
+        }
+    }
+}
+
+/// Visuel de la page (droite) : enveloppe, courbe de filtre, ou les 8
+/// paramètres en barres quand la page n'a pas de courbe.
+fn draw_page_visual(
+    frame: &mut DisplayFrame,
+    p: &Pal,
+    v: &PageView,
+    (x, y, w, h): (usize, usize, usize, usize),
+    tint: DisplayPixel,
+) {
+    let raw = |name: &str| {
+        v.params
+            .iter()
+            .flatten()
+            .find(|pv| pv.name == name)
+            .map(|pv| pv.raw)
+    };
+    let text = |name: &str| {
+        v.params
+            .iter()
+            .flatten()
+            .find(|pv| pv.name == name)
+            .map(|pv| pv.value.as_str())
+    };
+    if let (Some(a), Some(d), Some(s), Some(r)) =
+        (raw("ATTACK"), raw("DECAY"), raw("SUSTAIN"), raw("RELEASE"))
+    {
+        let adsr = Adsr {
+            attack_ms: a,
+            decay_ms: d,
+            sustain: s,
+            release_ms: r,
+        };
+        draw_adsr(frame, p, x, y, w, h, &adsr);
+    } else if let (Some(cut), Some(reso)) = (raw("CUTOFF"), raw("RESO")) {
+        let kind = text("FILTRE").unwrap_or("LP");
+        draw_filter_curve(frame, p, (x, y, w, h), cut, reso, kind, tint);
+    } else {
+        fill_rect(frame, x, y, w, h, p.panel);
+        let cw = w / 8;
+        for (i, pv) in v.params.iter().enumerate() {
+            let cx = x + i * cw;
+            if i > 0 {
+                fill_rect(frame, cx, y + 8, 1, h - 16, p.border);
+            }
+            let Some(pv) = pv else { continue };
+            let color = if i < 4 { tint } else { p.cyan };
+            let bh = h - 44;
+            let fh = (pv.norm.clamp(0.0, 1.0) * bh as f32) as usize;
+            fill_rect(frame, cx + cw / 2 - 7, y + 10, 14, bh, p.track);
+            fill_rect(frame, cx + cw / 2 - 7, y + 10 + bh - fh, 14, fh, color);
+            let name = fit_text(pv.name, screen_text::Face::Sans, 11.0, (cw - 4) as f32);
+            let nw = screen_text::width(&name, screen_text::Face::Sans, 11.0);
+            label(
+                frame,
+                (cx + cw / 2) as f32 - nw / 2.0,
+                (y + h - 18) as f32,
+                &name,
+                11.0,
+                p.dim,
+                1.4,
+            );
+            let val = fit_text(&pv.value, screen_text::Face::Sans, 11.0, (cw - 4) as f32);
+            let vw = screen_text::width(&val, screen_text::Face::Sans, 11.0);
+            label(
+                frame,
+                (cx + cw / 2) as f32 - vw / 2.0,
+                (y + h - 5) as f32,
+                &val,
+                11.0,
+                p.white,
+                1.4,
+            );
+        }
+    }
+}
+
+/// Abscisse (0..w) d'une fréquence sur une échelle log 20 Hz – 20 kHz.
+fn log_x(hz: f32, w: usize) -> usize {
+    let t = (hz.clamp(20.0, 20000.0) / 20.0).log10() / 3.0;
+    ((t * (w - 1) as f32) as usize).min(w - 1)
+}
+
+/// Réponse en fréquence d'un filtre résonant (LP/HP/BP/NOTCH/PEAK/OFF).
+fn draw_filter_curve(
+    frame: &mut DisplayFrame,
+    p: &Pal,
+    (x, y, w, h): (usize, usize, usize, usize),
+    cutoff: f32,
+    reso: f32,
+    kind: &str,
+    color: DisplayPixel,
+) {
+    fill_rect(frame, x, y, w, h, p.panel);
+    // Repères : 100 Hz, 1 kHz, 10 kHz.
+    for f in [100.0f32, 1000.0, 10000.0] {
+        fill_rect(frame, x + log_x(f, w), y + 4, 1, h - 8, p.track);
+    }
+    let q = 0.7 + reso.clamp(0.0, 1.0) * 8.0;
+    let fc = cutoff.max(10.0);
+    let gain = |f: f32| {
+        let r = f / fc;
+        let lp = 1.0 / ((1.0 - r * r).powi(2) + (r / q).powi(2)).sqrt();
+        match kind {
+            "OFF" => 1.0,
+            "HP" => lp * r * r,
+            "BP" => lp * r / q,
+            "NOTCH" => lp * (1.0 - r * r).abs(),
+            "PEAK" => 1.0 + lp * r / q,
+            _ => lp,
+        }
+    };
+    let zero = y + h * 2 / 5;
+    fill_rect(frame, x, zero, w, 1, p.border);
+    let mut prev = None;
+    for i in 0..w {
+        let f = 20.0 * 1000f32.powf(i as f32 / (w - 1) as f32);
+        let db = (20.0 * gain(f).max(1e-4).log10()).clamp(-36.0, 18.0);
+        let py = (zero as f32 - db / 36.0 * (h * 3 / 5) as f32) as i32;
+        let py = py.clamp(y as i32 + 2, (y + h) as i32 - 3);
+        fill_rect(
+            frame,
+            x + i,
+            py as usize,
+            1,
+            (y + h - 2).saturating_sub(py as usize),
+            mix(p.panel, color, 0.22),
+        );
+        if let Some((px, qy)) = prev {
+            line(frame, px, qy, (x + i) as i32, py, color);
+        }
+        prev = Some(((x + i) as i32, py));
+    }
+    fill_rect(frame, x + log_x(fc, w), y + 4, 1, h - 8, color);
+}
+
+/// Forme d'un cycle d'oscillateur wavetable (aperçu, `t` en cycles).
+fn wave_shape(wave: crate::wavetable_synth::WavetableWaveform, t: f32) -> f32 {
+    use crate::wavetable_synth::WavetableWaveform as W;
+    use std::f32::consts::TAU;
+    let ph = t.fract();
+    let sin = |k: f32| (TAU * k * t).sin();
+    match wave {
+        W::Sine => sin(1.0),
+        W::Triangle => 1.0 - 4.0 * (ph - 0.5).abs(),
+        W::Saw => 2.0 * ph - 1.0,
+        W::Square => {
+            if ph < 0.5 {
+                0.8
+            } else {
+                -0.8
+            }
+        }
+        W::Supersaw => 0.5 * ((2.0 * ph - 1.0) + (2.0 * (t * 1.01).fract() - 1.0)),
+        W::GrandPiano | W::M1Piano | W::RhodesTines => {
+            0.6 * sin(1.0) + 0.3 * sin(2.0) + 0.1 * sin(3.0)
+        }
+        W::DigiLead => {
+            if ph < 0.25 {
+                0.8
+            } else {
+                -0.8
+            }
+        }
+        W::TonewheelOrgan => 0.45 * sin(1.0) + 0.3 * sin(2.0) + 0.2 * sin(4.0),
+        W::VocalFormant => sin(1.0) * (0.6 + 0.4 * sin(3.0)),
+        W::Noise => ((t * 9973.0).sin() * 43758.547).fract() * 1.6 - 0.8,
+    }
+}
+
 /// Rend la paire d'écrans avec l'état ampli guitare éventuel.
 #[must_use]
 pub fn render_screens_with_guitar(
@@ -6795,9 +5698,8 @@ pub fn render_screens_with_guitar(
             2 => render_sampler_left(snap),
             3 if snap.browser_kind == 1 => render_project_browser_left(snap),
             3 => render_browser_left(snap),
-            4 if snap.plugin_page == 0 => render_sampler_left(snap),
             4 if snap.plugin_page == 2 => render_guitar_amp_left(snap, g),
-            4 => render_synth_left(snap),
+            4 => render_plugin_left(snap),
             _ => {
                 if snap.controller_mode == 3 {
                     render_step_left(snap)
@@ -6815,12 +5717,10 @@ pub fn render_screens_with_guitar(
         render_arranger_right(snap)
     } else if snap.scene_mode && snap.left_tab == 0 && snap.right_tab == 0 {
         render_scenes_right(snap)
-    } else if snap.left_tab == 4 && snap.right_tab == 0 && snap.plugin_page == 0 {
-        render_sampler_right(snap)
     } else if snap.left_tab == 4 && snap.right_tab == 0 && snap.plugin_page == 2 {
         render_guitar_amp_right(snap, g)
     } else if snap.left_tab == 4 && snap.right_tab == 0 {
-        render_synth_right(snap)
+        render_plugin_right(snap)
     } else if snap.left_tab == 2 && snap.right_tab == 0 {
         render_sampler_right(snap)
     } else if snap.left_tab == 3 && snap.right_tab == 0 {
@@ -6855,39 +5755,36 @@ pub fn render_screens(snap: &EngineSnapshot) -> (DisplayFrame, DisplayFrame) {
     render_screens_with_guitar(snap, None)
 }
 
-/// Écrans de fermeture : splash neutre « MASCHINE MK3 LINUX » envoyé avant
-/// de libérer l'interface USB. Si le firmware réaffiche son logo au release,
-/// il remplace ce splash ; sinon les écrans ne restent jamais figés sur l'UI.
+/// Écrans de veille, envoyés à la fermeture (et en cas de plantage) avant
+/// de libérer l'interface USB : presque noirs, un seul mot-symbole sobre à
+/// cheval sur les deux écrans (« MASCHINE » | « MK3 »), faiblement éclairé —
+/// rien ne reste figé ni ne brille inutilement quand l'app est fermée.
 #[must_use]
 pub fn render_shutdown_screens() -> (DisplayFrame, DisplayFrame) {
-    let p = Pal::new();
-    let make = |id| {
-        let mut frame = DisplayFrame::solid(id, p.bg);
-        // Liseré supérieur et inférieur, sobre.
-        fill_rect(&mut frame, 0, 0, SCR_W, 3, p.accent);
-        fill_rect(&mut frame, 0, SCR_H - 3, SCR_W, 3, p.accent);
-
-        let title = "MASCHINE";
-        let scale = 4usize;
-        let tx = (SCR_W - title.len() * 8 * scale) / 2;
-        draw_text_scaled(&mut frame, tx, 82, title, scale, p.white, p.bg);
-
-        fill_rect(&mut frame, 160, 132, 160, 2, p.accent);
-        let mk3 = "MK3";
-        let mk3_scale = 3usize;
-        let mx = (SCR_W - mk3.len() * 8 * mk3_scale) / 2;
-        draw_text_scaled(&mut frame, mx, 148, mk3, mk3_scale, p.cyan, p.bg);
-
-        let sub = "LINUX";
-        let sx = (SCR_W - sub.len() * 8 * 2) / 2;
-        draw_text_scaled(&mut frame, sx, 190, sub, 2, p.dim, p.bg);
-
-        let foot = "A BIENTOT";
-        let fx = (SCR_W - foot.len() * 8) / 2;
-        draw_text(&mut frame, fx, 228, foot, p.muted, p.bg);
-        frame
-    };
-    (make(DisplayId::Left), make(DisplayId::Right))
+    let ink = DisplayPixel::from_rgb(78, 78, 84);
+    let glow = DisplayPixel::from_rgb(120, 70, 18);
+    let black = DisplayPixel::from_rgb(0, 0, 0);
+    let px = 30.0;
+    let baseline = SCR_H as f32 / 2.0 + 10.0;
+    let mut left = DisplayFrame::solid(DisplayId::Left, black);
+    let word = "MASCHINE";
+    let w = screen_text::width(word, screen_text::Face::Sans, px);
+    // Le mot finit près du bord intérieur : il se lit d'un écran à l'autre.
+    let x = SCR_W as f32 - 34.0 - w;
+    label(&mut left, x, baseline, word, px, ink, 1.3);
+    let mut right = DisplayFrame::solid(DisplayId::Right, black);
+    label(&mut right, 34.0, baseline, "MK3", px, ink, 1.3);
+    fill_rect(&mut right, 36, baseline as usize + 12, 26, 2, glow);
+    label(
+        &mut right,
+        36.0,
+        baseline + 34.0,
+        "linux",
+        13.0,
+        DisplayPixel::from_rgb(52, 52, 58),
+        1.2,
+    );
+    (left, right)
 }
 
 #[cfg(test)]
@@ -7063,10 +5960,13 @@ mod tests {
         let (left, right) = render_shutdown_screens();
         check_pair(&left);
         check_pair(&right);
-        // Le splash doit différer du fond uni (titre MASCHINE + liserés).
-        assert_ne!(
-            left.pixels,
-            DisplayFrame::solid(DisplayId::Left, Pal::new().bg).pixels
+        // Veille : un mot-symbole discret, l'écran reste presque entièrement noir.
+        let black = DisplayPixel::from_rgb(0, 0, 0);
+        let lit = left.pixels.iter().filter(|px| **px != black).count();
+        assert!(lit > 0, "le mot-symbole est dessiné");
+        assert!(
+            lit * 20 < left.pixels.len(),
+            "moins de 5 % de pixels allumés"
         );
         assert_eq!(left.pixels.len(), right.pixels.len());
     }
@@ -7098,7 +5998,7 @@ mod tests {
         // Fond du bouton 1 actif, juste sous le bouton physique.
         assert_eq!(left.pixels[10 * SCR_W + 8], p.accent);
         // Encoche du knob 1 (TEMPO), juste au-dessus du knob physique.
-        assert_eq!(left.pixels[(SCR_H - ENC_H - 4) * SCR_W + 9], p.accent);
+        assert_eq!(left.pixels[(SCR_H - ENC_H + 1) * SCR_W + 9], p.accent);
         // L'ancien emplacement du bouton 1, en bas, n'est plus une soft key.
         assert_ne!(left.pixels[(SCR_H - 12) * SCR_W + 8], p.accent);
     }

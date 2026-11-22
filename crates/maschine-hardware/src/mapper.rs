@@ -289,22 +289,6 @@ pub enum MapperAction {
     SoundVolumeDeltaFor { group: u8, sound: u8, delta: f32 },
     /// Ajustement Pan d'un son/pad précis (mode MIXER pad + shift)
     SoundPanDeltaFor { group: u8, sound: u8, delta: f32 },
-    /// Ajustement Tune Kick Synth
-    KickTuneDelta(f32),
-    /// Ajustement Decay Kick Synth
-    KickDecayDelta(f32),
-    /// Ajustement Snap / Punch Kick Synth
-    KickSnapDelta(f32),
-    /// Ajustement Sweep time Kick Synth
-    KickSweepDelta(f32),
-    /// Ajustement Click Kick Synth
-    KickClickDelta(f32),
-    /// Ajustement Drive Kick Synth
-    KickDriveDelta(f32),
-    /// Ajustement Sub Kick Synth
-    KickSubDelta(f32),
-    /// Ajustement Volume Kick Synth
-    KickVolumeDelta(f32),
     /// Mode STEP : vélocité du pas sélectionné (delta entier)
     StepVelocityDelta(i32),
     /// Mode STEP : position (nudge) du pas sélectionné (delta en ticks)
@@ -383,79 +367,26 @@ pub enum MapperAction {
     ToggleLoop,
     /// Bascule le métronome
     ToggleMetronome,
+    /// Knob d'écran en mode PLUGIN : le moteur règle le paramètre affiché.
+    PluginKnob {
+        /// Knob 0..7
+        knob: u8,
+        /// Ticks bruts (1024 par tour)
+        delta: i32,
+    },
+    /// Page de paramètres précédente / suivante (boutons Page ◄ ►).
+    PluginPageStep(i8),
+    /// Emplacement précédent / suivant de la chaîne de plugins (4D tourné).
+    PluginSlotStep(i8),
     /// Soft key d'écran (1..8) — action contextuelle décidée par l'Engine
     /// (les labels affichés sous les écrans correspondent exactement).
     SoftKey(u8),
     // ─── Acid Synth (tab 4) ───────────────────────────────────
-    /// Knob 1 : Cutoff filtre acid
-    AcidCutoffDelta(f32),
-    /// Knob 2 : Résonance filtre acid
-    AcidResoDelta(f32),
-    /// Knob 3 : Modulation enveloppe acid
-    AcidEnvModDelta(f32),
-    /// Knob 4 : Decay enveloppe acid
-    AcidDecayDelta(f32),
-    /// Knob 5 : Accent acid
-    AcidAccentDelta(f32),
-    /// Knob 6 : Drive distortion acid
-    AcidDriveDelta(f32),
-    /// Knob 7 : Temps delay acid
-    AcidDelayTimeDelta(f32),
-    /// Knob 8 : Mix delay acid
-    AcidDelayMixDelta(f32),
     /// Mode mixer (0: Pads 1-8, 1: Pads 9-16, 2: Groupes A-H, 3: Master)
     SetMixerMode(u8),
     /// Alterne le type de filtre du son actif
     CycleSoundFilterKind,
-    /// Kick Synth : coupure filtre
-    KickFilterCutoffDelta(f32),
-    /// Kick Synth : résonance filtre
-    KickFilterResoDelta(f32),
-    /// Kick Synth : cycle type de distorsion
-    KickDriveTypeDelta(i32),
-    /// Kick Synth : cycle mode de filtre
-    KickFilterModeDelta(i32),
-    /// Kick Synth : cycle forme d'onde
-    KickWaveformDelta(i32),
-    /// Kick Synth : modulation FM
-    KickFmAmtDelta(f32),
-    /// Kick Synth : ratio FM
-    KickFmRatioDelta(f32),
-    /// Kick Synth : tonalité de saturation
-    KickToneDelta(f32),
     // ─── Wavetable / Nexus Synth (tab 4) ──────────────────────
-    /// Knob 1 : Cutoff filtre Wavetable
-    WavetableCutoffDelta(f32),
-    /// Knob 2 : Résonance filtre Wavetable
-    WavetableResoDelta(f32),
-    /// Knob 3 : Modulation enveloppe filtre Wavetable
-    WavetableEnvAmtDelta(f32),
-    /// Knob 4 : Drive filtre Wavetable
-    WavetableDriveDelta(f32),
-    /// Knob 5 : Attack enveloppe amplitude Wavetable
-    WavetableAttackDelta(f32),
-    /// Knob 6 : Decay enveloppe amplitude Wavetable
-    WavetableDecayDelta(f32),
-    /// Knob 7 : Sustain enveloppe amplitude Wavetable
-    WavetableSustainDelta(f32),
-    /// Knob 8 : Release enveloppe amplitude Wavetable
-    WavetableReleaseDelta(f32),
-    /// Shift + Knob 1 : Cycle mode de filtre Wavetable
-    WavetableFilterModeCycle,
-    /// Shift + Knob 2 : Delta voix d'unisson Wavetable
-    WavetableUnisonVoicesDelta(i32),
-    /// Shift + Knob 3 : Cycle forme d'onde OSC 1 Wavetable
-    WavetableOsc1WaveCycle,
-    /// Shift + Knob 4 : Cycle forme d'onde OSC 2 Wavetable
-    WavetableOsc2WaveCycle,
-    /// Shift + Knob 5 : Mix chorus Wavetable
-    WavetableChorusDelta(f32),
-    /// Shift + Knob 6 : Mix delay Wavetable
-    WavetableDelayDelta(f32),
-    /// Shift + Knob 7 : Mix reverb Wavetable
-    WavetableReverbDelta(f32),
-    /// Shift + Knob 8 : Volume Wavetable (dB)
-    WavetableVolumeDelta(f32),
     /// Preset Wavetable suivant
     WavetableNextPreset,
     /// Preset Wavetable précédent
@@ -546,6 +477,8 @@ pub struct SequencerLedInfo {
     pub soft_present: [bool; 8],
     /// Boutons d'écran allumés sur l'écran (même calcul que les écrans MK3).
     pub soft_active: [bool; 8],
+    /// Pages PLUGIN : précédente / suivante disponibles (`None` ailleurs).
+    pub page_nav: Option<[bool; 2]>,
 }
 
 /// Mapper — convertit `HardwareEvent` → `MidiEvent` + `LedState` + actions Engine.
@@ -797,7 +730,14 @@ impl HardwareMapper {
     /// Désactive tous les menus « latchés » (PATTERN, SCENE, SELECT, ERASE, MUTE)
     /// et referme les overlays (EVENTS, MACRO, SETTINGS).
     fn clear_menu_modes(&mut self, actions: &mut Vec<MapperAction>) {
-        self.pad_pressed = [false; 16];
+        // Un pad qui fait sonner une note reste « pressé » jusqu'à la vraie
+        // levée (sinon elle serait ignorée : note bloquée, LED éteinte) ;
+        // les appuis de workflow (scène, pattern…) sont oubliés.
+        for (i, pressed) in self.pad_pressed.iter_mut().enumerate() {
+            if !self.pad_played.contains_key(&(i as u8)) {
+                *pressed = false;
+            }
+        }
         if self.pattern_select_mode {
             self.pattern_select_mode = false;
             self.led_state
@@ -1404,6 +1344,14 @@ impl HardwareMapper {
     fn handle_4way_button(&mut self, id: ButtonId, actions: &mut Vec<MapperAction>) -> bool {
         match id {
             // Navigation 4D & Flèches < >
+            ButtonId::FourWayLeft | ButtonId::Left if self.left_tab == 4 => {
+                actions.push(MapperAction::PluginPageStep(-1));
+                true
+            }
+            ButtonId::FourWayRight | ButtonId::Right if self.left_tab == 4 => {
+                actions.push(MapperAction::PluginPageStep(1));
+                true
+            }
             ButtonId::FourWayLeft | ButtonId::Left => {
                 if self.scene_select_mode {
                     actions.push(MapperAction::SceneStep(-1));
@@ -1615,13 +1563,10 @@ impl HardwareMapper {
                 self.group_focus = (self.group_focus as i32 + delta as i32).rem_euclid(8) as u8;
                 actions.push(MapperAction::GroupFocus(self.group_focus));
             }
-        } else if self.left_tab == 4 && self.has_wavetable_synth {
-            // Vue WAVETABLE / NEXUS SYNTH : encodeur 4D défile les presets
-            if delta > 0 {
-                actions.push(MapperAction::WavetableNextPreset);
-            } else {
-                actions.push(MapperAction::WavetablePrevPreset);
-            }
+        } else if self.left_tab == 4 {
+            // Mode PLUGIN : le 4D parcourt la chaîne (instrument, effets du
+            // Sound, du groupe, du Master) ; les presets restent aux boutons.
+            actions.push(MapperAction::PluginSlotStep(delta));
         } else if self.left_tab == 3 {
             self.browser_preset_idx =
                 (self.browser_preset_idx as i32 + delta as i32).rem_euclid(16) as u8;
@@ -1762,99 +1707,18 @@ impl HardwareMapper {
     }
 
     fn handle_plugin_knobs(&mut self, idx: usize, delta: i32) -> Vec<MapperAction> {
-        let mut actions = Vec::new();
-        // Page 2 (left_tab=4, plugin_page=2) = AMPLI GUITARE :
-        // Les 8 encodeurs d'écran pilotent les 8 paramètres de l'ampli en temps réel.
+        // Page 2 = AMPLI GUITARE : les 8 knobs pilotent l'ampli (état côté app).
         if self.plugin_page == 2 {
             // Sensibilité : 1 cran = 0.5% de variation normalisée.
             let norm_delta = delta as f32 * 0.005;
-            actions.push(MapperAction::GuitarParamDelta(idx, norm_delta));
-            return actions;
+            return vec![MapperAction::GuitarParamDelta(idx, norm_delta)];
         }
-        if self.plugin_page == 1
-            || self.has_kick_synth
-            || self.has_wavetable_synth
-            || self.has_acid_synth
-        {
-            if self.has_kick_synth {
-                let is_page2 = (self.synth_param_page == 1) ^ self.shift_held;
-                if is_page2 {
-                    match idx {
-                        0 => actions.push(MapperAction::KickWaveformDelta(delta.signum())),
-                        1 => actions.push(MapperAction::KickFmAmtDelta(delta as f32 * 0.02)),
-                        2 => actions.push(MapperAction::KickFmRatioDelta(delta as f32 * 0.1)),
-                        3 => actions.push(MapperAction::KickToneDelta(delta as f32 * 0.02)),
-                        4 => actions.push(MapperAction::KickDriveTypeDelta(delta.signum())),
-                        5 => actions.push(MapperAction::KickFilterModeDelta(delta.signum())),
-                        6 => actions.push(MapperAction::KickFilterCutoffDelta(delta as f32)),
-                        _ => actions.push(MapperAction::KickFilterResoDelta(delta as f32)),
-                    }
-                } else {
-                    match idx {
-                        0 => actions.push(MapperAction::KickTuneDelta(delta as f32)),
-                        1 => actions.push(MapperAction::KickDecayDelta(delta as f32)),
-                        2 => actions.push(MapperAction::KickSnapDelta(delta as f32)),
-                        3 => actions.push(MapperAction::KickSweepDelta(delta as f32)),
-                        4 => actions.push(MapperAction::KickClickDelta(delta as f32)),
-                        5 => actions.push(MapperAction::KickDriveDelta(delta as f32)),
-                        6 => actions.push(MapperAction::KickSubDelta(delta as f32)),
-                        _ => actions.push(MapperAction::KickVolumeDelta(delta as f32)),
-                    }
-                }
-            } else if self.has_wavetable_synth {
-                let is_page2 = (self.synth_param_page == 1) ^ self.shift_held;
-                if is_page2 {
-                    match idx {
-                        0 => actions.push(MapperAction::WavetableFilterModeCycle),
-                        1 => actions.push(MapperAction::WavetableUnisonVoicesDelta(delta.signum())),
-                        2 => actions.push(MapperAction::WavetableOsc1WaveCycle),
-                        3 => actions.push(MapperAction::WavetableOsc2WaveCycle),
-                        4 => actions.push(MapperAction::WavetableChorusDelta(delta as f32)),
-                        5 => actions.push(MapperAction::WavetableDelayDelta(delta as f32)),
-                        6 => actions.push(MapperAction::WavetableReverbDelta(delta as f32)),
-                        _ => actions.push(MapperAction::WavetableVolumeDelta(delta as f32)),
-                    }
-                } else {
-                    match idx {
-                        0 => actions.push(MapperAction::WavetableCutoffDelta(delta as f32)),
-                        1 => actions.push(MapperAction::WavetableResoDelta(delta as f32)),
-                        2 => actions.push(MapperAction::WavetableEnvAmtDelta(delta as f32)),
-                        3 => actions.push(MapperAction::WavetableDriveDelta(delta as f32)),
-                        4 => actions.push(MapperAction::WavetableAttackDelta(delta as f32)),
-                        5 => actions.push(MapperAction::WavetableDecayDelta(delta as f32)),
-                        6 => actions.push(MapperAction::WavetableSustainDelta(delta as f32)),
-                        _ => actions.push(MapperAction::WavetableReleaseDelta(delta as f32)),
-                    }
-                }
-            } else {
-                match idx {
-                    0 => actions.push(MapperAction::AcidCutoffDelta(delta as f32)),
-                    1 => actions.push(MapperAction::AcidResoDelta(delta as f32)),
-                    2 => actions.push(MapperAction::AcidEnvModDelta(delta as f32)),
-                    3 => actions.push(MapperAction::AcidDecayDelta(delta as f32)),
-                    4 => actions.push(MapperAction::AcidAccentDelta(delta as f32)),
-                    5 => actions.push(MapperAction::AcidDriveDelta(delta as f32)),
-                    6 => actions.push(MapperAction::AcidDelayTimeDelta(delta as f32)),
-                    _ => actions.push(MapperAction::AcidDelayMixDelta(delta as f32)),
-                }
-            }
-        } else {
-            if self.shift_held && (idx == 2 || idx == 3) {
-                actions.push(MapperAction::CycleSoundFilterKind);
-            } else {
-                match idx {
-                    0 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
-                    1 => actions.push(MapperAction::SoundPanDelta(delta as f32)),
-                    2 => actions.push(MapperAction::SoundFilterCutoffDelta(delta as f32)),
-                    3 => actions.push(MapperAction::SoundFilterResoDelta(delta as f32)),
-                    4 => actions.push(MapperAction::SoundAttackDelta(delta as f32)),
-                    5 => actions.push(MapperAction::SoundDecayDelta(delta as f32)),
-                    6 => actions.push(MapperAction::SoundSustainDelta(delta as f32)),
-                    _ => actions.push(MapperAction::SoundReleaseDelta(delta as f32)),
-                }
-            }
-        }
-        actions
+        // Autres instruments : le moteur règle le paramètre de la page affichée
+        // (mêmes tables que l'écran, Shift = réglage fin).
+        vec![MapperAction::PluginKnob {
+            knob: idx as u8,
+            delta,
+        }]
     }
 
     fn handle_browser_knobs(&mut self, idx: usize, delta: i32) -> Vec<MapperAction> {
@@ -2446,8 +2310,14 @@ impl HardwareMapper {
         self.led_state
             .set_button_raw(offsets::SHIFT, if self.shift_held { 7 } else { 1 });
         self.led_state.set_button_raw(offsets::CHANNEL_MIDI, 1);
-        self.led_state.set_button_raw(offsets::LEFT, 2);
-        self.led_state.set_button_raw(offsets::RIGHT, 2);
+        // Page ◄ ► : en mode PLUGIN, pleine quand une page voisine existe,
+        // éteinte sinon (comme la MK3) ; ailleurs, demi-teinte.
+        let (left, right) = match info.page_nav {
+            Some([prev, next]) => (if prev { 7 } else { 0 }, if next { 7 } else { 0 }),
+            None => (2, 2),
+        };
+        self.led_state.set_button_raw(offsets::LEFT, left);
+        self.led_state.set_button_raw(offsets::RIGHT, right);
         self.led_state.set_button_raw(offsets::VARIATION, 2);
         self.led_state.set_button_raw(offsets::AUTO, 2);
         self.mixer_mode = info.mixer_mode;
@@ -2641,7 +2511,9 @@ impl HardwareMapper {
                     for i in 0..16 {
                         let is_muted = (muted_mask & (1u16 << i)) != 0;
                         if self.pad_flash(i, now) && !is_muted {
-                            self.led_state.set_pad(i, white);
+                            // Frappe / tenue : le pad s'allume dans la couleur
+                            // pleine de son Sound, comme sur la MK3.
+                            self.led_state.set_pad(i, self.pad_colors[i]);
                         } else if is_muted {
                             // Pads mutés : atténués (visibles, distincts des pads actifs).
                             // En mode MUTE, léger contraste pour identifier la sélection.
@@ -3032,11 +2904,12 @@ mod tests {
         // Repos : demi-teinte (pad 0 = Red 6 -> DimRed 5).
         m.update_leds(&info);
         assert_eq!(m.led_state().pad_leds[0], 5);
-        // Tap éclair (press + release aussitôt) : flash blanc garanti.
+        // Tap éclair (press + release aussitôt) : flash garanti, dans la
+        // couleur pleine du Sound (Red 6).
         let _ = m.handle_hardware_event(pad_ev(0, true, 1));
         let _ = m.handle_hardware_event(pad_ev(0, false, 2));
         m.update_leds(&info);
-        assert_eq!(m.led_state().pad_leds[0], 78);
+        assert_eq!(m.led_state().pad_leds[0], 6);
         // Le flash suit la frappe, pas l'état pressé (relâché entre-temps).
         assert!(!m.pad_pressed[0]);
         // Expiré (>200ms) : retour à la demi-teinte.
@@ -3824,44 +3697,21 @@ mod tests {
     fn hardware_filter_and_kick_knobs_cycle_modes() {
         let mut m = HardwareMapper::with_default();
 
-        // 1. En vue SAMPLER (left_tab = 2), Shift + Knob 3 (index 2) alterne le type de filtre
+        // SAMPLER (left_tab = 2) : Shift + Knob 3 alterne le type de filtre.
         m.left_tab = 2;
         m.shift_held = true;
         let _ = m.handle_hardware_event(knob_ev(3, 100, 0));
         let a = m.handle_hardware_event(knob_ev(3, 101, 1));
         assert_eq!(a, vec![MapperAction::CycleSoundFilterKind]);
 
-        // 2. En vue KICK SYNTH (left_tab = 4, plugin_page = 1, has_kick_synth = true)
+        // PLUGIN (kick) : les knobs suivent la page affichée par le moteur,
+        // Shift compris (réglage fin côté moteur).
         m.left_tab = 4;
         m.plugin_page = 1;
         m.has_kick_synth = true;
-        m.shift_held = true;
-
-        // Shift + Knob 5 (index 4) = Disto Type
         let _ = m.handle_hardware_event(knob_ev(5, 200, 2));
         let a = m.handle_hardware_event(knob_ev(5, 201, 3));
-        assert_eq!(a, vec![MapperAction::KickDriveTypeDelta(1)]);
-
-        // Shift + Knob 6 (index 5) = Filter Mode
-        let _ = m.handle_hardware_event(knob_ev(6, 300, 4));
-        let a = m.handle_hardware_event(knob_ev(6, 301, 5));
-        assert_eq!(a, vec![MapperAction::KickFilterModeDelta(1)]);
-
-        // 3. En vue WAVETABLE SYNTH (left_tab = 4, plugin_page = 1, has_wavetable_synth = true)
-        m.has_kick_synth = false;
-        m.has_wavetable_synth = true;
-        m.shift_held = true;
-
-        // Shift + Knob 1 (index 0) = Cycle filter mode
-        let _ = m.handle_hardware_event(knob_ev(1, 400, 6));
-        let a = m.handle_hardware_event(knob_ev(1, 401, 7));
-        assert_eq!(a, vec![MapperAction::WavetableFilterModeCycle]);
-
-        // Regular Knob 1 (Cutoff)
-        m.shift_held = false;
-        let _ = m.handle_hardware_event(knob_ev(1, 401, 8));
-        let a = m.handle_hardware_event(knob_ev(1, 402, 9));
-        assert_eq!(a, vec![MapperAction::WavetableCutoffDelta(1.0)]);
+        assert_eq!(a, vec![MapperAction::PluginKnob { knob: 4, delta: 1 }]);
     }
 
     #[test]
@@ -3933,42 +3783,33 @@ mod tests {
         let mut m = HardwareMapper::with_default();
         m.left_tab = 4; // Plugin tab
         m.has_wavetable_synth = true;
-
-        // Knobs 1..8 réguliers en vue Wavetable Synth
-        let tests = [
-            (1, MapperAction::WavetableCutoffDelta(1.0)),
-            (2, MapperAction::WavetableResoDelta(1.0)),
-            (3, MapperAction::WavetableEnvAmtDelta(1.0)),
-            (4, MapperAction::WavetableDriveDelta(1.0)),
-            (5, MapperAction::WavetableAttackDelta(1.0)),
-            (6, MapperAction::WavetableDecayDelta(1.0)),
-            (7, MapperAction::WavetableSustainDelta(1.0)),
-            (8, MapperAction::WavetableReleaseDelta(1.0)),
-        ];
-
-        for (knob, expected) in tests {
-            let _ = m.handle_hardware_event(knob_ev(knob, 100, 0));
-            let a = m.handle_hardware_event(knob_ev(knob, 101, 1));
-            assert_eq!(a, vec![expected], "Knob {knob} en vue Wavetable");
+        for shift in [false, true] {
+            m.shift_held = shift;
+            for knob in 1..=8u8 {
+                let _ = m.handle_hardware_event(knob_ev(knob, 100, 0));
+                let a = m.handle_hardware_event(knob_ev(knob, 101, 1));
+                assert_eq!(
+                    a,
+                    vec![MapperAction::PluginKnob {
+                        knob: knob - 1,
+                        delta: 1
+                    }],
+                    "knob {knob} shift={shift}"
+                );
+            }
         }
-
-        // Avec Shift : Knobs 1..8
-        m.shift_held = true;
-        let shift_tests = [
-            (1, MapperAction::WavetableFilterModeCycle),
-            (2, MapperAction::WavetableUnisonVoicesDelta(1)),
-            (3, MapperAction::WavetableOsc1WaveCycle),
-            (4, MapperAction::WavetableOsc2WaveCycle),
-            (5, MapperAction::WavetableChorusDelta(1.0)),
-            (6, MapperAction::WavetableDelayDelta(1.0)),
-            (7, MapperAction::WavetableReverbDelta(1.0)),
-            (8, MapperAction::WavetableVolumeDelta(1.0)),
-        ];
-
-        for (knob, expected) in shift_tests {
-            let _ = m.handle_hardware_event(knob_ev(knob, 200, 2));
-            let a = m.handle_hardware_event(knob_ev(knob, 201, 3));
-            assert_eq!(a, vec![expected], "Shift + Knob {knob} en vue Wavetable");
+        // Boutons Page ◄ ► (et flèches du 4D) : pages de paramètres.
+        for (id, step) in [
+            (maschine_proto::ButtonId::Left, -1),
+            (maschine_proto::ButtonId::Right, 1),
+            (maschine_proto::ButtonId::FourWayRight, 1),
+        ] {
+            let a = m.handle_hardware_event(HardwareEvent::Button {
+                id,
+                pressed: true,
+                ts_ns: 0,
+            });
+            assert!(a.contains(&MapperAction::PluginPageStep(step)), "{id:?}");
         }
     }
 
@@ -4095,7 +3936,7 @@ mod tests {
         let mut m = HardwareMapper::with_default();
         m.shift_held = true;
 
-        // 1. En vue arrangeur (tab 0) : knob 6 (cutoff) et knob 7 (reso) avec shift cyclent le filtre
+        // ARRANGE (tab 0) : Shift + knob 6 (cutoff) ou 7 (reso) cyclent le filtre.
         m.left_tab = 0;
         let _ = m.handle_hardware_event(knob_ev(6, 100, 0));
         let a = m.handle_hardware_event(knob_ev(6, 101, 1));
@@ -4105,20 +3946,13 @@ mod tests {
         let a = m.handle_hardware_event(knob_ev(7, 101, 3));
         assert_eq!(a, vec![MapperAction::CycleSoundFilterKind]);
 
-        // 2. En vue plugin standard (tab 4) : knob 3 (cutoff) et knob 4 (reso) avec shift cyclent le filtre
+        // PLUGIN (sampler) : le filtre est un paramètre de page (FILTRE) et
+        // ses boutons ; les knobs restent ceux de la page affichée.
         m.left_tab = 4;
         m.plugin_page = 0;
-        m.has_kick_synth = false;
-        m.has_wavetable_synth = false;
-        m.has_acid_synth = false;
-
         let _ = m.handle_hardware_event(knob_ev(3, 100, 4));
         let a = m.handle_hardware_event(knob_ev(3, 101, 5));
-        assert_eq!(a, vec![MapperAction::CycleSoundFilterKind]);
-
-        let _ = m.handle_hardware_event(knob_ev(4, 100, 6));
-        let a = m.handle_hardware_event(knob_ev(4, 101, 7));
-        assert_eq!(a, vec![MapperAction::CycleSoundFilterKind]);
+        assert_eq!(a, vec![MapperAction::PluginKnob { knob: 2, delta: 1 }]);
     }
 
     #[test]

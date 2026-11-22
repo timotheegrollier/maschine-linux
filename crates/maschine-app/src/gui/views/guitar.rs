@@ -23,7 +23,7 @@ pub fn render(
         );
         ui.add_space(6.0);
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        egui::ScrollArea::both().show(ui, |ui| {
             render_controls(ui, app, &c);
             ui.add_space(8.0);
             render_analysis(ui, app, &c);

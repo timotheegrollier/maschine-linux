@@ -17,6 +17,9 @@ serde_json = { workspace = true }
 log = { workspace = true }
 crossbeam-channel = { workspace = true }
 parking_lot = { workspace = true }
+# Texte lissé des écrans MK3 : mêmes crates et polices que la GUI egui.
+ab_glyph = "0.2"
+epaint_default_fonts = "0.32"
 
 # sampler / audio utils
 hound = { version = "3.5", optional = true }

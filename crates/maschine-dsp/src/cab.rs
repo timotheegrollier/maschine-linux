@@ -42,7 +42,10 @@ impl CabModel {
 
 /// Cabinet simulator: resonant speaker peaks + high-cut.
 pub struct CabSim {
+    /// Coupe-haut du HP : deux biquads = Butterworth 4ᵉ ordre (24 dB/oct),
+    /// la pente d'un vrai baffle ; à 12 dB/oct la distorsion « grésille ».
     highcut: Biquad,
+    highcut2: Biquad,
     lowcut: Biquad,
     resonance: Biquad,
     presence: Biquad,
@@ -55,6 +58,7 @@ impl CabSim {
     pub fn new(sample_rate: f32) -> Self {
         let mut sim = Self {
             highcut: Biquad::new(sample_rate),
+            highcut2: Biquad::new(sample_rate),
             lowcut: Biquad::new(sample_rate),
             resonance: Biquad::new(sample_rate),
             presence: Biquad::new(sample_rate),
@@ -94,7 +98,8 @@ impl CabSim {
             CabModel::Modern => 2.0 + resonance_q * 0.3,
             CabModel::Flat => resonance_q * 0.2,
         };
-        self.highcut.lowpass(highcut_hz, 0.707, self.sample_rate);
+        self.highcut.lowpass(highcut_hz, 0.541, self.sample_rate);
+        self.highcut2.lowpass(highcut_hz, 1.307, self.sample_rate);
         self.resonance
             .peaking(peak_freq, peak_db, 1.2, self.sample_rate);
     }
@@ -138,7 +143,7 @@ impl CabSim {
         let x = self.lowcut.process(input);
         let x = self.resonance.process(x);
         let x = self.presence.process(x);
-        self.highcut.process(x)
+        self.highcut2.process(self.highcut.process(x))
     }
 
     #[inline]
@@ -154,6 +159,7 @@ impl CabSim {
 
     pub fn reset(&mut self) {
         self.highcut.reset_state();
+        self.highcut2.reset_state();
         self.lowcut.reset_state();
         self.resonance.reset_state();
         self.presence.reset_state();

@@ -55,7 +55,7 @@ pub fn render(
             None
         };
 
-    egui::ScrollArea::vertical()
+    egui::ScrollArea::both()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             if snap.pattern_mode {

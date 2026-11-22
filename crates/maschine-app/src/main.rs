@@ -310,6 +310,9 @@ fn sync_mapper_context(
 
 fn main() -> anyhow::Result<()> {
     init_ctrlc();
+    // Plantage : écran de veille sur la MK3 plutôt qu'une image figée.
+    #[cfg(feature = "usb")]
+    display_thread::install_standby_panic_hook();
     let cli = Cli::parse();
     init_logger(cli.verbose);
 
@@ -1266,168 +1269,8 @@ fn cmd_daemon(
                         pan: new_pan,
                     });
                 }
-                MapperAction::KickTuneDelta(delta) => {
-                    let mut p = engine.lock().kick_synth.params.clone();
-                    p.tune_hz = (p.tune_hz + delta * 0.5).clamp(30.0, 90.0);
-                    let _ = engine.lock().handle_event(EngineEvent::KickSetParams(p));
-                }
-                MapperAction::KickDecayDelta(delta) => {
-                    let mut p = engine.lock().kick_synth.params.clone();
-                    p.decay_ms = (p.decay_ms + delta * 5.0).clamp(40.0, 2000.0);
-                    let _ = engine.lock().handle_event(EngineEvent::KickSetParams(p));
-                }
-                MapperAction::KickSnapDelta(delta) => {
-                    let mut p = engine.lock().kick_synth.params.clone();
-                    p.snap = (p.snap + delta * 0.02).clamp(0.0, 1.0);
-                    let _ = engine.lock().handle_event(EngineEvent::KickSetParams(p));
-                }
-                MapperAction::KickSweepDelta(delta) => {
-                    let mut p = engine.lock().kick_synth.params.clone();
-                    p.sweep_time_ms = (p.sweep_time_ms + delta * 1.0).clamp(5.0, 120.0);
-                    let _ = engine.lock().handle_event(EngineEvent::KickSetParams(p));
-                }
-                MapperAction::KickClickDelta(delta) => {
-                    let mut p = engine.lock().kick_synth.params.clone();
-                    p.click = (p.click + delta * 0.02).clamp(0.0, 1.0);
-                    let _ = engine.lock().handle_event(EngineEvent::KickSetParams(p));
-                }
-                MapperAction::KickDriveDelta(delta) => {
-                    let mut p = engine.lock().kick_synth.params.clone();
-                    p.drive = (p.drive + delta * 0.02).clamp(0.0, 1.0);
-                    let _ = engine.lock().handle_event(EngineEvent::KickSetParams(p));
-                }
-                MapperAction::KickSubDelta(delta) => {
-                    let mut p = engine.lock().kick_synth.params.clone();
-                    p.sub = (p.sub + delta * 0.02).clamp(0.0, 1.0);
-                    let _ = engine.lock().handle_event(EngineEvent::KickSetParams(p));
-                }
-                MapperAction::KickVolumeDelta(delta) => {
-                    let mut p = engine.lock().kick_synth.params.clone();
-                    p.volume_db = (p.volume_db + delta * knob_rate::VOL_DB).clamp(-60.0, 12.0);
-                    let _ = engine.lock().handle_event(EngineEvent::KickSetParams(p));
-                }
-                MapperAction::KickFilterCutoffDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::KickFilterCutoffDelta(delta));
-                }
-                MapperAction::KickFilterResoDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::KickFilterResoDelta(delta));
-                }
-                MapperAction::KickDriveTypeDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::KickDriveTypeDelta(delta));
-                }
-                MapperAction::KickFilterModeDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::KickFilterModeDelta(delta));
-                }
-                MapperAction::KickWaveformDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::KickWaveformDelta(delta));
-                }
-                MapperAction::KickFmAmtDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::KickFmAmtDelta(delta));
-                }
-                MapperAction::KickFmRatioDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::KickFmRatioDelta(delta));
-                }
-                MapperAction::KickToneDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::KickToneDelta(delta));
-                }
                 MapperAction::SetMixerMode(mode) => {
                     let _ = engine.lock().handle_event(EngineEvent::SetMixerMode(mode));
-                }
-                MapperAction::WavetableCutoffDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::WavetableCutoffDelta(delta));
-                }
-                MapperAction::WavetableResoDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::WavetableResoDelta(delta));
-                }
-                MapperAction::WavetableEnvAmtDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::WavetableEnvAmtDelta(delta));
-                }
-                MapperAction::WavetableDriveDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::WavetableDriveDelta(delta));
-                }
-                MapperAction::WavetableAttackDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::WavetableAttackDelta(delta));
-                }
-                MapperAction::WavetableDecayDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::WavetableDecayDelta(delta));
-                }
-                MapperAction::WavetableSustainDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::WavetableSustainDelta(delta));
-                }
-                MapperAction::WavetableReleaseDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::WavetableReleaseDelta(delta));
-                }
-                MapperAction::WavetableFilterModeCycle => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::WavetableFilterModeCycle);
-                }
-                MapperAction::WavetableUnisonVoicesDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::WavetableUnisonVoicesDelta(delta));
-                }
-                MapperAction::WavetableOsc1WaveCycle => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::WavetableOsc1WaveCycle);
-                }
-                MapperAction::WavetableOsc2WaveCycle => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::WavetableOsc2WaveCycle);
-                }
-                MapperAction::WavetableChorusDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::WavetableChorusDelta(delta));
-                }
-                MapperAction::WavetableDelayDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::WavetableDelayDelta(delta));
-                }
-                MapperAction::WavetableReverbDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::WavetableReverbDelta(delta));
-                }
-                MapperAction::WavetableVolumeDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::WavetableVolumeDelta(delta));
                 }
                 MapperAction::WavetableNextPreset => {
                     let _ = engine.lock().handle_event(EngineEvent::WavetableNextPreset);
@@ -1728,6 +1571,21 @@ fn cmd_daemon(
                         let _ = engine.lock().handle_event(EngineEvent::SoftKey(n));
                     }
                 }
+                MapperAction::PluginKnob { knob, delta } => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::PluginKnob { knob, delta });
+                }
+                MapperAction::PluginPageStep(step) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::PluginPageStep(step));
+                }
+                MapperAction::PluginSlotStep(step) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::PluginSlotStep(step));
+                }
                 MapperAction::GuitarParamDelta(param_idx, norm_delta) => {
                     guitar.adjust_param(param_idx, norm_delta);
                 }
@@ -1816,46 +1674,6 @@ fn cmd_daemon(
                         .lock()
                         .handle_event(EngineEvent::SetBrowserKind(kind));
                 }
-                MapperAction::AcidCutoffDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::AcidCutoffDelta(delta));
-                }
-                MapperAction::AcidResoDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::AcidResoDelta(delta));
-                }
-                MapperAction::AcidEnvModDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::AcidEnvModDelta(delta));
-                }
-                MapperAction::AcidDecayDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::AcidDecayDelta(delta));
-                }
-                MapperAction::AcidAccentDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::AcidAccentDelta(delta));
-                }
-                MapperAction::AcidDriveDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::AcidDriveDelta(delta));
-                }
-                MapperAction::AcidDelayTimeDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::AcidDelayTimeDelta(delta));
-                }
-                MapperAction::AcidDelayMixDelta(delta) => {
-                    let _ = engine
-                        .lock()
-                        .handle_event(EngineEvent::AcidDelayMixDelta(delta));
-                }
             }
         }
     }
@@ -1921,6 +1739,7 @@ fn cmd_daemon(
             shift_held: snap.shift_held,
             soft_present: snap.soft_present,
             soft_active: snap.soft_active,
+            page_nav: snap.page_nav,
         };
         mapper.update_leds(&led_info);
     }
@@ -2850,6 +2669,7 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             master_peak: 0.0,
             soft_labels: ["1", "2", "3", "4", "5", "6", "7", "8"],
             soft_active: [false; 8],
+            page_flash: 0.0,
             waveform: None,
             sample_duration: 0.0,
             revision: 0,
@@ -2860,6 +2680,9 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             focus_sound_acid: None,
             focus_sound_wavetable: None,
             focus_sound_fx: Vec::new(),
+            plugin_slots: Vec::new(),
+            plugin_slot: 0,
+            plugin_fx: None,
             focus_group_fx: Vec::new(),
             mixer_mode: 0,
             browser_plugin_idx: 0,
@@ -3119,15 +2942,33 @@ mod tests {
         assert_eq!(mapper.plugin_page, 0);
         let _ = mapper.handle_hardware_event(event(100));
         let actions = mapper.handle_hardware_event(event(101));
-        assert!(actions.contains(&MapperAction::SoundVolumeDelta(1.0)));
+        assert!(actions.contains(&MapperAction::PluginKnob { knob: 0, delta: 1 }));
 
-        engine.handle_event(EngineEvent::SetPluginPage(1)).unwrap();
+        // Le knob 1 règle le premier paramètre de la page affichée par le moteur.
+        let before = engine.snapshot();
+        let sound = |snap: &maschine_engine::EngineSnapshot| {
+            snap.project.groups[snap.group_focus as usize].sounds[snap.active_sound as usize]
+                .as_ref()
+                .map(|s| s.volume_db)
+        };
+        engine
+            .handle_event(EngineEvent::PluginKnob { knob: 0, delta: 64 })
+            .unwrap();
+        if sound(&before).is_some() {
+            assert_ne!(sound(&before), sound(&engine.snapshot()), "VOLUME a bougé");
+        }
+
+        // L'ampli guitare (page 2) garde ses knobs dédiés.
+        engine.handle_event(EngineEvent::SetPluginPage(2)).unwrap();
         let context = engine.hardware_snapshot();
         sync_mapper_context(&mut mapper, &context);
-        assert_eq!(mapper.plugin_page, 1);
+        assert_eq!(mapper.plugin_page, 2);
         let _ = mapper.handle_hardware_event(event(101));
         let actions = mapper.handle_hardware_event(event(102));
-        assert!(actions.contains(&MapperAction::AcidCutoffDelta(1.0)));
+        assert!(matches!(
+            actions[..],
+            [MapperAction::GuitarParamDelta(0, _)]
+        ));
     }
 }
 

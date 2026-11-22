@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.21.0" date="2026-11-22">
+      <description>
+        <p>Release 0.21.0: during REC the recorded pattern plays back immediately (as on the MK3) while the Sound played live uses its own monitoring voice — both monophonic synths are audible through the same gain, pan and FX path without cutting each other. Design and workflow synced with the MK3; auto quantize unchanged.</p>
+      </description>
+    </release>
     <release version="0.20.0" date="2026-11-22">
       <description>
         <p>Release 0.20.0: Maschine recording flow — during REC, the Sound played live takes priority over its pattern so held notes, slides and note effects stay audible on monophonic synths (TB-303, Kick, Wavetable). Design and workflow synced with the MK3.</p>

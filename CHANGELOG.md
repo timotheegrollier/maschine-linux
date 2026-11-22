@@ -2,6 +2,14 @@
 
 All notable changes.
 
+## [0.21.0] - 2026-11-22
+
+### Changed
+- **Flow d'enregistrement Maschine** : pendant `REC`, le pattern rejoue immédiatement — la boucle enregistrée est audible sans attendre la désactivation de REC. Le Sound joué en direct dispose de sa propre voix de monitoring : les deux synthés monophoniques (TB-303, Kick, Wavetable) partagent le même gain, pan et bus d'effets sans jamais se couper. Synchro design/workflow avec la MK3 (`docs/design.md`, `docs/workflow.md`). La quantification automatique est inchangée.
+
+### Validation
+- 295 tests, `clippy -D warnings`, vérification sans sampler au vert. Test : `rec_pattern_does_not_cut_live_synth_voice` (pattern et live actifs en REC).
+
 ## [0.20.0] - 2026-11-22
 
 ### Changed

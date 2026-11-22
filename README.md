@@ -14,7 +14,7 @@ Maschine Linux is an independent project. It does not include Native
 Instruments code or proprietary assets; it reproduces the documented workflow
 and hardware behavior through a clean-room implementation.
 
-## Current state (0.20.0)
+## Current state (0.21.0)
 
 Cargo workspace with six crates:
 
@@ -42,6 +42,13 @@ errors) and `--stress` (deliberate engine-lock contention).
   pads, like the MK3.
 - Arpeggiator modes on knob 7 (up, down, up-down, one or two octaves).
 - Events mode edits every note of the Sound at once (knob 6).
+
+### Pattern and live playing together during REC in 0.21.0
+
+- During REC, the recorded pattern plays immediately — you hear the loop
+  without waiting to disarm REC, like on the MK3. The Sound under your fingers
+  has its own monitoring voice, so both monophonic synths stay audible.
+  Auto quantize is unchanged.
 
 ### Maschine recording flow in 0.20.0
 

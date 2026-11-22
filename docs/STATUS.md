@@ -4,7 +4,7 @@ Living document: what works, what is partial, what is missing, and what to
 check on real hardware. Update it with every release (see the release steps in
 `AGENTS.md`). Behaviour details live in `workflow.md`; this file is the map.
 
-## Current version: 0.19.1
+## Current version: 0.19.3
 
 ### Done (with tests)
 
@@ -91,6 +91,10 @@ check on real hardware. Update it with every release (see the release steps in
 
 ## History (recent)
 
+- **0.19.3** — LED du groupe sélectionné : plus illuminé que les autres
+  (atténués même en lecture).
+- **0.19.2** — illumination des pads pendant la lecture du pattern (notes
+  jouées dans le pattern en mode keyboard).
 - **0.19.1** — LEDs MK3 : bouton MUTE hors mode mute, groupe et pad
   sélectionnés plus illuminés ; notes pendant REC — son pendant la tenue
   (slide à l'écran).

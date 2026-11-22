@@ -36,6 +36,16 @@
   </provides>
 
   <releases>
+    <release version="0.19.3" date="2026-11-22">
+      <description>
+        <p>Release 0.19.3: the selected group's LED is the most lit; the other groups are dimmed even when playing, so the selection is clearly visible in pad mode.</p>
+      </description>
+    </release>
+    <release version="0.19.2" date="2026-11-22">
+      <description>
+        <p>Release 0.19.2: pads played in the pattern light up in keyboard mode according to the notes played in the loop.</p>
+      </description>
+    </release>
     <release version="0.19.1" date="2026-11-22">
       <description>
         <p>Release 0.19.1 fixes the MK3 LEDs: the MUTE button lights only during mute mode (not while navigating in pad mode), the selected group LED is brighter than the others, and the selected pad is brighter than the others.</p>

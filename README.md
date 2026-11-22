@@ -14,7 +14,7 @@ Maschine Linux is an independent project. It does not include Native
 Instruments code or proprietary assets; it reproduces the documented workflow
 and hardware behavior through a clean-room implementation.
 
-## Current state (0.19.1)
+## Current state (0.19.3)
 
 Cargo workspace with six crates:
 
@@ -42,6 +42,16 @@ errors) and `--stress` (deliberate engine-lock contention).
   pads, like the MK3.
 - Arpeggiator modes on knob 7 (up, down, up-down, one or two octaves).
 - Events mode edits every note of the Sound at once (knob 6).
+
+### Selected group LED more lit in 0.19.3
+
+- The selected group's LED is the most lit of all groups; the other group
+  buttons are dimmed, even when they play.
+
+### Pads played in the pattern light up in keyboard mode in 0.19.2
+
+- The pads of the notes played in the pattern light up according to the
+  notes in the loop.
 
 ### MK3 LEDs — MUTE button off mode-less, selected group and pad brighter in 0.19.1
 

@@ -2,6 +2,22 @@
 
 All notable changes.
 
+## [0.19.3] - 2026-11-22
+
+### Fixed
+- **LED du groupe sélectionné** : le groupe sélectionné est plus illuminé que les autres — les autres groupes sont atténués même en lecture, pour distinguer facilement le groupe sélectionné en mode PAD.
+
+### Validation
+- 292 tests, `clippy -D warnings`, vérification sans sampler au vert.
+
+## [0.19.2] - 2026-11-22
+
+### Fixed
+- **Illumination des pads pendant la lecture du pattern** : les pads des notes jouées dans le pattern s'illuminent en mode keyboard en fonction des notes jouées dans la boucle (via l'activité pendant la lecture) — comme sur la version officielle.
+
+### Validation
+- 292 tests, `clippy -D warnings`, vérification sans sampler au vert. Nouveau test : `pattern_playback_lights_pads_via_activity`.
+
 ## [0.19.1] - 2026-11-22
 
 ### Fixed

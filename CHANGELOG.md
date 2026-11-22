@@ -2,6 +2,33 @@
 
 All notable changes.
 
+## [0.12.0] - 2026-11-22
+
+### Added
+- **Miroir MK3 dans l'ordre du contrôleur** : bande des boutons d'écran (cliquable directement sur l'image des écrans), les deux écrans, les 8 knobs centrés sous le slot qui affiche leur nom et leur valeur, puis les groupes A–H et les pads 4×4. Écrans côte à côte dès que la place le permet, empilés sinon, jamais réduits sous 75 % ; boutons `ÉCRANS` et `PADS` pour replier une moitié sur petit écran.
+- **Knobs GUI = knobs MK3** : un glisser sur un knob de la GUI envoie `HardwareEvent::KnobDelta` à la boucle matérielle, qui applique exactement le mapping et les vitesses du knob physique, avec ou sans contrôleur branché.
+- **Pads et groupes aux couleurs des LEDs** : la GUI peint ses pads et ses boutons de groupe avec l'état LED calculé pour la MK3 (repos, frappe, pas programmés, modes PATTERN/SCENE/STEP/KEYBOARD…).
+- **MK3 plein écran** : avec le centre masqué (`F3`), le miroir occupe toute la fenêtre, écrans côte à côte.
+
+### Changed
+- **Disposition officielle des écrans MK3** : les libellés des boutons 1–8 sont en haut de chaque écran, juste sous les boutons physiques ; le nom et la valeur de chaque knob restent en bas, juste au-dessus du knob.
+- **Boutons allumés selon leur libellé** : un bouton s'allume quand l'état qu'il sélectionne est courant (mesure, longueur, groupe, banque du mixer, mode de filtre, métronome, SONG, cadence Note Repeat…). Le même état pilote les écrans, le miroir GUI et les LEDs des boutons d'écran (éteinte sans fonction, demi-teinte si disponible, pleine si allumé).
+- **Panneaux qui suivent la fenêtre** : le rail des vues et le miroir MK3 gardent leur part de la largeur à chaque redimensionnement (la poignée change cette part) ; le rail se masque sous 1400 px et revient en grandissant.
+- **Thème graphite façon logiciel Maschine** : gris neutres et plats, un seul orange d'accent partagé avec les écrans MK3, boutons rectangulaires, bascules de panneaux allumées en blanc comme les boutons du contrôleur.
+- **Transport compact** sur une seule ligne (statistiques voix/audio visibles quand la fenêtre est large).
+
+### Fixed
+- Les boutons 5–8 de l'écran droit TB-303 affichaient les libellés des boutons 2–5.
+- `MASTER` s'allumait dans le mixer des pads quand le pad 4 était sélectionné ; `CYC FLT`, `ECOUTE` ou `SND <` s'allumaient selon le son actif dans SAMPLER ; les surbrillances de la couche Shift ne correspondaient pas aux libellés.
+- Titres et contextes d'en-tête qui se chevauchaient (mixer des pads), noms de Sounds illisibles dans la grille PATTERN, modèle d'ampli décentré, entrée guitare tronquée, ligne d'aide du browser qui débordait sur les knobs.
+- Les knobs de la GUI ne pilotaient pas les mêmes paramètres que la MK3 (ARRANGE, MIXER, IDEAS, STEP, BROWSER, pages synthé).
+- Cartes de la GUI aux libellés repliés lettre par lettre (IDEAS), cartes coupées sous le miroir (PLUGIN, SAMPLER) et grille du séquenceur qui débordait en fenêtre étroite.
+
+### Validation
+- `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` et `cargo test --workspace --locked` au vert.
+- Nouveaux tests : `button_labels_on_top_and_knob_slots_at_bottom`, `lit_soft_keys_follow_their_labels`, `gui_knob_delta_routes_like_the_physical_knob`, LEDs des boutons d'écran dans `file_save_and_browser_distinction_and_leds`.
+- Captures sous Xvfb de la GUI en 1280×720, 1366×768, 1600×900, 1920×1080 et 2560×1440, et rendu des écrans via `dump_screens`.
+
 ## [0.11.8] - 2026-11-22
 
 ### Fixes

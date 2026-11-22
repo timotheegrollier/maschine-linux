@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.12.0" date="2026-11-22">
+      <description>
+        <p>Release 0.12.0 lays out the MK3 screens like the official controller (button labels on top, knob values at the bottom), lights buttons and LEDs from one shared state, and turns the GUI into a responsive mirror of the hardware: panels that follow the window, real knob mapping and LED-coloured pads.</p>
+      </description>
+    </release>
     <release version="0.11.8" date="2026-11-22">
       <description>
         <p>Release 0.11.8 fixes guitar amp latency with small capture buffers and a bounded ring, and retunes the preamp gain staging for a clean, audible signal with gradual saturation.</p>

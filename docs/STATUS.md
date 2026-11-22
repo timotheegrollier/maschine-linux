@@ -4,7 +4,7 @@ Living document: what works, what is partial, what is missing, and what to
 check on real hardware. Update it with every release (see the release steps in
 `AGENTS.md`). Behaviour details live in `workflow.md`; this file is the map.
 
-## Current version: 0.25.0
+## Current version: 0.26.0
 
 ### Done (with tests)
 
@@ -98,6 +98,8 @@ check on real hardware. Update it with every release (see the release steps in
 
 ## History (recent)
 
+- **0.26.0** — pré-écoute REC coupée à la fin quantifiée de la note ; chaînage
+  deux pads (800 ms) ; GUI correcte quand aucun pattern n'est actif.
 - **0.25.0** — monitoring live REC : coupe nette entre les notes, attaque
   immédiate sans portamento, longueurs enregistrées quantisées à la grille.
 - **0.24.0** — ré-appui sur le pad du pattern actif : coupe instantanée

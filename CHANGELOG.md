@@ -2,6 +2,16 @@
 
 All notable changes.
 
+## [0.26.0] - 2026-11-22
+
+### Fixed
+- **Pré-écoute REC quantifiée** : la voix live est coupée à la fin quantifiée de la note enregistrée (et non au relâchement physique) — l'écoute et le pattern coïncident exactement.
+- **Chaînage de patterns** : deux pads maintenus ensemble OU pressés à moins de 800 ms chaînent tout l'intervalle, même si le premier pad a été relâché.
+- **GUI sans pattern actif** : les vues Sequencer / Ideas n'affichent plus le pattern 0 comme actif quand aucun pattern n'est assigné ; les actions d'édition sont désactivées et un message l'indique.
+
+### Validation
+- 303 tests, `clippy -D warnings`, vérification sans sampler au vert. Nouveaux tests : `rec_live_note_off_is_quantized`, `pattern_chain_on_two_quick_pads_after_release`.
+
 ## [0.25.0] - 2026-11-22
 
 ### Changed

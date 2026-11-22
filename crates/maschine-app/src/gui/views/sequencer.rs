@@ -529,14 +529,6 @@ fn render_pattern_manager(
                                 .color(c.text_muted),
                         );
                     }
-                    if no_active_pattern {
-                        ui.label(
-                            egui::RichText::new("Aucun pattern actif — clique sur un pad PATTERN.")
-                                .small()
-                                .strong()
-                                .color(c.warning),
-                        );
-                    }
                     for (idx, pat) in patterns.iter().enumerate().take(64) {
                         let label = format!("P{:02} {}", idx + 1, short_name(&pat.name, 14));
                         let active = !no_active_pattern && idx == pattern_index;

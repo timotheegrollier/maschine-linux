@@ -281,12 +281,6 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                         .get(gf)
                         .map(|g| g.patterns.len())
                         .unwrap_or(0);
-                    if active_pattern.is_none() {
-                        ui.colored_label(
-                            c.warning,
-                            "Aucun pattern actif — clique sur un pad PATTERN.",
-                        );
-                    }
                     let has_active_pattern = active_pattern.is_some();
                     let active_pattern = active_pattern.unwrap_or(0);
                     ui.horizontal_wrapped(|ui| {

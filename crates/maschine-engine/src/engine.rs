@@ -1210,6 +1210,10 @@ pub struct Engine {
     master_fx: crate::fx::FxChainProcessor,
     /// Synthés de lecture : une instance par Sound (voir `SynthRack`).
     rack: SynthRack,
+    /// Voix de monitoring pendant REC : le Sound joué en direct utilise ses
+    /// propres instances pour ne pas être coupé par la lecture du pattern
+    /// (le pattern continue de sonner sur `rack` — flow Maschine).
+    monitor_rack: SynthRack,
     /// Lancements en attente pendant la lecture : la scène ou le pattern
     /// choisi démarre au début de la mesure suivante, comme sur la MK3.
     pending_scene: Option<usize>,
@@ -1582,6 +1586,7 @@ impl Engine {
             fx_buses: Vec::new(),
             master_fx: crate::fx::FxChainProcessor::new(sample_rate),
             rack: SynthRack::new(),
+            monitor_rack: SynthRack::new(),
             pending_scene: None,
             count_in: None,
             pending_notes: [None; 64],
@@ -2488,12 +2493,21 @@ impl Engine {
         // Synthés : l'instance de ce Sound dans le rack (créée au besoin, ce
         // n'est pas le thread audio) ; le synthé « édition » suit le Sound joué.
         let i = rack_index(self.group_focus, pad);
+        // Pendant REC, la note jouée en direct a sa propre voix : le pattern
+        // continue de sonner sur `rack` et le monitoring sur `monitor_rack`.
+        let live_monitor =
+            self.transport.state == TransportState::Recording && pad == self.active_sound;
+        let rack = if live_monitor {
+            &mut self.monitor_rack
+        } else {
+            &mut self.rack
+        };
         if is_kick_sound {
             self.kick_sound_target = Some((self.group_focus, pad));
             if let Some(p) = kick_params {
                 self.kick_synth.params = p.clone();
                 let sr = self.transport.sample_rate;
-                let slot = self.rack.kick[i]
+                let slot = rack.kick[i]
                     .get_or_insert_with(|| RackSlot::new(crate::kick_synth::KickSynth::new(sr)));
                 slot.synth.params = p;
                 slot.idle_blocks = 0;
@@ -2504,7 +2518,7 @@ impl Engine {
             if let Some(p) = synth_params {
                 self.acid_synth.params = p.clone();
                 let sr = self.transport.sample_rate;
-                let slot = self.rack.acid[i]
+                let slot = rack.acid[i]
                     .get_or_insert_with(|| RackSlot::new(crate::acid_synth::AcidSynth::new(sr)));
                 slot.synth.params = p;
                 slot.idle_blocks = 0;
@@ -2515,7 +2529,7 @@ impl Engine {
             if let Some(p) = wavetable_params {
                 self.wavetable_synth.params = p.clone();
                 let sr = self.transport.sample_rate;
-                let slot = self.rack.wavetable[i].get_or_insert_with(|| {
+                let slot = rack.wavetable[i].get_or_insert_with(|| {
                     RackSlot::new(crate::wavetable_synth::WavetableSynth::new(sr))
                 });
                 slot.synth.params = p;
@@ -2534,12 +2548,20 @@ impl Engine {
     /// Relâche la note pour les synthétiseurs et le sampler.
     pub fn release_sound_voice(&mut self, pad: u8, note: u8) {
         let sound = sampler_sound_id(self.group_focus, pad);
-        // Chaque Sound a son propre synthé : relâcher ce pad ne coupe que lui.
         let i = rack_index(self.group_focus, pad);
-        if let Some(slot) = self.rack.acid[i].as_mut() {
+        // La voix release est celle du monitoring pendant REC (le pattern
+        // garde sa propre voix sur `rack`).
+        let live_monitor =
+            self.transport.state == TransportState::Recording && pad == self.active_sound;
+        let rack = if live_monitor {
+            &mut self.monitor_rack
+        } else {
+            &mut self.rack
+        };
+        if let Some(slot) = rack.acid[i].as_mut() {
             slot.synth.note_off(note);
         }
-        if let Some(slot) = self.rack.wavetable[i].as_mut() {
+        if let Some(slot) = rack.wavetable[i].as_mut() {
             slot.synth.note_off(note);
         }
         self.sampler.note_off(sound, note);
@@ -5087,20 +5109,6 @@ impl Engine {
                                     is_wavetable[s] = snd.wavetable_synth.is_some();
                                 }
                             }
-                            // Flow Maschine : pendant REC, le son joué en direct
-                            // reprend la voix sur le pattern. Les synthés (TB-303,
-                            // Kick, Wavetable) sont monophoniques par Sound : si le
-                            // pattern rejouait le même Sound, note_on/note_off se
-                            // voleraient la voix et la pré-écoute serait coupée.
-                            // On ne joue donc pas le pattern de ce Sound pendant
-                            // REC — les autres Sounds et les LEDs restent vivants.
-                            let skip_sound = if self.transport.state == TransportState::Recording
-                                && gi as u8 == self.group_focus
-                            {
-                                Some(self.active_sound)
-                            } else {
-                                None
-                            };
                             Self::trigger_pattern_events(
                                 pat,
                                 eff_prev,
@@ -5122,7 +5130,6 @@ impl Engine {
                                 &ctx,
                                 &mut self.pad_activity,
                                 self.muted_sounds[gi],
-                                skip_sound,
                             );
                         }
                     }
@@ -5308,7 +5315,6 @@ impl Engine {
         ctx: &BlockCtx,
         activity: &mut [f32; 16],
         muted_sound_mask: u16,
-        skip_sound: Option<u8>,
     ) {
         let pat_len = pat.length.to_ticks() as u64;
         if pat_len == 0 || prev_tick == new_tick {
@@ -5321,9 +5327,6 @@ impl Engine {
         let new_in_pat = new_tick % pat_len;
         let wrapped = new_in_pat < prev_in_pat;
         for ev in &pat.events {
-            // Pendant REC, le Sound joué en direct garde sa voix : le pattern
-            // ne le rejoue pas (sinon note_off / glissando coupent la tenue).
-            let skip_audio = skip_sound == Some(ev.pad);
             let tick = ev.tick as u64;
             // Tick effectif avec swing (16e impaire = retardée)
             let eff = if swing_ticks > 0 && (tick / 240) % 2 == 1 {
@@ -5363,36 +5366,34 @@ impl Engine {
                     let is_k = is_kick.get(sound as usize).copied().unwrap_or(false);
                     let is_wt = is_wavetable.get(sound as usize).copied().unwrap_or(false);
                     let ri = rack_index(group, sound);
-                    if !skip_audio {
-                        if is_k {
-                            if let Some(slot) = rack.kick[ri].as_mut() {
-                                slot.idle_blocks = 0;
-                                slot.synth.trigger(note, ev.velocity);
-                            }
-                        } else if is_acid {
-                            if let Some(slot) = rack.acid[ri].as_mut() {
-                                slot.idle_blocks = 0;
-                                slot.synth.note_on_at(note, ev.velocity, start_frame);
-                            }
-                        } else if is_wt {
-                            if let Some(slot) = rack.wavetable[ri].as_mut() {
-                                slot.idle_blocks = 0;
-                                slot.synth.note_on(note, ev.velocity);
-                            }
-                        } else if let Some(idx) = sampler.note_on_at(
-                            sampler_sound_id(group, sound),
-                            note,
-                            ev.velocity,
-                            note,
-                            start_frame,
-                        ) {
-                            sampler.set_voice_gain(idx, group_gain * sg);
-                            sampler.set_voice_pan(idx, sp);
-                            sampler.set_voice_group(idx, group);
-                            sampler.set_voice_group_pan(idx, group_pan);
-                            if let Some(vp) = voice_params.get(sound as usize) {
-                                sampler.set_voice_params(idx, vp);
-                            }
+                    if is_k {
+                        if let Some(slot) = rack.kick[ri].as_mut() {
+                            slot.idle_blocks = 0;
+                            slot.synth.trigger(note, ev.velocity);
+                        }
+                    } else if is_acid {
+                        if let Some(slot) = rack.acid[ri].as_mut() {
+                            slot.idle_blocks = 0;
+                            slot.synth.note_on_at(note, ev.velocity, start_frame);
+                        }
+                    } else if is_wt {
+                        if let Some(slot) = rack.wavetable[ri].as_mut() {
+                            slot.idle_blocks = 0;
+                            slot.synth.note_on(note, ev.velocity);
+                        }
+                    } else if let Some(idx) = sampler.note_on_at(
+                        sampler_sound_id(group, sound),
+                        note,
+                        ev.velocity,
+                        note,
+                        start_frame,
+                    ) {
+                        sampler.set_voice_gain(idx, group_gain * sg);
+                        sampler.set_voice_pan(idx, sp);
+                        sampler.set_voice_group(idx, group);
+                        sampler.set_voice_group_pan(idx, group_pan);
+                        if let Some(vp) = voice_params.get(sound as usize) {
+                            sampler.set_voice_params(idx, vp);
                         }
                     }
                     // Flash LED du pad (fenêtre d'une triple-croche : bref et net).
@@ -5414,7 +5415,7 @@ impl Engine {
                 end_in_pat > prev_in_pat || end_in_pat <= new_in_pat
             };
             // évite de couper la note à t=0 et seulement si la note a déjà sonné
-            if off_triggered && end_tick > tick && tick <= new_tick && !skip_audio {
+            if off_triggered && end_tick > tick && tick <= new_tick {
                 let ri = rack_index(group, ev.pad);
                 if is_synth.get(ev.pad as usize).copied().unwrap_or(false) {
                     if let Some(slot) = rack.acid[ri].as_mut() {
@@ -5738,6 +5739,41 @@ impl Engine {
                     self.mix_synth_buffer(out, out_len, (g, s), bus, &proj);
                 }
                 self.rack.wavetable[i] = Some(slot);
+            }
+        }
+
+        // Monitoring REC : le Sound joué en direct a sa propre voix, mixée
+        // exactement comme le rack (même gain, pan et bus) — le pattern et le
+        // live sonnent donc ensemble, comme sur la MK3.
+        for i in 0..128usize {
+            let (g, s) = ((i / 16) as u8, (i % 16) as u8);
+            let bus = route[g as usize][s as usize];
+            if let Some(mut slot) = self.monitor_rack.kick[i].take() {
+                if slot.idle_blocks < RACK_IDLE_BLOCKS {
+                    self.synth_buf[..out_len].fill(0.0);
+                    slot.synth.render(&mut self.synth_buf[..out_len]);
+                    slot.idle_blocks = self.note_idle(slot.idle_blocks, out_len);
+                    self.mix_synth_buffer(out, out_len, (g, s), bus, &proj);
+                }
+                self.monitor_rack.kick[i] = Some(slot);
+            }
+            if let Some(mut slot) = self.monitor_rack.acid[i].take() {
+                if slot.idle_blocks < RACK_IDLE_BLOCKS {
+                    self.synth_buf[..out_len].fill(0.0);
+                    slot.synth.render(&mut self.synth_buf[..out_len]);
+                    slot.idle_blocks = self.note_idle(slot.idle_blocks, out_len);
+                    self.mix_synth_buffer(out, out_len, (g, s), bus, &proj);
+                }
+                self.monitor_rack.acid[i] = Some(slot);
+            }
+            if let Some(mut slot) = self.monitor_rack.wavetable[i].take() {
+                if slot.idle_blocks < RACK_IDLE_BLOCKS {
+                    self.synth_buf[..out_len].fill(0.0);
+                    slot.synth.render(&mut self.synth_buf[..out_len]);
+                    slot.idle_blocks = self.note_idle(slot.idle_blocks, out_len);
+                    self.mix_synth_buffer(out, out_len, (g, s), bus, &proj);
+                }
+                self.monitor_rack.wavetable[i] = Some(slot);
             }
         }
 
@@ -7560,6 +7596,37 @@ impl Engine {
                     }
                     None => self.rack.wavetable[i] = None,
                 }
+                // Voix de monitoring : mêmes paramètres pour le Sound actif,
+                // afin que les knobs tournés pendant REC l'affectent aussi.
+                if g == self.group_focus && s == self.active_sound {
+                    match snd.and_then(|snd| snd.synth.as_ref()) {
+                        Some(p) => {
+                            let slot = self.monitor_rack.acid[i].get_or_insert_with(|| {
+                                RackSlot::new(crate::acid_synth::AcidSynth::new(sr))
+                            });
+                            slot.synth.params = p.clone();
+                        }
+                        None => self.monitor_rack.acid[i] = None,
+                    }
+                    match snd.and_then(|snd| snd.kick_synth.as_ref()) {
+                        Some(p) => {
+                            let slot = self.monitor_rack.kick[i].get_or_insert_with(|| {
+                                RackSlot::new(crate::kick_synth::KickSynth::new(sr))
+                            });
+                            slot.synth.params = p.clone();
+                        }
+                        None => self.monitor_rack.kick[i] = None,
+                    }
+                    match snd.and_then(|snd| snd.wavetable_synth.as_ref()) {
+                        Some(p) => {
+                            let slot = self.monitor_rack.wavetable[i].get_or_insert_with(|| {
+                                RackSlot::new(crate::wavetable_synth::WavetableSynth::new(sr))
+                            });
+                            slot.synth.params = p.clone();
+                        }
+                        None => self.monitor_rack.wavetable[i] = None,
+                    }
+                }
             }
         }
     }
@@ -9355,6 +9422,7 @@ mod tests {
         let mut block = vec![0.0f32; 2048];
         let mut peak = 0.0f32;
         for _ in 0..50 {
+            eng.advance(1024);
             block.fill(0.0);
             eng.render_audio(&mut block);
             peak = peak.max(block.iter().map(|s| s.abs()).fold(0.0f32, f32::max));
@@ -9380,6 +9448,7 @@ mod tests {
         .unwrap();
         let mut peak2 = 0.0f32;
         for _ in 0..50 {
+            eng.advance(1024);
             block.fill(0.0);
             eng.render_audio(&mut block);
             peak2 = peak2.max(block.iter().map(|s| s.abs()).fold(0.0f32, f32::max));
@@ -9408,6 +9477,7 @@ mod tests {
         let mut peak = 0.0f32;
         let mut capture = |eng: &mut Engine, peak: &mut f32| {
             for _ in 0..50 {
+                eng.advance(1024);
                 block.fill(0.0);
                 eng.render_audio(&mut block);
                 *peak = peak.max(block.iter().map(|s| s.abs()).fold(0.0f32, f32::max));
@@ -9513,6 +9583,7 @@ mod tests {
         let mut block = vec![0.0f32; 2048];
         let mut late_peak = 0.0f32;
         for i in 0..50 {
+            eng.advance(1024);
             block.fill(0.0);
             eng.render_audio(&mut block);
             if i >= 30 {
@@ -9540,6 +9611,7 @@ mod tests {
         let mut capture = |eng: &mut Engine| -> f32 {
             let mut peak = 0.0f32;
             for _ in 0..50 {
+                eng.advance(1024);
                 block.fill(0.0);
                 eng.render_audio(&mut block);
                 peak = peak.max(block.iter().map(|s| s.abs()).fold(0.0f32, f32::max));
@@ -9614,12 +9686,20 @@ mod tests {
         .unwrap();
         // Rendre au-delà du note_off du pattern (tick 120).
         let mut block = vec![0.0f32; 2048];
-        for _ in 0..100 {
+        let mut pattern_was_playing = false;
+        for n in 0..100 {
+            eng.advance(1024);
             block.fill(0.0);
             eng.render_audio(&mut block);
+            if n < 4 {
+                pattern_was_playing |= eng.rack.acid[0]
+                    .as_ref()
+                    .is_some_and(|s| s.synth.is_active());
+            }
         }
+        assert!(pattern_was_playing, "le pattern doit sonner pendant REC");
         assert!(
-            eng.rack.acid[0]
+            eng.monitor_rack.acid[0]
                 .as_ref()
                 .is_some_and(|s| s.synth.is_active()),
             "la note live doit rester active malgré la lecture du pattern pendant REC"

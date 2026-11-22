@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.26.1" date="2026-11-22">
+      <description>
+        <p>Release 0.26.1: when no pattern is selected in the GUI, no warning is shown — simply no selection colour on the pattern.</p>
+      </description>
+    </release>
     <release version="0.26.0" date="2026-11-22">
       <description>
         <p>Release 0.26.0: live monitoring during REC is cut at the quantized end of the recorded note; pattern chaining works with two pads held together or pressed within 800 ms; the GUI no longer shows pattern 0 as active when no pattern is assigned.</p>

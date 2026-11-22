@@ -2,6 +2,14 @@
 
 All notable changes.
 
+## [0.26.1] - 2026-11-22
+
+### Fixed
+- **GUI** : quand aucun pattern n'est actif, plus d'avertissement — simplement aucune couleur de sélection sur le pattern.
+
+### Validation
+- 303 tests, `clippy -D warnings`, vérification sans sampler au vert.
+
 ## [0.26.0] - 2026-11-22
 
 ### Fixed

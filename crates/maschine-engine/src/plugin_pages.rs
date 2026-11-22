@@ -305,6 +305,18 @@ pub fn turn<P>(
     true
 }
 
+/// Valeur brute actuelle du paramètre affiché au-dessus du knob (`None` si
+/// la page/knob ne pointe pas sur un paramètre du Sound) — sert à enregistrer
+/// les automations pendant REC.
+#[must_use]
+pub fn value<P>(pages: &[Page<P>], page: usize, knob: usize, p: &P) -> Option<f32> {
+    let param = pages[page.min(pages.len() - 1)]
+        .params
+        .get(knob)
+        .and_then(Option::as_ref)?;
+    Some((param.get)(p))
+}
+
 /// Le knob `knob` de la page avance-t-il par crans ?
 #[must_use]
 pub fn is_stepped<P>(pages: &[Page<P>], page: usize, knob: usize) -> bool {

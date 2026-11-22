@@ -1001,6 +1001,9 @@ pub struct Pattern {
     /// Swing 0..1 override Group
     #[serde(default)]
     pub swing: Option<f32>,
+    /// Automations de Sound (knobs) — enregistrées pendant la lecture/REC.
+    #[serde(default)]
+    pub automations: Vec<SoundAutomation>,
 }
 
 impl Pattern {
@@ -1013,8 +1016,21 @@ impl Pattern {
             length,
             events: Vec::new(),
             swing: None,
+            automations: Vec::new(),
         }
     }
+}
+
+/// Automation d'un Sound (instrument) — lue pendant la lecture d'un Pattern.
+/// Points triés par tick ; la dernière valeur ≤ tick courant s'applique.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SoundAutomation {
+    /// Sound ciblé (`None` = tous les Sounds du Pattern).
+    pub sound: Option<u8>,
+    /// Identifiant du paramètre : table `plugin_pages` du Sound (knob 0..7).
+    pub knob: u8,
+    /// Points (tick, valeur brute du paramètre).
+    pub points: Vec<(u32, f32)>,
 }
 
 /// Scene — un pattern par Group max.

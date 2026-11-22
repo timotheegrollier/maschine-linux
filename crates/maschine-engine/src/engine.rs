@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use crate::project::{BarsBeatsTicks, Pattern, PatternEvent, Project, Scene, Section, Zone};
+use crate::project::{
+    BarsBeatsTicks, Pattern, PatternEvent, Project, Scene, Section, SoundAutomation, Zone,
+};
 use crate::sampler::Sampler;
 use crate::sequencer::{Grid, Sequencer};
 use crate::transport::{Transport, TransportState};
@@ -1212,6 +1214,12 @@ pub struct Engine {
     /// écrites dans le pattern par `commit_launches` (jamais dans le callback :
     /// écrire le projet le recopie en entier).
     pending_notes: [Option<PendingNote>; 64],
+    /// Ticks des notes enregistrées pendant REC : par pad, le tick de
+    /// l'événement enregistré (relâchement = fin de la note tenue).
+    rec_pad_press: [Option<u32>; 16],
+    /// Notes clavier tenues enregistrées pendant REC : par note, le
+    /// (groupe, Sound, tick de l'événement enregistré).
+    rec_key_press: [Option<(u8, u8, u32)>; 128],
     /// KEYBOARD / CHORDS : vélocité des notes MIDI tenues (0 = relâchée).
     arp_held: [u8; 128],
     /// Dernière note jouée par l'arpégiateur (relâchée au pas suivant).
@@ -1568,6 +1576,8 @@ impl Engine {
             pending_scene: None,
             count_in: None,
             pending_notes: [None; 64],
+            rec_pad_press: [None; 16],
+            rec_key_press: [None; 128],
             arp_held: [0; 128],
             arp_last: None,
             arp_mode: 0,
@@ -2601,12 +2611,15 @@ impl Engine {
                         self.note_repeat_samples = 0;
                     }
                     // si Recording, ajoute event au pattern actif
-                    if self.transport.state == TransportState::Recording {
-                        self.record_pad_event(pad, velocity);
+                    if self.transport.state == TransportState::Recording && (pad as usize) < 16 {
+                        self.rec_pad_press[pad as usize] = self.record_pad_event(pad, velocity);
                     }
                 } else {
                     if (pad as usize) < 16 {
                         self.note_repeat_held_pads[pad as usize] = None;
+                        if let Some(q) = self.rec_pad_press[pad as usize].take() {
+                            self.set_recorded_length(self.group_focus, pad, q, self.transport.tick);
+                        }
                     }
                     self.release_sound_voice(pad, 36 + pad);
                 }
@@ -2623,9 +2636,11 @@ impl Engine {
                     }
                     if rec {
                         self.transport.record();
+                        self.clear_rec_press_marks();
                     }
                 }
                 if stop {
+                    self.clear_rec_press_marks();
                     self.count_in = None;
                     // STOP déjà à l'arrêt : retour au début (comme la MK3).
                     if !self.transport.is_playing() {
@@ -3653,9 +3668,16 @@ impl Engine {
                     self.trigger_sound_voice(self.active_sound, note, velocity);
                     if self.transport.state == TransportState::Recording {
                         // Keyboard/Chords : enregistre la hauteur jouée (accords = plusieurs événements).
-                        self.record_note_event(self.active_sound, note, velocity);
+                        let q = self.record_note_event(self.active_sound, note, velocity);
+                        if let Some(q) = q {
+                            self.rec_key_press[note as usize] =
+                                Some((self.group_focus, self.active_sound, q));
+                        }
                     }
                 } else {
+                    if let Some((g, s, q)) = self.rec_key_press[note as usize].take() {
+                        self.set_recorded_length(g, s, q, self.transport.tick);
+                    }
                     self.release_sound_voice(self.active_sound, note);
                 }
             }
@@ -5131,7 +5153,7 @@ impl Engine {
             }
         }
         for n in notes.into_iter().flatten() {
-            self.record_note_at(n.group, n.pad, n.pitch, n.velocity, n.tick);
+            let _ = self.record_note_at(n.group, n.pad, n.pitch, n.velocity, n.tick);
         }
         self.revision = self.revision.wrapping_add(1);
     }
@@ -5365,21 +5387,29 @@ impl Engine {
         }
     }
 
-    fn record_pad_event(&mut self, pad: u8, velocity: u8) {
-        self.record_note_event(pad, 36 + pad, velocity);
+    fn record_pad_event(&mut self, pad: u8, velocity: u8) -> Option<u32> {
+        self.record_note_event(pad, 36 + pad, velocity)
     }
 
-    fn record_note_event(&mut self, pad: u8, pitch: u8, velocity: u8) {
-        self.record_note_at(self.group_focus, pad, pitch, velocity, self.transport.tick);
+    fn record_note_event(&mut self, pad: u8, pitch: u8, velocity: u8) -> Option<u32> {
+        self.record_note_at(self.group_focus, pad, pitch, velocity, self.transport.tick)
     }
 
-    fn record_note_at(&mut self, group: u8, pad: u8, pitch: u8, velocity: u8, tick: u64) {
+    fn record_note_at(
+        &mut self,
+        group: u8,
+        pad: u8,
+        pitch: u8,
+        velocity: u8,
+        tick: u64,
+    ) -> Option<u32> {
         let focus = group as usize;
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
         // Comme le logiciel officiel : enregistrer sur un groupe sans pattern
         // dans la scène en crée un et l'y place (sinon les notes se perdaient).
         let pat_idx = ensure_group_pattern(proj, &mut self.active_scene, focus);
+        let mut recorded = None;
         if let Some(group) = proj.groups.get_mut(focus) {
             if let Some(idx) = pat_idx {
                 if let Some(pat) = group.patterns.get_mut(idx) {
@@ -5397,8 +5427,82 @@ impl Engine {
                         pitch,
                     });
                     pat.events.sort_by_key(|e| e.tick);
+                    recorded = Some(q_tick);
                 }
             }
+        }
+        recorded
+    }
+
+    /// Met à jour la longueur d'une note enregistrée pendant REC : celle de la
+    /// note tenue (relâchement du pad / de la touche), comme en mode keyboard.
+    fn set_recorded_length(&mut self, group: u8, pad: u8, q_tick: u32, release_tick: u64) {
+        if self.transport.state != TransportState::Recording {
+            return;
+        }
+        let len = (release_tick.saturating_sub(u64::from(q_tick)) as u32).clamp(30, 3840 * 8);
+        let focus = group as usize;
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
+        if let Some(pat) = proj
+            .active_pattern_index(focus, self.active_scene)
+            .and_then(|i| proj.groups.get_mut(focus)?.patterns.get_mut(i))
+        {
+            if let Some(e) = pat
+                .events
+                .iter_mut()
+                .rev()
+                .find(|e| e.pad == pad && e.tick == q_tick)
+            {
+                e.length_ticks = len;
+            }
+        }
+    }
+
+    /// Efface les marques de notes tenues en cours d'enregistrement (REC).
+    fn clear_rec_press_marks(&mut self) {
+        self.rec_pad_press = [None; 16];
+        self.rec_key_press = [None; 128];
+    }
+
+    /// Enregistre un point d'automation pendant REC (knob du Sound actif) dans
+    /// le Pattern actif : crée ou complète l'automation du (Sound, knob).
+    fn record_sound_automation(&mut self, group: u8, sound: u8, knob: u8, value: f32) {
+        if self.transport.state != TransportState::Recording {
+            return;
+        }
+        let focus = group as usize;
+        let tick = self.transport.tick.min(u32::MAX as u64) as u32;
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
+        let Some(idx) = proj.active_pattern_index(focus, self.active_scene) else {
+            return;
+        };
+        let Some(pat) = proj
+            .groups
+            .get_mut(focus)
+            .and_then(|g| g.patterns.get_mut(idx))
+        else {
+            return;
+        };
+        if let Some(auto) = pat
+            .automations
+            .iter_mut()
+            .find(|a| a.sound == Some(sound) && a.knob == knob)
+        {
+            if let Some(last) = auto.points.last_mut() {
+                if last.0 == tick {
+                    last.1 = value;
+                    return;
+                }
+            }
+            auto.points.push((tick, value));
+        } else {
+            pat.automations.push(SoundAutomation {
+                sound: Some(sound),
+                knob,
+                points: vec![(tick, value)],
+            });
         }
     }
 
@@ -6294,18 +6398,42 @@ impl Engine {
             Instrument::Kick => {
                 let mut p = self.focus_sound_kick_params().unwrap_or_default();
                 if pp::turn(&pp::KICK_PAGES, page, knob, &mut p, delta, steps, fine) {
+                    if let Some(v) = pp::value(&pp::KICK_PAGES, page, knob, &p) {
+                        self.record_sound_automation(
+                            self.group_focus,
+                            self.active_sound,
+                            knob as u8,
+                            v,
+                        );
+                    }
                     self.handle_event(EngineEvent::KickSetParams(p))?;
                 }
             }
             Instrument::Wavetable => {
                 let mut p = self.focus_sound_wavetable_params().unwrap_or_default();
                 if pp::turn(&pp::WAVETABLE_PAGES, page, knob, &mut p, delta, steps, fine) {
+                    if let Some(v) = pp::value(&pp::WAVETABLE_PAGES, page, knob, &p) {
+                        self.record_sound_automation(
+                            self.group_focus,
+                            self.active_sound,
+                            knob as u8,
+                            v,
+                        );
+                    }
                     self.handle_event(EngineEvent::WavetableSetParams(p))?;
                 }
             }
             Instrument::Acid => {
                 let mut p = self.acid_synth.params.clone();
                 if pp::turn(&pp::ACID_PAGES, page, knob, &mut p, delta, steps, fine) {
+                    if let Some(v) = pp::value(&pp::ACID_PAGES, page, knob, &p) {
+                        self.record_sound_automation(
+                            self.group_focus,
+                            self.active_sound,
+                            knob as u8,
+                            v,
+                        );
+                    }
                     self.handle_event(EngineEvent::AcidSetParams(p))?;
                 }
             }
@@ -6323,6 +6451,14 @@ impl Engine {
                     steps,
                     fine,
                 ) {
+                    if let Some(v) = pp::value(&pp::SAMPLER_PAGES, page, knob, &after) {
+                        self.record_sound_automation(
+                            self.group_focus,
+                            self.active_sound,
+                            knob as u8,
+                            v,
+                        );
+                    }
                     self.apply_sound_edit(&before, &after)?;
                 }
             }
@@ -9054,6 +9190,136 @@ mod tests {
     }
 
     #[test]
+    fn rec_button_from_transport_records_pad_notes() {
+        let mut eng = Engine::new_demo(48000);
+        eng.clear_bar(0);
+        eng.clear_bar(1);
+        // Appui sur REC (bouton MK3) : play + rec.
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: true,
+            stop: false,
+        })
+        .unwrap();
+        assert_eq!(eng.transport.state, TransportState::Recording);
+        eng.handle_event(EngineEvent::Pad {
+            pad: 5,
+            velocity: 90,
+            pressed: true,
+        })
+        .unwrap();
+        let guard = eng.project_handle();
+        let proj = guard.read();
+        let ev = proj.groups[0].patterns[0]
+            .events
+            .iter()
+            .find(|e| e.pad == 5)
+            .expect("la note enregistrée doit exister");
+        assert_eq!(ev.velocity, 90);
+        assert_eq!(ev.pitch, 41);
+    }
+
+    #[test]
+    fn rec_pad_notes_keep_the_held_length() {
+        let mut eng = Engine::new_demo(48000);
+        eng.clear_bar(0);
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: true,
+            stop: false,
+        })
+        .unwrap();
+        assert_eq!(eng.transport.state, TransportState::Recording);
+        // Appui long sur le pad 0, 2 temps de tenue.
+        eng.handle_event(EngineEvent::Pad {
+            pad: 0,
+            velocity: 90,
+            pressed: true,
+        })
+        .unwrap();
+        // 2 temps : 48000 échantillons à 120 bpm (960 ticks/temps).
+        let t0 = eng.transport.tick;
+        eng.advance(48_000);
+        let hold = eng.transport.tick - t0;
+        eng.handle_event(EngineEvent::Pad {
+            pad: 0,
+            velocity: 0,
+            pressed: false,
+        })
+        .unwrap();
+        let guard = eng.project_handle();
+        let proj = guard.read();
+        let ev = proj.groups[0].patterns[0]
+            .events
+            .iter()
+            .find(|e| e.pad == 0)
+            .expect("la note enregistrée doit exister");
+        assert_eq!(ev.velocity, 90);
+        // La longueur suit la note tenue, pas le 120 par défaut.
+        assert_eq!(ev.length_ticks, hold as u32);
+    }
+
+    #[test]
+    fn rec_keyboard_notes_keep_the_held_length() {
+        let mut eng = Engine::new_demo(48000);
+        eng.clear_bar(0);
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: true,
+            stop: false,
+        })
+        .unwrap();
+        eng.handle_event(EngineEvent::KeyboardTrigger {
+            note: 60,
+            velocity: 80,
+            pressed: true,
+        })
+        .unwrap();
+        let t0 = eng.transport.tick;
+        eng.advance(48_000);
+        let hold = eng.transport.tick - t0;
+        eng.handle_event(EngineEvent::KeyboardTrigger {
+            note: 60,
+            velocity: 0,
+            pressed: false,
+        })
+        .unwrap();
+        let guard = eng.project_handle();
+        let proj = guard.read();
+        let ev = proj.groups[0].patterns[0]
+            .events
+            .iter()
+            .find(|e| e.pitch == 60 && e.velocity == 80)
+            .expect("la note enregistrée doit exister");
+        assert_eq!(ev.length_ticks, hold as u32);
+    }
+
+    #[test]
+    fn rec_plugin_knob_turns_record_automations() {
+        let mut eng = Engine::new_demo(48000);
+        eng.load_plugin_to_sound(0, 0, 1).unwrap(); // TB-303 sur le pad 0
+        eng.handle_event(EngineEvent::SetLeftTab(4)).unwrap(); // Onglet PLUGIN
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: true,
+            stop: false,
+        })
+        .unwrap();
+        assert_eq!(eng.transport.state, TransportState::Recording);
+        eng.handle_event(EngineEvent::PluginKnob { knob: 2, delta: 64 })
+            .unwrap();
+        let guard = eng.project_handle();
+        let proj = guard.read();
+        let pat = &proj.groups[0].patterns[0];
+        assert!(
+            pat.automations
+                .iter()
+                .any(|a| a.sound == Some(0) && a.knob == 2),
+            "l'automation du knob doit être enregistrée pendant REC"
+        );
+    }
+
+    #[test]
     fn toggle_step_is_silent_and_single_press() {
         let mut eng = Engine::new_demo(48000);
         assert_eq!(eng.sampler.num_voices(), 0);
@@ -11229,7 +11495,7 @@ mod tests {
             proj.scenes[0].patterns[g as usize] = None;
         }
         eng.handle_event(EngineEvent::GroupFocus(g)).unwrap();
-        eng.record_note_event(2, 38, 100);
+        let _ = eng.record_note_event(2, 38, 100);
         let proj = eng.project.read().clone();
         let pi = proj
             .active_pattern_index(g as usize, eng.active_scene)

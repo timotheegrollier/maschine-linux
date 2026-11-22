@@ -175,6 +175,25 @@ The MK3 manual describes SAMPLING as a Sample Editor tied to the focused Sound: 
 
 Since 0.14.0 both modes follow that reference; see the two sections below. Not implemented: destructive editing beyond REVERSE / NORMALIZE (no cut, paste or fades on the audio itself), several zones per Sound from the controller (ZONE edits the zones of the focused Sound together), slicing to a pattern, and multi-note selection in EVENTS (one note at a time).
 
+## Groups, launches and LEDs
+
+- **All groups play at once**: each Sound with a TB-303, Kick Synth or Nexus has
+  its own synthesizer instance, so groups never cut or re-tune each other.
+- **MUTE / SOLO**: per group (MK3: `MUTE` / `SOLO` + group button; GUI: `M` /
+  `S` in the group list or the mixer) and per Sound (`MUTE` + pad). SOLO keeps
+  only the soloed groups audible, for patterns, live playing and synths.
+- **Launching**: while the transport runs, a scene (`SCENE` + pad) or a pattern
+  (`PATTERN` + pad, GUI Ideas grid) starts at the beginning of the next bar;
+  its pad blinks until then. Stopped, changes are immediate.
+- **Transport**: `PLAY` toggles playback, `STOP` stops (again: back to the
+  start), `REC` toggles recording (`SHIFT + REC`: one-bar count-in),
+  `RESTART` (`SHIFT`: loop), `TAP` (`SHIFT`: metronome).
+- **Pad LEDs**: empty pad off, Sound present dim, selected Sound normal, hit or
+  sequencer note bright (velocity ≥ 64 = brightest), muted Sound off (dim while
+  `MUTE` is held). PATTERN mode: patterns in the group colour, playing one
+  bright, queued one blinking. SCENE mode: scenes yellow, active bright, queued
+  blinking. Group buttons: group colour, focused bright, muted off.
+
 ## SAMPLING: sample editor (RECORD, EDIT, SLICE, ZONE)
 
 `SAMPLING` (left tab 2) edits the sample of the focused Sound. Display buttons

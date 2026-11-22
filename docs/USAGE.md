@@ -163,7 +163,7 @@ The layout follows the Maschine software and the controller on the desk (see [de
 The native GUI displays in real time:
 
 - **Header**: rail toggle, view picker (when the rail is hidden), Play/Stop, Rec, Restart, position and BPM in large type, Swing, Loop, Metronome, Song, latched workflow indicators, Master, audio settings, updates and panel toggles lit like MK3 buttons.
-- **Rail**: the eight views, then the eight groups with their colour, letter and name (click to focus; `M` marks a muted group); the rail hides itself below 1400 px and returns when the window grows.
+- **Rail**: the eight views, then the eight groups with their colour, letter and name — click to focus, `M` / `S` buttons mute or solo each group; the rail hides itself below 1400 px and returns when the window grows.
 - **MK3 deck**: display buttons (click the label strip at the top of each screen), both screens, 8 endless knobs aligned under their on-screen slots (drag up/down; same mapping and speed as the physical knobs), `◀ PAGE` / `PAGE ▶`, and in PLUG-IN mode `◀ SLOT` / `SLOT ▶` (the 4D encoder of the controller); groups A–H and the 4×4 pads painted with the hardware LED colours. `ÉCRANS` and `PADS` hide either half.
 - **Multi-bar step sequencer (16 tracks)**:
   - Active bar selector (1, 2, 3, 4...) and `◀` / `▶` navigation arrows.

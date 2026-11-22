@@ -38,7 +38,7 @@ usable from the GUI without the controller. User-facing text is French.
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-cargo check -p maschine-engine --no-default-features --locked   # CI checks this too
+RUSTFLAGS="-D warnings" cargo check -p maschine-engine --no-default-features --locked   # CI runs it with -D warnings
 ```
 
 - System packages: ALSA, udev and JACK development headers (see CONTRIBUTING.md).
@@ -104,6 +104,16 @@ cargo check -p maschine-engine --no-default-features --locked   # CI checks this
   (`HELD_SILENCE_FALLBACK`); releasing a pad only releases the synth it plays.
 - Display bulk windows need an even width (pixel pairs).
 - The 808 kit sounds are synthesized (no file): they cannot be sliced.
+- Synthesizers live in `Engine::rack` (one instance per Sound, synced from the
+  project after every event). `Engine::acid_synth` / `kick_synth` /
+  `wavetable_synth` are only the *editing* copies shown on the PLUG-IN pages;
+  never render or trigger them.
+- `SoundId` packs the group in the high byte: decode with `>> 8` / `& 0xFF`.
+- Scene / pattern changes during playback are queued (`pending_*`), applied on
+  the next bar in `advance` and written to the project by `commit_launches`
+  (never from the audio thread).
+- The CI sampler-free check runs with `-D warnings`: items only used under
+  `#[cfg(feature = "sampler")]` need the same cfg.
 
 ## Conventions
 

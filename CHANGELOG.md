@@ -2,6 +2,25 @@
 
 All notable changes.
 
+## [0.15.0] - 2026-11-22
+
+### Fixed
+- **Tous les groupes jouent ensemble, synthés compris** : le TB-303, le Kick Synth et le Nexus n'existaient qu'en un exemplaire partagé par tout le projet — deux groupes avec un synthé se coupaient, prenaient les réglages l'un de l'autre et sortaient sur un seul groupe. Chaque Sound a désormais sa propre instance (rendu suspendu quand elle se tait), mixée avec le volume, le pan, les mutes et les effets de son groupe.
+- **VU-mètres des groupes B à H** : seuls ceux du groupe A bougeaient (identifiant de Sound mal décodé) ; tous les groupes et tous les pads ont maintenant leurs niveaux, dans la GUI comme sur les écrans.
+- **Notes perdues à l'enregistrement** : jouer en REC (ou poser des pas, éditer des notes) sur un groupe qui n'a pas de pattern dans la scène ne faisait rien ; un pattern est créé et placé dans la scène, comme sur le logiciel officiel.
+- **SOLO** ne coupait rien à la lecture : il s'applique maintenant aux patterns, au jeu en direct et aux synthés, comme MUTE.
+
+### Added
+- **Lancement quantifié** : en lecture, choisir une scène ou un pattern le fait démarrer au début de la mesure suivante (pad clignotant en attente, message à l'écran) ; à l'arrêt, le changement est immédiat.
+- **LEDs des pads comme sur la MK3** : pad vide éteint, Sound présent atténué, Sound sélectionné normal, frappe ou note du séquenceur vive (selon la vélocité), Sound muet éteint (atténué en mode MUTE) ; patterns dans la couleur du groupe, scène active vive, éléments en attente clignotants ; boutons de groupe dans leur couleur (focalisé vif, muet éteint).
+- **GUI** : boutons **M** (mute) et **S** (solo) sur chaque groupe du rail.
+- **Démarrage** : la MK3 affiche l'étape de chargement avec une barre de progression dès le lancement ; la fenêtre apparaît en fondu.
+- **Transport** : `STOP` à l'arrêt revient au début ; `SHIFT + REC` active le pré-compte d'une mesure.
+
+### Validation
+- `cargo fmt`, `cargo clippy -D warnings`, `cargo test --workspace` (262 tests) et `RUSTFLAGS=-D warnings cargo check -p maschine-engine --no-default-features` au vert.
+- Nouveaux tests : groupes simultanés avec leurs synthés et leurs VU (`every_group_plays_at_once_with_its_own_synths_and_meters`), lancement à la mesure suivante, SOLO / MUTE, enregistrement sur un groupe sans pattern (`launches_wait_for_the_next_bar_and_solo_mute_and_record_work_per_group`), intensités des LEDs des pads.
+
 ## [0.14.0] - 2026-11-22
 
 ### Added

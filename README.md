@@ -14,7 +14,7 @@ Maschine Linux is an independent project. It does not include Native
 Instruments code or proprietary assets; it reproduces the documented workflow
 and hardware behavior through a clean-room implementation.
 
-## Current state (0.14.0)
+## Current state (0.15.0)
 
 Cargo workspace with six crates:
 
@@ -35,6 +35,14 @@ Audio uses a 256-frame buffer (64-frame period, about 1.3 ms) at 48 kHz, a
 inside each block, and a drum kit regenerated at the device sample rate.
 Instrumentation: `--debug-latency` (HID→Engine, real buffer size, misses,
 errors) and `--stress` (deliberate engine-lock contention).
+
+### Groups, launches and LEDs in 0.15.0
+
+- Every group plays at once, synthesizers included (one TB-303 / Kick / Nexus
+  instance per Sound), with working meters, MUTE and SOLO everywhere.
+- Scenes and patterns chosen during playback start on the next bar.
+- Pads and group buttons light like on the MK3 (dim, normal, bright, blinking
+  when queued); the MK3 shows startup progress.
 
 ### Sample editor and EVENTS in 0.14.0
 

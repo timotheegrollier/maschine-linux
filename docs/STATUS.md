@@ -4,7 +4,7 @@ Living document: what works, what is partial, what is missing, and what to
 check on real hardware. Update it with every release (see the release steps in
 `AGENTS.md`). Behaviour details live in `workflow.md`; this file is the map.
 
-## Current version: 0.14.0
+## Current version: 0.15.0
 
 ### Done (with tests)
 
@@ -16,6 +16,8 @@ check on real hardware. Update it with every release (see the release steps in
 | Sound quality | Transparent master limiter, Hermite sampler interpolation, PolyBLEP oscillators, guitar amp (oversampler fixed, compensated gain, 24 dB/oct cabinet) | `limiter` tests, `maschine-dsp` amp tests |
 | SAMPLING | Sample editor: RECORD (MK3 input → WAV → pad), EDIT (play range, tune, gain, ADSR), SLICE (grid / transients → pads), ZONE (root, key and velocity ranges, fine tune, pan, gain) | `sample_editor_pages_edit_slice_zone_and_record`, `play_range_*`, `onsets_*` |
 | EVENTS | Note editing: position, note, velocity, length; select, delete, duplicate, quantize, nudge; one Sound or all | `events_mode_edits_the_selected_note_with_knobs_and_buttons` |
+| Groups together | One synth instance per Sound, meters for all groups, SOLO / MUTE in playback and live, queued scene / pattern launch on the next bar | `every_group_plays_at_once_*`, `launches_wait_for_the_next_bar_*` |
+| LEDs | Pads: off / dim / normal (selected) / bright (hit, sequencer); patterns in group colour; queued items blink; group buttons in group colours | `pad_hit_flashes_white_then_falls_back_to_dim` |
 | Held notes | Firm holds without HID reports, note-off only for the owning synth, menus keep held pads | `replay_firm_hold_without_reports_keeps_the_note` |
 | Standby | Standby screen on quit, on panic, and on plug-in (udev + user unit; `standby --install` for AppImage / tarball) | manual (needs hardware) |
 | GUI | Single header, colour-coded group rail, MK3 deck at the bottom (screens, buttons, knobs, pads, PAGE / SLOT / EVENTS), plugin chain strip, sample editor strip, nothing clipped from 420×340 up, deck folds below 620 px | Xvfb captures at 1920×1080 → 800×600 |
@@ -29,9 +31,16 @@ check on real hardware. Update it with every release (see the release steps in
 - **EVENTS**: one note at a time (no multi-selection, no velocity ramps).
 - **Zones**: ZONE edits all zones of the Sound together; no multi-zone editing
   from the controller.
-- **Pad LEDs**: a hit lights the pad in its Sound colour at full brightness.
-  The official manual does not spell this out ("Playing on the controller"),
-  so it is unverified on hardware.
+- **LED levels**: the MK3 palette is used as dim / normal / bright per hue
+  (index `4k+1..4k+3`); the exact official levels are not documented by NI and
+  remain to be checked on hardware. Screens show queued launches only through
+  the status message (LEDs blink).
+- **Keyboard / Chords modes** on the MK3 were reported as incomplete compared
+  with the official modes (scale, chord sets, octave controls) — not reworked
+  yet.
+- **Long press on pads**: the engine sustains synth notes while a pad is held
+  (tests); if notes still stop early on hardware, capture `hid-dump` with a held
+  pad — the tracker releases a pad when it disappears from the 0x02 report.
 - **Secondary screens** (mixer, browser, step) use the new typography, palette,
   rounded shapes and knob slots, but keep their older layouts.
 - **Standby before any launch** needs the packages (or `standby --install`) and
@@ -64,6 +73,10 @@ check on real hardware. Update it with every release (see the release steps in
 
 ## History (recent)
 
+- **0.15.0** — all groups play together (synth rack), meters B–H, recording
+  into groups without a pattern, SOLO, queued launches, MK3-like pad and group
+  LEDs, GUI mute / solo per group, startup progress on the MK3, STOP twice,
+  SHIFT + REC count-in.
 - **0.14.0** — sample editor (RECORD / EDIT / SLICE / ZONE), EVENTS note
   editing, mixer knob slots, cleaner browser and step screens, GUI EVENTS
   button and sample editor strip, `standby --install`, agent docs (`AGENTS.md`,

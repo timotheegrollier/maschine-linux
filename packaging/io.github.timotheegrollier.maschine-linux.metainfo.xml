@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.15.0" date="2026-11-22">
+      <description>
+        <p>Release 0.15.0 lets every group play at once with its own synthesizer instances, fixes the meters of groups B to H, recording into groups without a pattern and SOLO, launches scenes and patterns on the next bar, lights pads and group buttons with the MK3 intensities, adds mute and solo buttons to the GUI group list, and shows startup progress on the MK3.</p>
+      </description>
+    </release>
     <release version="0.14.0" date="2026-11-22">
       <description>
         <p>Release 0.14.0 adds the MK3 sample editor (record from the MK3 input, play range, slicing to pads, zone mapping) and EVENTS note editing on both screens, adds volume knob slots to the pad mixer, and documents the repository for new contributors.</p>

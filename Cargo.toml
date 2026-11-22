@@ -32,7 +32,6 @@ log = "0.4"
 env_logger = "0.11"
 crossbeam-channel = "0.5"
 parking_lot = "0.12"
-tokio = { version = "1.40", features = ["rt", "sync", "time", "rt-multi-thread"] }
 
 [profile.dev]
 opt-level = 0

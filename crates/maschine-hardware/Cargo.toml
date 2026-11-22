@@ -10,11 +10,9 @@ categories.workspace = true
 
 [dependencies]
 maschine-proto = { workspace = true }
-anyhow = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 crossbeam-channel = { workspace = true }
-parking_lot = { workspace = true }
 serde = { workspace = true }
 libc = "0.2"
 

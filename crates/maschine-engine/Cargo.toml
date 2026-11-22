@@ -10,12 +10,10 @@ categories.workspace = true
 
 [dependencies]
 maschine-proto = { workspace = true }
-anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
-crossbeam-channel = { workspace = true }
 parking_lot = { workspace = true }
 # Texte lissé des écrans MK3 : mêmes crates et polices que la GUI egui.
 ab_glyph = "0.2"
@@ -25,12 +23,11 @@ tiny-skia = { version = "0.11", default-features = false, features = ["std", "si
 
 # sampler / audio utils
 hound = { version = "3.5", optional = true }
-rubato = { version = "0.15", optional = true }
 cpal = { version = "0.15", optional = true }
 
 [features]
 default = ["sampler"]
-sampler = ["dep:hound", "dep:rubato"]
+sampler = ["dep:hound"]
 audio = ["dep:cpal", "sampler"]
 
 [dev-dependencies]

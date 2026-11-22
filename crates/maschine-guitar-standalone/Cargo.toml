@@ -16,7 +16,6 @@ log = { workspace = true }
 env_logger = { workspace = true }
 crossbeam-channel = { workspace = true }
 parking_lot = { workspace = true }
-tokio = { workspace = true }
 ctrlc = "3.4"
 # Audio backends
 jack = { version = "0.12", optional = true }

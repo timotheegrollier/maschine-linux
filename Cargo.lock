@@ -2377,7 +2377,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
- "tokio",
  "ureq",
 ]
 
@@ -2385,14 +2384,11 @@ dependencies = [
 name = "maschine-dsp"
 version = "0.15.0"
 dependencies = [
- "anyhow",
  "atomic_float",
  "criterion",
  "hound",
- "parking_lot",
  "realfft",
  "rustfft",
- "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -2400,16 +2396,13 @@ name = "maschine-engine"
 version = "0.15.0"
 dependencies = [
  "ab_glyph",
- "anyhow",
  "cpal",
- "crossbeam-channel",
  "env_logger",
  "epaint_default_fonts",
  "hound",
  "log",
  "maschine-proto",
  "parking_lot",
- "rubato",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -2436,7 +2429,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
- "tokio",
 ]
 
 [[package]]
@@ -2444,7 +2436,6 @@ name = "maschine-hardware"
 version = "0.15.0"
 dependencies = [
  "alsa",
- "anyhow",
  "crossbeam-channel",
  "env_logger",
  "hidapi",
@@ -2452,7 +2443,6 @@ dependencies = [
  "log",
  "maschine-proto",
  "midir",
- "parking_lot",
  "rusb",
  "serde",
  "thiserror 2.0.20",
@@ -3482,18 +3472,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rubato"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5d18b486e7d29a408ef3f825bc1327d8f87af091c987ca2f5b734625940e234"
-dependencies = [
- "num-complex",
- "num-integer",
- "num-traits",
- "realfft",
-]
-
-[[package]]
 name = "rusb"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4085,15 +4063,6 @@ checksum = "be4d6b5f19ff7664e8c98d03e2139cb510db9b0a60b55f8e8709b689d939b6bc"
 dependencies = [
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "tokio"
-version = "1.53.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
-dependencies = [
- "pin-project-lite",
 ]
 
 [[package]]

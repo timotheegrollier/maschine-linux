@@ -94,7 +94,10 @@ impl AudioOutput {
         guitar: Arc<GuitarRuntime>,
     ) -> anyhow::Result<Self> {
         auto_configure_djm_routing();
-        auto_configure_mk3_input();
+        let mk3_present = mk3_audio_present();
+        if mk3_present {
+            auto_configure_mk3_input();
+        }
         let host = cpal::default_host();
         log::info!("cpal host: {:?}", host.id());
 
@@ -224,8 +227,11 @@ impl AudioOutput {
         // Entrée guitare : on ouvre le port de capture de la MK3 (profil
         // pro-audio) en fallback sur le device par défaut. Un échec ici ne
         // doit pas empêcher le reste de l'application de fonctionner.
-        let input_stream =
-            build_guitar_input_stream(&host, actual_rate, cfg.buffer_size, guitar.clone());
+        let input_stream = if mk3_present || guitar.control.enabled.load(Ordering::Relaxed) {
+            build_guitar_input_stream(&host, actual_rate, cfg.buffer_size, guitar.clone())
+        } else {
+            None
+        };
         if let Some(stream) = input_stream.as_ref() {
             if let Err(e) = stream.play() {
                 log::warn!("Impossible de démarrer l'entrée guitare: {e}");
@@ -236,7 +242,7 @@ impl AudioOutput {
         }
 
         let router_stop = Arc::new(AtomicBool::new(false));
-        if input_stream.is_some() {
+        if mk3_present && input_stream.is_some() {
             let stop_flag = router_stop.clone();
             let guitar_rt = guitar.clone();
             let bin_name = std::env::current_exe()
@@ -1035,6 +1041,18 @@ pub fn play_test_tone(
 
 /// Détecte et configure automatiquement les tables de mixage Pioneer DJM connectées (ex: DJM-250MK2).
 /// Assure que Output 3 n'est pas en conflit sur 'Aux', préservant le routage géré par le système.
+/// Vrai si une Maschine MK3 est réellement visible comme périphérique audio
+/// ALSA. Sur une machine sans contrôleur (ex. Nobara en GUI seule), aucune
+/// automatisations PipeWire / wp-link ne doit toucher aux sources audio.
+pub fn mk3_audio_present() -> bool {
+    std::fs::read_to_string("/proc/asound/cards")
+        .map(|cards| {
+            let lower = cards.to_lowercase();
+            lower.contains("maschine") || lower.contains("mk3")
+        })
+        .unwrap_or(false)
+}
+
 pub fn auto_configure_djm_routing() {
     let Ok(cards) = std::fs::read_to_string("/proc/asound/cards") else {
         return;
@@ -1113,6 +1131,11 @@ pub fn auto_configure_mk3_input() {
 /// Lie explicitement les ports de capture de maschine-linux aux ports physiques Line In de la Maschine MK3.
 /// Retourne true si les ports MK3 sont actuellement liés à l'application.
 pub fn sync_pipewire_mk3_links(app_bin_name: &str) -> bool {
+    // Sans MK3 physique, ne jamais interroger ni modifier PipeWire : c'est
+    // ce qui faisait changer de source audio sur les machines sans contrôleur.
+    if !mk3_audio_present() {
+        return false;
+    }
     let Ok(outputs_out) = std::process::Command::new("pw-link").arg("-o").output() else {
         return false;
     };

@@ -435,6 +435,9 @@ pub enum EngineEvent {
     PluginSlotStep(i8),
     /// Mode EVENTS : événement précédent / suivant (4D).
     EventStep(i32),
+    /// SHIFT + FIXED VEL : 16 vélocités (les 16 pads jouent le Sound
+    /// sélectionné, du plus doux au plus fort).
+    ToggleSixteenVelocities,
     /// SHIFT + REC : à l'arrêt, une mesure de clics puis l'enregistrement
     /// démarre ; en lecture, REC simple ; pendant le pré-compte, l'annule.
     CountInRecord,
@@ -689,6 +692,9 @@ pub struct EngineSnapshot {
     pub event_index: usize,
     pub event_count: usize,
     pub events_all: bool,
+    /// EVENTS : les éditions portent sur toutes les notes parcourues
+    /// (knob 6 « SÉLECTION »), pas seulement la note du curseur.
+    pub events_select_all: bool,
     /// Éditeur de sample : page (0 RECORD, 1 EDIT, 2 SLICE, 3 ZONE), les
     /// 8 paramètres affichés au-dessus des knobs, la plage de lecture, les
     /// débuts de tranches (fractions du sample) et l'enregistrement en cours.
@@ -724,6 +730,10 @@ pub struct EngineSnapshot {
     pub fixed_velocity: bool,
     /// Niveau affiché de la vélocité fixe (1..127)
     pub fixed_velocity_level: u8,
+    /// 16 vélocités (SHIFT + FIXED VEL).
+    pub sixteen_velocities: bool,
+    /// Mode de l'arpégiateur (index dans `ARP_MODES`).
+    pub arp_mode: u8,
     /// Compteur de révision : change dès qu'un état a bougé (repaint UI/écrans).
     pub revision: u64,
 }
@@ -802,6 +812,9 @@ pub struct HardwareSnapshot {
     pub pending_pattern: Option<usize>,
     /// Pré-compte en cours (REC clignote).
     pub count_in: bool,
+    /// 16 vélocités : les pads ne changent pas le Sound sélectionné.
+    pub sixteen_velocities: bool,
+    pub fixed_velocity: bool,
 }
 
 /// Convertit un gain en décibels en multiplicateur linéaire.
@@ -822,7 +835,6 @@ pub fn event_scope(pat: &crate::project::Pattern, pad: Option<u8>) -> Vec<usize>
     idx
 }
 
-/// Plages de lecture enregistrées dans le projet → sampler (chargement).
 /// Rejoue sur un sampler fraîchement chargé ce que le projet garde des
 /// éditions de sample : plage de lecture et retouches (REVERSE, NORMLZ, LOOP).
 fn restore_sound_edits(sampler: &mut Sampler, project: &Project) {
@@ -974,6 +986,10 @@ const EVENT_LABELS: [&str; 8] = [
 
 /// Ticks par pas de 16e (960 par noire).
 const TICKS_PER_STEP: u32 = 240;
+
+/// Modes de l'arpégiateur (knob 7 en KEYBOARD / CHORDS) : sens, et « 2 » =
+/// les notes tenues plus leur octave au-dessus.
+pub const ARP_MODES: [&str; 6] = ["HAUT", "BAS", "H-B", "HAUT 2", "BAS 2", "H-B 2"];
 
 /// Note jouée par le thread audio, à écrire dans le pattern hors du callback.
 #[derive(Debug, Clone, Copy)]
@@ -1200,6 +1216,11 @@ pub struct Engine {
     arp_held: [u8; 128],
     /// Dernière note jouée par l'arpégiateur (relâchée au pas suivant).
     arp_last: Option<u8>,
+    /// Mode de l'arpégiateur (`ARP_MODES`) et sens courant en HAUT-BAS.
+    arp_mode: u8,
+    arp_falling: bool,
+    /// 16 vélocités (SHIFT + FIXED VEL).
+    sixteen_velocities: bool,
     /// Patterns lancés par le séquenceur, reportés dans la scène du projet
     /// hors du thread audio (`commit_launches`).
     launched_patterns: [Option<usize>; 8],
@@ -1213,6 +1234,7 @@ pub struct Engine {
     /// ou le Sound actif) et crans de knob en attente.
     event_cursor: usize,
     events_all: bool,
+    events_select_all: bool,
     event_knob_accum: [i32; 8],
     /// Éditeur de sample (SAMPLING) : page, découpe, enregistrement.
     sample_page: u8,
@@ -1548,6 +1570,9 @@ impl Engine {
             pending_notes: [None; 64],
             arp_held: [0; 128],
             arp_last: None,
+            arp_mode: 0,
+            arp_falling: false,
+            sixteen_velocities: false,
             pending_patterns: [None; 8],
             launched_patterns: [None; 8],
             master_limiter: crate::limiter::MasterLimiter::new(sample_rate),
@@ -1555,6 +1580,7 @@ impl Engine {
             plugin_slot_focus: (0, 0),
             event_cursor: 0,
             events_all: false,
+            events_select_all: false,
             event_knob_accum: [0; 8],
             sample_page: 1,
             slice_count: 8,
@@ -1946,6 +1972,7 @@ impl Engine {
                 .min(self.event_scope().len().saturating_sub(1)),
             event_count: self.event_scope().len(),
             events_all: self.events_all,
+            events_select_all: self.events_select_all,
             sample_page: self.sample_page,
             sample_params: self.sample_param_views(),
             sample_range: self.focus_range(),
@@ -1966,6 +1993,8 @@ impl Engine {
             note_repeat_rate: self.note_repeat_rate,
             fixed_velocity: self.fixed_velocity,
             fixed_velocity_level: self.fixed_velocity_level,
+            sixteen_velocities: self.sixteen_velocities,
+            arp_mode: self.arp_mode,
             shift_held: self.shift_held,
             lock_active: self.lock_active,
             pattern_chains: self.pattern_chains.clone(),
@@ -2098,6 +2127,8 @@ impl Engine {
             pending_scene: self.pending_scene,
             pending_pattern: self.pending_patterns[self.group_focus as usize % 8],
             count_in: self.count_in.is_some(),
+            sixteen_velocities: self.sixteen_velocities,
+            fixed_velocity: self.fixed_velocity,
         }
     }
 
@@ -2555,6 +2586,14 @@ impl Engine {
                 if self.fixed_velocity {
                     velocity = self.fixed_velocity_level;
                 }
+                // 16 VEL : le pad choisit la vélocité (pad 1 = 7 … pad 16 = 127)
+                // du Sound sélectionné, sur la MK3 comme dans la GUI.
+                let pad = if self.sixteen_velocities && pad < 16 {
+                    velocity = (pad + 1) * 8 - 1;
+                    self.active_sound
+                } else {
+                    pad
+                };
                 if pressed {
                     self.trigger_pad_voice(pad, velocity);
                     if self.note_repeat_enabled && (pad as usize) < 16 {
@@ -4383,8 +4422,26 @@ impl Engine {
                     std::time::Instant::now() + std::time::Duration::from_millis(1500);
                 self.revision = self.revision.wrapping_add(1);
             }
+            EngineEvent::ToggleSixteenVelocities => {
+                self.sixteen_velocities = !self.sixteen_velocities;
+                if self.sixteen_velocities {
+                    // Deux modes de vélocité exclusifs, comme sur la MK3.
+                    self.fixed_velocity = false;
+                }
+                self.show_status(if self.sixteen_velocities {
+                    format!(
+                        "16 vélocités : Sound {:02} sur les 16 pads",
+                        self.active_sound + 1
+                    )
+                } else {
+                    "16 vélocités coupé".to_string()
+                });
+            }
             EngineEvent::SetFixedVelocity(enabled) => {
                 self.fixed_velocity = enabled;
+                if enabled {
+                    self.sixteen_velocities = false;
+                }
                 self.status_message = Some(format!(
                     "Vélocité fixe: {} ({})",
                     self.fixed_velocity_level,
@@ -5036,6 +5093,11 @@ impl Engine {
             (false, 2) | (true, 4) => kb.cycle_octave(steps),
             (true, 2) => kb.cycle_chord(steps),
             (true, 3) => kb.cycle_inversion(steps),
+            (_, 6) => {
+                self.arp_mode =
+                    (i32::from(self.arp_mode) + steps).rem_euclid(ARP_MODES.len() as i32) as u8;
+                self.show_status(format!("Arp : {}", ARP_MODES[self.arp_mode as usize]));
+            }
             (false, 3) => {
                 let s = (i32::from(self.active_sound) + steps).clamp(0, 15) as u8;
                 return self.handle_event(EngineEvent::SelectSound(s));
@@ -5089,11 +5151,34 @@ impl Engine {
         }
     }
 
-    /// Pas de l'arpégiateur (vers le haut) : relâche la note précédente et
-    /// joue la note tenue suivante, en boucle.
+    /// Pas de l'arpégiateur : relâche la note précédente et joue la suivante
+    /// parmi les notes tenues (et leur octave au-dessus en mode « 2 »), selon
+    /// le sens du mode (`ARP_MODES`).
     fn arp_step(&mut self) {
-        let start = self.arp_last.map_or(0, |n| n as usize + 1);
-        let next = (start..128).chain(0..start).find(|&n| self.arp_held[n] > 0);
+        let two_octaves = self.arp_mode >= 3;
+        let held = |n: usize| match self.arp_held[n] {
+            0 if two_octaves && n >= 12 => self.arp_held[n - 12],
+            v => v,
+        };
+        let up = |from: usize| (from..128).find(|&n| held(n) > 0);
+        let down = |to: usize| (0..to).rev().find(|&n| held(n) > 0);
+        let last = self.arp_last.map(usize::from);
+        let next = match (self.arp_mode % 3, last) {
+            (1, None) => down(128),
+            (_, None) => up(0),
+            (0, Some(l)) => up(l + 1).or_else(|| up(0)),
+            (1, Some(l)) => down(l).or_else(|| down(128)),
+            // HAUT-BAS : on repart dans l'autre sens au bout de la plage.
+            (_, Some(l)) if self.arp_falling => down(l).or_else(|| up(l + 1)),
+            (_, Some(l)) => up(l + 1).or_else(|| down(l)),
+        }
+        .or(last.filter(|&l| held(l) > 0));
+        let velocity = next.map_or(0, held);
+        if let (Some(n), Some(l)) = (next, last) {
+            if n != l {
+                self.arp_falling = n < l;
+            }
+        }
         if let Some(last) = self.arp_last.take() {
             self.release_sound_voice(self.active_sound, last);
         }
@@ -5103,7 +5188,7 @@ impl Engine {
         if !self.group_audible(self.group_focus) {
             return;
         }
-        let (note, velocity) = (note as u8, self.arp_held[note]);
+        let note = note as u8;
         self.trigger_sound_voice(self.active_sound, note, velocity);
         self.arp_last = Some(note);
         if self.transport.state == TransportState::Recording {
@@ -7041,7 +7126,22 @@ impl Engine {
 
     /// Modifie l'événement sélectionné puis le garde sélectionné (le tri par
     /// temps peut changer son rang quand sa position bouge).
-    fn edit_selected_event(&mut self, f: impl FnOnce(&mut crate::project::PatternEvent, u32)) {
+    fn edit_selected_event(&mut self, f: impl Fn(&mut crate::project::PatternEvent, u32)) {
+        if self.events_select_all {
+            // Toutes les notes parcourues (le Sound, ou tous avec TOUS),
+            // chacune bougée du même écart.
+            let scope = self.event_scope();
+            self.with_active_pattern(|pat| {
+                let len = u32::from(pat.length.bars.max(1)) * 4 * 960;
+                for &i in &scope {
+                    if let Some(e) = pat.events.get_mut(i) {
+                        f(e, len);
+                    }
+                }
+            });
+            self.revision = self.revision.wrapping_add(1);
+            return;
+        }
         let Some((i, _)) = self.selected_event() else {
             return;
         };
@@ -7121,6 +7221,18 @@ impl Engine {
                 });
             }
             4 => self.step_event_cursor(steps),
+            5 => {
+                // Knob 6 : une note (curseur) ↔ toutes les notes parcourues.
+                self.events_select_all = steps > 0;
+                self.show_status(
+                    if self.events_select_all {
+                        "Sélection : toutes les notes"
+                    } else {
+                        "Sélection : une note"
+                    }
+                    .to_string(),
+                );
+            }
             _ => {}
         }
     }
@@ -7134,6 +7246,23 @@ impl Engine {
                 self.events_all = !self.events_all;
                 self.event_cursor = 0;
                 self.revision = self.revision.wrapping_add(1);
+            }
+            "SUPPR" if self.events_select_all => {
+                let mut scope = self.event_scope();
+                if !scope.is_empty() {
+                    self.push_project_history();
+                    scope.sort_unstable_by(|a, b| b.cmp(a));
+                    self.with_active_pattern(|pat| {
+                        for i in scope {
+                            if i < pat.events.len() {
+                                pat.events.remove(i);
+                            }
+                        }
+                    });
+                    self.show_status("Notes supprimées".to_string());
+                    self.event_cursor = 0;
+                    self.revision = self.revision.wrapping_add(1);
+                }
             }
             "SUPPR" => {
                 if let Some((i, e)) = self.selected_event() {
@@ -9393,6 +9522,88 @@ mod tests {
     }
 
     #[test]
+    fn arp_modes_go_down_bounce_and_add_the_octave() {
+        let run = |mode: u8, steps: usize| -> Vec<u8> {
+            let mut eng = Engine::new_demo(48000);
+            eng.controller_mode = 1;
+            eng.arp_mode = mode;
+            eng.handle_event(EngineEvent::SetNoteRepeat(true)).unwrap();
+            eng.handle_event(EngineEvent::SetNoteRepeatRate(1)).unwrap();
+            for note in [60, 64, 67] {
+                eng.handle_event(EngineEvent::KeyboardTrigger {
+                    note,
+                    velocity: 90,
+                    pressed: true,
+                })
+                .unwrap();
+            }
+            let mut seq = vec![eng.arp_last.unwrap()];
+            for _ in 0..steps {
+                eng.advance(6000);
+                seq.push(eng.arp_last.unwrap());
+            }
+            seq
+        };
+        assert_eq!(run(0, 4), [60, 64, 67, 60, 64], "HAUT");
+        assert_eq!(run(1, 4), [60, 67, 64, 60, 67], "BAS");
+        assert_eq!(run(2, 5), [60, 64, 67, 64, 60, 64], "HAUT-BAS");
+        assert_eq!(
+            run(3, 6),
+            [60, 64, 67, 72, 76, 79, 60],
+            "HAUT sur 2 octaves"
+        );
+    }
+
+    #[test]
+    fn sixteen_velocities_play_the_selected_sound_at_sixteen_levels() {
+        let mut eng = Engine::new_demo(48000);
+        eng.handle_event(EngineEvent::SelectSound(2)).unwrap();
+        eng.handle_event(EngineEvent::ToggleSixteenVelocities)
+            .unwrap();
+        assert!(eng.snapshot().sixteen_velocities);
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: true,
+            stop: false,
+        })
+        .unwrap();
+        for pad in [0u8, 15] {
+            eng.handle_event(EngineEvent::Pad {
+                pad,
+                velocity: 50,
+                pressed: true,
+            })
+            .unwrap();
+            eng.handle_event(EngineEvent::Pad {
+                pad,
+                velocity: 0,
+                pressed: false,
+            })
+            .unwrap();
+            eng.advance(3000);
+        }
+        let proj = eng.project.read();
+        let idx = proj.active_pattern_index(0, eng.active_scene).unwrap();
+        let recorded: Vec<(u8, u8)> = proj.groups[0].patterns[idx]
+            .events
+            .iter()
+            .filter(|e| e.velocity == 7 || e.velocity == 127)
+            .map(|e| (e.pad, e.velocity))
+            .collect();
+        drop(proj);
+        // Pad 1 = la plus douce, pad 16 = la plus forte, toujours le Sound 3.
+        assert!(
+            recorded.contains(&(2, 7)) && recorded.contains(&(2, 127)),
+            "{recorded:?}"
+        );
+        assert_eq!(eng.snapshot().active_sound, 2);
+        // FIXED VEL et 16 VEL s'excluent.
+        eng.handle_event(EngineEvent::SetFixedVelocity(true))
+            .unwrap();
+        assert!(!eng.snapshot().sixteen_velocities);
+    }
+
+    #[test]
     fn metronome_click_audible() {
         // Projet vide : seul le métronome doit produire du son.
         let mut eng = Engine::new(Project::default(), 48000);
@@ -10786,6 +10997,47 @@ mod tests {
         assert!(eng.snapshot().events_all);
         assert!(eng.soft_key_active()[2]);
         assert!(eng.snapshot().event_count >= count - 1);
+    }
+
+    #[test]
+    fn events_knob_six_selects_every_note_for_relative_edits() {
+        let mut eng = Engine::new_demo(48000);
+        eng.handle_event(EngineEvent::GroupFocus(0)).unwrap();
+        eng.handle_event(EngineEvent::SelectSound(0)).unwrap();
+        eng.handle_event(EngineEvent::SetRightTab(1)).unwrap();
+        let velocities = |eng: &Engine| -> Vec<u8> {
+            let proj = eng.project.read();
+            let idx = proj.active_pattern_index(0, eng.active_scene).unwrap();
+            let pat = &proj.groups[0].patterns[idx];
+            event_scope(pat, Some(0))
+                .into_iter()
+                .map(|i| pat.events[i].velocity)
+                .collect()
+        };
+        let before = velocities(&eng);
+        assert!(before.len() > 1);
+        // Knob 6 vers la droite : toutes les notes du Sound.
+        eng.handle_event(EngineEvent::EventKnob { knob: 5, delta: 32 })
+            .unwrap();
+        assert!(eng.snapshot().events_select_all);
+        // Knob 3 : vélocité −10 sur chaque note (bornée à 1).
+        eng.handle_event(EngineEvent::EventKnob {
+            knob: 2,
+            delta: -80,
+        })
+        .unwrap();
+        let expected: Vec<u8> = before.iter().map(|v| v.saturating_sub(10).max(1)).collect();
+        assert_eq!(velocities(&eng), expected);
+        // SUPPR : toutes les notes du Sound partent d'un coup.
+        eng.handle_event(EngineEvent::SoftKey(4)).unwrap();
+        assert!(velocities(&eng).is_empty());
+        // Knob 6 vers la gauche : retour à une note.
+        eng.handle_event(EngineEvent::EventKnob {
+            knob: 5,
+            delta: -32,
+        })
+        .unwrap();
+        assert!(!eng.snapshot().events_select_all);
     }
 
     #[test]

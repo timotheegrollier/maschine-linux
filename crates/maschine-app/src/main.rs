@@ -311,6 +311,8 @@ fn sync_mapper_context(
     mapper.has_acid_synth = snap.has_acid_synth;
     mapper.has_wavetable_synth = snap.has_wavetable_synth;
     mapper.delete_project_confirm = snap.delete_project_confirm;
+    mapper.sixteen_vel = snap.sixteen_velocities;
+    mapper.fixed_velocity = snap.fixed_velocity;
     let (kb, chords) = (snap.keyboard, snap.controller_mode == 2);
     mapper.kbd_pad_notes = std::array::from_fn(|p| kb.pad_notes(chords, p as u8));
     mapper.kbd_root_pads = (0..16u8)
@@ -899,10 +901,13 @@ fn cmd_daemon(
                     log::debug!("PAD trigger pad={pad} vel={velocity} pressed={pressed}");
                     if pressed {
                         // La sélection suit le jeu (comme Maschine) : l'écran SAMPLER
-                        // et l'édition GUI ciblent toujours le dernier pad touché.
-                        mapper.active_sound = pad;
+                        // et l'édition GUI ciblent toujours le dernier pad touché
+                        // (sauf en 16 VEL : les pads sont des vélocités).
                         let mut eng = engine.lock();
-                        let _ = eng.handle_event(EngineEvent::SelectSound(pad));
+                        if !mapper.sixteen_vel {
+                            mapper.active_sound = pad;
+                            let _ = eng.handle_event(EngineEvent::SelectSound(pad));
+                        }
                         let _ = eng.handle_event(EngineEvent::Pad {
                             pad,
                             velocity,
@@ -1613,6 +1618,11 @@ fn cmd_daemon(
                     let _ = engine
                         .lock()
                         .handle_event(EngineEvent::KeyboardKnob { knob, delta });
+                }
+                MapperAction::ToggleSixteenVelocities => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::ToggleSixteenVelocities);
                 }
                 MapperAction::CountInRecord => {
                     let _ = engine.lock().handle_event(EngineEvent::CountInRecord);
@@ -2845,6 +2855,7 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             event_index: 0,
             event_count: 0,
             events_all: false,
+            events_select_all: false,
             sample_page: 1,
             sample_params: Default::default(),
             sample_range: (0.0, 1.0),
@@ -2861,6 +2872,8 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             note_repeat_rate: 1,
             fixed_velocity: false,
             fixed_velocity_level: 100,
+            sixteen_velocities: false,
+            arp_mode: 0,
             shift_held: false,
             lock_active: false,
             pattern_chains: [None, None, None, None, None, None, None, None],

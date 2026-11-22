@@ -90,6 +90,15 @@ fn main() -> std::io::Result<()> {
     eng.handle_event(maschine_engine::EngineEvent::SetRightTab(1))
         .unwrap();
     dump(&eng, "events")?;
+    // Knob 6 : toutes les notes du Sound sélectionnées.
+    eng.handle_event(maschine_engine::EngineEvent::EventKnob { knob: 5, delta: 32 })
+        .unwrap();
+    dump(&eng, "events_all_notes")?;
+    eng.handle_event(maschine_engine::EngineEvent::EventKnob {
+        knob: 5,
+        delta: -32,
+    })
+    .unwrap();
     eng.handle_event(maschine_engine::EngineEvent::SetRightTab(2))
         .unwrap();
     dump(&eng, "macro")?;

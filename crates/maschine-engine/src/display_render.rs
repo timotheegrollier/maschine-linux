@@ -3996,7 +3996,7 @@ pub fn render_events_right(snap: &EngineSnapshot) -> DisplayFrame {
         for (row, &i) in scope.iter().enumerate().skip(first).take(rows) {
             let e = &pt.events[i];
             let y = 52 + (row - first) * 19;
-            let on = row == sel;
+            let on = row == sel || snap.events_select_all;
             if on {
                 screen_vector::fill_round_rect(
                     &mut frame,
@@ -4099,7 +4099,17 @@ pub fn render_events_right(snap: &EngineSnapshot) -> DisplayFrame {
             snap.event_index as f32 / (n - 1).max(1) as f32,
             p.accent,
         )),
-        None,
+        Some((
+            "SÉLECTION",
+            if snap.events_select_all {
+                "TOUTES"
+            } else {
+                "1 NOTE"
+            }
+            .to_string(),
+            if snap.events_select_all { 1.0 } else { 0.0 },
+            p.cyan,
+        )),
         None,
         None,
     ];
@@ -4170,7 +4180,7 @@ pub fn render_events_left(snap: &EngineSnapshot) -> DisplayFrame {
             let e = &pt.events[i];
             let (x, y) = (tx(e.tick), ty(e.pitch));
             let bw = (tx(e.tick + e.length_ticks.max(30)) - x).max(3.0);
-            let on = k == sel;
+            let on = k == sel || snap.events_select_all;
             let color = if on {
                 p.accent
             } else {
@@ -4732,7 +4742,12 @@ pub fn render_keyboard_right(snap: &EngineSnapshot) -> DisplayFrame {
             snap.group_focus as f32 / 7.0,
             p.cyan,
         )),
-        Some(("7:--", String::new(), 0.0, p.border)),
+        Some((
+            "7:ARP",
+            crate::engine::ARP_MODES[snap.arp_mode as usize % 6].to_string(),
+            f32::from(snap.arp_mode) / 5.0,
+            p.green,
+        )),
         Some((
             "8:MASTER",
             format!("{:.0}%", snap.master_volume * 100.0),
@@ -4914,7 +4929,12 @@ pub fn render_chords_right(snap: &EngineSnapshot) -> DisplayFrame {
             p.cyan,
         )),
         Some(("6:--", String::new(), 0.0, p.border)),
-        Some(("7:--", String::new(), 0.0, p.border)),
+        Some((
+            "7:ARP",
+            crate::engine::ARP_MODES[snap.arp_mode as usize % 6].to_string(),
+            f32::from(snap.arp_mode) / 5.0,
+            p.green,
+        )),
         Some((
             "8:MASTER",
             format!("{:.0}%", snap.master_volume * 100.0),

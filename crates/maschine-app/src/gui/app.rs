@@ -955,6 +955,9 @@ impl GuiApp {
                             format!("PAS {:02}", index + 1),
                             index as usize == snap.step_cursor % 16,
                         )
+                    } else if snap.sixteen_velocities && snap.controller_mode == 0 {
+                        // 16 VEL : chaque pad = une vélocité du Sound sélectionné.
+                        (format!("VEL {}", (index + 1) * 8 - 1), false)
                     } else if snap.controller_mode == 1 || snap.controller_mode == 2 {
                         // Note (ou fondamentale de l'accord) du pad, comme à l'écran.
                         let note = keyboard_notes(snap, index).first().copied().unwrap_or(0);

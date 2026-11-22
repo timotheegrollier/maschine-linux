@@ -395,6 +395,8 @@ pub enum MapperAction {
     EventKnob { knob: u8, delta: i32 },
     /// SHIFT + REC : une mesure de pré-compte puis enregistrement.
     CountInRecord,
+    /// SHIFT + FIXED VEL : 16 vélocités.
+    ToggleSixteenVelocities,
     /// Modes KEYBOARD / CHORDS : knob des réglages de jeu (ticks bruts).
     KeyboardKnob { knob: u8, delta: i32 },
     /// SAMPLING : knob de la page de l'éditeur de sample (ticks bruts).
@@ -540,6 +542,8 @@ pub struct HardwareMapper {
     pub touchstrip_mode: TouchStripMode,
     /// Vélocité fixe activée (niveau `fixed_velocity_level`)
     pub fixed_velocity: bool,
+    /// 16 vélocités (moteur) : les pads jouent le Sound sélectionné.
+    pub sixteen_vel: bool,
     /// Niveau de la vélocité fixe (1..127), réglable au 4D quand actif
     pub fixed_velocity_level: u8,
     /// Suivi du playhead activé
@@ -668,6 +672,7 @@ impl HardwareMapper {
             encoder_focus: EncoderFocus::Tempo,
             touchstrip_mode: TouchStripMode::Perform,
             fixed_velocity: false,
+            sixteen_vel: false,
             fixed_velocity_level: 100,
             follow_mode: true,
             note_repeat: false,
@@ -1107,6 +1112,11 @@ impl HardwareMapper {
             }
 
             // Features & Vues
+            ButtonId::FixedVel if self.shift_held => {
+                // SHIFT + FIXED VEL = 16 VEL, comme sur la MK3.
+                actions.push(MapperAction::ToggleSixteenVelocities);
+                true
+            }
             ButtonId::FixedVel => {
                 self.fixed_velocity = !self.fixed_velocity;
                 actions.push(MapperAction::SetFixedVelocity(self.fixed_velocity));
@@ -2058,6 +2068,22 @@ impl HardwareMapper {
                     }
                     self.pad_played.insert(p.pad, notes);
                 }
+                ControllerMode::Pad if self.sixteen_vel => {
+                    // 16 VEL : le moteur joue le Sound sélectionné à la
+                    // vélocité du pad ; la sélection ne bouge pas.
+                    let note = self.cfg.pad_base_note + self.active_sound;
+                    self.pad_note.insert(p.pad, note);
+                    actions.push(MapperAction::Midi(MidiEvent::NoteOn {
+                        channel: ch,
+                        note,
+                        velocity: (p.pad + 1) * 8 - 1,
+                    }));
+                    actions.push(MapperAction::PadTrigger {
+                        pad: p.pad,
+                        velocity: vel,
+                        pressed: true,
+                    });
+                }
                 ControllerMode::Pad => {
                     self.pad_note.insert(p.pad, note);
                     actions.push(MapperAction::Midi(MidiEvent::NoteOn {
@@ -2284,8 +2310,14 @@ impl HardwareMapper {
             self.lock_active = true;
         }
 
-        self.led_state
-            .set_button_raw(offsets::FIXED_VEL, if self.fixed_velocity { 7 } else { 0 });
+        self.led_state.set_button_raw(
+            offsets::FIXED_VEL,
+            match (self.fixed_velocity, self.sixteen_vel) {
+                (true, _) => 7,
+                (false, true) => 4,
+                _ => 0,
+            },
+        );
         self.led_state
             .set_button_raw(offsets::FOLLOW, if self.follow_mode { 7 } else { 1 });
         self.led_state
@@ -2523,6 +2555,26 @@ impl HardwareMapper {
             }
         } else {
             match self.mode {
+                ControllerMode::Pad if self.sixteen_vel => {
+                    // 16 VEL : dégradé du Sound sélectionné, du pad le plus
+                    // doux (atténué) au plus fort (vif) ; frappe en blanc.
+                    let mut color = self.pad_colors[self.active_sound as usize % 16];
+                    if color == Color::OFF {
+                        color = white;
+                    }
+                    for i in 0..16 {
+                        let led = if self.pad_flash(i, now) {
+                            white
+                        } else if i < 5 {
+                            dim_pad_color(color)
+                        } else if i < 11 {
+                            color
+                        } else {
+                            bright_pad_color(color)
+                        };
+                        self.led_state.set_pad(i, led);
+                    }
+                }
                 ControllerMode::Pad => {
                     let muted_mask = info.muted_sounds[self.group_focus as usize % 8];
                     for i in 0..16 {
@@ -3346,6 +3398,37 @@ mod tests {
                 delta: 4.0
             }]
         );
+    }
+
+    #[test]
+    fn sixteen_velocities_keep_the_selection_and_shade_the_pads() {
+        let mut m = HardwareMapper::with_default();
+        m.shift_held = true;
+        let a = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::FixedVel,
+            pressed: true,
+            ts_ns: 0,
+        });
+        assert_eq!(a, vec![MapperAction::ToggleSixteenVelocities]);
+        m.shift_held = false;
+        // Le moteur a basculé : l'état revient par la synchro.
+        m.sixteen_vel = true;
+        m.active_sound = 2;
+        let a = m.handle_hardware_event(pad_ev(15, true, 1));
+        assert!(!a.iter().any(|x| matches!(x, MapperAction::SelectSound(_))));
+        assert!(a.iter().any(|x| matches!(
+            x,
+            MapperAction::PadTrigger {
+                pad: 15,
+                pressed: true,
+                ..
+            }
+        )));
+        assert_eq!(m.active_sound, 2);
+        m.update_leds(&SequencerLedInfo::default());
+        let c = m.pad_colors[2];
+        assert_eq!(m.led_state().pad_leds[1], dim_pad_color(c).to_index());
+        assert_eq!(m.led_state().pad_leds[13], bright_pad_color(c).to_index());
     }
 
     #[test]

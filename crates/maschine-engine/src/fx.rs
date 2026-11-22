@@ -857,8 +857,8 @@ impl LoFi {
             self.acc += step;
             if self.acc >= 1.0 {
                 self.acc -= 1.0;
-                for c in 0..2 {
-                    self.held[c] = (frame[c].clamp(-1.0, 1.0) * levels).round() / levels;
+                for (held, f) in self.held.iter_mut().zip(frame.iter()) {
+                    *held = (f.clamp(-1.0, 1.0) * levels).round() / levels;
                 }
             }
             for (c, s) in frame.iter_mut().enumerate() {

@@ -208,7 +208,9 @@ Since 0.14.0 both modes follow that reference; see the two sections below. Not i
   instantly (no portamento in the live monitor), while the pattern keeps its
   recorded slides. Both monophonic synth instances are audible through the same
   gain, pan and FX path. Recorded note **lengths are quantized to the grid**
-  (start quantize unchanged), so what you hear and what is written match.
+  (start quantize unchanged), and the live monitoring voice is held until that
+  quantized end tick — so what you hear matches what is written. Pattern
+  chaining accepts two pads held simultaneously or pressed within 800 ms.
 - **16 Velocities**: `SHIFT + FIXED VEL` — the 16 pads play the selected Sound
   from velocity 7 (pad 1) to 127 (pad 16) without changing the selection; pads
   shaded in its colour, `FIXED VEL` half lit, GUI pads labelled `VEL n`.

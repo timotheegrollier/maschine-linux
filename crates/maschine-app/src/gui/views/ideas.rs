@@ -274,16 +274,21 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
 
                     ui.add_space(6.0);
                     let gf = snap.group_focus as usize;
-                    let active_pattern = snap
-                        .project
-                        .active_pattern_index(gf, active_scene)
-                        .unwrap_or(0);
+                    let active_pattern = snap.project.active_pattern_index(gf, active_scene);
                     let count = snap
                         .project
                         .groups
                         .get(gf)
                         .map(|g| g.patterns.len())
                         .unwrap_or(0);
+                    if active_pattern.is_none() {
+                        ui.colored_label(
+                            c.warning,
+                            "Aucun pattern actif — clique sur un pad PATTERN.",
+                        );
+                    }
+                    let has_active_pattern = active_pattern.is_some();
+                    let active_pattern = active_pattern.unwrap_or(0);
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
                             egui::RichText::new("PATTERN DU GROUPE FOCUS")
@@ -296,7 +301,10 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                                 group: snap.group_focus,
                             });
                         }
-                        if chip(ui, "DUPLIQUER", false, c.accent_cyan) && count > 0 {
+                        if chip(ui, "DUPLIQUER", false, c.accent_cyan)
+                            && count > 0
+                            && has_active_pattern
+                        {
                             let _ = app
                                 .engine
                                 .lock()
@@ -305,13 +313,14 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                                     pattern: active_pattern,
                                 });
                         }
-                        if chip(ui, "VIDER", false, c.warning) && count > 0 {
+                        if chip(ui, "VIDER", false, c.warning) && count > 0 && has_active_pattern {
                             let _ = app.engine.lock().handle_event(EngineEvent::ClearPattern {
                                 group: snap.group_focus,
                                 pattern: active_pattern,
                             });
                         }
-                        if chip(ui, "SUPPRIMER", false, c.error) && count > 1 {
+                        if chip(ui, "SUPPRIMER", false, c.error) && count > 1 && has_active_pattern
+                        {
                             let _ = app.engine.lock().handle_event(EngineEvent::DeletePattern {
                                 group: snap.group_focus,
                                 pattern: active_pattern,

@@ -581,6 +581,8 @@ pub struct HardwareMapper {
     pub fixed_velocity: bool,
     /// Bouton AUTO allumé : armement des automations.
     pub automation_armed: bool,
+    /// Dernier pad PATTERN pressé (avec horodatage) pour le chaînage.
+    pub last_pattern_pad: Option<(u8, Instant)>,
     /// 16 vélocités (moteur) : les pads jouent le Sound sélectionné.
     pub sixteen_vel: bool,
     /// Niveau de la vélocité fixe (1..127), réglable au 4D quand actif
@@ -712,6 +714,7 @@ impl HardwareMapper {
             touchstrip_mode: TouchStripMode::Perform,
             fixed_velocity: false,
             automation_armed: false,
+            last_pattern_pad: None,
             sixteen_vel: false,
             fixed_velocity_level: 100,
             follow_mode: true,
@@ -2046,21 +2049,31 @@ impl HardwareMapper {
                 return actions;
             }
             if self.pattern_select_mode {
+                // Chaînage : deux pads maintenus ensemble OU deux pads pressés
+                // à moins de 800 ms (le premier a pu être relâché entre-temps).
+                let now = Instant::now();
+                let recent = self
+                    .last_pattern_pad
+                    .filter(|(pad, at)| *pad != p.pad && at.elapsed() < Duration::from_millis(800));
                 let other_held = self
                     .pad_pressed
                     .iter()
                     .enumerate()
                     .any(|(i, &held)| held && i != p.pad as usize);
-                if other_held {
-                    let mut held_indices: Vec<usize> = self
+                self.last_pattern_pad = Some((p.pad, now));
+                if other_held || recent.is_some() {
+                    let mut indices: Vec<usize> = self
                         .pad_pressed
                         .iter()
                         .enumerate()
                         .filter_map(|(i, &held)| if held { Some(i) } else { None })
                         .collect();
-                    held_indices.push(p.pad as usize);
-                    let min = *held_indices.iter().min().unwrap_or(&(p.pad as usize));
-                    let max = *held_indices.iter().max().unwrap_or(&(p.pad as usize));
+                    indices.push(p.pad as usize);
+                    if let Some((pad, _)) = recent {
+                        indices.push(pad as usize);
+                    }
+                    let min = *indices.iter().min().unwrap_or(&(p.pad as usize));
+                    let max = *indices.iter().max().unwrap_or(&(p.pad as usize));
                     actions.push(MapperAction::PatternChain {
                         group: self.group_focus,
                         patterns: (min..=max).collect(),
@@ -4250,6 +4263,33 @@ mod tests {
             ts_ns: 1,
         });
         assert_eq!(actions, vec![MapperAction::ToggleAutomation]);
+    }
+
+    #[test]
+    fn pattern_chain_on_two_quick_pads_after_release() {
+        use crate::events::PadState;
+        let mut m = HardwareMapper::with_default();
+        let _ = press_button(&mut m, maschine_proto::ButtonId::Pattern);
+        let press = |m: &mut HardwareMapper, pad: u8, pressed: bool| {
+            m.handle_hardware_event(HardwareEvent::Pad(PadState {
+                pad,
+                pressed,
+                velocity: 100,
+                pressure: 0x4000,
+                ts_ns: 1,
+            }))
+        };
+        let _ = press(&mut m, 0, true);
+        let _ = press(&mut m, 0, false); // relâché avant le second pad
+        let actions = press(&mut m, 4, true);
+        assert_eq!(
+            actions,
+            vec![MapperAction::PatternChain {
+                group: 0,
+                patterns: (0..=4).collect()
+            }],
+            "deux pads pressés rapidement chaînent même après relâchement"
+        );
     }
 
     #[test]

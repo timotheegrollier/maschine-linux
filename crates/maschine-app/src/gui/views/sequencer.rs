@@ -20,19 +20,21 @@ pub fn render(
 ) {
     let c = MachColors::dark();
     let gf = snap.group_focus as usize;
-    let pattern_index = snap
-        .project
-        .active_pattern_index(gf, snap.active_scene)
-        .unwrap_or(0);
+    let active_pattern = snap.project.active_pattern_index(gf, snap.active_scene);
+    let no_active_pattern = active_pattern.is_none();
+    let pattern_index = active_pattern.unwrap_or(0);
     let total_bars = snap.pattern_bars.max(1);
     let selected_bar = snap.selected_bar.min(total_bars - 1);
-    let events = snap
-        .project
-        .groups
-        .get(gf)
-        .and_then(|g| g.patterns.get(pattern_index))
-        .map(|pat| pat.events.clone())
-        .unwrap_or_default();
+    let events = if no_active_pattern {
+        Vec::new()
+    } else {
+        snap.project
+            .groups
+            .get(gf)
+            .and_then(|g| g.patterns.get(pattern_index))
+            .map(|pat| pat.events.clone())
+            .unwrap_or_default()
+    };
 
     // Table d'occupation : [sound][step] → (velocity, velocity_bars)
     let mut occupied = [[false; 16]; 16];
@@ -78,7 +80,7 @@ pub fn render(
             }
 
             // ── Gestionnaire de patterns (création / duplication / édition) ──
-            render_pattern_manager(ui, app, snap, &c, gf, pattern_index);
+            render_pattern_manager(ui, app, snap, &c, gf, active_pattern);
             ui.add_space(6.0);
 
             // ── Barre d'outils ─────────────────────────────────────────
@@ -445,26 +447,28 @@ fn render_pattern_manager(
     snap: &maschine_engine::EngineSnapshot,
     c: &MachColors,
     group_idx: usize,
-    active_pattern: usize,
+    active_pattern: Option<usize>,
 ) {
+    let no_active_pattern = active_pattern.is_none();
+    let pattern_index = active_pattern.unwrap_or(0);
     let group = snap.project.groups.get(group_idx);
     let patterns = group.map(|g| g.patterns.as_slice()).unwrap_or(&[]);
     let count = patterns.len();
     let current_name = patterns
-        .get(active_pattern)
+        .get(pattern_index)
         .map(|p| p.name.clone())
         .unwrap_or_else(|| "—".to_string());
     let current_bars = patterns
-        .get(active_pattern)
+        .get(pattern_index)
         .map(|p| p.length.bars.max(1) as usize)
         .unwrap_or(2);
     let current_events = patterns
-        .get(active_pattern)
+        .get(pattern_index)
         .map(|p| p.events.len())
         .unwrap_or(0);
 
     // Synchronise le buffer de renommage quand le pattern actif change.
-    let target = Some((snap.group_focus, active_pattern));
+    let target = Some((snap.group_focus, pattern_index));
     if app.pattern_name_target != target {
         app.pattern_name_target = target;
         app.pattern_name_buf = current_name.clone();
@@ -480,7 +484,7 @@ fn render_pattern_manager(
                 egui::RichText::new(format!(
                     "Groupe {} • {count} pattern(s) • actif P{:02} « {} » • {current_bars} mes. • {current_events} événements",
                     group_label(group_idx),
-                    active_pattern + 1,
+                    pattern_index + 1,
                     current_name,
                 ))
                 .small()
@@ -525,9 +529,17 @@ fn render_pattern_manager(
                                 .color(c.text_muted),
                         );
                     }
+                    if no_active_pattern {
+                        ui.label(
+                            egui::RichText::new("Aucun pattern actif — clique sur un pad PATTERN.")
+                                .small()
+                                .strong()
+                                .color(c.warning),
+                        );
+                    }
                     for (idx, pat) in patterns.iter().enumerate().take(64) {
                         let label = format!("P{:02} {}", idx + 1, short_name(&pat.name, 14));
-                        let active = idx == active_pattern;
+                        let active = !no_active_pattern && idx == pattern_index;
                         if chip(ui, &label, active, c.accent) {
                             app.send(EngineEvent::PatternSelect {
                                 group: snap.group_focus,
@@ -540,22 +552,22 @@ fn render_pattern_manager(
 
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
-            if chip(ui, "DUPLIQUER", false, c.accent_cyan) && count > 0 {
+            if chip(ui, "DUPLIQUER", false, c.accent_cyan) && count > 0 && !no_active_pattern {
                 app.send(EngineEvent::DuplicatePattern {
                     group: snap.group_focus,
-                    pattern: active_pattern,
+                    pattern: pattern_index,
                 });
             }
-            if chip(ui, "VIDER", false, c.warning) && count > 0 {
+            if chip(ui, "VIDER", false, c.warning) && count > 0 && !no_active_pattern {
                 app.send(EngineEvent::ClearPattern {
                     group: snap.group_focus,
-                    pattern: active_pattern,
+                    pattern: pattern_index,
                 });
             }
-            if chip(ui, "SUPPRIMER", false, c.error) && count > 1 {
+            if chip(ui, "SUPPRIMER", false, c.error) && count > 1 && !no_active_pattern {
                 app.send(EngineEvent::DeletePattern {
                     group: snap.group_focus,
-                    pattern: active_pattern,
+                    pattern: pattern_index,
                 });
             }
             ui.separator();
@@ -583,10 +595,10 @@ fn render_pattern_manager(
             );
             let rename = chip(ui, "RENOMMER", false, c.success)
                 || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-            if rename && count > 0 {
+            if rename && count > 0 && !no_active_pattern {
                 app.send(EngineEvent::RenamePattern {
                     group: snap.group_focus,
-                    pattern: active_pattern,
+                    pattern: pattern_index,
                     name: app.pattern_name_buf.clone(),
                 });
             }

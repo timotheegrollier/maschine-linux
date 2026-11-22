@@ -1246,6 +1246,8 @@ pub struct Engine {
     /// Note tenue sur chaque pad pendant REC (tick de l'événement enregistré),
     /// pour enregistrer les slides (glissando legato) du TB-303.
     rec_sounding: [Option<u32>; 16],
+    /// Notes tenues pendant REC : (pad, note, tick de fin quantifié).
+    pending_note_offs: [Option<(u8, u8, u64)>; 16],
     /// Notes clavier tenues enregistrées pendant REC : par note, le
     /// (groupe, Sound, tick de l'événement enregistré).
     rec_key_press: [Option<(u8, u8, u32)>; 128],
@@ -1612,6 +1614,7 @@ impl Engine {
             pending_notes: [None; 64],
             rec_pad_press: [None; 16],
             rec_sounding: [None; 16],
+            pending_note_offs: [None; 16],
             rec_key_press: [None; 128],
             arp_held: [0; 128],
             arp_last: None,
@@ -2721,14 +2724,21 @@ impl Engine {
                         self.rec_sounding[pad as usize] = q_new;
                     }
                 } else {
+                    let mut scheduled = false;
                     if (pad as usize) < 16 {
                         self.note_repeat_held_pads[pad as usize] = None;
                         self.rec_sounding[pad as usize] = None;
                         if let Some(q) = self.rec_pad_press[pad as usize].take() {
                             self.set_recorded_length(self.group_focus, pad, q, self.transport.tick);
+                            if self.transport.state == TransportState::Recording {
+                                self.schedule_note_off(pad, 36 + pad, q, self.transport.tick);
+                                scheduled = true;
+                            }
                         }
                     }
-                    self.release_sound_voice(pad, 36 + pad);
+                    if !scheduled {
+                        self.release_sound_voice(pad, 36 + pad);
+                    }
                 }
             }
             EngineEvent::Transport { play, rec, stop } => {
@@ -3817,10 +3827,17 @@ impl Engine {
                         }
                     }
                 } else {
+                    let mut scheduled = false;
                     if let Some((g, s, q)) = self.rec_key_press[note as usize].take() {
                         self.set_recorded_length(g, s, q, self.transport.tick);
+                        if self.transport.state == TransportState::Recording {
+                            self.schedule_note_off(s, note, q, self.transport.tick);
+                            scheduled = true;
+                        }
                     }
-                    self.release_sound_voice(self.active_sound, note);
+                    if !scheduled {
+                        self.release_sound_voice(self.active_sound, note);
+                    }
                 }
             }
             EngineEvent::KeyboardRootDelta(d) => self.keyboard.cycle_root(d),
@@ -5086,6 +5103,20 @@ impl Engine {
                 self.count_in = Some(end);
             }
         }
+        // Voix de monitoring : on coupe la note live à la fin quantifiée
+        // enregistrée, pour que l'écoute et le pattern restent synchronisés.
+        let mut due = [None; 16];
+        for (i, slot) in self.pending_note_offs.iter_mut().enumerate() {
+            if let Some((pad, note, end)) = *slot {
+                if self.transport.tick >= end {
+                    due[i] = Some((pad, note));
+                    *slot = None;
+                }
+            }
+        }
+        for (pad, note) in due.into_iter().flatten() {
+            self.release_sound_voice(pad, note);
+        }
         if !self.transport.is_playing() {
             return;
         }
@@ -5599,15 +5630,28 @@ impl Engine {
 
     /// Met à jour la longueur d'une note enregistrée pendant REC : celle de la
     /// note tenue (relâchement du pad / de la touche), comme en mode keyboard.
+    /// Longueur quantisée à la grille d'une note tenue pendant REC.
+    fn quantize_note_len(&self, from_tick: u32, release_tick: u64) -> u32 {
+        let step = self.sequencer.grid.ticks().max(1) as u64;
+        let raw = release_tick.saturating_sub(u64::from(from_tick));
+        (((raw + step / 2) / step * step).max(step).min(3840 * 8)) as u32
+    }
+
+    /// Pendant REC, la voix live est coupée à la fin quantifiée de la note —
+    /// pas au relâchement physique — pour que l'écoute colle à l'enregistrement.
+    fn schedule_note_off(&mut self, pad: u8, note: u8, from_tick: u32, release_tick: u64) {
+        let len = self.quantize_note_len(from_tick, release_tick);
+        let end = u64::from(from_tick).saturating_add(len as u64);
+        if let Some(slot) = self.pending_note_offs.iter_mut().find(|s| s.is_none()) {
+            *slot = Some((pad, note, end));
+        }
+    }
+
     fn set_recorded_length(&mut self, group: u8, pad: u8, q_tick: u32, release_tick: u64) {
         if self.transport.state != TransportState::Recording {
             return;
         }
-        // Longueur quantisée à la grille (comme le départ de la note) pour
-        // que la queue entendue et la queue enregistrée tombent juste.
-        let step = self.sequencer.grid.ticks().max(1) as u64;
-        let raw = release_tick.saturating_sub(u64::from(q_tick));
-        let len = (((raw + step / 2) / step * step).max(step).min(3840 * 8)) as u32;
+        let len = self.quantize_note_len(q_tick, release_tick);
         let focus = group as usize;
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
@@ -5658,6 +5702,7 @@ impl Engine {
         self.rec_pad_press = [None; 16];
         self.rec_key_press = [None; 128];
         self.rec_sounding = [None; 16];
+        self.pending_note_offs = [None; 16];
     }
 
     /// Enregistre un point d'automation pendant REC (knob du Sound actif) dans
@@ -9954,6 +9999,43 @@ mod tests {
                 .iter()
                 .any(|a| a.sound == Some(0) && a.knob == 2),
             "l'automation du knob doit être enregistrée pendant REC"
+        );
+    }
+
+    #[test]
+    fn rec_live_note_off_is_quantized() {
+        let mut eng = Engine::new_demo(48000);
+        eng.load_plugin_to_sound(0, 0, 1).unwrap();
+        eng.handle_event(EngineEvent::SelectSound(0)).unwrap();
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: true,
+            stop: false,
+        })
+        .unwrap();
+        eng.handle_event(EngineEvent::KeyboardTrigger {
+            note: 60,
+            velocity: 110,
+            pressed: true,
+        })
+        .unwrap();
+        eng.advance(1200);
+        eng.handle_event(EngineEvent::KeyboardTrigger {
+            note: 60,
+            velocity: 0,
+            pressed: false,
+        })
+        .unwrap();
+        assert!(
+            eng.pending_note_offs.iter().any(Option::is_some),
+            "la fin de note est programmée à la fin quantifiée"
+        );
+        for _ in 0..40 {
+            eng.advance(240);
+        }
+        assert!(
+            eng.pending_note_offs.iter().all(Option::is_none),
+            "la note live est coupée à la fin quantifiée"
         );
     }
 

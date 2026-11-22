@@ -98,6 +98,19 @@ impl SpscRing {
         (w - r) as usize
     }
 
+    /// Drop the oldest samples so at most `max_frames` remain buffered.
+    /// Called by the consumer (output callback) to bound monitoring latency
+    /// when the input callback delivers larger blocks than expected.
+    pub fn discard_excess(&self, max_frames: usize) {
+        let r = self.read.load(Ordering::Relaxed);
+        let w = self.write.load(Ordering::Acquire);
+        let available = (w - r) as usize;
+        if available > max_frames {
+            self.read
+                .store(r + (available - max_frames) as u64, Ordering::Release);
+        }
+    }
+
     pub fn clear(&self) {
         self.read.store(0, Ordering::Relaxed);
         self.write.store(0, Ordering::Relaxed);
@@ -150,7 +163,9 @@ impl Default for GuitarControl {
             presence: AtomicF32::new(settings.presence),
             sag: AtomicF32::new(settings.sag),
             master: AtomicF32::new(settings.master),
-            monitor_gain: AtomicF32::new(0.8),
+            // Monitoring at unity: the amp's own MASTER and the output
+            // softlimiter already set the level.
+            monitor_gain: AtomicF32::new(1.0),
             // Par défaut, Line In 1 (AUX0) = prise jack guitare de la MK3.
             input_channel: AtomicU32::new(INPUT_CHANNEL_LINE1),
         }
@@ -527,6 +542,9 @@ impl GuitarProcessor {
             return;
         }
 
+        // Never let the ring accumulate more than one output block: each extra
+        // buffered frame is direct monitoring latency.
+        self.runtime.input_ring.discard_excess(frames);
         let read = self
             .runtime
             .input_ring
@@ -741,6 +759,18 @@ mod tests {
         assert_eq!(ring.read_into(&mut out), 3);
         assert_eq!(&out[..3], &[1.0, 2.0, 3.0]);
         assert_eq!(ring.available(), 0);
+    }
+
+    #[test]
+    fn ring_discards_old_frames_to_bound_latency() {
+        let ring = SpscRing::new(16);
+        ring.write(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+        assert_eq!(ring.available(), 5);
+        ring.discard_excess(2);
+        assert_eq!(ring.available(), 2);
+        let mut out = [0.0; 4];
+        assert_eq!(ring.read_into(&mut out), 2);
+        assert_eq!(&out[..2], &[4.0, 5.0]);
     }
 
     #[test]

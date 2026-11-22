@@ -48,7 +48,12 @@ available input ports.
 2. Pick an amp voice — `Vox AC30`, `Fender Blackface`, `Fender Tweed` or
    `High Gain` — and a cabinet (`Vox 12"`, `Fender 12"`, `Modern 12"`, `Flat`).
 3. Shape the sound with Gain / Bass / Mid / Treble / Presence / Sag / Master.
+   Defaults are GAIN 30 %, MASTER 90 %, MONITOR 100 %: clean and audible for a
+   line-level guitar. Increase GAIN progressively for crunch/lead saturation.
    The same eight controls are mapped to the MK3 contextual knobs in this view.
+   The capture stream uses the smallest buffer the device accepts (128 frames
+   first) and the ring never buffers more than one output block, keeping the
+   monitoring latency close to the audio interface's own latency.
 4. Use `BYPASS` to compare with the dry signal, and `MONITOR` to set the level
    sent to the main outputs (headphones follow their own volume).
 

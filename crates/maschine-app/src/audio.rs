@@ -224,7 +224,8 @@ impl AudioOutput {
         // Entrée guitare : on ouvre le port de capture de la MK3 (profil
         // pro-audio) en fallback sur le device par défaut. Un échec ici ne
         // doit pas empêcher le reste de l'application de fonctionner.
-        let input_stream = build_guitar_input_stream(&host, actual_rate, guitar.clone());
+        let input_stream =
+            build_guitar_input_stream(&host, actual_rate, cfg.buffer_size, guitar.clone());
         if let Some(stream) = input_stream.as_ref() {
             if let Err(e) = stream.play() {
                 log::warn!("Impossible de démarrer l'entrée guitare: {e}");
@@ -426,6 +427,7 @@ fn get_input_candidates(host: &cpal::Host) -> Vec<cpal::Device> {
 fn build_guitar_input_stream(
     host: &cpal::Host,
     sample_rate: u32,
+    output_buffer: cpal::BufferSize,
     guitar: Arc<GuitarRuntime>,
 ) -> Option<cpal::Stream> {
     for device in get_input_candidates(host) {
@@ -437,85 +439,105 @@ fn build_guitar_input_stream(
             .map(|c| c.sample_format())
             .unwrap_or(cpal::SampleFormat::F32);
 
+        // Use the same (small) buffer as the output stream when possible:
+        // BufferSize::Default can negotiate 1024+ frames (~21 ms) on PipeWire,
+        // which adds a full extra block of latency to the monitoring path.
+        let preferred = output_buffer;
+        let mut buffers = vec![cpal::BufferSize::Fixed(128)];
+        if !buffers.contains(&preferred) {
+            buffers.push(preferred);
+        }
+        for frames in [256u32, 512, 1024] {
+            let candidate = cpal::BufferSize::Fixed(frames);
+            if !buffers.contains(&candidate) {
+                buffers.push(candidate);
+            }
+        }
+        buffers.push(cpal::BufferSize::Default);
+
         for channels in [2u16, 1] {
-            let cfg = cpal::StreamConfig {
-                channels,
-                sample_rate: cpal::SampleRate(sample_rate),
-                buffer_size: cpal::BufferSize::Default,
-            };
-            let rt = guitar.clone();
-            let attempt = match input_format {
-                cpal::SampleFormat::F32 => device.build_input_stream(
-                    &cfg,
-                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        let ch_mode = rt.control.input_channel.load(Ordering::Relaxed);
-                        push_input_frames(
-                            &rt.input_ring,
-                            &rt.dropped,
-                            data,
-                            channels as usize,
-                            ch_mode,
-                        );
-                    },
-                    |e| log::warn!("Input stream error: {e}"),
-                    None,
-                ),
-                cpal::SampleFormat::I16 => device.build_input_stream(
-                    &cfg,
-                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                        let ch_mode = rt.control.input_channel.load(Ordering::Relaxed);
-                        let mut converted = [0.0f32; 1024];
-                        for chunk in data.chunks(1024) {
-                            for (i, &s) in chunk.iter().enumerate() {
-                                converted[i] = s as f32 / i16::MAX as f32;
-                            }
+            for buffer_size in &buffers {
+                let cfg = cpal::StreamConfig {
+                    channels,
+                    sample_rate: cpal::SampleRate(sample_rate),
+                    buffer_size: *buffer_size,
+                };
+                let rt = guitar.clone();
+                let attempt = match input_format {
+                    cpal::SampleFormat::F32 => device.build_input_stream(
+                        &cfg,
+                        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                            let ch_mode = rt.control.input_channel.load(Ordering::Relaxed);
                             push_input_frames(
                                 &rt.input_ring,
                                 &rt.dropped,
-                                &converted[..chunk.len()],
+                                data,
                                 channels as usize,
                                 ch_mode,
                             );
-                        }
-                    },
-                    |e| log::warn!("Input stream error: {e}"),
-                    None,
-                ),
-                cpal::SampleFormat::I32 => device.build_input_stream(
-                    &cfg,
-                    move |data: &[i32], _: &cpal::InputCallbackInfo| {
-                        let ch_mode = rt.control.input_channel.load(Ordering::Relaxed);
-                        let mut converted = [0.0f32; 1024];
-                        for chunk in data.chunks(1024) {
-                            for (i, &s) in chunk.iter().enumerate() {
-                                converted[i] = s as f32 / i32::MAX as f32;
+                        },
+                        |e| log::warn!("Input stream error: {e}"),
+                        None,
+                    ),
+                    cpal::SampleFormat::I16 => device.build_input_stream(
+                        &cfg,
+                        move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                            let ch_mode = rt.control.input_channel.load(Ordering::Relaxed);
+                            let mut converted = [0.0f32; 1024];
+                            for chunk in data.chunks(1024) {
+                                for (i, &s) in chunk.iter().enumerate() {
+                                    converted[i] = s as f32 / i16::MAX as f32;
+                                }
+                                push_input_frames(
+                                    &rt.input_ring,
+                                    &rt.dropped,
+                                    &converted[..chunk.len()],
+                                    channels as usize,
+                                    ch_mode,
+                                );
                             }
-                            push_input_frames(
-                                &rt.input_ring,
-                                &rt.dropped,
-                                &converted[..chunk.len()],
-                                channels as usize,
-                                ch_mode,
-                            );
-                        }
-                    },
-                    |e| log::warn!("Input stream error: {e}"),
-                    None,
-                ),
-                other => {
-                    log::warn!("Format d'entrée non supporté sur '{name}': {other:?}");
-                    continue;
-                }
-            };
-            match attempt {
-                Ok(stream) => {
-                    log::info!(
-                        "✓ Entrée guitare configurée sur '{name}' ({channels}ch, format={input_format:?})"
+                        },
+                        |e| log::warn!("Input stream error: {e}"),
+                        None,
+                    ),
+                    cpal::SampleFormat::I32 => device.build_input_stream(
+                        &cfg,
+                        move |data: &[i32], _: &cpal::InputCallbackInfo| {
+                            let ch_mode = rt.control.input_channel.load(Ordering::Relaxed);
+                            let mut converted = [0.0f32; 1024];
+                            for chunk in data.chunks(1024) {
+                                for (i, &s) in chunk.iter().enumerate() {
+                                    converted[i] = s as f32 / i32::MAX as f32;
+                                }
+                                push_input_frames(
+                                    &rt.input_ring,
+                                    &rt.dropped,
+                                    &converted[..chunk.len()],
+                                    channels as usize,
+                                    ch_mode,
+                                );
+                            }
+                        },
+                        |e| log::warn!("Input stream error: {e}"),
+                        None,
+                    ),
+                    other => {
+                        log::warn!("Format d'entrée non supporté sur '{name}': {other:?}");
+                        continue;
+                    }
+                };
+                match attempt {
+                    Ok(stream) => {
+                        log::info!(
+                        "✓ Entrée guitare configurée sur '{name}' ({channels}ch, buffer={buffer_size:?}, format={input_format:?})"
                     );
-                    *guitar.input_device_name.lock() = Some(name);
-                    return Some(stream);
+                        *guitar.input_device_name.lock() = Some(name);
+                        return Some(stream);
+                    }
+                    Err(e) => log::debug!(
+                        "Config entrée refusée sur '{name}' ({channels}ch, {buffer_size:?}): {e}"
+                    ),
                 }
-                Err(e) => log::debug!("Config entrée refusée sur '{name}' ({channels}ch): {e}"),
             }
         }
     }

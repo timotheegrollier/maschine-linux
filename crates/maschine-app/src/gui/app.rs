@@ -1068,7 +1068,7 @@ impl GuiApp {
                         snap.acid_params.delay_mix,
                     ),
                     KParam::GuitarGain => (
-                        KnobSpec::linear("GAIN", " %", 0.0, 1.0, 0.45),
+                        KnobSpec::linear("GAIN", " %", 0.0, 1.0, 0.30),
                         self.guitar
                             .control
                             .get_norm(crate::guitar::GuitarParam::Gain),
@@ -1104,13 +1104,13 @@ impl GuiApp {
                             .get_norm(crate::guitar::GuitarParam::Sag),
                     ),
                     KParam::GuitarMaster => (
-                        KnobSpec::linear("MASTER", " %", 0.0, 1.0, 0.8),
+                        KnobSpec::linear("MASTER", " %", 0.0, 1.0, 0.9),
                         self.guitar
                             .control
                             .get_norm(crate::guitar::GuitarParam::Master),
                     ),
                     KParam::GuitarMonitor => (
-                        KnobSpec::linear("MONITOR", " %", 0.0, 1.0, 0.8),
+                        KnobSpec::linear("MONITOR", " %", 0.0, 1.0, 1.0),
                         self.guitar
                             .control
                             .get_norm(crate::guitar::GuitarParam::MonitorGain),

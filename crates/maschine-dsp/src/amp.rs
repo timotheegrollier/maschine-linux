@@ -71,16 +71,22 @@ pub struct AmpSettings {
 impl Default for AmpSettings {
     fn default() -> Self {
         Self {
-            gain: 0.45,
+            // Gain staging is calibrated for a line-level input: 0.30 gives a
+            // clean, usable level; higher values progressively drive the tubes.
+            gain: 0.30,
             bass: 0.5,
             mid: 0.5,
             treble: 0.5,
             presence: 0.5,
             sag: 0.5,
-            master: 0.7,
+            master: 0.9,
         }
     }
 }
+
+/// Fixed output trim that makes a quiet line input audible without forcing
+/// the preamp into permanent saturation.
+const OUTPUT_TRIM: f32 = 1.6;
 
 /// Configuration of a single preamp gain stage.
 #[derive(Clone, Copy)]
@@ -109,24 +115,28 @@ struct ModelConfig {
 }
 
 fn model_config(model: AmpModel) -> ModelConfig {
+    // Stage gains are deliberately modest: the user's GAIN control provides
+    // the remaining drive on top of this fixed voicing. The old values (up to
+    // 9x per stage) multiplied into a ~200x chain and squared every note,
+    // even at the lowest GAIN setting.
     match model {
         AmpModel::VoxAc30 => ModelConfig {
             stages: [
                 StageConfig {
-                    gain: 3.2,
-                    bias: 0.28,
+                    gain: 1.5,
+                    bias: 0.16,
                     hp_hz: 70.0,
                     lp_hz: 12000.0,
                 },
                 StageConfig {
-                    gain: 4.5,
-                    bias: 0.22,
+                    gain: 1.8,
+                    bias: 0.13,
                     hp_hz: 90.0,
                     lp_hz: 9000.0,
                 },
                 StageConfig {
-                    gain: 2.4,
-                    bias: 0.18,
+                    gain: 1.3,
+                    bias: 0.10,
                     hp_hz: 120.0,
                     lp_hz: 7000.0,
                 },
@@ -136,25 +146,25 @@ fn model_config(model: AmpModel) -> ModelConfig {
             treble_hz: 3800.0,
             presence_hz: 6000.0,
             mid_cut_db: -3.0,
-            power_headroom: 0.85,
+            power_headroom: 1.4,
         },
         AmpModel::FenderBlackface => ModelConfig {
             stages: [
                 StageConfig {
-                    gain: 2.6,
-                    bias: 0.18,
+                    gain: 1.3,
+                    bias: 0.11,
                     hp_hz: 80.0,
                     lp_hz: 14000.0,
                 },
                 StageConfig {
-                    gain: 3.6,
-                    bias: 0.14,
+                    gain: 1.6,
+                    bias: 0.09,
                     hp_hz: 100.0,
                     lp_hz: 11000.0,
                 },
                 StageConfig {
-                    gain: 1.8,
-                    bias: 0.10,
+                    gain: 1.2,
+                    bias: 0.07,
                     hp_hz: 130.0,
                     lp_hz: 8500.0,
                 },
@@ -163,26 +173,26 @@ fn model_config(model: AmpModel) -> ModelConfig {
             mid_hz: 800.0,
             treble_hz: 3200.0,
             presence_hz: 5500.0,
-            mid_cut_db: -6.0,
-            power_headroom: 1.1,
+            mid_cut_db: -4.0,
+            power_headroom: 1.5,
         },
         AmpModel::FenderTweed => ModelConfig {
             stages: [
                 StageConfig {
-                    gain: 3.0,
-                    bias: 0.30,
+                    gain: 1.4,
+                    bias: 0.18,
                     hp_hz: 90.0,
                     lp_hz: 10000.0,
                 },
                 StageConfig {
-                    gain: 4.0,
-                    bias: 0.25,
+                    gain: 1.7,
+                    bias: 0.15,
                     hp_hz: 110.0,
                     lp_hz: 8000.0,
                 },
                 StageConfig {
-                    gain: 2.2,
-                    bias: 0.20,
+                    gain: 1.3,
+                    bias: 0.12,
                     hp_hz: 140.0,
                     lp_hz: 6500.0,
                 },
@@ -192,25 +202,25 @@ fn model_config(model: AmpModel) -> ModelConfig {
             treble_hz: 2800.0,
             presence_hz: 4500.0,
             mid_cut_db: 1.0,
-            power_headroom: 0.9,
+            power_headroom: 1.3,
         },
         AmpModel::HighGain => ModelConfig {
             stages: [
                 StageConfig {
-                    gain: 4.5,
-                    bias: 0.12,
+                    gain: 1.8,
+                    bias: 0.09,
                     hp_hz: 35.0,
                     lp_hz: 16000.0,
                 },
                 StageConfig {
-                    gain: 8.0,
-                    bias: 0.10,
+                    gain: 2.4,
+                    bias: 0.07,
                     hp_hz: 45.0,
                     lp_hz: 13000.0,
                 },
                 StageConfig {
-                    gain: 9.0,
-                    bias: 0.08,
+                    gain: 2.0,
+                    bias: 0.06,
                     hp_hz: 60.0,
                     lp_hz: 10000.0,
                 },
@@ -220,7 +230,7 @@ fn model_config(model: AmpModel) -> ModelConfig {
             treble_hz: 4200.0,
             presence_hz: 7000.0,
             mid_cut_db: -2.0,
-            power_headroom: 0.7,
+            power_headroom: 1.6,
         },
     }
 }
@@ -483,8 +493,9 @@ impl TubeAmp {
 
     /// Process a block of samples at the base sample rate.
     pub fn process(&mut self, input: &[f32], output: &mut [f32]) {
-        let gain_db = (self.settings.gain * 36.0).max(0.0);
-        let pre_gain = 10.0_f32.powf(gain_db * 0.05);
+        // 1..=5 linear drive range: at the default 0.30 the preamp adds only
+        // ~2.2x, so a line-level guitar signal stays clean and audible.
+        let pre_gain = 1.0 + self.settings.gain.clamp(0.0, 1.0) * 4.0;
         let headroom = self.config.power_headroom;
 
         for (x, y) in input.iter().zip(output.iter_mut()) {
@@ -508,15 +519,20 @@ impl TubeAmp {
                     self.sag_release
                 };
                 self.sag_env += (level - self.sag_env) * coeff;
-                let sag_amount = self.settings.sag * 0.6;
-                let supply = 1.0 / (1.0 + sag_amount * self.sag_env * 2.0);
+                // Gentle supply sag: it adds dynamics without swallowing the
+                // signal (the old 0.6 / 2.0 factors cut the level in half).
+                let sag_amount = self.settings.sag * 0.15;
+                let supply = 1.0 / (1.0 + sag_amount * self.sag_env);
 
                 let driven = s * supply;
-                let power = tube_clip(driven / headroom, 0.04) * headroom;
+                let power = tube_clip(driven / headroom, 0.03) * headroom;
                 let smooth = self.power_lp.process(power);
                 acc += self.oversampler.downsample(smooth).unwrap_or(0.0);
             }
-            *y = acc * self.settings.master;
+            // Output trim + softlimiter: quiet line input becomes audible,
+            // loud peaks are rounded instead of hard-clipped by the backend.
+            let out = acc * self.settings.master * OUTPUT_TRIM;
+            *y = out.tanh();
         }
     }
 
@@ -587,6 +603,26 @@ mod tests {
             high_energy
         };
         assert!(analyze(0.9) > analyze(0.1) * 1.5);
+    }
+
+    #[test]
+    fn default_settings_are_clean_and_audible() {
+        let mut amp = TubeAmp::new(AmpModel::VoxAc30, 48000.0);
+        let n = 16384;
+        let input: Vec<f32> = (0..n)
+            .map(|i| 0.05 * (2.0 * std::f32::consts::PI * 220.0 * i as f32 / 48000.0).sin())
+            .collect();
+        let mut output = vec![0.0; n];
+        amp.process(&input, &mut output);
+        let tail = &output[4096..];
+        let rms = (tail.iter().map(|s| s * s).sum::<f32>() / tail.len() as f32).sqrt();
+        assert!(rms > 0.05 && rms < 0.65, "output RMS out of range: {rms}");
+        let near_clip = tail.iter().filter(|s| s.abs() > 0.95).count();
+        assert!(
+            near_clip < tail.len() / 100,
+            "default settings clip too often: {near_clip}/{}",
+            tail.len()
+        );
     }
 
     #[test]

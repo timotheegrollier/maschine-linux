@@ -18,6 +18,26 @@ All notable changes.
 ### Validation
 - `cargo fmt --all`, `cargo clippy --workspace --all-targets --locked -- -D warnings` et `cargo test --workspace` au vert.
 
+## [Unreleased]
+
+### Fixes
+
+- **Guitar amp latency**: the capture stream now negotiates a small explicit
+  buffer (128 frames first, then the output buffer) instead of
+  `BufferSize::Default`, and the SPSC ring drops any backlog beyond one output
+  block. This removes the extra 20–40 ms introduced by large PipeWire buffers.
+- **Guitar amp gain staging**: fixed stage gains were multiplied by the user
+  GAIN into a ~200x chain, so every note was square-wave distorted. Stage gains
+  are now modest, GAIN maps to 1–5x, power-amp sag no longer halves the level,
+  and a fixed output trim with a soft limiter makes the guitar audible without
+  hard clipping.
+- Defaults retuned: GAIN 30 %, MASTER 90 %, MONITOR 100 %.
+
+### Validation
+
+- `cargo test --workspace --locked` (new clean/audible gain and ring-latency tests)
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+
 ## [0.11.6] - 2026-11-22
 
 ### Fixed

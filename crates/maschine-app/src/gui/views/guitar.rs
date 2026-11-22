@@ -118,8 +118,9 @@ fn render_controls(ui: &mut egui::Ui, app: &mut crate::gui::app::GuiApp, c: &Mac
             for param in GuitarParam::ALL {
                 let value = app.guitar.control.get_norm(param);
                 let default = match param {
-                    GuitarParam::Gain => 0.45,
-                    GuitarParam::Master | GuitarParam::MonitorGain => 0.8,
+                    GuitarParam::Gain => 0.30,
+                    GuitarParam::Master => 0.9,
+                    GuitarParam::MonitorGain => 1.0,
                     _ => 0.5,
                 };
                 let spec = KnobSpec::linear(param.label(), " %", 0.0, 1.0, default);

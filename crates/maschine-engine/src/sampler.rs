@@ -30,6 +30,53 @@ fn hermite(sample: &[f32], i: usize, frac: f32) -> f32 {
     ((c3 * frac + c2) * frac + c1) * frac + x0
 }
 
+/// Débuts de coups (transitoires) dans `sample[start..end]` : énergie par
+/// fenêtres de 5 ms, un coup quand elle bondit au-dessus de la moyenne
+/// récente (`sensitivity` 0..1 : plus haut = plus de coups). Au plus `max`
+/// coups, les plus nets, renvoyés dans l'ordre ; le début compte toujours.
+#[must_use]
+pub fn detect_onsets(
+    sample: &[f32],
+    sample_rate: u32,
+    start: usize,
+    end: usize,
+    max: usize,
+    sensitivity: f32,
+) -> Vec<usize> {
+    let end = end.min(sample.len());
+    if start >= end || max == 0 {
+        return Vec::new();
+    }
+    let win = (sample_rate as usize / 200).max(16);
+    let energy: Vec<f32> = sample[start..end]
+        .chunks(win)
+        .map(|c| c.iter().map(|s| s * s).sum::<f32>() / c.len() as f32)
+        .collect();
+    let ratio = 4.0 - 3.0 * sensitivity.clamp(0.0, 1.0);
+    let min_gap = 8usize; // 40 ms entre deux coups
+    let mut candidates: Vec<(f32, usize)> = Vec::new();
+    let mut avg = energy.first().copied().unwrap_or(0.0);
+    let mut last = 0usize;
+    for (k, &e) in energy.iter().enumerate().skip(1) {
+        let jump = e / (avg + 1e-6);
+        if jump > ratio && e > 1e-5 && k - last >= min_gap {
+            candidates.push((jump, k));
+            last = k;
+        }
+        avg = avg * 0.7 + e * 0.3;
+    }
+    candidates.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut onsets: Vec<usize> = candidates
+        .into_iter()
+        .take(max.saturating_sub(1))
+        .map(|(_, k)| start + k * win)
+        .collect();
+    onsets.push(start);
+    onsets.sort_unstable();
+    onsets.dedup();
+    onsets
+}
+
 /// Clé distincte par Group et slot Sound (chaque slot va de 0 à 15).
 #[must_use]
 pub const fn sound_id(group: u8, sound: u8) -> SoundId {
@@ -169,6 +216,8 @@ pub struct SamplerVoice {
     pub start_frame: usize,
     /// Longueur (en positions de lecture) du fondu anti-clic en fin de sample.
     pub end_fade: f64,
+    /// Position de fin de lecture (plage du Sound), en échantillons.
+    pub end: f64,
     /// Resonance 0..1
     pub resonance: f32,
     /// Filtre activé
@@ -229,6 +278,9 @@ pub struct Sampler {
     rr_counters: std::collections::HashMap<u16, u8>,
     /// Polyphonie maximale par Sound (défaut : 8).
     sound_polyphony: HashMap<u16, u8>,
+    /// Plage de lecture par Sound (début, fin) en fraction du sample :
+    /// éditeur de sample (EDIT) et tranches (SLICE).
+    sound_range: HashMap<u16, (f32, f32)>,
     /// Polyphonie max globale
     pub max_voices: usize,
     /// Sample rate engine
@@ -269,6 +321,37 @@ impl Sampler {
         self.zones.remove(&sound);
         self.waveform_cache.remove(&sound);
         self.sound_polyphony.remove(&sound);
+        self.sound_range.remove(&sound);
+    }
+
+    /// Plage de lecture d'un Sound (fractions 0..1 du sample, début < fin).
+    pub fn set_sound_range(&mut self, sound: u16, start: f32, end: f32) {
+        let start = start.clamp(0.0, 0.999);
+        let end = end.clamp(start + 0.001, 1.0);
+        if start <= 0.0 && end >= 1.0 {
+            self.sound_range.remove(&sound);
+        } else {
+            self.sound_range.insert(sound, (start, end));
+        }
+    }
+
+    /// Plage de lecture d'un Sound (0..1 par défaut).
+    #[must_use]
+    pub fn sound_range(&self, sound: u16) -> (f32, f32) {
+        self.sound_range.get(&sound).copied().unwrap_or((0.0, 1.0))
+    }
+
+    /// Première zone d'un Sound (copie ; le sample est partagé).
+    #[must_use]
+    pub fn zone_mapping(&self, sound: u16) -> Option<ZoneMapping> {
+        self.zones.get(&sound)?.first().cloned()
+    }
+
+    /// Modifie les zones d'un Sound (racine, tessiture, accord, gain…).
+    pub fn edit_zones(&mut self, sound: u16, mut f: impl FnMut(&mut ZoneMapping)) {
+        if let Some(zones) = self.zones.get_mut(&sound) {
+            zones.iter_mut().for_each(&mut f);
+        }
     }
 
     /// Inverse temporellement les échantillons du son (effet Reverse).
@@ -382,6 +465,9 @@ impl Sampler {
         if sample.is_empty() {
             return None;
         }
+        let (range_start, range_end) = self.sound_range(sound);
+        let len = sample.len() as f64;
+        let (start_pos, end_pos) = (f64::from(range_start) * len, f64::from(range_end) * len);
 
         // choke : les voix du même groupe fondent en Release (5ms, pas de clic)
         // au lieu d'être coupées net.
@@ -459,7 +545,8 @@ impl Sampler {
 
         let voice = SamplerVoice {
             sample,
-            pos: 0.0,
+            pos: start_pos,
+            end: end_pos,
             increment,
             gain,
             pan,
@@ -542,6 +629,7 @@ impl Sampler {
             }
         }
         let voice = SamplerVoice {
+            end: sample.len() as f64,
             sample: sample.clone(),
             pos: 0.0,
             increment: 1.0,
@@ -659,7 +747,7 @@ impl Sampler {
                     let mut pos = voice.pos;
                     let inc = voice.increment;
                     let sample = &voice.sample;
-                    let sample_len = sample.len() as f64;
+                    let sample_len = voice.end.min(sample.len() as f64);
                     let end_fade = voice.end_fade;
                     let mut voice_peak = 0.0f32;
                     let mut finished = false;
@@ -1278,6 +1366,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn play_range_starts_and_stops_inside_the_sample() {
+        let mut s = Sampler::new(48_000);
+        let ramp: Vec<f32> = (0..48_000).map(|i| i as f32 / 48_000.0).collect();
+        s.add_zone(
+            7,
+            ZoneMapping {
+                sample: Some(Arc::new(ramp)),
+                sample_rate: 48_000,
+                root_key: 60,
+                ..Default::default()
+            },
+        );
+        s.set_sound_range(7, 0.5, 0.6);
+        assert_eq!(s.sound_range(7), (0.5, 0.6));
+        s.note_on(7, 60, 127, 60);
+        let mut out = vec![0.0f32; 48_000];
+        s.render(&mut out);
+        // La lecture part du milieu (rampe ≈ 0,5 après l'attaque de 2 ms) et
+        // s'arrête après 10 % du sample.
+        let early = out[2 * 400].abs();
+        assert!(early > 0.25, "départ au milieu : {early}");
+        let tail = out[2 * 5000..].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(tail < 1e-3, "fin de plage respectée");
+    }
+
+    #[test]
+    fn onsets_are_found_on_hits_and_start_is_always_one() {
+        let sr = 48_000;
+        let mut sample = vec![0.0f32; sr as usize];
+        for hit in [0usize, 12_000, 24_000, 36_000] {
+            for i in 0..2000 {
+                sample[hit + i] = (1.0 - i as f32 / 2000.0) * if i % 2 == 0 { 0.8 } else { -0.8 };
+            }
+        }
+        let onsets = detect_onsets(&sample, sr, 0, sample.len(), 8, 0.5);
+        assert_eq!(onsets.len(), 4, "{onsets:?}");
+        for (o, hit) in onsets.iter().zip([0usize, 12_000, 24_000, 36_000]) {
+            assert!(o.abs_diff(hit) <= 480, "{o} ≈ {hit}");
+        }
+    }
+
+    #[test]
     fn hermite_is_exact_on_samples_and_smooth_between() {
         let ramp = [0.0, 1.0, 2.0, 3.0, 4.0];
         assert_eq!(hermite(&ramp, 2, 0.0), 2.0);
@@ -1603,6 +1733,7 @@ mod tests {
                 release_from: 1.0,
                 start_frame: 0,
                 end_fade: 1.0,
+                end: 0.0,
                 note: 60,
                 velocity: 100,
                 choke_group: None,

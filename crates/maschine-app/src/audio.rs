@@ -794,6 +794,11 @@ fn render_audio_block(
     }
 
     eng.advance(frames as u64);
+    // Éditeur de sample (RECORD) : l'entrée de la MK3 part vers le Sound visé
+    // (l'ampli guitare se tait le temps de l'enregistrement).
+    if eng.is_recording() {
+        eng.push_record_input(guitar.capture_input(frames));
+    }
     let hp_vol = eng.headphone_volume();
 
     const CHUNK_FRAMES: usize = 1024;

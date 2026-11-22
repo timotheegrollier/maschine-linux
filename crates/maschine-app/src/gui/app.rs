@@ -798,6 +798,18 @@ impl GuiApp {
                     self.press_hardware_button(id);
                 }
             }
+            // EVENTS (bouton de la MK3) : édition note par note sur les deux
+            // écrans, knobs = position / note / vélocité / longueur.
+            let events_lit = leds[maschine_proto::hid_output::offsets::EVENTS - 1] > 2;
+            if crate::gui::widgets::chip_tooltip(
+                ui,
+                "EVENTS",
+                events_lit,
+                c.text_dim,
+                "Éditer les notes du pattern (bouton EVENTS de la MK3)",
+            ) {
+                self.press_hardware_button(maschine_proto::ButtonId::Events);
+            }
             // Mode PLUGIN : la chaîne (instrument, effets) se parcourt à
             // l'encodeur 4D sur la MK3 ; ici, deux boutons.
             if snap.left_tab == 4 && snap.plugin_page != 2 {
@@ -1791,7 +1803,11 @@ pub fn run_native_gui(
 ) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1560.0, 960.0])
+            // Ouverte maximisée : le gestionnaire de fenêtres la loge dans la
+            // zone utile (hors barre des tâches KDE / GNOME, quelle que soit
+            // la mise à l'échelle) ; la taille ci-dessous sert au retour.
+            .with_inner_size([1200.0, 720.0])
+            .with_maximized(true)
             .with_min_inner_size([420.0, 340.0]),
         ..Default::default()
     };
@@ -1820,7 +1836,11 @@ pub fn run_native_gui(
 ) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1560.0, 960.0])
+            // Ouverte maximisée : le gestionnaire de fenêtres la loge dans la
+            // zone utile (hors barre des tâches KDE / GNOME, quelle que soit
+            // la mise à l'échelle) ; la taille ci-dessous sert au retour.
+            .with_inner_size([1200.0, 720.0])
+            .with_maximized(true)
             .with_min_inner_size([420.0, 340.0]),
         ..Default::default()
     };

@@ -378,6 +378,12 @@ pub enum MapperAction {
     PluginPageStep(i8),
     /// Emplacement précédent / suivant de la chaîne de plugins (4D tourné).
     PluginSlotStep(i8),
+    /// Mode EVENTS : événement précédent / suivant (4D tourné).
+    EventStep(i32),
+    /// Mode EVENTS : knob de l'événement sélectionné (ticks bruts).
+    EventKnob { knob: u8, delta: i32 },
+    /// SAMPLING : knob de la page de l'éditeur de sample (ticks bruts).
+    SampleKnob { knob: u8, delta: i32 },
     /// Soft key d'écran (1..8) — action contextuelle décidée par l'Engine
     /// (les labels affichés sous les écrans correspondent exactement).
     SoftKey(u8),
@@ -1534,6 +1540,11 @@ impl HardwareMapper {
 
     fn handle_main_4d_encoder(&mut self, delta: i8) -> Vec<MapperAction> {
         let mut actions = Vec::new();
+        if self.right_tab == 1 {
+            // EVENTS : le 4D passe d'une note à l'autre.
+            actions.push(MapperAction::EventStep(i32::from(delta)));
+            return actions;
+        }
         if self.scene_select_mode {
             actions.push(MapperAction::SceneStep(delta as i32));
         } else if self.pattern_select_mode {
@@ -1683,27 +1694,13 @@ impl HardwareMapper {
         actions
     }
 
+    /// SAMPLING : l'éditeur de sample du moteur règle le paramètre affiché
+    /// au-dessus du knob (page RECORD / EDIT / SLICE / ZONE).
     fn handle_sampler_knobs(&mut self, idx: usize, delta: i32) -> Vec<MapperAction> {
-        let mut actions = Vec::new();
-        if self.shift_held && (idx == 2 || idx == 3) {
-            actions.push(MapperAction::CycleSoundFilterKind);
-        } else {
-            if self.shift_held && (idx == 2 || idx == 3) {
-                actions.push(MapperAction::CycleSoundFilterKind);
-            } else {
-                match idx {
-                    0 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
-                    1 => actions.push(MapperAction::SoundPanDelta(delta as f32)),
-                    2 => actions.push(MapperAction::SoundFilterCutoffDelta(delta as f32)),
-                    3 => actions.push(MapperAction::SoundFilterResoDelta(delta as f32)),
-                    4 => actions.push(MapperAction::SoundAttackDelta(delta as f32)),
-                    5 => actions.push(MapperAction::SoundDecayDelta(delta as f32)),
-                    6 => actions.push(MapperAction::SoundSustainDelta(delta as f32)),
-                    _ => actions.push(MapperAction::SoundReleaseDelta(delta as f32)),
-                }
-            }
-        }
-        actions
+        vec![MapperAction::SampleKnob {
+            knob: idx as u8,
+            delta,
+        }]
     }
 
     fn handle_plugin_knobs(&mut self, idx: usize, delta: i32) -> Vec<MapperAction> {
@@ -1807,6 +1804,13 @@ impl HardwareMapper {
     }
 
     fn handle_display_knob(&mut self, idx: usize, delta: i32) -> Vec<MapperAction> {
+        // EVENTS prend les deux écrans : les knobs éditent la note choisie.
+        if self.right_tab == 1 {
+            return vec![MapperAction::EventKnob {
+                knob: idx as u8,
+                delta,
+            }];
+        }
         if self.mode == ControllerMode::Step && self.left_tab == 0 {
             self.handle_step_knobs(idx, delta)
         } else if self.left_tab == 1 {
@@ -3298,6 +3302,25 @@ mod tests {
     }
 
     #[test]
+    fn events_mode_routes_knobs_and_4d_to_the_selected_event() {
+        let mut m = HardwareMapper::new(MapperConfig::default());
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Events,
+            pressed: true,
+            ts_ns: 0,
+        });
+        assert_eq!(m.right_tab, 1);
+        assert_eq!(
+            m.handle_display_knob(2, 40),
+            vec![MapperAction::EventKnob { knob: 2, delta: 40 }]
+        );
+        assert_eq!(
+            m.handle_main_4d_encoder(1),
+            vec![MapperAction::EventStep(1)]
+        );
+    }
+
+    #[test]
     fn selecting_main_view_clears_events_overlay() {
         let mut m = HardwareMapper::with_default();
         let events = m.handle_hardware_event(HardwareEvent::Button {
@@ -3697,12 +3720,13 @@ mod tests {
     fn hardware_filter_and_kick_knobs_cycle_modes() {
         let mut m = HardwareMapper::with_default();
 
-        // SAMPLER (left_tab = 2) : Shift + Knob 3 alterne le type de filtre.
+        // SAMPLING (left_tab = 2) : les knobs vont à l'éditeur de sample du
+        // moteur (page affichée), Shift compris (réglage fin côté moteur).
         m.left_tab = 2;
         m.shift_held = true;
         let _ = m.handle_hardware_event(knob_ev(3, 100, 0));
         let a = m.handle_hardware_event(knob_ev(3, 101, 1));
-        assert_eq!(a, vec![MapperAction::CycleSoundFilterKind]);
+        assert_eq!(a, vec![MapperAction::SampleKnob { knob: 2, delta: 1 }]);
 
         // PLUGIN (kick) : les knobs suivent la page affichée par le moteur,
         // Shift compris (réglage fin côté moteur).

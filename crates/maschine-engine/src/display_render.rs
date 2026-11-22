@@ -1675,7 +1675,7 @@ pub fn render_step_left(snap: &EngineSnapshot) -> DisplayFrame {
                 &mut frame,
                 8,
                 info_y,
-                "PAS VIDE - APPUIE UN PAD POUR LE POSER",
+                "Pas vide : appuie sur un pad pour le poser",
                 p.muted,
                 p.bg,
             );
@@ -1685,7 +1685,7 @@ pub fn render_step_left(snap: &EngineSnapshot) -> DisplayFrame {
         &mut frame,
         8,
         info_y + 14,
-        "K1-4 EDITER LE PAS | K5 SCROLL | 4D<> SCROLL | PADS STEPS",
+        "Knobs 1–4 : le pas · knob 5 / 4D : défiler · pads : poser",
         p.muted,
         p.bg,
     );
@@ -2292,6 +2292,31 @@ pub fn render_scenes_right(snap: &EngineSnapshot) -> DisplayFrame {
 
 // ── MIXER ──────────────────────────────────────────────────────────────
 
+/// Knobs du mixer des pads : volume (pan avec Shift) des 4 pads affichés.
+fn pad_volume_slots(snap: &EngineSnapshot, start_pad: usize) -> [EncSlot<'static>; 4] {
+    let grp = snap.project.groups.get(snap.group_focus as usize);
+    std::array::from_fn(|i| {
+        let pad = start_pad + i;
+        let snd = grp.and_then(|g| g.sounds.get(pad)).and_then(Option::as_ref);
+        let (vol, pan) = snd.map_or((0.0, 0.0), |s| (s.volume_db, s.pan));
+        let (name, value, norm) = if snap.shift_held {
+            (PAN_NAMES[pad % 16], fmt_pan(pan), (pan + 1.0) / 2.0)
+        } else {
+            (VOL_NAMES[pad % 16], fmt_db(vol), db_norm(vol))
+        };
+        Some((name, value, norm, hue_color(pad)))
+    })
+}
+
+const VOL_NAMES: [&str; 16] = [
+    "VOL 1", "VOL 2", "VOL 3", "VOL 4", "VOL 5", "VOL 6", "VOL 7", "VOL 8", "VOL 9", "VOL 10",
+    "VOL 11", "VOL 12", "VOL 13", "VOL 14", "VOL 15", "VOL 16",
+];
+const PAN_NAMES: [&str; 16] = [
+    "PAN 1", "PAN 2", "PAN 3", "PAN 4", "PAN 5", "PAN 6", "PAN 7", "PAN 8", "PAN 9", "PAN 10",
+    "PAN 11", "PAN 12", "PAN 13", "PAN 14", "PAN 15", "PAN 16",
+];
+
 fn render_pad_mixer_strips(
     frame: &mut DisplayFrame,
     p: &Pal,
@@ -2310,8 +2335,6 @@ fn render_pad_mixer_strips(
         panel(frame, p, x, y, w, h);
         if is_focused {
             draw_rect_outline(frame, x - 1, y - 1, w + 2, h + 2, p.accent);
-            fill_rect(frame, x - 1, y - 1, 3, 3, p.accent);
-            fill_rect(frame, x + w - 2, y - 1, 3, 3, p.accent);
         }
         let snd = grp
             .and_then(|g| g.sounds.get(pad_idx))
@@ -2397,12 +2420,10 @@ pub fn render_mixer_left(snap: &EngineSnapshot) -> DisplayFrame {
             } else {
                 "PAD MIXER | PADS 9-12"
             },
-            &format!(
-                "GRP {} | KNOBS 1-4 = VOL (SHIFT: PAN)",
-                group_letter(snap.group_focus)
-            ),
+            &format!("Groupe {}  ·  Shift = pan", group_letter(snap.group_focus)),
         );
         render_pad_mixer_strips(&mut frame, &p, snap, bank_pad);
+        encoder_row(&mut frame, &p, &pad_volume_slots(snap, bank_pad));
         finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
         return frame;
     }
@@ -2552,12 +2573,10 @@ pub fn render_mixer_right(snap: &EngineSnapshot) -> DisplayFrame {
             } else {
                 "PAD MIXER | PADS 13-16"
             },
-            &format!(
-                "GRP {} | KNOBS 5-8 = VOL (SHIFT: PAN)",
-                group_letter(snap.group_focus)
-            ),
+            &format!("Groupe {}  ·  Shift = pan", group_letter(snap.group_focus)),
         );
         render_pad_mixer_strips(&mut frame, &p, snap, bank_pad);
+        encoder_row(&mut frame, &p, &pad_volume_slots(snap, bank_pad));
         finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
         return frame;
     }
@@ -2797,253 +2816,403 @@ pub fn render_mixer_right(snap: &EngineSnapshot) -> DisplayFrame {
 
 // ── SAMPLER ────────────────────────────────────────────────────────────
 
-/// Écran gauche — vue SAMPLER : waveform + ADSR + infos du Sound actif.
+/// Écran gauche — SAMPLING (éditeur de sample, boutons 1–4 = RECORD, EDIT,
+/// SLICE, ZONE) : forme d'onde avec la plage de lecture et les tranches, ou
+/// l'état de l'enregistrement ; knobs 1–4 de la page.
 #[must_use]
 pub fn render_sampler_left(snap: &EngineSnapshot) -> DisplayFrame {
     let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
-    let s_name = sound_name(snap, snap.active_sound as usize);
-    let dur = snap.sample_duration;
-    header(
+    let snd = snap.active_sound as usize;
+    let page = SAMPLE_PAGE_NAMES[(snap.sample_page as usize).min(3)];
+    header_colored(
         &mut frame,
         &p,
         snap,
-        "SAMPLER",
+        page,
         &format!(
-            "GRP {} | SND {:02} {} | {:.2}s",
+            "{} {:02} {}  ·  {:.2} s",
             group_letter(snap.group_focus),
-            snap.active_sound + 1,
-            trunc(&s_name, 10),
-            dur
+            snd + 1,
+            sound_name(snap, snd),
+            snap.sample_duration
         ),
+        hue_color(snd),
     );
-
-    let buckets = snap.waveform.as_deref().unwrap_or(&[]);
-    draw_waveform(&mut frame, &p, 8, 26, 464, 92, buckets);
-    draw_text(
+    let (x, y, w, h) = (8usize, 34usize, SCR_W - 16, 142usize);
+    if snap.sample_page == 0 {
+        draw_record_state(&mut frame, &p, snap, (x, y, w, h));
+    } else {
+        let buckets = snap.waveform.as_deref().unwrap_or(&[]);
+        draw_waveform(&mut frame, &p, x, y, w, h, buckets);
+        if !buckets.is_empty() {
+            draw_play_range(&mut frame, &p, snap, (x, y, w, h));
+        }
+    }
+    let sections = ["ENTRÉE", "PLAGE & ACCORD", "DÉCOUPE", "TESSITURE"];
+    section_title(
         &mut frame,
-        12,
-        104,
-        &format!(
-            "SAMPLE {:.2}s | {} pts",
-            dur,
-            buckets.len().max(if buckets.is_empty() { 0 } else { 1 })
-        ),
-        p.dim,
-        p.bg,
+        &p,
+        sections[(snap.sample_page as usize).min(3)],
+        p.accent,
     );
-
-    let adsr = focus_sound(snap)
-        .map(|s| s.adsr.clone())
-        .unwrap_or_default();
-    draw_adsr(&mut frame, &p, 8, 124, 226, 62, &adsr);
-
-    let snd = focus_sound(snap);
-    let zones = snd.map(|s| s.zones.len()).unwrap_or(0);
-    let path = snd
-        .and_then(|s| s.zones.first())
-        .and_then(|z| z.sample_path.as_deref())
-        .map(|p| {
-            p.rsplit('/')
-                .next()
-                .map(|f| trunc(f, 16))
-                .unwrap_or_else(|| "--".into())
-        })
-        .unwrap_or_else(|| "--".to_string());
-    let poly = snd.map(|s| s.polyphony).unwrap_or(0);
-    let choke = snd
-        .and_then(|s| s.choke_group)
-        .map(|c| format!("{c}"))
-        .unwrap_or_else(|| "--".into());
-    let cut = snd.map(|s| s.filter.cutoff_hz).unwrap_or(20000.0);
-    let reso = snd.map(|s| s.filter.resonance).unwrap_or(0.0);
-    let f_kind = snd
-        .map(|s| s.filter.kind)
-        .unwrap_or(crate::project::FilterKind::LowPass);
-    let f_str = match f_kind {
-        crate::project::FilterKind::LowPass => "LP",
-        crate::project::FilterKind::HighPass => "HP",
-        crate::project::FilterKind::BandPass => "BP",
-        crate::project::FilterKind::Notch => "NOTCH",
-        crate::project::FilterKind::Peak => "PEAK",
-        crate::project::FilterKind::Off => "OFF",
-    };
-    fill_rect(&mut frame, 242, 124, 230, 62, p.panel);
-    draw_rect_outline(&mut frame, 242, 124, 230, 62, p.border);
-    draw_text(
+    encoder_row(
         &mut frame,
-        248,
-        128,
-        &format!("ZONES {zones} | POLY {poly} | CHOKE {choke}"),
-        p.dim,
-        p.panel,
+        &p,
+        &view_slots(&snap.sample_params, 0, p.accent),
     );
-    draw_text(
-        &mut frame,
-        248,
-        146,
-        &format!("FICH. {path}"),
-        p.muted,
-        p.panel,
-    );
-    draw_text(
-        &mut frame,
-        248,
-        164,
-        &format!(
-            "FILTRE [{f_str}] {} | RESO {:.0}%",
-            fmt_hz(cut),
-            reso * 100.0
-        ),
-        if f_kind == crate::project::FilterKind::Off {
-            p.muted
-        } else {
-            p.accent
-        },
-        p.panel,
-    );
-
-    let s_db = snd.map(|s| s.volume_db).unwrap_or(0.0);
-    let s_pan = snd.map(|s| s.pan).unwrap_or(0.0);
-    let slots = [
-        Some(("1:VOL", fmt_db(s_db), db_norm(s_db), p.cyan)),
-        Some(("2:PAN", fmt_pan(s_pan), (s_pan + 1.0) * 0.5, p.cyan)),
-        Some((
-            if f_kind == crate::project::FilterKind::Off {
-                "3:CUT [OFF]"
-            } else {
-                match f_kind {
-                    crate::project::FilterKind::LowPass => "3:CUT [LP]",
-                    crate::project::FilterKind::HighPass => "3:CUT [HP]",
-                    crate::project::FilterKind::BandPass => "3:CUT [BP]",
-                    _ => "3:CUTOFF",
-                }
-            },
-            fmt_hz(cut),
-            ((cut - 20.0) / 19980.0).clamp(0.0, 1.0),
-            if f_kind == crate::project::FilterKind::Off {
-                p.muted
-            } else {
-                p.accent
-            },
-        )),
-        Some(("4:RESO", format!("{:.0}%", reso * 100.0), reso, p.cyan)),
-    ];
-    encoder_row(&mut frame, &p, &slots);
-
     finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
     frame
 }
 
-/// Écran droit — vue SAMPLER : ADSR plein écran + réglages du Sound.
+/// Noms des pages de l'éditeur de sample (boutons 1–4).
+const SAMPLE_PAGE_NAMES: [&str; 4] = ["RECORD", "EDIT", "SLICE", "ZONE"];
+
+/// Les 4 slots d'une moitié des paramètres (`first` = 0 ou 4).
+fn view_slots(
+    params: &[Option<crate::plugin_pages::ParamView>; 8],
+    first: usize,
+    color: DisplayPixel,
+) -> [EncSlot<'_>; 4] {
+    std::array::from_fn(|i| {
+        let pv = params[first + i].as_ref()?;
+        Some((pv.name, pv.value.clone(), pv.norm, color))
+    })
+}
+
+/// Plage de lecture (hors plage voilée, marqueurs début / fin) et tranches.
+fn draw_play_range(
+    frame: &mut DisplayFrame,
+    p: &Pal,
+    snap: &EngineSnapshot,
+    (x, y, w, h): (usize, usize, usize, usize),
+) {
+    use screen_vector::Paint;
+    let inner = w as f32 - 8.0;
+    let px = |f: f32| x as f32 + 4.0 + f.clamp(0.0, 1.0) * inner;
+    let (start, end) = snap.sample_range;
+    for (a, b) in [(x as f32, px(start)), (px(end), (x + w) as f32)] {
+        if b - a > 0.5 {
+            if let Some(path) = screen_vector::round_rect(a, y as f32, b - a, h as f32, 0.0) {
+                screen_vector::fill(frame, &path, Paint::Solid(p.bg, 0.62));
+            }
+        }
+    }
+    if snap.sample_page == 2 {
+        for (k, &f) in snap.slice_points.iter().enumerate() {
+            let sx = px(f);
+            fill_rect(frame, sx as usize, y + 2, 1, h - 4, p.white);
+            let n = format!("{}", k + 1);
+            label(frame, sx + 3.0, y as f32 + 13.0, &n, 11.0, p.white, 1.8);
+        }
+    }
+    for (f, name) in [(start, "S"), (end, "E")] {
+        let mx = px(f);
+        screen_vector::fill_round_rect(frame, mx - 1.0, y as f32, 2.0, h as f32, 1.0, p.accent);
+        screen_vector::fill_round_rect(
+            frame,
+            mx - 7.0,
+            (y + h) as f32 - 16.0,
+            14.0,
+            14.0,
+            3.0,
+            p.accent,
+        );
+        let tw = screen_text::width(name, screen_text::Face::Bold, 11.0);
+        bold(
+            frame,
+            mx - tw / 2.0,
+            (y + h) as f32 - 5.0,
+            name,
+            11.0,
+            p.ink,
+        );
+    }
+}
+
+/// Page RECORD : état, niveau d'entrée avec le seuil, durée.
+fn draw_record_state(
+    frame: &mut DisplayFrame,
+    p: &Pal,
+    snap: &EngineSnapshot,
+    (x, y, w, h): (usize, usize, usize, usize),
+) {
+    panel(frame, p, x, y, w, h);
+    let (title, color) = match &snap.record {
+        Some(r) if r.waiting => ("Armé : joue pour démarrer".to_string(), p.yellow),
+        Some(r) => (
+            format!("● Enregistrement  {:.1} s / {:.0} s", r.secs, r.max_secs),
+            p.red,
+        ),
+        None => ("Prêt à enregistrer".to_string(), p.white),
+    };
+    bold(frame, (x + 14) as f32, (y + 34) as f32, &title, 22.0, color);
+    let hint = "ENREG lance la prise sur le pad actif, STOP la garde · entrée de la MK3";
+    let hint = fit_text(hint, screen_text::Face::Sans, 13.0, (w - 28) as f32);
+    label(
+        frame,
+        (x + 14) as f32,
+        (y + 56) as f32,
+        &hint,
+        13.0,
+        p.dim,
+        1.0,
+    );
+    // Niveau d'entrée (dB) avec le seuil.
+    let level = snap.record.map_or(0.0, |r| r.level);
+    let db = 20.0 * level.max(1e-6).log10();
+    let norm = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
+    let (bx, by, bw) = (x + 14, y + 84, w - 28);
+    bar_h(
+        frame,
+        p,
+        bx,
+        by,
+        bw,
+        10,
+        norm,
+        if db > -6.0 { p.red } else { p.green },
+    );
+    let threshold = snap.sample_params[0].as_ref().map_or(-30.0, |pv| pv.raw);
+    let tx = bx as f32 + (threshold + 60.0) / 60.0 * bw as f32;
+    screen_vector::fill_round_rect(frame, tx - 1.0, (by - 4) as f32, 2.0, 18.0, 1.0, p.white);
+    label(
+        frame,
+        bx as f32,
+        (by + 30) as f32,
+        "ENTRÉE",
+        12.0,
+        p.muted,
+        1.0,
+    );
+    let seuil = format!("seuil {threshold:.0} dB");
+    let sw = screen_text::width(&seuil, screen_text::Face::Sans, 12.0);
+    label(
+        frame,
+        (bx + bw) as f32 - sw,
+        (by + 30) as f32,
+        &seuil,
+        12.0,
+        p.muted,
+        1.0,
+    );
+}
+
+/// Écran droit — SAMPLING : onglets des 4 pages et le visuel de la page
+/// (enveloppe en EDIT, tranches en SLICE, clavier en ZONE) ; knobs 5–8.
 #[must_use]
 pub fn render_sampler_right(snap: &EngineSnapshot) -> DisplayFrame {
     let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
-    let s_name = sound_name(snap, snap.active_sound as usize);
-    header(
+    let page = (snap.sample_page as usize).min(3);
+    header_colored(
         &mut frame,
         &p,
         snap,
-        "SAMPLER | ENVELOPPE",
-        &format!("SND {:02} {}", snap.active_sound + 1, trunc(&s_name, 12)),
+        "SAMPLE EDITOR",
+        &format!("PAGE {}/4", page + 1),
+        hue_color(snap.active_sound as usize),
     );
-
-    let snd = focus_sound(snap);
-    let adsr = snd.map(|s| s.adsr.clone()).unwrap_or_default();
-    draw_adsr(&mut frame, &p, 8, 26, 464, 118, &adsr);
-    // Repères A / D / S / R.
-    let labels = ["A", "D", "S", "R"];
-    for (i, l) in labels.iter().enumerate() {
-        draw_text(&mut frame, 24 + i * 112, 146, l, p.accent, p.bg);
-    }
-
-    let s_db = snd.map(|s| s.volume_db).unwrap_or(0.0);
-    let s_pan = snd.map(|s| s.pan).unwrap_or(0.0);
-    let cut = snd.map(|s| s.filter.cutoff_hz).unwrap_or(20000.0);
-    let reso = snd.map(|s| s.filter.resonance).unwrap_or(0.0);
-    let muted = snd.map(|s| s.muted).unwrap_or(false);
-    let soloed = snd.map(|s| s.solo).unwrap_or(false);
-    draw_text(
-        &mut frame,
-        8,
-        152,
-        &format!("VOL {}", fmt_db(s_db)),
-        p.white,
-        p.bg,
-    );
-    draw_text(
-        &mut frame,
-        120,
-        152,
-        &format!("PAN {}", fmt_pan(s_pan)),
-        p.white,
-        p.bg,
-    );
-    let f_kind = snd
-        .map(|s| s.filter.kind)
-        .unwrap_or(crate::project::FilterKind::LowPass);
-    let f_str = match f_kind {
-        crate::project::FilterKind::LowPass => "LP",
-        crate::project::FilterKind::HighPass => "HP",
-        crate::project::FilterKind::BandPass => "BP",
-        crate::project::FilterKind::Notch => "NOTCH",
-        crate::project::FilterKind::Peak => "PEAK",
-        crate::project::FilterKind::Off => "OFF",
-    };
-    draw_text(
-        &mut frame,
-        220,
-        152,
-        &format!("CUT [{f_str}] {}", fmt_hz(cut)),
-        if f_kind == crate::project::FilterKind::Off {
-            p.muted
+    let tw = (SCR_W - 16) / 4;
+    for (i, name) in SAMPLE_PAGE_NAMES.iter().enumerate() {
+        let x = 8 + i * tw;
+        let on = i == page;
+        let bg = if on { p.accent } else { p.panel };
+        screen_vector::fill_round_rect(
+            &mut frame,
+            x as f32 + 1.0,
+            32.0,
+            tw as f32 - 2.0,
+            20.0,
+            4.0,
+            bg,
+        );
+        let face = if on {
+            screen_text::Face::Bold
         } else {
-            p.accent
-        },
-        p.bg,
-    );
-    draw_text(
+            screen_text::Face::Sans
+        };
+        let w = screen_text::width(name, face, 14.0);
+        screen_text::draw(
+            &mut frame,
+            (x + tw / 2) as f32 - w / 2.0,
+            46.5,
+            name,
+            face,
+            14.0,
+            if on { p.ink } else { p.dim },
+            1.0,
+        );
+    }
+    let rect = (8usize, 60usize, SCR_W - 16, 114usize);
+    match page {
+        0 => {
+            panel(&mut frame, &p, rect.0, rect.1, rect.2, rect.3);
+            let lines = [
+                "SEUIL (bouton 2) : la prise démarre au premier son",
+                "Knob 1 : niveau de seuil · knob 2 : durée max",
+                "La prise devient le sample du pad, enregistré en WAV",
+            ];
+            for (k, line) in lines.iter().enumerate() {
+                label(
+                    &mut frame,
+                    22.0,
+                    88.0 + k as f32 * 26.0,
+                    line,
+                    14.0,
+                    p.dim,
+                    1.0,
+                );
+            }
+        }
+        2 => draw_slices(&mut frame, &p, snap, rect),
+        3 => draw_zone_map(&mut frame, &p, snap, rect),
+        _ => {
+            let adsr = focus_sound(snap)
+                .map(|s| s.adsr.clone())
+                .unwrap_or_default();
+            draw_adsr(&mut frame, &p, rect.0, rect.1, rect.2, rect.3, &adsr);
+        }
+    }
+    let section = ["", "ENVELOPPE", "", "VÉLOCITÉ & SORTIE"][page];
+    section_title(&mut frame, &p, section, p.accent);
+    encoder_row(
         &mut frame,
-        340,
-        152,
-        &format!("RESO {:.0}%", reso * 100.0),
-        p.white,
-        p.bg,
+        &p,
+        &view_slots(&snap.sample_params, 4, p.accent),
     );
-    pill(&mut frame, &p, 8, 170, 60, "MUTE", p.red, muted);
-    pill(&mut frame, &p, 76, 170, 60, "SOLO", p.yellow, soloed);
-
-    let slots = [
-        Some((
-            "5:ATTACK",
-            fmt_ms(adsr.attack_ms),
-            (adsr.attack_ms / 500.0).clamp(0.0, 1.0),
-            p.accent,
-        )),
-        Some((
-            "6:DECAY",
-            fmt_ms(adsr.decay_ms),
-            (adsr.decay_ms / 1000.0).clamp(0.0, 1.0),
-            p.accent,
-        )),
-        Some((
-            "7:SUSTAIN",
-            format!("{:.0}%", adsr.sustain * 100.0),
-            adsr.sustain.clamp(0.0, 1.0),
-            p.accent,
-        )),
-        Some((
-            "8:RELEASE",
-            fmt_ms(adsr.release_ms),
-            (adsr.release_ms / 2000.0).clamp(0.0, 1.0),
-            p.accent,
-        )),
-    ];
-    encoder_row(&mut frame, &p, &slots);
-
     finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
     frame
+}
+
+/// Tranches : une case par pad cible, avec sa durée.
+fn draw_slices(
+    frame: &mut DisplayFrame,
+    p: &Pal,
+    snap: &EngineSnapshot,
+    (x, y, w, h): (usize, usize, usize, usize),
+) {
+    panel(frame, p, x, y, w, h);
+    let n = snap.slice_points.len();
+    if n == 0 {
+        label(
+            frame,
+            (x + 14) as f32,
+            (y + 60) as f32,
+            "Pas de sample à découper",
+            15.0,
+            p.muted,
+            1.0,
+        );
+        return;
+    }
+    let (_, end) = snap.sample_range;
+    let cols = 8usize;
+    let (cw, ch) = ((w - 16) / cols, 48usize);
+    for k in 0..n.min(16) {
+        let (cx, cy) = (x + 8 + (k % cols) * cw, y + 8 + (k / cols) * (ch + 6));
+        let pad = snap.active_sound as usize + k;
+        let color = if pad < 16 { hue_color(pad) } else { p.track };
+        screen_vector::fill_round_rect(
+            frame,
+            cx as f32,
+            cy as f32,
+            cw as f32 - 6.0,
+            ch as f32,
+            4.0,
+            p.panel2,
+        );
+        screen_vector::fill_round_rect(frame, cx as f32, cy as f32, 4.0, ch as f32, 2.0, color);
+        let pad_txt = if pad < 16 {
+            format!("PAD {}", pad + 1)
+        } else {
+            "—".to_string()
+        };
+        bold(
+            frame,
+            (cx + 9) as f32,
+            (cy + 18) as f32,
+            &pad_txt,
+            13.0,
+            p.white,
+        );
+        let a = snap.slice_points[k];
+        let b = snap.slice_points.get(k + 1).copied().unwrap_or(end);
+        let ms = (b - a).max(0.0) * snap.sample_duration * 1000.0;
+        label(
+            frame,
+            (cx + 9) as f32,
+            (cy + 38) as f32,
+            &fmt_ms(ms),
+            12.0,
+            p.dim,
+            1.0,
+        );
+    }
+}
+
+/// Zone : tessiture sur un clavier de 128 notes, note racine, vélocités.
+fn draw_zone_map(
+    frame: &mut DisplayFrame,
+    p: &Pal,
+    snap: &EngineSnapshot,
+    (x, y, w, h): (usize, usize, usize, usize),
+) {
+    panel(frame, p, x, y, w, h);
+    let raw = |i: usize| snap.sample_params[i].as_ref().map_or(0.0, |pv| pv.raw);
+    let (root, lo, hi) = (raw(0) as usize, raw(1) as usize, raw(2) as usize);
+    let (kx, ky, kw, kh) = (x + 10, y + 14, w - 20, 54usize);
+    let key_w = kw as f32 / 128.0;
+    for n in 0..128usize {
+        let black = matches!(n % 12, 1 | 3 | 6 | 8 | 10);
+        let inside = (lo..=hi).contains(&n);
+        let base = if black { p.panel } else { p.track };
+        let color = if inside {
+            mix(base, p.accent, if black { 0.55 } else { 0.8 })
+        } else {
+            base
+        };
+        let x0 = kx as f32 + n as f32 * key_w;
+        let khh = if black { kh * 3 / 5 } else { kh };
+        fill_rect(frame, x0 as usize, ky, key_w.ceil() as usize, khh, color);
+    }
+    let rx = kx as f32 + (root as f32 + 0.5) * key_w;
+    screen_vector::fill_round_rect(
+        frame,
+        rx - 1.5,
+        (ky - 6) as f32,
+        3.0,
+        (kh + 12) as f32,
+        1.5,
+        p.white,
+    );
+    let root_name = snap.sample_params[0]
+        .as_ref()
+        .map_or(String::new(), |pv| pv.value.clone());
+    bold(
+        frame,
+        rx + 5.0,
+        (ky + kh + 18) as f32,
+        &format!("racine {root_name}"),
+        13.0,
+        p.white,
+    );
+    // Vélocités acceptées.
+    let (vlo, vhi) = (raw(4), raw(5));
+    let (vx, vy, vw) = (kx, y + h - 22, kw);
+    fill_rect(frame, vx, vy, vw, 6, p.track);
+    let a = vx as f32 + vlo / 127.0 * vw as f32;
+    let b = vx as f32 + vhi / 127.0 * vw as f32;
+    screen_vector::fill_round_rect(frame, a, vy as f32, (b - a).max(2.0), 6.0, 3.0, p.accent);
+    label(
+        frame,
+        vx as f32,
+        (vy - 4) as f32,
+        "VÉLOCITÉ",
+        11.0,
+        p.muted,
+        1.0,
+    );
 }
 
 // ── KICK SYNTH (TECHNO MODELER) ─────────────────────────────────────────
@@ -3463,44 +3632,28 @@ pub fn render_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
         &format!("PRESET {}/16", idx + 1),
     );
 
-    draw_text_scaled(&mut frame, 12, 40, &trunc(name, 26), 2, p.white, p.bg);
-    draw_text(&mut frame, 12, 84, "-> CIBLE", p.muted, p.bg);
-    draw_text(
-        &mut frame,
-        12,
-        102,
-        &format!(
-            "GROUPE {} | SND {:02} {}",
-            group_letter(snap.group_focus),
-            snap.active_sound + 1,
-            trunc(&sound_name(snap, snap.active_sound as usize), 14)
-        ),
-        p.cyan,
-        p.bg,
+    // Carte du preset : nom en grand, cible en couleur du pad visé.
+    panel(&mut frame, &p, 8, 34, SCR_W - 16, 142);
+    let title = fit_text(name, screen_text::Face::Bold, 30.0, (SCR_W - 40) as f32);
+    bold(&mut frame, 22.0, 76.0, &title, 30.0, p.white);
+    let pad = snap.active_sound as usize;
+    cell(&mut frame, 22, 96, 12, 12, hue_color(pad), p.panel);
+    let target = format!(
+        "Charger sur Groupe {} · pad {} ({})",
+        group_letter(snap.group_focus),
+        pad + 1,
+        sound_name(snap, pad)
     );
-    draw_text(
-        &mut frame,
-        12,
-        128,
-        "k1 SND CIBLE | k2 PRESET | k8 MASTER",
-        p.dim,
-        p.bg,
-    );
-    draw_text(
-        &mut frame,
-        12,
-        146,
-        "SOFT 5 ECOUTE | SOFT 6 CHARGER",
-        p.dim,
-        p.bg,
-    );
-    pill(&mut frame, &p, 12, 168, 90, "ECOUTE", p.cyan, false);
-    pill(&mut frame, &p, 110, 168, 90, "CHARGER", p.green, true);
+    let target = fit_text(&target, screen_text::Face::Sans, 15.0, (SCR_W - 80) as f32);
+    label(&mut frame, 42.0, 107.0, &target, 15.0, p.dim, 1.0);
+    let hint = "ECOUTE pour pré-écouter, CHARGER pour remplacer le son du pad";
+    let hint = fit_text(hint, screen_text::Face::Sans, 13.0, (SCR_W - 44) as f32);
+    label(&mut frame, 22.0, 150.0, &hint, 13.0, p.muted, 1.0);
 
     let slots = [
-        Some(("5:--", String::new(), 0.0, p.border)),
-        Some(("6:--", String::new(), 0.0, p.border)),
-        Some(("7:--", String::new(), 0.0, p.border)),
+        None,
+        None,
+        None,
         Some((
             "8:MASTER",
             format!("{:.0}%", snap.master_volume * 100.0),
@@ -3806,177 +3959,289 @@ pub fn render_project_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
 
 // ── EVENTS / MACRO / SETTINGS ──────────────────────────────────────────
 
-/// Écran droit — vue EVENTS : événements du pattern (mesure sélectionnée).
+/// Écran droit — mode EVENTS : liste des notes parcourues (Sound actif ou
+/// toutes), la note choisie en surbrillance ; knob 5 = note précédente /
+/// suivante.
 #[must_use]
 pub fn render_events_right(snap: &EngineSnapshot) -> DisplayFrame {
     let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     let pat = active_pattern(snap);
-    let (pat_name, total) = match pat {
-        Some(pt) => (trunc(&pt.name, 12), pt.events.len()),
-        None => ("--".to_string(), 0),
+    let scope_pad = (!snap.events_all).then_some(snap.active_sound);
+    let scope = pat.map_or_else(Vec::new, |pt| crate::engine::event_scope(pt, scope_pad));
+    let title = if snap.events_all {
+        "TOUTES LES NOTES"
+    } else {
+        "NOTES DU SOUND"
     };
     header(
         &mut frame,
         &p,
         snap,
-        "EVENTS",
+        title,
         &format!(
-            "GRP {} | {} | {} ev",
-            group_letter(snap.group_focus),
-            pat_name,
-            total
+            "{} / {}",
+            (snap.event_index + 1).min(scope.len()),
+            scope.len()
         ),
     );
 
-    let bar_offset = snap.selected_bar as u32 * TICKS_PER_BAR as u32;
-    let mut events: Vec<&crate::project::PatternEvent> = pat
-        .map(|pt| {
-            pt.events
-                .iter()
-                .filter(|e| e.tick >= bar_offset && e.tick < bar_offset + TICKS_PER_BAR as u32)
-                .collect()
-        })
-        .unwrap_or_default();
-    events.sort_by_key(|e| e.tick);
-
-    if events.is_empty() {
-        center_text(&mut frame, 70, "AUCUN EVENEMENT", p.muted, p.bg);
-        center_text(
-            &mut frame,
-            94,
-            &format!("MES {} DU PATTERN", snap.selected_bar + 1),
-            p.muted,
-            p.bg,
-        );
+    // En-tête de colonnes.
+    for (x, text) in [
+        (10.0, "SON"),
+        (176.0, "POSITION"),
+        (282.0, "NOTE"),
+        (348.0, "VEL"),
+        (420.0, "LONG."),
+    ] {
+        label(&mut frame, x, 44.0, text, 12.0, p.muted, 1.0);
     }
+    fill_rect(&mut frame, 8, 49, SCR_W - 16, 1, p.border);
 
-    // En-tête de colonnes + règle.
-    draw_text(&mut frame, 8, 28, "SON", p.muted, p.bg);
-    draw_text(&mut frame, 170, 28, "PAS", p.muted, p.bg);
-    draw_text(&mut frame, 250, 28, "VEL", p.muted, p.bg);
-    draw_text(&mut frame, 340, 28, "LEN", p.muted, p.bg);
-    draw_text(&mut frame, 424, 28, "NOTE", p.muted, p.bg);
-    fill_rect(&mut frame, 8, 45, SCR_W - 16, 1, p.border);
-
-    let playing = snap.transport.is_playing();
-    let cur_step = tick_step(snap);
-    let show_now = playing && tick_bar(snap) == snap.selected_bar;
-
-    let mut y = 50usize;
-    for (i, e) in events.iter().take(8).enumerate() {
-        let step = ((e.tick - bar_offset) / TICKS_PER_STEP as u32) as usize;
-        let is_now = show_now && step == cur_step;
-        let row_bg = if is_now {
-            p.panel2
-        } else if i % 2 == 0 {
-            p.panel
-        } else {
-            p.bg
-        };
-        if is_now {
-            fill_rect(&mut frame, 0, y - 1, SCR_W, 17, row_bg);
-            fill_rect(&mut frame, 0, y - 1, 3, 17, p.accent);
-        } else if i % 2 == 0 {
-            fill_rect(&mut frame, 0, y - 1, SCR_W, 17, row_bg);
+    if let Some(pt) = pat.filter(|_| !scope.is_empty()) {
+        // Fenêtre de 7 lignes qui garde la note choisie visible.
+        let rows = 7usize;
+        let sel = snap.event_index.min(scope.len() - 1);
+        let first = sel
+            .saturating_sub(rows / 2)
+            .min(scope.len().saturating_sub(rows));
+        for (row, &i) in scope.iter().enumerate().skip(first).take(rows) {
+            let e = &pt.events[i];
+            let y = 52 + (row - first) * 19;
+            let on = row == sel;
+            if on {
+                screen_vector::fill_round_rect(
+                    &mut frame,
+                    6.0,
+                    y as f32,
+                    (SCR_W - 12) as f32,
+                    18.0,
+                    4.0,
+                    p.panel2,
+                );
+                screen_vector::fill_round_rect(
+                    &mut frame,
+                    6.0,
+                    y as f32 + 3.0,
+                    3.0,
+                    12.0,
+                    1.5,
+                    p.accent,
+                );
+            }
+            let base = (y + 14) as f32;
+            cell(
+                &mut frame,
+                14,
+                y + 6,
+                8,
+                7,
+                hue_color(e.pad as usize),
+                if on { p.panel2 } else { p.bg },
+            );
+            let fg = if on { p.white } else { p.dim };
+            let name = fit_text(
+                &format!("{:02} {}", e.pad + 1, sound_name(snap, e.pad as usize)),
+                screen_text::Face::Sans,
+                14.0,
+                140.0,
+            );
+            label(
+                &mut frame,
+                28.0,
+                base,
+                &name,
+                14.0,
+                fg,
+                if on { 1.8 } else { 1.0 },
+            );
+            label(
+                &mut frame,
+                176.0,
+                base,
+                &fmt_position(e.tick),
+                14.0,
+                fg,
+                1.0,
+            );
+            label(&mut frame, 282.0, base, &note_name(e.pitch), 14.0, fg, 1.0);
+            bar_h(
+                &mut frame,
+                &p,
+                348,
+                y + 7,
+                54,
+                5,
+                f32::from(e.velocity) / 127.0,
+                p.accent,
+            );
+            label(
+                &mut frame,
+                420.0,
+                base,
+                &fmt_len(e.length_ticks),
+                14.0,
+                fg,
+                1.0,
+            );
         }
-        draw_text(
+    } else {
+        let msg = "Aucune note : joue en REC ou pose des pas";
+        let w = screen_text::width(msg, screen_text::Face::Sans, 15.0);
+        label(
             &mut frame,
-            8,
-            y,
-            &format!(
-                "{:02} {}",
-                e.pad + 1,
-                trunc(&sound_name(snap, e.pad as usize), 10)
-            ),
-            if is_now { p.white } else { p.dim },
-            row_bg,
-        );
-        draw_text(
-            &mut frame,
-            170,
-            y,
-            &format!("PAS {:02}", step + 1),
-            if is_now { p.accent } else { p.dim },
-            row_bg,
-        );
-        draw_text(
-            &mut frame,
-            250,
-            y,
-            &format!("{:>3}", e.velocity),
-            p.cyan,
-            row_bg,
-        );
-        // Petite barre de vélocité (repère immédiat).
-        bar_h(
-            &mut frame,
-            &p,
-            286,
-            y + 5,
-            40,
-            6,
-            e.velocity as f32 / 127.0,
-            p.cyan,
-        );
-        draw_text(
-            &mut frame,
-            340,
-            y,
-            &fmt_len(e.length_ticks),
+            (SCR_W as f32 - w) / 2.0,
+            120.0,
+            msg,
+            15.0,
             p.muted,
-            row_bg,
-        );
-        draw_text(
-            &mut frame,
-            424,
-            y,
-            &format!("{:>3} {}", e.pitch, note_name(e.pitch)),
-            p.muted,
-            row_bg,
-        );
-        y += 17;
-    }
-    // Résumé : seulement si la place le permet (sinon le header donne le total).
-    if total > events.len() && !events.is_empty() && events.len() <= 6 {
-        draw_text(
-            &mut frame,
-            8,
-            y + 2,
-            &format!(
-                "{} ev au total dans le pattern — M{} ci-dessus",
-                total,
-                snap.selected_bar + 1
-            ),
-            p.muted,
-            p.bg,
+            1.0,
         );
     }
 
-    let s_db = focus_sound(snap).map(|s| s.volume_db).unwrap_or(0.0);
-    let cut = focus_sound(snap)
-        .map(|s| s.filter.cutoff_hz)
-        .unwrap_or(20000.0);
-    let reso = focus_sound(snap).map(|s| s.filter.resonance).unwrap_or(0.0);
+    let n = scope.len().max(1);
     let slots = [
-        Some(("5:VOL SND", fmt_db(s_db), db_norm(s_db), p.cyan)),
         Some((
-            "6:CUTOFF",
-            fmt_hz(cut),
-            ((cut - 20.0) / 19980.0).clamp(0.0, 1.0),
-            p.cyan,
-        )),
-        Some(("7:RESO", format!("{:.0}%", reso * 100.0), reso, p.cyan)),
-        Some((
-            "8:MASTER",
-            format!("{:.0}%", snap.master_volume * 100.0),
-            snap.master_volume,
+            "NOTE",
+            format!(
+                "{} / {}",
+                (snap.event_index + 1).min(scope.len()),
+                scope.len()
+            ),
+            snap.event_index as f32 / (n - 1).max(1) as f32,
             p.accent,
         )),
+        None,
+        None,
+        None,
     ];
     encoder_row(&mut frame, &p, &slots);
-
     finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
+    frame
+}
+
+/// Position d'un tick : mesure.temps.double-croche (+ ticks hors grille).
+fn fmt_position(tick: u32) -> String {
+    let bar = tick / TICKS_PER_BAR as u32 + 1;
+    let beat = tick % TICKS_PER_BAR as u32 / 960 + 1;
+    let sixteenth = tick % 960 / TICKS_PER_STEP as u32 + 1;
+    let rest = tick % TICKS_PER_STEP as u32;
+    if rest == 0 {
+        format!("{bar}.{beat}.{sixteenth}")
+    } else {
+        format!("{bar}.{beat}.{sixteenth} +{rest}")
+    }
+}
+
+/// Écran gauche — mode EVENTS : rouleau de notes du pattern entier, la note
+/// choisie en couleur du groupe ; knobs 1–4 POSITION, NOTE, VÉLOCITÉ,
+/// LONGUEUR de cette note.
+#[must_use]
+pub fn render_events_left(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::of(snap);
+    let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
+    let snd = snap.active_sound as usize;
+    let title = format!("EVENTS — {:02} {}", snd + 1, sound_name(snap, snd));
+    let right = if snap.events_all {
+        "tous les Sounds"
+    } else {
+        "Sound actif"
+    };
+    header_colored(&mut frame, &p, snap, &title, right, hue_color(snd));
+
+    let pat = active_pattern(snap);
+    let (x0, y0, w, h) = (8usize, 34usize, SCR_W - 16, 150usize);
+    panel(&mut frame, &p, x0, y0, w, h);
+    let bars = pat.map_or(1, |pt| u32::from(pt.length.bars.max(1)));
+    let len = bars * TICKS_PER_BAR as u32;
+    let tx = |tick: u32| x0 as f32 + 6.0 + tick as f32 / len as f32 * (w as f32 - 12.0);
+    // Mesures et temps.
+    for beat in 0..bars * 4 {
+        let x = tx(beat * 960) as usize;
+        let c = if beat % 4 == 0 { p.border } else { p.track };
+        fill_rect(&mut frame, x, y0 + 4, 1, h - 8, c);
+    }
+    let scope_pad = (!snap.events_all).then_some(snap.active_sound);
+    if let Some(pt) = pat {
+        let scope = crate::engine::event_scope(pt, scope_pad);
+        let (lo, hi) = scope.iter().fold((127u8, 0u8), |(lo, hi), &i| {
+            let n = pt.events[i].pitch;
+            (lo.min(n), hi.max(n))
+        });
+        let (lo, hi) = if scope.is_empty() {
+            (36, 48)
+        } else {
+            let span = (hi - lo).max(11);
+            (lo.saturating_sub(1), (lo + span + 1).min(127))
+        };
+        let rows = f32::from(hi - lo + 1);
+        let row_h = ((h as f32 - 12.0) / rows).clamp(3.0, 14.0);
+        let ty = |pitch: u8| (y0 + h) as f32 - 6.0 - (f32::from(pitch - lo) + 1.0) * row_h;
+        let sel = snap.event_index.min(scope.len().saturating_sub(1));
+        for (k, &i) in scope.iter().enumerate() {
+            let e = &pt.events[i];
+            let (x, y) = (tx(e.tick), ty(e.pitch));
+            let bw = (tx(e.tick + e.length_ticks.max(30)) - x).max(3.0);
+            let on = k == sel;
+            let color = if on {
+                p.accent
+            } else {
+                mix(
+                    p.track,
+                    hue_color(e.pad as usize),
+                    0.35 + 0.65 * f32::from(e.velocity) / 127.0,
+                )
+            };
+            screen_vector::fill_round_rect(&mut frame, x, y, bw, row_h - 1.0, 2.0, color);
+            if on {
+                draw_rect_outline(
+                    &mut frame,
+                    x as usize,
+                    y as usize,
+                    bw as usize + 1,
+                    row_h as usize,
+                    p.white,
+                );
+            }
+        }
+        if snap.transport.is_playing() {
+            let tick = (current_tick(snap) % u64::from(len)) as u32;
+            fill_rect(&mut frame, tx(tick) as usize, y0 + 2, 1, h - 4, p.white);
+        }
+    }
+
+    let slots = match &snap.event_sel {
+        Some(e) => [
+            Some((
+                "POSITION",
+                fmt_position(e.tick),
+                e.tick as f32 / len as f32,
+                p.accent,
+            )),
+            Some((
+                "NOTE",
+                format!("{} ({})", note_name(e.pitch), e.pitch),
+                f32::from(e.pitch) / 127.0,
+                p.accent,
+            )),
+            Some((
+                "VÉLOCITÉ",
+                format!("{}", e.velocity),
+                f32::from(e.velocity) / 127.0,
+                p.accent,
+            )),
+            Some((
+                "LONGUEUR",
+                fmt_len(e.length_ticks),
+                (e.length_ticks as f32 / 3840.0).min(1.0),
+                p.accent,
+            )),
+        ],
+        None => [None, None, None, None],
+    };
+    section_title(&mut frame, &p, "NOTE CHOISIE", p.accent);
+    encoder_row(&mut frame, &p, &slots);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
     frame
 }
 
@@ -6109,7 +6374,9 @@ pub fn render_screens_with_guitar(
 ) -> (DisplayFrame, DisplayFrame) {
     let fallback = GuitarScreenData::default();
     let g = guitar.unwrap_or(&fallback);
-    let left = if snap.song_mode {
+    let left = if snap.right_tab == 1 {
+        render_events_left(snap)
+    } else if snap.song_mode {
         render_arranger_left(snap)
     } else if snap.scene_mode && snap.left_tab == 0 {
         render_scenes_left(snap)
@@ -6136,7 +6403,9 @@ pub fn render_screens_with_guitar(
             }
         }
     };
-    let right = if snap.song_mode {
+    let right = if snap.right_tab == 1 {
+        render_events_right(snap)
+    } else if snap.song_mode {
         render_arranger_right(snap)
     } else if snap.scene_mode && snap.left_tab == 0 && snap.right_tab == 0 {
         render_scenes_right(snap)

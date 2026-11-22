@@ -31,6 +31,10 @@ pub enum Unit {
     /// Taux de compression (« 4.0:1 »).
     Compression,
     Count,
+    /// Note MIDI (« C3 »).
+    Note,
+    /// Secondes (« 12.5 s »).
+    Seconds,
 }
 
 /// Échelle d'un paramètre : réponse aux knobs et affichage.
@@ -124,6 +128,14 @@ impl Scale {
             Unit::Pan => format!("R{:.0}", v * 100.0),
             Unit::Ratio => format!("x{v:.2}"),
             Unit::Compression => format!("{v:.1}:1"),
+            Unit::Note => {
+                const NAMES: [&str; 12] = [
+                    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+                ];
+                let n = v.round().clamp(0.0, 127.0) as i32;
+                format!("{}{}", NAMES[(n % 12) as usize], n / 12 - 2)
+            }
+            Unit::Seconds => format!("{v:.1} s"),
             Unit::Count => format!("{:.0}", v.round()),
         }
     }

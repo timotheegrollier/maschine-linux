@@ -858,10 +858,20 @@ pub struct Zone {
     /// Volume dB
     #[serde(default)]
     pub volume_db: f32,
+    /// Début de la plage de lecture (fraction du sample, éditeur EDIT/SLICE).
+    #[serde(default)]
+    pub start: f32,
+    /// Fin de la plage de lecture (fraction du sample).
+    #[serde(default = "full")]
+    pub end: f32,
 }
 
 fn one() -> u8 {
     1
+}
+
+fn full() -> f32 {
+    1.0
 }
 
 impl Default for Zone {
@@ -878,6 +888,8 @@ impl Default for Zone {
             tune_cents: 0,
             pan: 0.0,
             volume_db: 0.0,
+            start: 0.0,
+            end: 1.0,
         }
     }
 }

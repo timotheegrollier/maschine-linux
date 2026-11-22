@@ -173,7 +173,57 @@ the audio thread when the chain changes.
 
 The MK3 manual describes SAMPLING as a Sample Editor tied to the focused Sound: buttons 1–4 select RECORD, EDIT, SLICE and ZONE; EDIT notably sets the play range, while ZONE handles mapping, tuning and key/velocity ranges. The controller's eight buttons and knobs are contextual and their function is displayed on screen ([official manual, Sampling and sample mapping](https://docs.native-instruments.com/ni-tech-manuals/maschine-mk3-manual/en/sampling-and-sample-mapping), [MK3 quick reference](https://docs.native-instruments.com/ni-tech-manuals/maschine-mk3-manual/en/quick-reference)).
 
-In this application, the SAMPLING button currently opens **Sampler / Sound**: WAV import from the GUI, waveform, audition, ADSR, filter, volume and pan. Import is decoded on a worker thread. The recording, destructive editing and slicing pages, manipulable play/selection ranges and zone editing are not yet implemented on the controller. The current EVENTS screen is also an information view; it does not yet offer the event editing of position/pitch/velocity/length found in the official mode ([official description of EVENTS mode](https://docs.native-instruments.com/ni-tech-manuals/maschine-mk3-manual/en/quick-reference)).
+Since 0.14.0 both modes follow that reference; see the two sections below. Not implemented: destructive editing beyond REVERSE / NORMALIZE (no cut, paste or fades on the audio itself), several zones per Sound from the controller (ZONE edits the zones of the focused Sound together), slicing to a pattern, and multi-note selection in EVENTS (one note at a time).
+
+## SAMPLING: sample editor (RECORD, EDIT, SLICE, ZONE)
+
+`SAMPLING` (left tab 2) edits the sample of the focused Sound. Display buttons
+1–4 choose the page (lit = current), buttons 5–8 and the eight knobs belong to
+the page. Select the Sound with the pads; the 4D push auditions it.
+
+| Page | Buttons 5–8 | Knobs 1–4 | Knobs 5–8 | Screens |
+|---|---|---|---|---|
+| **RECORD** | `ENREG` / `STOP`, `SEUIL` | SEUIL (dB), DURÉE MAX (s) | — | state, input level with the threshold |
+| **EDIT** | `REVERSE`, `LOOP`, `NORMLZ`, `PLAGE MAX` | START, END (play range), TUNE (semitones), GAIN | ATTACK, DECAY, SUSTAIN, RELEASE | waveform with the play range (outside dimmed, S / E markers), envelope |
+| **SLICE** | `4`, `8`, `16`, `APPLIQUER` | TRANCHES, MODE (GRILLE / TRANSIT.), SENSIB | — | slice markers, one card per target pad with its length |
+| **ZONE** | `RÉINIT` | ROOT, LOW KEY, HIGH KEY, FINE (cents) | LOW VEL, HIGH VEL, PAN, GAIN | 128-key map with the key range and root, velocity range |
+
+- **Play range**: non-destructive, stored per zone in the project (`start` /
+  `end`, fractions of the sample) and applied by the sampler voice (start
+  position and end of playback).
+- **RECORD**: records the MK3 audio input (the capture stream also used by the
+  guitar amp, which stays silent while recording) into the focused Sound;
+  `SEUIL` waits for the input to cross the threshold. `STOP` writes a 32-bit
+  float WAV to `~/.local/share/maschine-linux/recordings/` and loads it like an
+  imported sample. The buffer is reserved when recording starts: the audio
+  callback never allocates.
+- **SLICE / APPLIQUER**: splits the play range on a grid or at the detected
+  hits (energy jump in 5 ms windows, sensitivity knob) and spreads the slices
+  over the pads from the focused Sound on (same sample file, one play range per
+  pad, named `<name> #n`). The sample must come from a file (imported or
+  recorded); the synthesized 808 kit cannot be sliced.
+
+## EVENTS: note editing
+
+The `EVENTS` button takes over both screens to edit the notes of the active
+pattern one at a time: the left screen shows the whole pattern as a piano roll
+(selected note in the group colour), the right screen lists the notes.
+
+| Control | Action |
+|---|---|
+| 4D turn, knob 5, `EVT <` / `EVT >` | previous / next note (time order) |
+| Knob 1 POSITION | one step per detent, `SHIFT` = 10 ticks |
+| Knob 2 NOTE | one semitone per detent |
+| Knob 3 VÉLOCITÉ | continuous |
+| Knob 4 LONGUEUR | one step per detent, `SHIFT` = 30 ticks |
+| `TOUS` | all Sounds of the pattern instead of the focused Sound (lit when on) |
+| `SUPPR` / `DUPLIQ` | delete the note / copy it right after itself |
+| `QUANT` | snap to the 1/16 grid |
+| `NUDGE <` / `NUDGE >` | ±60 ticks |
+
+Edits keep the note selected even when it moves past another one. `EVENTS`
+again (or any main view button) leaves the mode. In the GUI the deck has an
+`EVENTS` button.
 
 ## STEP mode (following the official software)
 

@@ -520,6 +520,17 @@ impl GuitarProcessor {
         self.chain.set_amp_settings(c.amp_settings());
     }
 
+    /// Lit l'entrée audio brute (mono) pour l'enregistreur du moteur, sans
+    /// allocation ; l'ampli ne la retraitera pas dans ce bloc.
+    pub fn capture_input(&mut self, frames: usize) -> &[f32] {
+        let frames = frames.min(self.in_buf.len());
+        let read = self
+            .runtime
+            .input_ring
+            .read_into(&mut self.in_buf[..frames]);
+        &self.in_buf[..read]
+    }
+
     /// Mix the processed guitar signal into the output block.
     pub fn process_output(
         &mut self,

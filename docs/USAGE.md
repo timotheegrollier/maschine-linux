@@ -23,7 +23,9 @@ maschine-linux audio-list              # list outputs AND inputs (MK3 capture po
 ## Standby screen
 
 `maschine-linux standby` draws the standby screen on both MK3 screens and
-releases them. Installed packages run it automatically when the controller is
+releases them. With the AppImage or the tarball, `maschine-linux standby
+--install` installs the user unit for that very executable and prints the udev
+rule to add once with `sudo`. Installed packages run it automatically when the controller is
 plugged in (udev rule `99-maschine-mk3.rules` → systemd user unit
 `maschine-linux-standby.service`, 3 s after plug-in, the time the firmware needs
 to show its own logo), so the custom standby appears even if the application has
@@ -156,7 +158,7 @@ maschine-linux daemon --project my_project.json
 
 The GUI also starts without a Maschine connected: the engine, mouse/keyboard controls, virtual MIDI and system audio output remain available for development. A saved audio output is preferred; when none is saved, the system default is used even if an MK3 is connected, so powering on the controller does not redirect audio away from the DJM or another system output. Select the MK3 explicitly in audio settings or with `--audio-device mk3` when desired. An unavailable saved output falls back to the system default, while an output explicitly supplied with `--audio-device` is treated as required. Use `--no-hardware` to ignore a connected controller and force standalone mode; hot-plug reconnection is disabled in that mode. The headless daemon deliberately remains strict and requires the controller.
 
-The layout follows the Maschine software and the controller on the desk (see [design.md](design.md)): one header (transport, tempo, modes, master), the rail on the left (views and the eight groups in their colours), the workspace in the middle and the **MK3 deck** at the bottom — both screens side by side with their buttons and knobs, groups and pads on the right. The header can hide the rail (`VUES`/`F1`), the MK3 deck (`MK3`/`F2`) and the workspace (`CENTRE`/`F3`); with the workspace hidden the deck fills the window. The deck can be resized by dragging its top edge; when the window gets lower than 620 px it folds away by itself (F2 brings it back) and returns above 700 px. Rows wrap instead of clipping and every region scrolls, down to a 420 × 340 window. The accent colour of the whole interface is the colour of the focused group, like its pads and the MK3 screens. Closing the window performs an ordered shutdown: the HID loop is joined, the screens show the standby screen and release IF5 without a USB reset, and the LED writer sends an all-off report.
+The layout follows the Maschine software and the controller on the desk (see [design.md](design.md)): one header (transport, tempo, modes, master), the rail on the left (views and the eight groups in their colours), the workspace in the middle and the **MK3 deck** at the bottom — both screens side by side with their buttons and knobs, groups and pads on the right. The header can hide the rail (`VUES`/`F1`), the MK3 deck (`MK3`/`F2`) and the workspace (`CENTRE`/`F3`); with the workspace hidden the deck fills the window. The deck can be resized by dragging its top edge; when the window gets lower than 620 px it folds away by itself (F2 brings it back) and returns above 700 px. Rows wrap instead of clipping and every region scrolls, down to a 420 × 340 window. The window opens maximized, so the desktop's taskbar (KDE, GNOME) never hides the bottom of the app whatever the display scaling. The accent colour of the whole interface is the colour of the focused group, like its pads and the MK3 screens. Closing the window performs an ordered shutdown: the HID loop is joined, the screens show the standby screen and release IF5 without a USB reset, and the LED writer sends an all-off report.
 
 The native GUI displays in real time:
 
@@ -179,7 +181,7 @@ The native GUI displays in real time:
 
 Useful shortcuts: `I` Ideas, `S` Sequencer, `K` Keyboard, `M` Mixer, `A` Sampler, `T`/`P` Plugin/Synth, `B` Browser/File, `Space` Play/Stop, `F1` toggle navigation, `F2` toggle MK3 panel, `F3` toggle centre workspace, `Ctrl+S` save, `Ctrl+Shift+S` quick save. On MK3, `FILE` opens the project browser, `Shift + FILE SAVE` performs a quick save, pushing 4D Up in Mixer enters group pad strips, 4D Down exits back to groups/master, and `Shift + EncoderPush` in Sampler cycles filter mode.
 
-The official Sample Editor (recording, playback ranges, slicing and zone editing from the MK3) is not yet implemented. The EVENTS screen currently displays information without editing events.
+**Sample editor and note editing**: `SAMPLING` opens the sample editor (RECORD, EDIT, SLICE, ZONE on display buttons 1–4) and `EVENTS` edits the notes of the pattern one by one — see [workflow.md](workflow.md#sampling-sample-editor-record-edit-slice-zone). In the GUI, the Sampler view starts with an "Éditeur de sample" strip (the same eight buttons and the knob values), and the MK3 deck has an `EVENTS` button.
 
 ## Hardware LCD screens (USB Bulk)
 

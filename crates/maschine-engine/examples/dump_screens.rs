@@ -74,6 +74,12 @@ fn main() -> std::io::Result<()> {
     eng.handle_event(maschine_engine::EngineEvent::SetLeftTab(2))
         .unwrap();
     dump(&eng, "sampler")?;
+    // Éditeur de sample : les quatre pages (boutons 1–4).
+    for (button, name) in [(1u8, "record"), (3, "slice"), (4, "zone"), (2, "edit")] {
+        eng.handle_event(maschine_engine::EngineEvent::SoftKey(button))
+            .unwrap();
+        dump(&eng, &format!("sampling_{name}"))?;
+    }
     eng.handle_event(maschine_engine::EngineEvent::SetLeftTab(3))
         .unwrap();
     dump(&eng, "browser")?;

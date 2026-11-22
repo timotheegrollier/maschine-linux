@@ -177,7 +177,12 @@ enum Commands {
     /// Lancé par udev/systemd au branchement de la MK3 (voir
     /// `packaging/systemd/maschine-linux-standby.service`) : l'écran de veille
     /// apparaît même si l'application n'a jamais été démarrée.
-    Standby,
+    Standby {
+        /// Installe le service utilisateur (AppImage, tarball) et affiche la
+        /// règle udev à ajouter avec les droits administrateur.
+        #[arg(long)]
+        install: bool,
+    },
     /// Test écrans bulk (couleur solide)
     DisplayTest {
         /// Couleur R
@@ -353,7 +358,8 @@ fn main() -> anyhow::Result<()> {
         Commands::PadMonitor => cmd_pad_monitor()?,
         Commands::DisplayTest { r, g, b, duration } => cmd_display_test(r, g, b, duration)?,
         Commands::DisplayProbe => cmd_display_probe()?,
-        Commands::Standby => cmd_standby(),
+        Commands::Standby { install: false } => cmd_standby(),
+        Commands::Standby { install: true } => install_standby_service()?,
         Commands::AudioList => cmd_audio_list()?,
         Commands::AudioTest {
             freq,
@@ -591,6 +597,9 @@ fn cmd_daemon(
 
     // Engine partagé (pour audio thread + main loop)
     let engine = Arc::new(Mutex::new(Engine::new(proj, 48000)));
+    engine
+        .lock()
+        .set_recordings_dir(projects::data_dir().join("recordings"));
     // Ajoute le kit complet 808 DSP (16 instruments analogiques authentiques)
     {
         engine.lock().load_default_808_kit();
@@ -1592,6 +1601,19 @@ fn cmd_daemon(
                         .lock()
                         .handle_event(EngineEvent::PluginSlotStep(step));
                 }
+                MapperAction::EventStep(step) => {
+                    let _ = engine.lock().handle_event(EngineEvent::EventStep(step));
+                }
+                MapperAction::SampleKnob { knob, delta } => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::SampleKnob { knob, delta });
+                }
+                MapperAction::EventKnob { knob, delta } => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::EventKnob { knob, delta });
+                }
                 MapperAction::GuitarParamDelta(param_idx, norm_delta) => {
                     guitar.adjust_param(param_idx, norm_delta);
                 }
@@ -2509,6 +2531,37 @@ fn cmd_display_test(r: u8, g: u8, b: u8, duration: u64) -> anyhow::Result<()> {
     }
 }
 
+/// Installe le service utilisateur de l'écran de veille pour l'exécutable
+/// courant (l'AppImage elle-même si on tourne dedans), puis explique la règle
+/// udev qui le déclenche au branchement (droits administrateur requis).
+fn install_standby_service() -> anyhow::Result<()> {
+    let exe = std::env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .map_or_else(std::env::current_exe, Ok)?;
+    let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME non défini"))?;
+    let dir = PathBuf::from(home).join(".config/systemd/user");
+    std::fs::create_dir_all(&dir)?;
+    let unit = dir.join("maschine-linux-standby.service");
+    std::fs::write(
+        &unit,
+        format!(
+            "[Unit]\nDescription=Maschine MK3 standby screen when the controller is plugged in\n\n\
+             [Service]\nType=oneshot\nExecStartPre=/bin/sh -c 'sleep 3'\nExecStart=\"{}\" standby\n",
+            exe.display()
+        ),
+    )?;
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .status();
+    println!("✓ Service utilisateur installé : {}", unit.display());
+    println!("Pour l'afficher au branchement de la MK3, ajoute la règle udev (une fois) :");
+    println!(
+        "  echo 'ACTION==\"add\", SUBSYSTEM==\"usb\", ENV{{DEVTYPE}}==\"usb_device\", ATTRS{{idVendor}}==\"17cc\", ATTRS{{idProduct}}==\"1600\", TAG+=\"systemd\", ENV{{SYSTEMD_USER_WANTS}}+=\"maschine-linux-standby.service\"' | sudo tee /etc/udev/rules.d/99-maschine-mk3-standby.rules"
+    );
+    println!("  sudo udevadm control --reload-rules");
+    Ok(())
+}
+
 /// Écran de veille au branchement. Ne fait jamais échouer le service : MK3
 /// absente ou écrans déjà pris par l'application → rien à faire.
 fn cmd_standby() {
@@ -2715,6 +2768,15 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             plugin_slots: Vec::new(),
             plugin_slot: 0,
             plugin_fx: None,
+            event_sel: None,
+            event_index: 0,
+            event_count: 0,
+            events_all: false,
+            sample_page: 1,
+            sample_params: Default::default(),
+            sample_range: (0.0, 1.0),
+            slice_points: Vec::new(),
+            record: None,
             focus_group_fx: Vec::new(),
             mixer_mode: 0,
             browser_plugin_idx: 0,
@@ -2948,7 +3010,8 @@ mod tests {
         };
         let _ = mapper.handle_hardware_event(event(100)); // baseline absolu
         let actions = mapper.handle_hardware_event(event(101));
-        assert!(actions.contains(&MapperAction::SoundVolumeDelta(1.0)));
+        // SAMPLING : le knob va à l'éditeur de sample (page affichée).
+        assert!(actions.contains(&MapperAction::SampleKnob { knob: 0, delta: 1 }));
         assert_eq!(mapper.left_tab, 2);
         assert_eq!(mapper.right_tab, 0);
     }

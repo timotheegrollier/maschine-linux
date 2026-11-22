@@ -696,3 +696,47 @@ pub fn display_pixels_to_image(
     colors.resize(w * h, egui::Color32::BLACK);
     egui::ColorImage::new([w, h], colors)
 }
+
+/// Les 8 boutons d'écran de la MK3 en boutons GUI (allumés comme leurs LEDs)
+/// puis les paramètres des knobs : la GUI fait exactement ce que fait le
+/// contrôleur, avec les mêmes libellés. `params` : valeurs à afficher.
+pub fn soft_key_strip(
+    ui: &mut egui::Ui,
+    app: &mut crate::gui::app::GuiApp,
+    snap: &maschine_engine::EngineSnapshot,
+    params: &[Option<maschine_engine::plugin_pages::ParamView>; 8],
+) {
+    let c = crate::gui::theme::MachColors::dark();
+    ui.horizontal_wrapped(|ui| {
+        for (n, label) in snap.soft_labels.iter().enumerate() {
+            if label.is_empty() {
+                continue;
+            }
+            let lit = snap.soft_active[n];
+            let text = egui::RichText::new(*label).color(if lit {
+                crate::gui::theme::ink_on(c.accent)
+            } else {
+                c.text
+            });
+            let button = egui::Button::new(text).fill(if lit { c.accent } else { c.surface });
+            if ui
+                .add(button)
+                .on_hover_text(format!("Bouton {} de la MK3", n + 1))
+                .clicked()
+            {
+                app.send(maschine_engine::EngineEvent::SoftKey(n as u8 + 1));
+            }
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        for (k, pv) in params.iter().enumerate() {
+            let Some(pv) = pv else { continue };
+            ui.label(
+                egui::RichText::new(format!("{} {}", pv.name, pv.value))
+                    .small()
+                    .color(c.text_dim),
+            )
+            .on_hover_text(format!("Knob {} de la MK3", k + 1));
+        }
+    });
+}

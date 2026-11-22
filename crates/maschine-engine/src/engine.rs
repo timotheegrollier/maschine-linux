@@ -433,6 +433,14 @@ pub enum EngineEvent {
     PluginPageStep(i8),
     /// Emplacement précédent / suivant de la chaîne de plugins (4D).
     PluginSlotStep(i8),
+    /// Mode EVENTS : événement précédent / suivant (4D).
+    EventStep(i32),
+    /// Éditeur de sample (SAMPLING) : knob `knob` tourné de `delta` ticks
+    /// bruts (paramètres de la page RECORD / EDIT / SLICE / ZONE).
+    SampleKnob { knob: u8, delta: i32 },
+    /// Mode EVENTS : knob `knob` tourné de `delta` ticks bruts (position,
+    /// note, vélocité, longueur de l'événement sélectionné ; 5 = sélection).
+    EventKnob { knob: u8, delta: i32 },
     /// Sélectionne un emplacement de la chaîne de plugins (GUI).
     SelectPluginSlot(usize),
     /// Supprime définitivement le projet sélectionné dans le navigateur
@@ -668,6 +676,20 @@ pub struct EngineSnapshot {
     pub plugin_slot: usize,
     /// Effet sélectionné (pages de paramètres de l'effet).
     pub plugin_fx: Option<crate::fx::FxSlot>,
+    /// Mode EVENTS : événement sélectionné, son rang et le nombre
+    /// d'événements parcourus (ceux du Sound actif, ou tous).
+    pub event_sel: Option<crate::project::PatternEvent>,
+    pub event_index: usize,
+    pub event_count: usize,
+    pub events_all: bool,
+    /// Éditeur de sample : page (0 RECORD, 1 EDIT, 2 SLICE, 3 ZONE), les
+    /// 8 paramètres affichés au-dessus des knobs, la plage de lecture, les
+    /// débuts de tranches (fractions du sample) et l'enregistrement en cours.
+    pub sample_page: u8,
+    pub sample_params: [Option<crate::plugin_pages::ParamView>; 8],
+    pub sample_range: (f32, f32),
+    pub slice_points: Vec<f32>,
+    pub record: Option<RecordView>,
     /// Mode mixer (0: Pads 1-8, 1: Pads 9-16, 2: Groupes A-H, 3: Master).
     pub mixer_mode: u8,
     /// Index plugin sélectionné dans le browser (0..3).
@@ -769,6 +791,168 @@ pub struct HardwareSnapshot {
 #[inline]
 pub fn db_to_linear(db: f32) -> f32 {
     10.0f32.powf(db / 20.0)
+}
+
+/// Événements parcourus en mode EVENTS : index dans `pat.events`, triés par
+/// temps (puis pad, hauteur) ; ceux d'un seul pad si `pad` est donné.
+/// Partagé par le moteur et les écrans : même liste, même ordre.
+#[must_use]
+pub fn event_scope(pat: &crate::project::Pattern, pad: Option<u8>) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..pat.events.len())
+        .filter(|&i| pad.is_none_or(|p| pat.events[i].pad == p))
+        .collect();
+    idx.sort_by_key(|&i| (pat.events[i].tick, pat.events[i].pad, pat.events[i].pitch));
+    idx
+}
+
+/// Plages de lecture enregistrées dans le projet → sampler (chargement).
+fn restore_ranges(sampler: &mut Sampler, project: &Project) {
+    for (g, group) in project.groups.iter().enumerate().take(8) {
+        for (s, snd) in group.sounds.iter().enumerate().take(16) {
+            if let Some(z) = snd.as_ref().and_then(|snd| snd.zones.first()) {
+                sampler.set_sound_range(sampler_sound_id(g as u8, s as u8), z.start, z.end);
+            }
+        }
+    }
+}
+
+/// Pages de l'éditeur de sample (boutons 1–4 en SAMPLING).
+const SAMPLE_PAGES: [&str; 4] = ["RECORD", "EDIT", "SLICE", "ZONE"];
+
+/// Enregistrement en cours : entrée audio mono vers un Sound.
+#[derive(Debug)]
+struct Recorder {
+    target: (u8, u8),
+    /// Capacité réservée au départ (durée max) : jamais d'allocation audio.
+    buf: Vec<f32>,
+    /// Attend le seuil (SEUIL) avant de capturer.
+    waiting: bool,
+    /// Crête récente de l'entrée (affichage).
+    level: f32,
+}
+
+/// État d'enregistrement affiché (écrans, GUI).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RecordView {
+    pub waiting: bool,
+    pub secs: f32,
+    pub max_secs: f32,
+    pub level: f32,
+}
+
+/// Clé du cache des tranches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SliceKey {
+    sound: crate::sampler::SoundId,
+    count: u8,
+    transients: bool,
+    sensitivity: u32,
+    range: (u32, u32),
+    sample: Option<usize>,
+}
+
+/// Réglages d'une zone, communs au projet et au sampler.
+#[derive(Debug, Clone, Copy, Default)]
+struct ZoneFields {
+    root_key: u8,
+    lokey: u8,
+    hikey: u8,
+    lovel: u8,
+    hivel: u8,
+    tune_cents: i16,
+    pan: f32,
+    volume_db: f32,
+}
+
+impl ZoneFields {
+    fn of_mapping(z: &crate::sampler::ZoneMapping) -> Self {
+        Self {
+            root_key: z.root_key,
+            lokey: z.lokey,
+            hikey: z.hikey,
+            lovel: z.lovel,
+            hivel: z.hivel,
+            tune_cents: z.tune_cents,
+            pan: z.pan,
+            volume_db: z.volume_db,
+        }
+    }
+
+    fn write_mapping(self, z: &mut crate::sampler::ZoneMapping) {
+        (z.root_key, z.lokey, z.hikey, z.lovel, z.hivel) = (
+            self.root_key,
+            self.lokey,
+            self.hikey,
+            self.lovel,
+            self.hivel,
+        );
+        (z.tune_cents, z.pan, z.volume_db) = (self.tune_cents, self.pan, self.volume_db);
+    }
+
+    fn of_zone(z: &Zone) -> Self {
+        Self {
+            root_key: z.root_key,
+            lokey: z.lokey,
+            hikey: z.hikey,
+            lovel: z.lovel,
+            hivel: z.hivel,
+            tune_cents: z.tune_cents,
+            pan: z.pan,
+            volume_db: z.volume_db,
+        }
+    }
+
+    fn write_zone(self, z: &mut Zone) {
+        (z.root_key, z.lokey, z.hikey, z.lovel, z.hivel) = (
+            self.root_key,
+            self.lokey,
+            self.hikey,
+            self.lovel,
+            self.hivel,
+        );
+        (z.tune_cents, z.pan, z.volume_db) = (self.tune_cents, self.pan, self.volume_db);
+    }
+}
+
+/// Lettre d'un groupe (A–H).
+fn group_letter_char(group: u8) -> char {
+    (b'A' + group % 8) as char
+}
+
+/// Écrit un WAV mono 32 bits flottants.
+#[cfg(feature = "sampler")]
+fn write_wav_mono(path: &std::path::Path, samples: &[f32], sample_rate: u32) -> Result<(), String> {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut w = hound::WavWriter::create(path, spec).map_err(|e| e.to_string())?;
+    for &s in samples {
+        w.write_sample(s).map_err(|e| e.to_string())?;
+    }
+    w.finalize().map_err(|e| e.to_string())
+}
+
+/// Boutons du mode EVENTS (écran gauche puis droit).
+const EVENT_LABELS: [&str; 8] = [
+    "EVT <", "EVT >", "TOUS", "SUPPR", "DUPLIQ", "QUANT", "NUDGE <", "NUDGE >",
+];
+
+/// Ticks par pas de 16e (960 par noire).
+const TICKS_PER_STEP: u32 = 240;
+
+/// Nom d'une note MIDI (« C3 », « F#4 »…), pour les messages.
+fn note_label(pitch: u8) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    format!(
+        "{}{}",
+        NAMES[pitch as usize % 12],
+        i32::from(pitch) / 12 - 2
+    )
 }
 
 /// Propriétaire d'une chaîne d'effets d'insert.
@@ -932,6 +1116,24 @@ pub struct Engine {
     /// Sound pour lequel il a été choisi (un autre Sound repart de l'instrument).
     plugin_slot: usize,
     plugin_slot_focus: (u8, u8),
+    /// Mode EVENTS : rang de l'événement sélectionné, portée (tous les Sounds
+    /// ou le Sound actif) et crans de knob en attente.
+    event_cursor: usize,
+    events_all: bool,
+    event_knob_accum: [i32; 8],
+    /// Éditeur de sample (SAMPLING) : page, découpe, enregistrement.
+    sample_page: u8,
+    slice_count: u8,
+    slice_transients: bool,
+    slice_sensitivity: f32,
+    record_threshold_db: f32,
+    record_max_secs: f32,
+    record_wait: bool,
+    recorder: Option<Recorder>,
+    recordings_dir: std::path::PathBuf,
+    sample_knob_accum: [i32; 8],
+    /// Débuts de tranches calculés (clé = Sound, réglages, plage).
+    slice_cache: parking_lot::Mutex<Option<(SliceKey, Vec<f32>)>>,
     /// Tampons de mixage des bus, préalloués hors du thread audio.
     fx_bus_bufs: Vec<Vec<f32>>,
     /// Entrées du navigateur de projets.
@@ -1228,6 +1430,20 @@ impl Engine {
             master_limiter: crate::limiter::MasterLimiter::new(sample_rate),
             plugin_slot: 0,
             plugin_slot_focus: (0, 0),
+            event_cursor: 0,
+            events_all: false,
+            event_knob_accum: [0; 8],
+            sample_page: 1,
+            slice_count: 8,
+            slice_transients: false,
+            slice_sensitivity: 0.5,
+            record_threshold_db: -30.0,
+            record_max_secs: 30.0,
+            record_wait: false,
+            recorder: None,
+            recordings_dir: std::env::temp_dir().join("maschine-linux-recordings"),
+            sample_knob_accum: [0; 8],
+            slice_cache: parking_lot::Mutex::new(None),
             fx_bus_bufs: Vec::new(),
             project_entries: Vec::new(),
             project_selected: 0,
@@ -1598,6 +1814,22 @@ impl Engine {
             plugin_slots: self.plugin_slot_views(),
             plugin_slot: self.plugin_slot_index(),
             plugin_fx: self.selected_fx().map(|(_, _, slot)| slot),
+            event_sel: self.selected_event().map(|(_, e)| e),
+            event_index: self
+                .event_cursor
+                .min(self.event_scope().len().saturating_sub(1)),
+            event_count: self.event_scope().len(),
+            events_all: self.events_all,
+            sample_page: self.sample_page,
+            sample_params: self.sample_param_views(),
+            sample_range: self.focus_range(),
+            slice_points: self.slice_points(),
+            record: self.recorder.as_ref().map(|r| RecordView {
+                waiting: r.waiting,
+                secs: r.buf.len() as f32 / self.transport.sample_rate.max(1) as f32,
+                max_secs: r.buf.capacity() as f32 / self.transport.sample_rate.max(1) as f32,
+                level: r.level,
+            }),
             mixer_mode: self.mixer_mode,
             browser_plugin_idx: self.browser_plugin_idx,
             browser_fx_idx: self.browser_fx_idx,
@@ -1831,6 +2063,7 @@ impl Engine {
                 self.sampler.add_zone(sound_id, zone);
             }
         }
+        restore_ranges(&mut self.sampler, &project);
         // `clear_sound` réinitialise la polyphonie : on la restaure depuis le
         // projet après le rechargement des zones personnalisées.
         for (group_index, group) in project.groups.iter().enumerate() {
@@ -2320,6 +2553,7 @@ impl Engine {
                         sampler.add_zone(sound_id, zone);
                     }
                 }
+                restore_ranges(&mut sampler, &p);
                 self.sampler = sampler;
                 self.transport.bpm = p.bpm;
                 let proj_name = p.name.clone();
@@ -3624,6 +3858,9 @@ impl Engine {
                 self.select_plugin_slot(next.max(0) as usize);
             }
             EngineEvent::SelectPluginSlot(index) => self.select_plugin_slot(index),
+            EngineEvent::EventStep(step) => self.step_event_cursor(step),
+            EngineEvent::SampleKnob { knob, delta } => self.turn_sample_knob(knob as usize, delta),
+            EngineEvent::EventKnob { knob, delta } => self.turn_event_knob(knob as usize, delta),
             EngineEvent::CycleSoundFilterKind { group, sound } => {
                 let mut guard = self.project.write();
                 let proj = project_mut(&mut guard);
@@ -4991,6 +5228,14 @@ impl Engine {
         if self.note_repeat_enabled {
             return ["1/32", "1/16", "1/8", "1/4", "1/2", "1/16T", "1/8T", "LOCK"];
         }
+        // Mode EVENTS : les deux écrans éditent les notes du pattern.
+        if self.right_tab == 1 {
+            return EVENT_LABELS;
+        }
+        // SAMPLING : boutons 1–4 = pages RECORD / EDIT / SLICE / ZONE.
+        if self.left_tab == 2 && !self.shift_held {
+            return self.sample_soft_labels();
+        }
         // Mode PLUGIN : 4 boutons d'instrument + 4 boutons de la page affichée.
         // Shift n'y change pas les boutons (Shift + knob = réglage fin).
         if let Some(inst) = self.plugin_instrument() {
@@ -5155,6 +5400,9 @@ impl Engine {
         // Même ordre que `NOTE_REPEAT_TICKS` et les libellés NOTE REPEAT.
         const RATES: [&str; 7] = ["1/32", "1/16", "1/8", "1/4", "1/2", "1/16T", "1/8T"];
         let fx = self.selected_fx().map(|(_, _, fx)| fx);
+        if self.right_tab == 1 && !self.note_repeat_enabled {
+            return EVENT_LABELS.map(|label| label == "TOUS" && self.events_all);
+        }
         self.soft_key_labels().map(|label| {
             if let Some(fx) = fx.as_ref().filter(|_| !self.note_repeat_enabled) {
                 return self.fx_soft_key_lit(fx, label);
@@ -5193,6 +5441,15 @@ impl Engine {
                 "COUNT-IN" => self.transport.count_in_bars > 0,
                 "PAGE 1/2" => self.synth_param_page == 1,
                 "SLIDE" => self.acid_synth.params.slide_time_ms > 1.0,
+                "RECORD" | "EDIT" | "SLICE" | "ZONE" => {
+                    self.left_tab == 2
+                        && SAMPLE_PAGES.get(self.sample_page as usize) == Some(&label)
+                }
+                "STOP" => self.left_tab == 2 && self.recorder.is_some(),
+                "SEUIL" => self.left_tab == 2 && self.record_wait,
+                "4" | "8" | "16" if self.left_tab == 2 => {
+                    label.parse::<u8>().ok() == Some(self.slice_count)
+                }
                 "OSC 2" => self
                     .focus_sound_wavetable_params()
                     .is_some_and(|p| p.osc2_enabled),
@@ -5856,6 +6113,675 @@ impl Engine {
         Ok(())
     }
 
+    /// Dossier des enregistrements (fixé par l'application au démarrage).
+    pub fn set_recordings_dir(&mut self, dir: std::path::PathBuf) {
+        self.recordings_dir = dir;
+    }
+
+    /// Un enregistrement attend-il l'entrée audio ? (callback audio)
+    #[must_use]
+    pub fn is_recording(&self) -> bool {
+        self.recorder.is_some()
+    }
+
+    /// Entrée audio (mono) pendant l'enregistrement — appelée par le callback
+    /// audio : aucune allocation, la capacité est réservée au départ.
+    pub fn push_record_input(&mut self, input: &[f32]) {
+        let threshold = db_to_linear(self.record_threshold_db);
+        let Some(rec) = self.recorder.as_mut() else {
+            return;
+        };
+        let peak = input.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        rec.level = peak.max(rec.level * 0.85);
+        let mut from = 0;
+        if rec.waiting {
+            match input.iter().position(|s| s.abs() >= threshold) {
+                Some(i) => {
+                    rec.waiting = false;
+                    from = i;
+                }
+                None => return,
+            }
+        }
+        let room = rec.buf.capacity() - rec.buf.len();
+        let take = (input.len() - from).min(room);
+        rec.buf.extend_from_slice(&input[from..from + take]);
+    }
+
+    fn focus_sound_id(&self) -> crate::sampler::SoundId {
+        sampler_sound_id(self.group_focus, self.active_sound)
+    }
+
+    /// Plage de lecture du Sound actif.
+    fn focus_range(&self) -> (f32, f32) {
+        self.sampler.sound_range(self.focus_sound_id())
+    }
+
+    fn sample_soft_labels(&self) -> [&'static str; 8] {
+        let page: [&'static str; 4] = match self.sample_page {
+            0 => [
+                if self.recorder.is_some() {
+                    "STOP"
+                } else {
+                    "ENREG"
+                },
+                "SEUIL",
+                "",
+                "",
+            ],
+            2 => ["4", "8", "16", "APPLIQUER"],
+            3 => ["", "", "", "RÉINIT"],
+            _ => ["REVERSE", "LOOP", "NORMLZ", "PLAGE MAX"],
+        };
+        [
+            SAMPLE_PAGES[0],
+            SAMPLE_PAGES[1],
+            SAMPLE_PAGES[2],
+            SAMPLE_PAGES[3],
+            page[0],
+            page[1],
+            page[2],
+            page[3],
+        ]
+    }
+
+    fn handle_sample_soft_key(&mut self, idx: usize) -> crate::Result<()> {
+        let label = self.sample_soft_labels()[idx.min(7)];
+        if let Some(page) = SAMPLE_PAGES.iter().position(|p| *p == label) {
+            self.sample_page = page as u8;
+            self.sample_knob_accum = [0; 8];
+            self.page_changed_at = Some(std::time::Instant::now());
+            self.revision = self.revision.wrapping_add(1);
+            return Ok(());
+        }
+        match label {
+            "ENREG" => self.start_recording(),
+            "STOP" => self.finish_recording(),
+            "SEUIL" => self.record_wait = !self.record_wait,
+            "4" | "8" | "16" => self.slice_count = label.parse().unwrap_or(8),
+            "APPLIQUER" => self.apply_slices(),
+            "REVERSE" => return self.sample_tool(0),
+            "LOOP" => return self.sample_tool(1),
+            "NORMLZ" => return self.sample_tool(2),
+            "PLAGE MAX" => self.set_focus_range(0.0, 1.0),
+            "RÉINIT" => self.edit_focus_zones(|z| {
+                z.root_key = 60;
+                z.lokey = 0;
+                z.hikey = 127;
+                z.lovel = 0;
+                z.hivel = 127;
+                z.tune_cents = 0;
+                z.pan = 0.0;
+                z.volume_db = 0.0;
+            }),
+            _ => {}
+        }
+        self.revision = self.revision.wrapping_add(1);
+        Ok(())
+    }
+
+    /// Plage de lecture du Sound actif : sampler et projet.
+    fn set_focus_range(&mut self, start: f32, end: f32) {
+        let id = self.focus_sound_id();
+        self.sampler.set_sound_range(id, start, end);
+        let (start, end) = self.sampler.sound_range(id);
+        let (g, s) = (self.group_focus as usize, self.active_sound as usize);
+        let mut guard = self.project.write();
+        if let Some(snd) = project_mut(&mut guard)
+            .groups
+            .get_mut(g)
+            .and_then(|grp| grp.sounds.get_mut(s))
+            .and_then(Option::as_mut)
+        {
+            for z in &mut snd.zones {
+                z.start = start;
+                z.end = end;
+            }
+        }
+        drop(guard);
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Modifie les zones du Sound actif (sampler et projet ensemble).
+    fn edit_focus_zones(&mut self, f: impl Fn(&mut ZoneFields)) {
+        let id = self.focus_sound_id();
+        self.sampler.edit_zones(id, |z| {
+            let mut v = ZoneFields::of_mapping(z);
+            f(&mut v);
+            v.write_mapping(z);
+        });
+        let (g, s) = (self.group_focus as usize, self.active_sound as usize);
+        let mut guard = self.project.write();
+        if let Some(snd) = project_mut(&mut guard)
+            .groups
+            .get_mut(g)
+            .and_then(|grp| grp.sounds.get_mut(s))
+            .and_then(Option::as_mut)
+        {
+            for z in &mut snd.zones {
+                let mut v = ZoneFields::of_zone(z);
+                f(&mut v);
+                v.write_zone(z);
+            }
+        }
+        drop(guard);
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Les 8 paramètres de la page de l'éditeur (nom, échelle, valeur).
+    fn sample_params(&self) -> [Option<(&'static str, crate::plugin_pages::Scale, f32)>; 8] {
+        use crate::plugin_pages::{Scale, Unit};
+        let lin = |min, max, unit| Scale::Linear { min, max, unit };
+        let log = |min, max, unit| Scale::Log { min, max, unit };
+        let steps = |min, max, unit| Scale::Steps { min, max, unit };
+        let zone = self
+            .sampler
+            .zone_mapping(self.focus_sound_id())
+            .map(|z| ZoneFields::of_mapping(&z))
+            .unwrap_or_default();
+        let adsr = self.focus_sound().map(|s| s.adsr).unwrap_or_default();
+        let (start, end) = self.focus_range();
+        match self.sample_page {
+            0 => [
+                Some(("SEUIL", lin(-60.0, 0.0, Unit::Db), self.record_threshold_db)),
+                Some((
+                    "DURÉE MAX",
+                    log(2.0, 120.0, Unit::Seconds),
+                    self.record_max_secs,
+                )),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
+            2 => [
+                Some((
+                    "TRANCHES",
+                    steps(2.0, 16.0, Unit::Count),
+                    f32::from(self.slice_count),
+                )),
+                Some((
+                    "MODE",
+                    Scale::Choice(&["GRILLE", "TRANSIT."]),
+                    if self.slice_transients { 1.0 } else { 0.0 },
+                )),
+                Some((
+                    "SENSIB",
+                    lin(0.0, 1.0, Unit::Percent),
+                    self.slice_sensitivity,
+                )),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
+            3 => [
+                Some((
+                    "ROOT",
+                    steps(0.0, 127.0, Unit::Note),
+                    f32::from(zone.root_key),
+                )),
+                Some((
+                    "LOW KEY",
+                    steps(0.0, 127.0, Unit::Note),
+                    f32::from(zone.lokey),
+                )),
+                Some((
+                    "HIGH KEY",
+                    steps(0.0, 127.0, Unit::Note),
+                    f32::from(zone.hikey),
+                )),
+                Some((
+                    "FINE",
+                    steps(-50.0, 50.0, Unit::Cents),
+                    f32::from(zone.tune_cents % 100),
+                )),
+                Some((
+                    "LOW VEL",
+                    steps(0.0, 127.0, Unit::Count),
+                    f32::from(zone.lovel),
+                )),
+                Some((
+                    "HIGH VEL",
+                    steps(0.0, 127.0, Unit::Count),
+                    f32::from(zone.hivel),
+                )),
+                Some(("PAN", lin(-1.0, 1.0, Unit::Pan), zone.pan)),
+                Some(("GAIN", lin(-24.0, 12.0, Unit::Db), zone.volume_db)),
+            ],
+            _ => [
+                Some(("START", lin(0.0, 1.0, Unit::Percent), start)),
+                Some(("END", lin(0.0, 1.0, Unit::Percent), end)),
+                Some((
+                    "TUNE",
+                    steps(-24.0, 24.0, Unit::Semitones),
+                    (f32::from(zone.tune_cents) / 100.0).round(),
+                )),
+                Some(("GAIN", lin(-24.0, 12.0, Unit::Db), zone.volume_db)),
+                Some(("ATTACK", log(0.5, 2000.0, Unit::Ms), adsr.attack_ms)),
+                Some(("DECAY", log(5.0, 2000.0, Unit::Ms), adsr.decay_ms)),
+                Some(("SUSTAIN", lin(0.0, 1.0, Unit::Percent), adsr.sustain)),
+                Some(("RELEASE", log(5.0, 3000.0, Unit::Ms), adsr.release_ms)),
+            ],
+        }
+    }
+
+    fn sample_param_views(&self) -> [Option<crate::plugin_pages::ParamView>; 8] {
+        self.sample_params().map(|p| {
+            p.map(|(name, scale, v)| crate::plugin_pages::ParamView {
+                name,
+                value: scale.format(v),
+                norm: scale.norm(v),
+                raw: v,
+            })
+        })
+    }
+
+    /// Knob de l'éditeur de sample : même échelle que l'affichage.
+    fn turn_sample_knob(&mut self, knob: usize, delta: i32) {
+        use crate::plugin_pages::DETENT_TICKS;
+        let knob = knob.min(7);
+        let Some((_, scale, value)) = self.sample_params()[knob] else {
+            return;
+        };
+        let next = if scale.is_stepped() {
+            let acc = self.sample_knob_accum[knob] + delta;
+            let steps = acc / DETENT_TICKS;
+            self.sample_knob_accum[knob] = acc - steps * DETENT_TICKS;
+            if steps == 0 {
+                return;
+            }
+            scale.step(value, steps)
+        } else {
+            scale.turn(value, delta, self.shift_held)
+        };
+        self.set_sample_param(knob, next);
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    fn set_sample_param(&mut self, knob: usize, v: f32) {
+        let (start, end) = self.focus_range();
+        match (self.sample_page, knob) {
+            (0, 0) => self.record_threshold_db = v,
+            (0, 1) => self.record_max_secs = v,
+            (2, 0) => self.slice_count = v.round() as u8,
+            (2, 1) => self.slice_transients = v.round() >= 1.0,
+            (2, 2) => self.slice_sensitivity = v,
+            (3, 0) => self.edit_focus_zones(|z| z.root_key = v.round() as u8),
+            (3, 1) => self.edit_focus_zones(|z| z.lokey = (v.round() as u8).min(z.hikey)),
+            (3, 2) => self.edit_focus_zones(|z| z.hikey = (v.round() as u8).max(z.lokey)),
+            (3, 3) => self.edit_focus_zones(|z| {
+                z.tune_cents = z.tune_cents / 100 * 100 + v.round() as i16;
+            }),
+            (3, 4) => self.edit_focus_zones(|z| z.lovel = (v.round() as u8).min(z.hivel)),
+            (3, 5) => self.edit_focus_zones(|z| z.hivel = (v.round() as u8).max(z.lovel)),
+            (3, 6) => self.edit_focus_zones(|z| z.pan = v),
+            (3, 7) | (1, 3) => self.edit_focus_zones(|z| z.volume_db = v),
+            (1, 0) => self.set_focus_range(v.min(end - 0.002), end),
+            (1, 1) => self.set_focus_range(start, v.max(start + 0.002)),
+            (1, 2) => self.edit_focus_zones(|z| {
+                z.tune_cents = v.round() as i16 * 100 + z.tune_cents % 100;
+            }),
+            (1, k @ 4..=7) => {
+                let Some(mut adsr) = self.focus_sound().map(|s| s.adsr) else {
+                    return;
+                };
+                match k {
+                    4 => adsr.attack_ms = v,
+                    5 => adsr.decay_ms = v,
+                    6 => adsr.sustain = v,
+                    _ => adsr.release_ms = v,
+                }
+                let _ = self.handle_event(EngineEvent::SoundAdsr {
+                    group: self.group_focus,
+                    sound: self.active_sound,
+                    attack_ms: adsr.attack_ms,
+                    decay_ms: adsr.decay_ms,
+                    sustain: adsr.sustain,
+                    release_ms: adsr.release_ms,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    /// Débuts des tranches (fractions du sample) d'après le mode de découpe :
+    /// grille régulière dans la plage, ou coups détectés.
+    fn slice_points(&self) -> Vec<f32> {
+        let id = self.focus_sound_id();
+        let (start, end) = self.focus_range();
+        let key = SliceKey {
+            sound: id,
+            count: self.slice_count,
+            transients: self.slice_transients,
+            sensitivity: (self.slice_sensitivity * 1000.0) as u32,
+            range: ((start * 1e6) as u32, (end * 1e6) as u32),
+            sample: self
+                .sampler
+                .zone_mapping(id)
+                .and_then(|z| z.sample.map(|s| Arc::as_ptr(&s) as usize)),
+        };
+        if let Some((k, pts)) = self.slice_cache.lock().as_ref() {
+            if *k == key {
+                return pts.clone();
+            }
+        }
+        let n = usize::from(self.slice_count.max(1));
+        let points: Vec<f32> = match (
+            self.slice_transients,
+            self.sampler.zone_mapping(id).and_then(|z| z.sample),
+        ) {
+            (true, Some(sample)) => {
+                let len = sample.len().max(1);
+                let (a, b) = ((start * len as f32) as usize, (end * len as f32) as usize);
+                crate::sampler::detect_onsets(
+                    &sample,
+                    self.sampler.sample_rate,
+                    a,
+                    b,
+                    n,
+                    self.slice_sensitivity,
+                )
+                .into_iter()
+                .map(|i| i as f32 / len as f32)
+                .collect()
+            }
+            _ => (0..n)
+                .map(|k| start + (end - start) * k as f32 / n as f32)
+                .collect(),
+        };
+        *self.slice_cache.lock() = Some((key, points.clone()));
+        points
+    }
+
+    /// Répartit les tranches sur les pads à partir du Sound actif (même
+    /// sample, une plage par pad), comme « Apply to pads » de la MK3.
+    fn apply_slices(&mut self) {
+        let id = self.focus_sound_id();
+        let Some(zone) = self.sampler.zone_mapping(id).filter(|z| z.sample.is_some()) else {
+            self.show_status("Pas de sample à découper".to_string());
+            return;
+        };
+        if zone.sample_path.is_none() {
+            self.show_status("Sample sans fichier : enregistre-le d'abord".to_string());
+            return;
+        }
+        let points = self.slice_points();
+        let (_, end) = self.focus_range();
+        let base = self
+            .focus_sound()
+            .map_or_else(|| "Slice".to_string(), |s| s.name);
+        self.push_project_history();
+        let group = self.group_focus;
+        let first = self.active_sound;
+        let mut made = 0;
+        for (k, &s) in points.iter().enumerate() {
+            let pad = first as usize + k;
+            if pad >= 16 {
+                break;
+            }
+            let e = points.get(k + 1).copied().unwrap_or(end);
+            if self
+                .install_sample_zone(group, pad as u8, zone.clone())
+                .is_err()
+            {
+                continue;
+            }
+            let sid = sampler_sound_id(group, pad as u8);
+            self.sampler.set_sound_range(sid, s, e);
+            let mut guard = self.project.write();
+            if let Some(snd) = project_mut(&mut guard).groups[group as usize].sounds[pad].as_mut() {
+                snd.name = format!("{} #{}", base.split(" #").next().unwrap_or("Slice"), k + 1);
+                for z in &mut snd.zones {
+                    z.start = s;
+                    z.end = e;
+                }
+            }
+            made += 1;
+        }
+        self.show_status(format!(
+            "{made} tranches sur les pads {}–{}",
+            first + 1,
+            first as usize + made
+        ));
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    fn start_recording(&mut self) {
+        let frames =
+            (self.record_max_secs.clamp(1.0, 120.0) * self.transport.sample_rate as f32) as usize;
+        self.recorder = Some(Recorder {
+            target: (self.group_focus, self.active_sound),
+            buf: Vec::with_capacity(frames),
+            waiting: self.record_wait,
+            level: 0.0,
+        });
+        self.show_status(if self.record_wait {
+            "Enregistrement armé : joue pour démarrer".to_string()
+        } else {
+            "Enregistrement…".to_string()
+        });
+    }
+
+    /// Arrête l'enregistrement : écrit un WAV et le charge sur le Sound visé.
+    fn finish_recording(&mut self) {
+        let Some(rec) = self.recorder.take() else {
+            return;
+        };
+        if rec.buf.is_empty() {
+            self.show_status("Rien n'a été enregistré".to_string());
+            return;
+        }
+        #[cfg(feature = "sampler")]
+        {
+            let (group, sound) = rec.target;
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let path = self.recordings_dir.join(format!(
+                "rec-{}{:02}-{stamp}.wav",
+                group_letter_char(group),
+                sound + 1
+            ));
+            let result = std::fs::create_dir_all(&self.recordings_dir)
+                .map_err(|e| e.to_string())
+                .and_then(|()| write_wav_mono(&path, &rec.buf, self.transport.sample_rate))
+                .and_then(|()| Sampler::prepare_wav(&path, 36 + sound).map_err(|e| e.to_string()))
+                .and_then(|zone| {
+                    self.install_sample_zone(group, sound, zone)
+                        .map_err(|e| e.to_string())
+                });
+            match result {
+                Ok(()) => self.show_status(format!(
+                    "Enregistré : {:.1} s sur le pad {}",
+                    rec.buf.len() as f32 / self.transport.sample_rate as f32,
+                    sound + 1
+                )),
+                Err(e) => self.show_status(format!("Enregistrement perdu : {e}")),
+            }
+        }
+        #[cfg(not(feature = "sampler"))]
+        self.show_status("Enregistrement indisponible (sampler désactivé)".to_string());
+    }
+
+    /// Index (dans le pattern actif) des événements parcourus en mode EVENTS,
+    /// dans l'ordre du temps : ceux du Sound actif, ou tous (`TOUS`).
+    fn event_scope(&self) -> Vec<usize> {
+        let proj = Arc::clone(&*self.project.read());
+        let Some(pat) = proj
+            .active_pattern_index(self.group_focus as usize, self.active_scene)
+            .and_then(|pi| proj.groups.get(self.group_focus as usize)?.patterns.get(pi))
+        else {
+            return Vec::new();
+        };
+        event_scope(pat, (!self.events_all).then_some(self.active_sound))
+    }
+
+    /// Événement sélectionné en mode EVENTS (index dans le pattern, copie).
+    #[must_use]
+    pub fn selected_event(&self) -> Option<(usize, crate::project::PatternEvent)> {
+        let scope = self.event_scope();
+        let i = *scope.get(self.event_cursor.min(scope.len().checked_sub(1)?))?;
+        let proj = Arc::clone(&*self.project.read());
+        let pat = proj
+            .active_pattern_index(self.group_focus as usize, self.active_scene)
+            .and_then(|pi| proj.groups.get(self.group_focus as usize)?.patterns.get(pi))?;
+        pat.events.get(i).cloned().map(|e| (i, e))
+    }
+
+    fn step_event_cursor(&mut self, step: i32) {
+        let n = self.event_scope().len();
+        if n == 0 {
+            self.event_cursor = 0;
+            return;
+        }
+        let cur = self.event_cursor.min(n - 1) as i32;
+        self.event_cursor = (cur + step).rem_euclid(n as i32) as usize;
+        self.event_knob_accum = [0; 8];
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Modifie l'événement sélectionné puis le garde sélectionné (le tri par
+    /// temps peut changer son rang quand sa position bouge).
+    fn edit_selected_event(&mut self, f: impl FnOnce(&mut crate::project::PatternEvent, u32)) {
+        let Some((i, _)) = self.selected_event() else {
+            return;
+        };
+        let mut edited = None;
+        self.with_active_pattern(|pat| {
+            let len = u32::from(pat.length.bars.max(1)) * 4 * 960;
+            if let Some(e) = pat.events.get_mut(i) {
+                f(e, len);
+                edited = Some(e.clone());
+            }
+        });
+        if let Some(e) = edited {
+            self.reselect_event(&e);
+        }
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    fn reselect_event(&mut self, e: &crate::project::PatternEvent) {
+        let proj = Arc::clone(&*self.project.read());
+        let Some(pat) = proj
+            .active_pattern_index(self.group_focus as usize, self.active_scene)
+            .and_then(|pi| proj.groups.get(self.group_focus as usize)?.patterns.get(pi))
+        else {
+            return;
+        };
+        let scope = self.event_scope();
+        if let Some(pos) = scope.iter().position(|&i| {
+            pat.events.get(i).is_some_and(|x| {
+                x.tick == e.tick && x.pad == e.pad && x.pitch == e.pitch && x.velocity == e.velocity
+            })
+        }) {
+            self.event_cursor = pos;
+        }
+    }
+
+    /// Knobs du mode EVENTS : 1 POSITION (un pas par cran, Shift = 10 ticks),
+    /// 2 NOTE (un demi-ton par cran), 3 VÉLOCITÉ, 4 LONGUEUR (un pas par cran,
+    /// Shift = 30 ticks), 5 = événement précédent / suivant.
+    fn turn_event_knob(&mut self, knob: usize, delta: i32) {
+        use crate::plugin_pages::DETENT_TICKS;
+        let knob = knob.min(7);
+        if knob == 2 {
+            // Vélocité : continue (≈ 1 par 8 ticks bruts).
+            let acc = self.event_knob_accum[2] + delta;
+            let steps = acc / 8;
+            self.event_knob_accum[2] = acc - steps * 8;
+            if steps != 0 {
+                self.edit_selected_event(|e, _| {
+                    e.velocity = (i32::from(e.velocity) + steps).clamp(1, 127) as u8;
+                });
+            }
+            return;
+        }
+        let acc = self.event_knob_accum[knob] + delta;
+        let steps = acc / DETENT_TICKS;
+        self.event_knob_accum[knob] = acc - steps * DETENT_TICKS;
+        if steps == 0 {
+            return;
+        }
+        let fine = self.shift_held;
+        match knob {
+            0 => {
+                let unit = if fine { 10 } else { TICKS_PER_STEP as i64 };
+                self.edit_selected_event(|e, len| {
+                    e.tick = (i64::from(e.tick) + i64::from(steps) * unit)
+                        .clamp(0, i64::from(len) - 1) as u32;
+                });
+            }
+            1 => self.edit_selected_event(|e, _| {
+                e.pitch = (i32::from(e.pitch) + steps).clamp(0, 127) as u8;
+            }),
+            3 => {
+                let unit = if fine { 30 } else { TICKS_PER_STEP as i64 };
+                self.edit_selected_event(|e, _| {
+                    e.length_ticks = (i64::from(e.length_ticks) + i64::from(steps) * unit)
+                        .clamp(30, 3840 * 8) as u32;
+                });
+            }
+            4 => self.step_event_cursor(steps),
+            _ => {}
+        }
+    }
+
+    /// Boutons du mode EVENTS (voir `EVENT_LABELS`).
+    fn handle_event_soft_key(&mut self, idx: usize) {
+        match EVENT_LABELS[idx.min(7)] {
+            "EVT <" => self.step_event_cursor(-1),
+            "EVT >" => self.step_event_cursor(1),
+            "TOUS" => {
+                self.events_all = !self.events_all;
+                self.event_cursor = 0;
+                self.revision = self.revision.wrapping_add(1);
+            }
+            "SUPPR" => {
+                if let Some((i, e)) = self.selected_event() {
+                    self.push_project_history();
+                    self.with_active_pattern(|pat| {
+                        if i < pat.events.len() {
+                            pat.events.remove(i);
+                        }
+                    });
+                    self.show_status(format!("Note {} supprimée", note_label(e.pitch)));
+                    let n = self.event_scope().len();
+                    self.event_cursor = self.event_cursor.min(n.saturating_sub(1));
+                    self.revision = self.revision.wrapping_add(1);
+                }
+            }
+            "DUPLIQ" => {
+                if let Some((_, e)) = self.selected_event() {
+                    self.push_project_history();
+                    let mut copy = e.clone();
+                    let mut added = None;
+                    self.with_active_pattern(|pat| {
+                        let len = u32::from(pat.length.bars.max(1)) * 4 * 960;
+                        copy.tick = (e.tick + e.length_ticks.max(TICKS_PER_STEP)) % len;
+                        pat.events.push(copy.clone());
+                        pat.events.sort_by_key(|x| x.tick);
+                        added = Some(copy);
+                    });
+                    if let Some(c) = added {
+                        self.reselect_event(&c);
+                    }
+                    self.revision = self.revision.wrapping_add(1);
+                }
+            }
+            "QUANT" => self.edit_selected_event(|e, len| {
+                let step = TICKS_PER_STEP;
+                e.tick = ((e.tick + step / 2) / step * step).min(len - step);
+            }),
+            "NUDGE <" => self.edit_selected_event(|e, _| e.tick = e.tick.saturating_sub(60)),
+            "NUDGE >" => self.edit_selected_event(|e, len| e.tick = (e.tick + 60).min(len - 1)),
+            _ => {}
+        }
+    }
+
     /// Crée ou retire les bus d'effets d'après les chaînes du projet. Appelé
     /// hors du thread audio : toutes les allocations des inserts ont lieu ici.
     fn sync_fx_buses(&mut self) {
@@ -6499,6 +7425,13 @@ impl Engine {
         let idx = (n.saturating_sub(1) as usize).min(7);
         if self.note_repeat_enabled {
             return self.handle_soft_key_note_repeat(idx);
+        }
+        if self.right_tab == 1 {
+            self.handle_event_soft_key(idx);
+            return Ok(());
+        }
+        if self.left_tab == 2 && !self.shift_held {
+            return self.handle_sample_soft_key(idx);
         }
         if let Some(inst) = self.plugin_instrument() {
             return self.handle_plugin_soft_key(inst, idx);
@@ -7656,13 +8589,9 @@ mod tests {
         eng.handle_event(EngineEvent::GroupFocus(2)).unwrap();
         assert_eq!(lit(&eng), vec!["GRP C"]);
 
-        // SAMPLER : seul le mode de filtre courant, jamais SND </ECOUTE/CYC FLT.
+        // SAMPLING : seule la page courante de l'éditeur est allumée.
         eng.handle_event(EngineEvent::SetLeftTab(2)).unwrap();
-        let sampler = lit(&eng);
-        assert!(sampler.len() <= 1, "{sampler:?}");
-        assert!(sampler
-            .iter()
-            .all(|l| ["LP/HP/BP", "NOTCH", "PEAK", "OFF"].contains(l)));
+        assert_eq!(lit(&eng), vec!["EDIT"]);
     }
 
     #[test]
@@ -8487,9 +9416,12 @@ mod tests {
 
     #[test]
     fn test_filter_selection_and_cycling_via_soft_keys() {
+        // Les modes de filtre du sampler sont sur la page SON du PLUG-IN
+        // (boutons 5–8), l'éditeur de sample ayant pris les boutons SAMPLING.
         let mut eng = Engine::new_demo(48000);
-        eng.left_tab = 2; // Sampler view
-        eng.active_sound = 0;
+        eng.handle_event(EngineEvent::SelectSound(0)).unwrap();
+        eng.handle_event(EngineEvent::SetLeftTab(4)).unwrap();
+        assert_eq!(eng.soft_key_labels()[4], "LP/HP/BP");
 
         // Réinitialise le filtre à Off
         eng.handle_event(EngineEvent::SetSoundFilterKind {
@@ -8499,8 +9431,8 @@ mod tests {
         })
         .unwrap();
 
-        // SoftKey 4 (idx 3) = CYC FLT : Off → LowPass
-        eng.handle_event(EngineEvent::SoftKey(4)).unwrap();
+        // Touche 5 = LP/HP/BP : Off → LowPass
+        eng.handle_event(EngineEvent::SoftKey(5)).unwrap();
         let f1 = eng.project.read().groups[0].sounds[0]
             .as_ref()
             .unwrap()
@@ -8508,8 +9440,8 @@ mod tests {
             .kind;
         assert_eq!(f1, crate::project::FilterKind::LowPass);
 
-        // SoftKey 4 (idx 3) = CYC FLT : LowPass → HighPass
-        eng.handle_event(EngineEvent::SoftKey(4)).unwrap();
+        // Touche 5 : LowPass → HighPass
+        eng.handle_event(EngineEvent::SoftKey(5)).unwrap();
         let f2 = eng.project.read().groups[0].sounds[0]
             .as_ref()
             .unwrap()
@@ -8517,8 +9449,7 @@ mod tests {
             .kind;
         assert_eq!(f2, crate::project::FilterKind::HighPass);
 
-        // Nouvelle disposition : touche 5 (idx 4) = «LP/HP/BP» cycle
-        // On est en HP → cycle donne BP
+        // Touche 5 encore : HighPass → BandPass
         eng.handle_event(EngineEvent::SoftKey(5)).unwrap();
         let f3 = eng.project.read().groups[0].sounds[0]
             .as_ref()
@@ -9204,5 +10135,128 @@ mod tests {
             let wet = pad_peak(&mut eng, 0);
             assert!(wet < dry * 0.2, "{owner:?} : {wet} vs {dry}");
         }
+    }
+
+    #[test]
+    fn events_mode_edits_the_selected_note_with_knobs_and_buttons() {
+        let mut eng = Engine::new_demo(48000);
+        eng.handle_event(EngineEvent::GroupFocus(0)).unwrap();
+        eng.handle_event(EngineEvent::SelectSound(0)).unwrap();
+        eng.handle_event(EngineEvent::SetRightTab(1)).unwrap();
+        assert_eq!(eng.soft_key_labels(), EVENT_LABELS);
+        let count = eng.snapshot().event_count;
+        assert!(count > 1, "le kick de la démo a plusieurs notes");
+        let first = eng.selected_event().unwrap().1;
+        // Knob 1 : un cran = un pas plus tard ; la note reste sélectionnée.
+        eng.handle_event(EngineEvent::EventKnob { knob: 0, delta: 32 })
+            .unwrap();
+        let moved = eng.selected_event().unwrap().1;
+        assert_eq!(moved.tick, first.tick + TICKS_PER_STEP);
+        // Knob 3 : vélocité continue ; knob 2 : un demi-ton par cran.
+        eng.handle_event(EngineEvent::EventKnob {
+            knob: 2,
+            delta: -80,
+        })
+        .unwrap();
+        assert_eq!(
+            eng.selected_event().unwrap().1.velocity,
+            moved.velocity - 10
+        );
+        eng.handle_event(EngineEvent::EventKnob { knob: 1, delta: 64 })
+            .unwrap();
+        assert_eq!(eng.selected_event().unwrap().1.pitch, moved.pitch + 2);
+        // NUDGE > puis QUANT : retour sur la grille.
+        eng.handle_event(EngineEvent::SoftKey(8)).unwrap();
+        assert_eq!(eng.selected_event().unwrap().1.tick, moved.tick + 60);
+        eng.handle_event(EngineEvent::SoftKey(6)).unwrap();
+        assert_eq!(eng.selected_event().unwrap().1.tick % TICKS_PER_STEP, 0);
+        // 4D / EVT > : note suivante ; SUPPR : une note de moins.
+        eng.handle_event(EngineEvent::EventStep(1)).unwrap();
+        assert_eq!(eng.snapshot().event_index, 1);
+        eng.handle_event(EngineEvent::SoftKey(4)).unwrap();
+        assert_eq!(eng.snapshot().event_count, count - 1);
+        // TOUS : tous les Sounds du pattern, bouton allumé.
+        eng.handle_event(EngineEvent::SoftKey(3)).unwrap();
+        assert!(eng.snapshot().events_all);
+        assert!(eng.soft_key_active()[2]);
+        assert!(eng.snapshot().event_count >= count - 1);
+    }
+
+    #[test]
+    fn sample_editor_pages_edit_slice_zone_and_record() {
+        let mut eng = Engine::new_demo(48000);
+        eng.handle_event(EngineEvent::GroupFocus(0)).unwrap();
+        eng.handle_event(EngineEvent::SelectSound(0)).unwrap();
+        eng.handle_event(EngineEvent::SetLeftTab(2)).unwrap();
+        assert_eq!(&eng.soft_key_labels()[..4], &SAMPLE_PAGES);
+        let id = eng.focus_sound_id();
+
+        // EDIT : knob 1 avance le début de la plage (sampler et projet).
+        eng.handle_event(EngineEvent::SampleKnob {
+            knob: 0,
+            delta: 300,
+        })
+        .unwrap();
+        let (start, end) = eng.sampler.sound_range(id);
+        assert!(start > 0.1 && end == 1.0, "{start} {end}");
+        let saved = eng.project.read().groups[0].sounds[0]
+            .as_ref()
+            .unwrap()
+            .zones[0]
+            .start;
+        assert!(
+            (saved - start).abs() < 1e-6,
+            "plage enregistrée dans le projet"
+        );
+        eng.handle_event(EngineEvent::SoftKey(8)).unwrap(); // PLAGE MAX
+        assert_eq!(eng.sampler.sound_range(id), (0.0, 1.0));
+
+        // ZONE : knob 1 = note racine (un demi-ton par cran).
+        eng.handle_event(EngineEvent::SoftKey(4)).unwrap();
+        assert_eq!(eng.snapshot().sample_page, 3);
+        let root = eng.sampler.zone_mapping(id).unwrap().root_key;
+        eng.handle_event(EngineEvent::SampleKnob { knob: 0, delta: 64 })
+            .unwrap();
+        assert_eq!(eng.sampler.zone_mapping(id).unwrap().root_key, root + 2);
+
+        // RECORD : prise sur le pad 2, WAV écrit puis chargé.
+        let dir = std::env::temp_dir().join(format!("mk3-rec-test-{}", std::process::id()));
+        eng.set_recordings_dir(dir.clone());
+        eng.handle_event(EngineEvent::SelectSound(1)).unwrap();
+        eng.handle_event(EngineEvent::SoftKey(1)).unwrap(); // page RECORD
+        eng.handle_event(EngineEvent::SoftKey(5)).unwrap(); // ENREG
+        assert!(eng.is_recording());
+        assert_eq!(eng.soft_key_labels()[4], "STOP");
+        let tone: Vec<f32> = (0..4800).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+        eng.push_record_input(&tone);
+        eng.handle_event(EngineEvent::SoftKey(5)).unwrap(); // STOP
+        assert!(!eng.is_recording());
+        #[cfg(feature = "sampler")]
+        {
+            let zone = eng.sampler.zone_mapping(sampler_sound_id(0, 1)).unwrap();
+            assert_eq!(zone.sample.unwrap().len(), 4800);
+            assert!(zone.sample_path.unwrap().starts_with(dir.to_str().unwrap()));
+
+            // SLICE de la prise : 4 tranches sur les pads 2–5, plages contiguës.
+            eng.handle_event(EngineEvent::SoftKey(3)).unwrap();
+            eng.handle_event(EngineEvent::SoftKey(5)).unwrap(); // « 4 »
+            assert!(eng.soft_key_active()[4], "4 tranches allumé");
+            eng.handle_event(EngineEvent::SoftKey(8)).unwrap(); // APPLIQUER
+            let ranges: Vec<(f32, f32)> = (1..5)
+                .map(|k| eng.sampler.sound_range(sampler_sound_id(0, k)))
+                .collect();
+            assert_eq!(ranges[0].0, 0.0);
+            assert_eq!(ranges[3].1, 1.0);
+            for w in ranges.windows(2) {
+                assert!((w[0].1 - w[1].0).abs() < 1e-6, "{ranges:?}");
+            }
+            let name = eng.project.read().groups[0].sounds[3]
+                .as_ref()
+                .unwrap()
+                .name
+                .clone();
+            assert!(name.ends_with("#3"), "{name}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -67,6 +67,24 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                 );
                 crate::gui::theme::view_header(ui, "SAMPLER", &subtitle);
             });
+            // Éditeur de sample (pages RECORD / EDIT / SLICE / ZONE de la MK3).
+            crate::gui::theme::card(ui, |ui| {
+                ui.label(
+                    egui::RichText::new("Éditeur de sample")
+                        .family(crate::gui::theme::bold_family())
+                        .size(15.0),
+                );
+                if let Some(rec) = &snap.record {
+                    let text = if rec.waiting {
+                        "Armé : joue pour démarrer".to_string()
+                    } else {
+                        format!("● Enregistrement {:.1} s / {:.0} s", rec.secs, rec.max_secs)
+                    };
+                    ui.colored_label(c.error, text);
+                }
+                crate::gui::widgets::soft_key_strip(ui, app, snap, &snap.sample_params);
+            });
+            ui.add_space(6.0);
 
             ui.add_space(6.0);
 

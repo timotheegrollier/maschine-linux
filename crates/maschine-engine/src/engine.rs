@@ -495,6 +495,10 @@ pub enum EngineEvent {
     ToggleLock(bool),
     /// Enchaîne plusieurs patterns (chain) pour un groupe
     PatternChain { group: u8, patterns: Vec<usize> },
+    /// Active / désactive la vélocité fixe (bouton FIXED VEL).
+    SetFixedVelocity(bool),
+    /// Niveau de la vélocité fixe (1..127).
+    SetFixedVelocityLevel(u8),
 }
 
 /// Noms des 16 presets de batterie DSP 808
@@ -665,6 +669,10 @@ pub struct EngineSnapshot {
     pub pattern_chains: [Option<Vec<usize>>; 8],
     /// Sous-page active de paramètres synthé (0: Main, 1: Filtre & Disto).
     pub synth_param_page: u8,
+    /// Vélocité fixe active (FIXED VEL)
+    pub fixed_velocity: bool,
+    /// Niveau affiché de la vélocité fixe (1..127)
+    pub fixed_velocity_level: u8,
     /// Compteur de révision : change dès qu'un état a bougé (repaint UI/écrans).
     pub revision: u64,
 }
@@ -849,6 +857,10 @@ pub struct Engine {
     pub note_repeat_held_pads: [Option<u8>; 16],
     /// Accumulateur d'échantillons pour Note Repeat en mode Stop
     note_repeat_samples: u64,
+    /// Vélocité fixe active (FIXED VEL)
+    fixed_velocity: bool,
+    /// Niveau appliqué aux pads joués et aux pas posés (1..127)
+    fixed_velocity_level: u8,
     /// Buffer de mixage temporaire pour le rendu des synthés
     synth_buf: Vec<f32>,
     /// Emplacement cible pour Kick Synth (group, sound)
@@ -1109,6 +1121,8 @@ impl Engine {
             note_repeat_rate: 1, // 1/16 par défaut
             note_repeat_held_pads: [None; 16],
             note_repeat_samples: 0,
+            fixed_velocity: false,
+            fixed_velocity_level: 100,
             synth_buf: vec![0.0; 4096],
             kick_sound_target: None,
             acid_sound_target: Some((0, 14)), // TB-303 sur Pad 14 par défaut
@@ -1448,6 +1462,8 @@ impl Engine {
             delete_project_confirm: self.delete_project_confirm,
             note_repeat_enabled: self.note_repeat_enabled,
             note_repeat_rate: self.note_repeat_rate,
+            fixed_velocity: self.fixed_velocity,
+            fixed_velocity_level: self.fixed_velocity_level,
             shift_held: self.shift_held,
             lock_active: self.lock_active,
             pattern_chains: self.pattern_chains.clone(),
@@ -1967,9 +1983,14 @@ impl Engine {
         match ev {
             EngineEvent::Pad {
                 pad,
-                velocity,
+                mut velocity,
                 pressed,
             } => {
+                // La vélocité fixe prime sur la pression réelle : elle
+                // s'applique au jeu live comme à l'enregistrement.
+                if self.fixed_velocity {
+                    velocity = self.fixed_velocity_level;
+                }
                 if pressed {
                     self.trigger_pad_voice(pad, velocity);
                     if self.note_repeat_enabled && (pad as usize) < 16 {
@@ -2075,11 +2096,29 @@ impl Engine {
                 let (proj_name, path) = generate_unique_project_path(&name);
                 let mut proj = Project::new_demo();
                 proj.name = proj_name.clone();
+                // Un nouveau projet repart sur un kit 808 complet et vierge,
+                // indépendant de la disposition « familles » de la démo.
                 if let Some(g) = proj.groups.first_mut() {
-                    if let Some(pat) = g.patterns.first_mut() {
-                        pat.name = "Pattern 1".to_string();
-                        pat.events.clear();
+                    g.name = "Kit 808".to_string();
+                    g.color = 22;
+                    for (i, sound_name) in DRUM_PRESET_NAMES.iter().enumerate() {
+                        let mut sound = crate::project::Sound::new(sound_name, 22);
+                        sound.zones.push(crate::project::Zone {
+                            sample_path: None,
+                            root_key: 36 + i as u8,
+                            lokey: 0,
+                            hikey: 127,
+                            lovel: 0,
+                            hivel: 127,
+                            ..Default::default()
+                        });
+                        g.sounds[i] = Some(sound);
                     }
+                    g.patterns.clear();
+                    g.patterns.push(crate::project::Pattern::new(
+                        "Pattern 1",
+                        crate::project::BarsBeatsTicks::new(2, 0, 0),
+                    ));
                 }
                 self.load_default_808_kit();
                 proj.save_json_with(&path, false)?;
@@ -2153,42 +2192,27 @@ impl Engine {
                     .map(|g| pattern < g.patterns.len())
                     .unwrap_or(false);
                 if valid {
-                    let scene_idx = ensure_active_scene(proj, &mut self.active_scene);
-                    if let Some(scene) = proj.scenes.get_mut(scene_idx) {
-                        if let Some(slot) = scene.patterns.get_mut(group_idx) {
-                            if *slot == Some(pattern) {
-                                // Appuyer sur un pattern déjà actif le désactive (tous les pads peuvent être désactivés)
-                                *slot = None;
-                            } else {
-                                *slot = Some(pattern);
-                            }
-                        }
-                    }
+                    // Workflow officiel Maschine : le pattern sélectionné remplace
+                    // uniquement la référence du Groupe dans la scène active. Les
+                    // autres Groupes gardent leur propre pattern, et ré-appuyer sur
+                    // le pad du pattern courant ne le désactive pas.
+                    assign_pattern_to_active_scene(
+                        proj,
+                        &mut self.active_scene,
+                        group_idx,
+                        pattern,
+                    );
                 }
             }
             EngineEvent::AddPattern { group } => {
                 let group_idx = group as usize;
-                let active_snd = self.active_sound;
                 let mut guard = self.project.write();
                 let proj = project_mut(&mut guard);
                 let length = new_pattern_length(proj, group_idx, self.active_scene);
-                // Préserve les événements de tous les autres pads/membres du groupe
-                // et isole la piste du pad actif pour créer sa nouvelle variation.
-                let prev_events: Vec<PatternEvent> = proj
-                    .active_pattern_index(group_idx, self.active_scene)
-                    .and_then(|pi| proj.groups.get(group_idx).and_then(|g| g.patterns.get(pi)))
-                    .map(|p| {
-                        p.events
-                            .iter()
-                            .filter(|e| e.pad != active_snd)
-                            .cloned()
-                            .collect()
-                    })
-                    .unwrap_or_default();
                 if let Some(g) = proj.groups.get_mut(group_idx) {
                     let idx = g.patterns.len();
-                    let mut pat = Pattern::new(&format!("Pattern {}", idx + 1), length);
-                    pat.events = prev_events;
+                    // Workflow officiel Maschine : un nouveau pattern est vide.
+                    let pat = Pattern::new(&format!("Pattern {}", idx + 1), length);
                     g.patterns.push(pat);
                     assign_pattern_to_active_scene(proj, &mut self.active_scene, group_idx, idx);
                 }
@@ -2198,29 +2222,15 @@ impl Engine {
             EngineEvent::CreatePatternAt { group, pattern } => {
                 let group_idx = group as usize;
                 let target = pattern.min(63);
-                let active_snd = self.active_sound;
                 let mut guard = self.project.write();
                 let proj = project_mut(&mut guard);
                 let length = new_pattern_length(proj, group_idx, self.active_scene);
-                // Préserve les pistes des autres pads pour le slot cible
-                let prev_events: Vec<PatternEvent> = proj
-                    .active_pattern_index(group_idx, self.active_scene)
-                    .and_then(|pi| proj.groups.get(group_idx).and_then(|g| g.patterns.get(pi)))
-                    .map(|p| {
-                        p.events
-                            .iter()
-                            .filter(|e| e.pad != active_snd)
-                            .cloned()
-                            .collect()
-                    })
-                    .unwrap_or_default();
                 if let Some(g) = proj.groups.get_mut(group_idx) {
+                    // Chaque slot libre créé pour atteindre le pad visé est un
+                    // pattern vide, comme les cellules vides du mode PATTERN MK3.
                     while g.patterns.len() <= target {
                         let idx = g.patterns.len();
-                        let mut pat = Pattern::new(&format!("Pattern {}", idx + 1), length);
-                        if idx == target {
-                            pat.events = prev_events.clone();
-                        }
+                        let pat = Pattern::new(&format!("Pattern {}", idx + 1), length);
                         g.patterns.push(pat);
                     }
                     assign_pattern_to_active_scene(proj, &mut self.active_scene, group_idx, target);
@@ -3718,6 +3728,21 @@ impl Engine {
                     std::time::Instant::now() + std::time::Duration::from_millis(1500);
                 self.revision = self.revision.wrapping_add(1);
             }
+            EngineEvent::SetFixedVelocity(enabled) => {
+                self.fixed_velocity = enabled;
+                self.status_message = Some(format!(
+                    "Vélocité fixe: {} ({})",
+                    self.fixed_velocity_level,
+                    if enabled { "ACTIF" } else { "off" }
+                ));
+                self.status_expires_at =
+                    std::time::Instant::now() + std::time::Duration::from_millis(1500);
+                self.revision = self.revision.wrapping_add(1);
+            }
+            EngineEvent::SetFixedVelocityLevel(level) => {
+                self.fixed_velocity_level = level.clamp(1, 127);
+                self.revision = self.revision.wrapping_add(1);
+            }
             EngineEvent::SetShiftHeld(held) => {
                 self.shift_held = held;
                 self.revision = self.revision.wrapping_add(1);
@@ -4489,7 +4514,17 @@ impl Engine {
     where
         F: Fn(&crate::project::Sound) -> bool,
     {
-        target.or_else(|| {
+        // La cible mémorisée peut être devenue invalide (Sound vide, projet
+        // démo réorganisé) : on la valide avant de s'en servir.
+        let valid_target = target.filter(|(g, s)| {
+            proj.groups
+                .get(*g as usize)
+                .and_then(|grp| grp.sounds.get(*s as usize))
+                .and_then(|snd| snd.as_ref())
+                .map(&predicate)
+                .unwrap_or(false)
+        });
+        valid_target.or_else(|| {
             for (g, grp) in proj.groups.iter().enumerate() {
                 for (s, snd) in grp.sounds.iter().enumerate() {
                     if snd.as_ref().map(&predicate).unwrap_or(false) {
@@ -6183,7 +6218,11 @@ impl Engine {
                     pat.events.push(crate::project::PatternEvent {
                         pad,
                         tick,
-                        velocity: 115,
+                        velocity: if self.fixed_velocity {
+                            self.fixed_velocity_level
+                        } else {
+                            115
+                        },
                         length_ticks: 120,
                         pitch: 36 + pad,
                     });
@@ -6344,20 +6383,22 @@ impl Engine {
         }
     }
 
-    /// Réinitialise le pattern avec le groove 808 complet
+    /// Réinitialise les patterns de démo (une famille d'instruments par Groupe).
     pub fn reset_demo_groove(&mut self) {
         self.revision = self.revision.wrapping_add(1);
         let demo_proj = crate::project::Project::new_demo();
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
-        if let Some(demo_g) = demo_proj.groups.first() {
-            if let Some(demo_p) = demo_g.patterns.first() {
-                if let Some(g) = proj.groups.get_mut(0) {
-                    if !g.patterns.is_empty() {
-                        g.patterns[0] = demo_p.clone();
-                    } else {
-                        g.patterns.push(demo_p.clone());
-                    }
+        let count = proj.groups.len().min(demo_proj.groups.len());
+        for gi in 0..count {
+            let Some(demo_p) = demo_proj.groups[gi].patterns.first() else {
+                continue;
+            };
+            if let Some(g) = proj.groups.get_mut(gi) {
+                if g.patterns.is_empty() {
+                    g.patterns.push(demo_p.clone());
+                } else {
+                    g.patterns[0] = demo_p.clone();
                 }
             }
         }
@@ -6679,6 +6720,69 @@ mod tests {
     }
 
     #[test]
+    fn fixed_velocity_applies_to_steps_and_live_pads() {
+        let mut eng = Engine::new_demo(48000);
+        eng.clear_bar(0);
+        eng.clear_bar(1);
+        eng.handle_event(EngineEvent::SetFixedVelocity(true))
+            .unwrap();
+        eng.handle_event(EngineEvent::SetFixedVelocityLevel(64))
+            .unwrap();
+        eng.toggle_step(0, 0);
+        {
+            let guard = eng.project_handle();
+            let proj = guard.read();
+            let ev = proj.groups[0].patterns[0]
+                .events
+                .iter()
+                .find(|e| e.pad == 0 && e.tick == 0)
+                .expect("le pas doit être posé");
+            assert_eq!(ev.velocity, 64);
+        }
+        // Jeu live enregistré : la vélocité du pad est remplacée par la valeur fixe.
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: true,
+            stop: false,
+        })
+        .unwrap();
+        eng.handle_event(EngineEvent::Pad {
+            pad: 1,
+            velocity: 20,
+            pressed: true,
+        })
+        .unwrap();
+        eng.handle_event(EngineEvent::Pad {
+            pad: 1,
+            velocity: 0,
+            pressed: false,
+        })
+        .unwrap();
+        {
+            let guard = eng.project_handle();
+            let proj = guard.read();
+            let ev = proj.groups[0].patterns[0]
+                .events
+                .iter()
+                .find(|e| e.pad == 1 && e.tick == 0)
+                .expect("la note enregistrée doit exister");
+            assert_eq!(ev.velocity, 64);
+        }
+        // Désactivée : on retrouve la vélocité par défaut du step sequencer.
+        eng.handle_event(EngineEvent::SetFixedVelocity(false))
+            .unwrap();
+        eng.toggle_step(2, 480);
+        let guard = eng.project_handle();
+        let proj = guard.read();
+        let ev = proj.groups[0].patterns[0]
+            .events
+            .iter()
+            .find(|e| e.pad == 2 && e.tick == 480)
+            .expect("le pas doit être posé");
+        assert_eq!(ev.velocity, 115);
+    }
+
+    #[test]
     fn toggle_step_is_silent_and_single_press() {
         let mut eng = Engine::new_demo(48000);
         assert_eq!(eng.sampler.num_voices(), 0);
@@ -6931,6 +7035,17 @@ mod tests {
         let mut eng = Engine::new_demo(48000);
         eng.clear_bar(0);
         eng.clear_bar(1);
+        // La démo répartit les notes sur plusieurs Groupes : on part d'un
+        // pattern totalement vide pour isoler la position du kick.
+        {
+            let handle = eng.project_handle();
+            let mut proj = handle.write();
+            for group in &mut proj.groups {
+                for pattern in &mut group.patterns {
+                    pattern.events.clear();
+                }
+            }
+        }
         // 150 BPM à 48 kHz : 20 échantillons par tick (blocs de 1000 = 50 ticks).
         eng.handle_event(EngineEvent::Bpm(150.0)).unwrap();
         eng.toggle_step(0, 240); // kick au tick 240
@@ -6992,9 +7107,11 @@ mod tests {
     #[test]
     fn sound_filter_adsr_audible() {
         let mut eng = Engine::new_demo(48000);
+        // Les charleys sont dans le Groupe B (famille « Snare & Cymbals »).
+        eng.handle_event(EngineEvent::GroupFocus(1)).unwrap();
         // Coupe franche : hi-hat fermé à 200Hz doit perdre ses aigus.
         eng.handle_event(EngineEvent::SoundFilterCutoff {
-            group: 0,
+            group: 1,
             sound: 2,
             cutoff_hz: 200.0,
         })
@@ -7009,7 +7126,7 @@ mod tests {
         eng.render_audio(&mut dark);
         // Rouvre le filtre et rejoue.
         eng.handle_event(EngineEvent::SoundFilterCutoff {
-            group: 0,
+            group: 1,
             sound: 2,
             cutoff_hz: 20000.0,
         })
@@ -7254,7 +7371,7 @@ mod tests {
     }
 
     #[test]
-    fn pattern_creation_isolates_active_pad_and_preserves_other_tracks() {
+    fn new_patterns_are_empty_and_keep_previous_patterns_intact() {
         let mut eng = Engine::new_demo(48000);
         let group = 0;
         eng.handle_event(EngineEvent::GroupFocus(group)).unwrap();
@@ -7302,11 +7419,14 @@ mod tests {
             .unwrap();
         let pat1 = &snap.project.groups[group as usize].patterns[active_pat_idx];
 
-        // Vérification : le Pad 0 (Kick) a sa piste vide pour composer la variation
-        assert!(!pat1.events.iter().any(|e| e.pad == 0));
-        // Les pistes des autres membres du groupe (Snare pad 1, Hihat pad 2) sont préservées !
-        assert!(pat1.events.iter().any(|e| e.pad == 1 && e.tick == 960));
-        assert!(pat1.events.iter().any(|e| e.pad == 2 && e.tick == 480));
+        // Comme sur Maschine : le nouveau pattern est totalement vide, aucune
+        // piste du pattern précédent n'est recopiée.
+        assert!(pat1.events.is_empty());
+        // Le pattern précédent du Groupe reste intact.
+        assert_eq!(
+            snap.project.groups[group as usize].patterns[0].events.len(),
+            3
+        );
 
         // Maintenant on sélectionne le Pad 1 (Snare) et on crée un pattern au slot 2 via CreatePatternAt
         eng.handle_event(EngineEvent::SelectSound(1)).unwrap();
@@ -7320,10 +7440,8 @@ mod tests {
             .unwrap();
         let pat2 = &snap2.project.groups[group as usize].patterns[active_pat2_idx];
 
-        // Vérification : le Pad 1 (Snare) a sa piste vide
-        assert!(!pat2.events.iter().any(|e| e.pad == 1));
-        // Le Pad 2 (Hihat) est toujours présent
-        assert!(pat2.events.iter().any(|e| e.pad == 2 && e.tick == 480));
+        // Idem pour un pattern créé sur un slot précis : il est vide.
+        assert!(pat2.events.is_empty());
     }
 
     #[test]
@@ -7740,38 +7858,40 @@ mod tests {
     }
 
     #[test]
-    fn test_pattern_deselect_and_chaining() {
+    fn test_pattern_selection_stays_and_chaining() {
         let mut eng = Engine::new_demo(48000);
         let group = eng.group_focus;
 
-        // 1. Désélection d'un pattern actif
-        // Initialement, pattern 0 est sélectionné
+        // 1. Sélection d'un pattern : comme sur Maschine, ré-appuyer sur le pad
+        //    du pattern courant ne le désélectionne pas.
         let init_pat = eng
             .project
             .read()
             .active_pattern_index(group as usize, eng.active_scene);
         assert_eq!(init_pat, Some(0));
 
-        // Un second appui sur pattern 0 le désélectionne (tous les pads désactivés)
         eng.handle_event(EngineEvent::PatternSelect { group, pattern: 0 })
             .unwrap();
-        let desel_pat = eng
+        let still_pat = eng
             .project
             .read()
             .active_pattern_index(group as usize, eng.active_scene);
         assert_eq!(
-            desel_pat, None,
-            "Appuyer sur un pattern actif doit le désélectionner (None)"
+            still_pat,
+            Some(0),
+            "Le pattern sélectionné doit rester sélectionné"
         );
 
-        // Ré-appuyer le réactive
-        eng.handle_event(EngineEvent::PatternSelect { group, pattern: 0 })
+        // 2. Chaque Groupe possède son propre pattern dans la scène : créer un
+        //    pattern dans un autre Groupe ne change pas celui du Groupe focus.
+        let other = (group + 1) % 8;
+        eng.handle_event(EngineEvent::AddPattern { group: other })
             .unwrap();
-        let re_pat = eng
+        let group_pat = eng
             .project
             .read()
             .active_pattern_index(group as usize, eng.active_scene);
-        assert_eq!(re_pat, Some(0));
+        assert_eq!(group_pat, Some(0));
 
         // 2. Chaining de patterns (ex: Patterns 0 et 1)
         eng.handle_event(EngineEvent::AddPattern { group }).unwrap(); // Pattern 1 créé
@@ -8059,23 +8179,23 @@ mod tests {
         eng.mixer_mode = 0; // Pads 1-8
         eng.group_focus = 0;
 
-        // Décentre le pan du pad 2
+        // Décentre le pan du pad 1 (kick)
         eng.handle_event(EngineEvent::SoundPan {
             group: 0,
-            sound: 1,
+            sound: 0,
             pan: 0.85,
         })
         .unwrap();
         assert_eq!(
-            eng.project.read().groups[0].sounds[1].as_ref().unwrap().pan,
+            eng.project.read().groups[0].sounds[0].as_ref().unwrap().pan,
             0.85
         );
 
-        // Shift + SoftKey 2 (PAN 2) -> centre le pan à 0.0
+        // Shift + SoftKey 1 (PAN 1) -> centre le pan à 0.0
         eng.handle_event(EngineEvent::SetShiftHeld(true)).unwrap();
-        eng.handle_event(EngineEvent::SoftKey(2)).unwrap();
+        eng.handle_event(EngineEvent::SoftKey(1)).unwrap();
         assert_eq!(
-            eng.project.read().groups[0].sounds[1].as_ref().unwrap().pan,
+            eng.project.read().groups[0].sounds[0].as_ref().unwrap().pan,
             0.0
         );
     }
@@ -8201,22 +8321,22 @@ mod tests {
     #[test]
     fn shift_erase_pad_removes_a_sound_slot_and_undo_restores_it() {
         let mut engine = Engine::new_demo(48_000);
-        let original_sound = engine.project.read().groups[0].sounds[4]
+        let original_sound = engine.project.read().groups[0].sounds[0]
             .as_ref()
             .unwrap()
             .name
             .clone();
         engine
-            .handle_event(EngineEvent::ClearSoundSlot { group: 0, sound: 4 })
+            .handle_event(EngineEvent::ClearSoundSlot { group: 0, sound: 0 })
             .unwrap();
-        assert!(engine.project.read().groups[0].sounds[4].is_none());
+        assert!(engine.project.read().groups[0].sounds[0].is_none());
         assert!(engine.project.read().groups[0].patterns[0]
             .events
             .iter()
-            .all(|event| event.pad != 4));
+            .all(|event| event.pad != 0));
         engine.handle_event(EngineEvent::ShiftPadAction(0)).unwrap();
         assert_eq!(
-            engine.project.read().groups[0].sounds[4]
+            engine.project.read().groups[0].sounds[0]
                 .as_ref()
                 .unwrap()
                 .name,

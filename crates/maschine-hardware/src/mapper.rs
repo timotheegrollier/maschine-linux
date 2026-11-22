@@ -465,6 +465,11 @@ pub enum MapperAction {
     SetNoteRepeat(bool),
     /// Division temporelle du Note Repeat (0..7)
     SetNoteRepeatRate(u8),
+    // ─── Vélocité fixe ─────────────────────────────────────────
+    /// Active / désactive la vélocité fixe (bouton FIXED VEL)
+    SetFixedVelocity(bool),
+    /// Niveau de la vélocité fixe (1..127)
+    SetFixedVelocityLevel(u8),
     /// Enchaîne plusieurs patterns
     PatternChain { group: u8, patterns: Vec<usize> },
     /// Bouton SHIFT physique enfoncé / relâché
@@ -564,8 +569,10 @@ pub struct HardwareMapper {
     pub encoder_focus: EncoderFocus,
     /// Mode Smart Strip (Pitch, Mod, Perform, Notes)
     pub touchstrip_mode: TouchStripMode,
-    /// Vélocité fixe (127) activée
+    /// Vélocité fixe activée (niveau `fixed_velocity_level`)
     pub fixed_velocity: bool,
+    /// Niveau de la vélocité fixe (1..127), réglable au 4D quand actif
+    pub fixed_velocity_level: u8,
     /// Suivi du playhead activé
     pub follow_mode: bool,
     /// Mode note repeat activé
@@ -689,6 +696,7 @@ impl HardwareMapper {
             encoder_focus: EncoderFocus::Tempo,
             touchstrip_mode: TouchStripMode::Perform,
             fixed_velocity: false,
+            fixed_velocity_level: 100,
             follow_mode: true,
             note_repeat: false,
             note_repeat_rate: 1,
@@ -1175,6 +1183,11 @@ impl HardwareMapper {
             // Features & Vues
             ButtonId::FixedVel => {
                 self.fixed_velocity = !self.fixed_velocity;
+                actions.push(MapperAction::SetFixedVelocity(self.fixed_velocity));
+                // Resynchronise le niveau affiché sur les écrans à chaque bascule.
+                actions.push(MapperAction::SetFixedVelocityLevel(
+                    self.fixed_velocity_level,
+                ));
                 true
             }
             ButtonId::Follow => {
@@ -1573,6 +1586,16 @@ impl HardwareMapper {
                 group: self.group_focus,
                 delta: delta as i32,
             });
+        } else if self.fixed_velocity {
+            // FIXED VEL actif : le 4D règle directement le niveau de vélocité
+            // fixe (SHIFT = pas de 10), affiché sur les écrans.
+            let step = if self.shift_held { 10 } else { 1 };
+            let level =
+                (self.fixed_velocity_level as i16 + delta as i16 * step).clamp(1, 127) as u8;
+            if level != self.fixed_velocity_level {
+                self.fixed_velocity_level = level;
+                actions.push(MapperAction::SetFixedVelocityLevel(level));
+            }
         } else if self.left_tab == 1 {
             // Mode MIXER : l'encodeur 4D scrolle les pistes (banques 1-8 / 9-16 ou groupes)
             if self.mixer_mode == 0 && delta > 0 {
@@ -2024,7 +2047,7 @@ impl HardwareMapper {
             false
         };
         let vel = if self.fixed_velocity {
-            127
+            self.fixed_velocity_level
         } else {
             self.apply_curve(p.velocity).max(1)
         };
@@ -4448,6 +4471,50 @@ mod tests {
             ts_ns: 24,
         });
         assert_eq!(m.touchstrip_mode, TouchStripMode::Notes);
+    }
+
+    #[test]
+    fn fixed_velocity_level_is_adjustable_and_used_for_pads() {
+        let mut m = HardwareMapper::with_default();
+        let on = m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::FixedVel,
+            pressed: true,
+            ts_ns: 1,
+        });
+        assert!(on.contains(&MapperAction::SetFixedVelocity(true)));
+        assert!(on.contains(&MapperAction::SetFixedVelocityLevel(100)));
+        assert!(m.fixed_velocity);
+
+        // Un appui de pad est émis avec le niveau fixe, pas la pression réelle.
+        let trig = m.handle_hardware_event(HardwareEvent::Pad(PadState {
+            pad: 0,
+            pressed: true,
+            velocity: 20,
+            pressure: 0x5000,
+            ts_ns: 2,
+        }));
+        let velocity = trig
+            .iter()
+            .find_map(|a| match a {
+                MapperAction::PadTrigger { velocity, .. } => Some(*velocity),
+                _ => None,
+            })
+            .expect("PadTrigger attendu");
+        assert_eq!(velocity, 100);
+
+        // Le 4D règle le niveau (1er événement = référence, 2e = delta).
+        let _ = m.handle_hardware_event(HardwareEvent::Encoder(maschine_proto::EncoderEvent {
+            id: 0,
+            value: 0,
+            touched: false,
+        }));
+        let up = m.handle_hardware_event(HardwareEvent::Encoder(maschine_proto::EncoderEvent {
+            id: 0,
+            value: 4,
+            touched: false,
+        }));
+        assert!(up.contains(&MapperAction::SetFixedVelocityLevel(104)));
+        assert_eq!(m.fixed_velocity_level, 104);
     }
 
     #[test]

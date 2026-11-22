@@ -1445,6 +1445,16 @@ fn cmd_daemon(
                         .lock()
                         .handle_event(EngineEvent::SetNoteRepeatRate(rate));
                 }
+                MapperAction::SetFixedVelocity(enabled) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::SetFixedVelocity(enabled));
+                }
+                MapperAction::SetFixedVelocityLevel(level) => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::SetFixedVelocityLevel(level));
+                }
                 MapperAction::PatternChain { group, patterns } => {
                     let _ = engine
                         .lock()
@@ -2837,6 +2847,8 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             delete_project_confirm: false,
             note_repeat_enabled: false,
             note_repeat_rate: 1,
+            fixed_velocity: false,
+            fixed_velocity_level: 100,
             shift_held: false,
             lock_active: false,
             pattern_chains: [None, None, None, None, None, None, None, None],

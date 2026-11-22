@@ -905,6 +905,14 @@ fn header(frame: &mut DisplayFrame, p: &Pal, snap: &EngineSnapshot, title: &str,
     fill_rect(frame, 0, 0, 4, H, p.accent);
     draw_text(frame, 10, 5, title, p.white, p.panel);
 
+    // Vélocité fixe : niveau visible en permanence quand FIXED VEL est actif
+    // (réglable au 4D sur la MK3).
+    if snap.fixed_velocity {
+        let label = format!("VEL {} FIXE", snap.fixed_velocity_level);
+        let x = 10 + title.chars().count() * 8 + 8;
+        draw_text(frame, x, 5, &label, p.accent, p.panel);
+    }
+
     // Feedback temporaire (sauvegarde/chargement) — prioritaire et visible.
     if let Some(msg) = snap.status_message.as_deref() {
         let msg = trunc(msg, 22);

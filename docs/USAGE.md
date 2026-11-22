@@ -118,11 +118,12 @@ with `try_lock`.
   - **Latched workflow menus**: PATTERN, STEP, KEYBOARD, SCENE, EVENTS, MACRO, SETTINGS, and PLUGIN remain active after the first press. Pressing the same button again returns to the default Pad workflow. Only one workflow menu is active at a time. Pressing any top view button (FILE/SAVE, BROWSER, PLUGIN, CHANNEL/MIDI, MIXER, SAMPLING, ARRANGER) automatically exits any active latch (PATTERN, SCENE, SELECT, ERASE, MUTE) and closes overlays (EVENTS, MACRO, SETTINGS) before entering the selected view.
 - **8 Groups A..H & 128 Independent Tracks**:
   - Full matrix of 8 groups × 16 pads = 128 distinct sound tracks with independent polyphony, sampler zones, synth engines, ADSR envelopes, filters, volumes, and pans.
-  - **Group A**: Kit 808 with TB-303 Acid synth on pad 15.
-  - **Group B**: Kit 909 with Kick Modeler synth on pad 15.
-  - **Group C**: Nexus Wavetable synth on pad 1.
-  - **Group D**: Bass & Acid bank (pads 1..3).
+  - **Group A**: Kick only (808 Kick on pad 1, its own kick pattern).
+  - **Group B**: Snare & cymbals (snare, clap, closed/open hats, rimshot, crash), pattern per Group.
+  - **Group C**: Synth (Wavetable synth and TB-303 Acid lead), its own synth pattern.
+  - **Group D**: Bass bank.
   - **Groups E..H**: Percussion, Keys & Chords, Vocal & SFX, Hits & Stabs.
+  - **Fixed velocity**: the FIXED VEL button applies the displayed level to pads, live recording and step placement; while active, the 4D encoder sets that level and the screens show `VEL n FIXE`.
   - **MUTE / SOLO + Group**: holding MUTE or SOLO and pressing a group button instantly mutes or solos that group without losing track/pad focus. An actively held SOLO button takes priority over latched MUTE pad mode.
 - **Transport**: PLAY, REC, STOP, RESTART (clean restart or loop toggle with Shift), TAP (metronome), ERASE (erase notes by pad or clear pattern with Shift).
 - **Touchstrip**: modulation / pitch bend / perform / notes with LED ribbon visual feedback.

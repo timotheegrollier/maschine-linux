@@ -210,10 +210,11 @@ Deux écrans dédiés, rendus par `maschine-engine::display_render::render_guita
 
 #### Structure des 8 Groupes (A à H) et 128 Pistes :
 Le projet initialise nativement 8 groupes indépendants (`Groupes A..H`), chacun doté de 16 pads/sons distincts (128 pistes au total) :
-- **Groupe A** : `Kit 808` complet (Kick, Snare, HiHats, Clap, Toms, Percs, Acid 303 sur Pad 15).
-- **Groupe B** : `Kit 909` (909 Drums analogiques, Kick Modeler sur Pad 15).
-- **Groupe C** : `Nexus Synth` (Wavetable Synth sur Pad 1, leads, plucks, pads, strings).
-- **Groupe D** : `Bass & Acid` (Presets Acid TB-303 multiples sur Pads 1..3, sub bass, basslines).
+- **Groupe A** : `Kick` seul (Kick 808 sur Pad 1), avec son propre pattern.
+- **Groupe B** : `Snare & Cymbals` (snare, clap, charleys, rimshot, crash), pattern dédié.
+- **Groupe C** : `Synth` (Wavetable Synth sur Pad 1, Acid 303 sur Pad 9), pattern dédié.
+- **Groupe D** : `Bass` (sub bass, basslines).
+- La démo suit ainsi le workflow Maschine : chaque famille d'instruments a son Groupe et son pattern, les 16 pads du mode PATTERN sélectionnent les slots de ce Groupe.
 - **Groupe E** : `Percussion` (Congas, bongos, timbales, claves, shakers, tambourines).
 - **Groupe F** : `Keys & Chords` (Pianos acoustiques/électriques, Rhodes, orgues, stabs harmoniques).
 - **Groupe G** : `Vocal & SFX` (Chants, risers, sub drops, reverse cymbals, bleeps).

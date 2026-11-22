@@ -1439,10 +1439,25 @@ impl GuiApp {
             } else if snap.scene_mode {
                 self.send(EngineEvent::Scene(pad as usize));
             } else if snap.pattern_mode {
-                self.send(EngineEvent::PatternSelect {
-                    group: snap.group_focus,
-                    pattern: pad as usize,
-                });
+                // Mode PATTERN officiel : un pad existant sélectionne son
+                // pattern, un pad vide crée le pattern de ce slot.
+                let exists = snap
+                    .project
+                    .groups
+                    .get(snap.group_focus as usize)
+                    .map(|g| (pad as usize) < g.patterns.len())
+                    .unwrap_or(false);
+                if exists {
+                    self.send(EngineEvent::PatternSelect {
+                        group: snap.group_focus,
+                        pattern: pad as usize,
+                    });
+                } else {
+                    self.send(EngineEvent::CreatePatternAt {
+                        group: snap.group_focus,
+                        pattern: pad as usize,
+                    });
+                }
             } else if snap.select_mode {
                 self.send(EngineEvent::SelectSound(pad));
             } else if snap.erase_mode {

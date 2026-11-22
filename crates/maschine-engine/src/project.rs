@@ -387,6 +387,140 @@ impl Project {
             p.groups.push(grp);
         }
 
+        // ── Démo façon Maschine : une famille d'instruments par Groupe ──────
+        // A = kick seul, B = snare & cymbales, C = synth, D = basse,
+        // E..H = percussion, claviers, voix/FX, hits.
+        if let Some(group) = p.groups.get_mut(0) {
+            group.name = "Kick".to_string();
+            group.color = 6;
+            for (i, sound) in group.sounds.iter_mut().enumerate() {
+                if i == 0 {
+                    if let Some(s) = sound {
+                        s.name = "Kick 808".to_string();
+                        s.color = 6;
+                    }
+                } else {
+                    *sound = None;
+                }
+            }
+        }
+        if let Some(group) = p.groups.get_mut(1) {
+            group.name = "Snare & Cymbals".to_string();
+            group.color = 22;
+            const SNARE_PADS: [(usize, &str); 6] = [
+                (1, "Snare 808"),
+                (2, "Closed HH"),
+                (3, "Open HH"),
+                (7, "Clap 808"),
+                (8, "Rimshot"),
+                (11, "Crash"),
+            ];
+            for (i, sound) in group.sounds.iter_mut().enumerate() {
+                match SNARE_PADS.iter().find(|(pad, _)| *pad == i) {
+                    Some((_, name)) => {
+                        if let Some(s) = sound {
+                            s.name = (*name).to_string();
+                            s.color = 22;
+                        }
+                    }
+                    None => *sound = None,
+                }
+            }
+        }
+        if let Some(group) = p.groups.get_mut(2) {
+            group.name = "Synth".to_string();
+            group.color = 50;
+            if let Some(sound) = group.sounds[8].as_mut() {
+                sound.name = "Acid 303".to_string();
+                sound.synth = Some(crate::acid_synth::AcidParams::preset_classic_acid());
+            }
+        }
+        if let Some(group) = p.groups.get_mut(3) {
+            group.name = "Bass".to_string();
+        }
+
+        // Patterns de la démo : chacun ne contient que les Sons de sa famille.
+        fn demo_note(pat: &mut Pattern, pad: u8, bar: u32, beat: u32, step16: u32, vel: u8) {
+            let tick = bar * 4 * 960 + beat * 960 + step16 * 240;
+            pat.events.push(PatternEvent {
+                pad,
+                tick,
+                velocity: vel,
+                length_ticks: 120,
+                pitch: 36 + pad,
+            });
+        }
+        fn demo_note_pitch(
+            pat: &mut Pattern,
+            pad: u8,
+            bar: u32,
+            beat: u32,
+            step16: u32,
+            pitch: u8,
+            vel_len: (u8, u32),
+        ) {
+            let (vel, len) = vel_len;
+            let tick = bar * 4 * 960 + beat * 960 + step16 * 240;
+            pat.events.push(PatternEvent {
+                pad,
+                tick,
+                velocity: vel,
+                length_ticks: len,
+                pitch,
+            });
+        }
+
+        let mut kick = Pattern::new("Kick", BarsBeatsTicks::new(2, 0, 0));
+        demo_note(&mut kick, 0, 0, 0, 0, 115);
+        demo_note(&mut kick, 0, 0, 2, 2, 105);
+        demo_note(&mut kick, 0, 1, 0, 0, 115);
+        demo_note(&mut kick, 0, 1, 1, 2, 100);
+        demo_note(&mut kick, 0, 1, 2, 0, 110);
+        demo_note(&mut kick, 0, 1, 3, 2, 105);
+
+        let mut snare = Pattern::new("Snare & Cymbals", BarsBeatsTicks::new(2, 0, 0));
+        demo_note(&mut snare, 1, 0, 1, 0, 110);
+        demo_note(&mut snare, 1, 0, 3, 0, 115);
+        demo_note(&mut snare, 1, 1, 1, 0, 110);
+        demo_note(&mut snare, 1, 1, 3, 0, 120);
+        demo_note(&mut snare, 7, 0, 3, 0, 95);
+        demo_note(&mut snare, 7, 1, 3, 0, 100);
+        for beat in 0u32..4 {
+            demo_note(&mut snare, 2, 0, beat, 0, 90);
+            demo_note(&mut snare, 2, 0, beat, 2, 75);
+            demo_note(&mut snare, 2, 1, beat, 0, 90);
+            demo_note(&mut snare, 2, 1, beat, 2, 75);
+        }
+        demo_note(&mut snare, 3, 0, 1, 2, 85);
+        demo_note(&mut snare, 3, 0, 3, 2, 85);
+        demo_note(&mut snare, 3, 1, 2, 2, 90);
+        demo_note(&mut snare, 11, 0, 0, 0, 70);
+
+        let mut synth = Pattern::new("Synth", BarsBeatsTicks::new(2, 0, 0));
+        demo_note_pitch(&mut synth, 8, 0, 0, 0, 36, (100, 200));
+        demo_note_pitch(&mut synth, 8, 0, 0, 2, 36, (90, 200));
+        demo_note_pitch(&mut synth, 8, 0, 1, 0, 39, (105, 200));
+        demo_note_pitch(&mut synth, 8, 0, 1, 2, 48, (120, 240));
+        demo_note_pitch(&mut synth, 8, 0, 2, 0, 46, (110, 240));
+        demo_note_pitch(&mut synth, 8, 0, 2, 2, 43, (95, 200));
+        demo_note_pitch(&mut synth, 8, 0, 3, 0, 41, (100, 200));
+        demo_note_pitch(&mut synth, 8, 0, 3, 2, 39, (105, 200));
+        demo_note_pitch(&mut synth, 8, 1, 0, 0, 36, (105, 200));
+        demo_note_pitch(&mut synth, 8, 1, 0, 2, 36, (95, 200));
+        demo_note_pitch(&mut synth, 8, 1, 1, 0, 48, (125, 240));
+        demo_note_pitch(&mut synth, 8, 1, 1, 2, 51, (115, 240));
+        demo_note_pitch(&mut synth, 8, 1, 2, 0, 48, (100, 200));
+        demo_note_pitch(&mut synth, 8, 1, 2, 2, 46, (95, 200));
+        demo_note_pitch(&mut synth, 8, 1, 3, 0, 43, (110, 200));
+        demo_note_pitch(&mut synth, 8, 1, 3, 2, 38, (105, 200));
+
+        for (gi, pattern) in [(0usize, kick), (1, snare), (2, synth)] {
+            if let Some(group) = p.groups.get_mut(gi) {
+                group.patterns.clear();
+                group.patterns.push(pattern);
+            }
+        }
+
         p.scenes.push(Scene {
             name: "Scene 1".to_string(),
             color: 22,

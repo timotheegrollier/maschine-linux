@@ -501,7 +501,7 @@ fn render_pattern_manager(
                 "+ NOUVEAU",
                 false,
                 c.success,
-                "Crée un nouveau pattern pour la scène : conserve les pistes des autres pads et isole le pad sélectionné",
+                "Crée un pattern vide pour le Groupe focus et l'assigne à la scène active",
             ) {
                 app.send(EngineEvent::AddPattern {
                     group: snap.group_focus,

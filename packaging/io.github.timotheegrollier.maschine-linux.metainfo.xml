@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.26.3" date="2026-11-23">
+      <description>
+        <p>Release 0.26.3: reliability fixes for USB LED/display/HID shutdown (timeouts, non-blocking stop), PipeWire router commands timed out, no automatic default source change, and cleaner REC live note-off handling.</p>
+      </description>
+    </release>
     <release version="0.26.2" date="2026-11-22">
       <description>
         <p>Release 0.26.2: pads belonging to a chained pattern loop light up in bright colour on the MK3 so the chain is visible.</p>

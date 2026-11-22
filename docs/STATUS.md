@@ -4,7 +4,7 @@ Living document: what works, what is partial, what is missing, and what to
 check on real hardware. Update it with every release (see the release steps in
 `AGENTS.md`). Behaviour details live in `workflow.md`; this file is the map.
 
-## Current version: 0.26.2
+## Current version: 0.26.3
 
 ### Done (with tests)
 
@@ -55,6 +55,10 @@ check on real hardware. Update it with every release (see the release steps in
 - **Long press on pads**: the engine sustains synth notes while a pad is held
   (tests); if notes still stop early on hardware, capture `hid-dump` with a held
   pad — the tracker releases a pad when it disappears from the 0x02 report.
+- **Freeze / changement d'output audio avec MK3** : causes plausibles corrigées
+  (écriture LED en poll timeout, arrêt USB non bloquant, plus de
+  `wpctl set-default` automatique, timeout `pw-link`). À confirmer sur matériel
+  avec `RUST_LOG=info` si le symptôme réapparaît.
 - **Secondary screens** (mixer, browser, step) use the new typography, palette,
   rounded shapes and knob slots, but keep their older layouts.
 - **Standby before any launch** needs the packages (or `standby --install`) and
@@ -98,6 +102,9 @@ check on real hardware. Update it with every release (see the release steps in
 
 ## History (recent)
 
+- **0.26.3** — fiabilité : timeout des écritures LED/pw-link, arrêt USB
+  non bloquant, plus de changement automatique de la source PipeWire par défaut,
+  relâchement propre des note-offs REC programmés.
 - **0.26.2** — LEDs vives sur les pads de la chaîne de patterns (MK3).
 - **0.26.1** — GUI : aucun avertissement quand aucun pattern n'est actif,
   juste pas de couleur de sélection.

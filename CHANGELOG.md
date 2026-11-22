@@ -2,6 +2,16 @@
 
 All notable changes.
 
+## [0.26.3] - 2026-11-23
+
+### Fixed
+- **Fiabilité USB / anti-freeze** : l'écriture des LEDs utilise un poll avec timeout, et l'arrêt des threads HID/LED/écrans ne bloque plus la boucle HID (plus de gel possible lors d'une déconnexion ou d'un write USB bloqué).
+- **PipeWire** : plus de modification automatique de la source par défaut (`wpctl set-default`) à l'ouverture audio ; les commandes `pw-link` du routeur MK3 ont un timeout pour éviter un thread bloqué.
+- **REC monitoring** : `clear_rec_press_marks` relâche proprement les fins de notes programmées ; un seul note-off quantifié est conservé par pad.
+
+### Validation
+- 309 tests, `clippy -D warnings`, vérification sans sampler au vert. Nouveaux tests : `command_output_timeout_returns_output`, `command_output_timeout_kills_slow_process`, `write_with_timeout_times_out_on_full_pipe`, `pending_note_off_replaces_same_pad`, `clear_rec_marks_releases_pending_note_offs`.
+
 ## [0.26.2] - 2026-11-22
 
 ### Added

@@ -4,7 +4,7 @@ Living document: what works, what is partial, what is missing, and what to
 check on real hardware. Update it with every release (see the release steps in
 `AGENTS.md`). Behaviour details live in `workflow.md`; this file is the map.
 
-## Current version: 0.17.0
+## Current version: 0.18.0
 
 ### Done (with tests)
 
@@ -89,6 +89,9 @@ check on real hardware. Update it with every release (see the release steps in
 
 ## History (recent)
 
+- **0.18.0** — notes enregistrées pendant REC gardent la longueur de la note
+  tenue (pads et clavier), automations de knobs enregistrées dans le Pattern
+  pendant REC.
 - **0.17.0** — 16 Velocities, arpeggiator modes, EVENTS multi-note editing.
 - **0.16.0** — arpeggiator, queued recording of repeated notes,
   sample edits persisted, PATTERN screen follows launches, FIXED VEL in

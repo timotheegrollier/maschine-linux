@@ -2,6 +2,15 @@
 
 All notable changes.
 
+## [0.18.0] - 2026-11-22
+
+### Added
+- **Notes enregistrées pendant REC gardent la longueur de la note tenue** — appui long sur un pad (synth, TB-303, Nexus, …) ou touche clavier (Keyboard/Chords) : la note écrite dans le Pattern a la longueur de la note tenue à son relâchement, plutôt que la longueur par défaut ; la vélocité et la hauteur jouées sont enregistrées.
+- **Automations de knobs enregistrées pendant REC** — pendant l'enregistrement, tourner un knob du Sound actif (onglet PLUGIN) ajoute un point d'automation dans le Pattern actif : nouveau modèle `SoundAutomation` (Sound, knob, points `(tick, valeur)`) persisté dans le projet.
+
+### Validation
+- 281 tests, `clippy -D warnings`, vérification sans sampler au vert. Nouveaux tests : `rec_pad_notes_keep_the_held_length`, `rec_keyboard_notes_keep_the_held_length`, `rec_plugin_knob_turns_record_automations` ; fix `needless_range_loop` dans le filtre Lo-Fi.
+
 ## [0.17.0] - 2026-11-22
 
 ### Added

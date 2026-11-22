@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.24.0" date="2026-11-22">
+      <description>
+        <p>Release 0.24.0: pressing the pad of the currently active pattern now cuts it instantly (MK3 workflow) — the group falls silent, pending launches and chains are cancelled; the pattern stays in the group's bank.</p>
+      </description>
+    </release>
     <release version="0.23.0" date="2026-11-22">
       <description>
         <p>Release 0.23.0: the MK3 AUTO button arms automation recording (LED on) and opens two dedicated automation screens; pattern chaining works in the GUI; the Kick Synth tail is clean with two new presets; the in-app updater text is readable.</p>

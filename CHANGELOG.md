@@ -2,6 +2,14 @@
 
 All notable changes.
 
+## [0.24.0] - 2026-11-22
+
+### Fixed
+- **Pattern actif coupé par ré-appui** : dans le workflow MK3, presser le pad du pattern en cours le désassigne instantanément de la scène (le groupe se tait), annule le lancement en attente et la chaîne — au lieu de le garder sélectionné. Le pattern reste dans la banque du groupe.
+
+### Validation
+- 300 tests, `clippy -D warnings`, vérification sans sampler au vert.
+
 ## [0.23.0] - 2026-11-22
 
 ### Added

@@ -4,7 +4,7 @@ Living document: what works, what is partial, what is missing, and what to
 check on real hardware. Update it with every release (see the release steps in
 `AGENTS.md`). Behaviour details live in `workflow.md`; this file is the map.
 
-## Current version: 0.23.0
+## Current version: 0.24.0
 
 ### Done (with tests)
 
@@ -98,6 +98,8 @@ check on real hardware. Update it with every release (see the release steps in
 
 ## History (recent)
 
+- **0.24.0** — ré-appui sur le pad du pattern actif : coupe instantanée
+  (désassignation de la scène, le groupe se tait), workflow MK3.
 - **0.23.0** — bouton AUTO : armement des automations + deux écrans dédiés ;
   chaînage de patterns dans la GUI ; queue des kicks propre et 2 nouveaux
   presets ; texte lisible dans l'updater in-app.

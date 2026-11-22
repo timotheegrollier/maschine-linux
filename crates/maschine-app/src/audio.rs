@@ -1,6 +1,6 @@
 //! Sortie audio via `cpal` vers MK3 (PipeWire).
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -65,11 +65,18 @@ pub struct AudioOutput {
     _stream: cpal::Stream,
     /// Flux d'entrée de l'interface MK3 (si disponible).
     _input_stream: Option<cpal::Stream>,
+    _router_stop: Arc<AtomicBool>,
     #[allow(dead_code)]
     device_name: String,
     sample_rate: u32,
     /// Statistiques temps réel partagées.
     pub stats: Arc<AudioStats>,
+}
+
+impl Drop for AudioOutput {
+    fn drop(&mut self) {
+        self._router_stop.store(true, Ordering::Relaxed);
+    }
 }
 
 impl AudioOutput {
@@ -227,12 +234,55 @@ impl AudioOutput {
             guitar.control.enabled.store(false, Ordering::Relaxed);
         }
 
+        let router_stop = Arc::new(AtomicBool::new(false));
+        if input_stream.is_some() {
+            let stop_flag = router_stop.clone();
+            let guitar_rt = guitar.clone();
+            let bin_name = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+                .unwrap_or_else(|| "maschine-linux".to_string());
+
+            // Surveillance et liaison automatique vers les prises physiques Line In de la MK3
+            std::thread::Builder::new()
+                .name("mk3-pw-router".into())
+                .spawn(move || {
+                    std::thread::sleep(Duration::from_millis(50));
+                    let mut was_linked = sync_pipewire_mk3_links(&bin_name);
+                    if was_linked {
+                        *guitar_rt.input_device_name.lock() =
+                            Some("Maschine MK3 (Line In 1)".to_string());
+                    }
+                    while !stop_flag.load(Ordering::Relaxed) {
+                        std::thread::sleep(Duration::from_millis(1000));
+                        if stop_flag.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let linked = sync_pipewire_mk3_links(&bin_name);
+                        if linked != was_linked {
+                            was_linked = linked;
+                            if linked {
+                                log::info!("✓ PipeWire : prise jack Line In de la Maschine MK3 reliée à l'ampli guitare");
+                                *guitar_rt.input_device_name.lock() =
+                                    Some("Maschine MK3 (Line In 1)".to_string());
+                            } else {
+                                log::debug!("Maschine MK3 en attente de reconnexion dans PipeWire...");
+                                *guitar_rt.input_device_name.lock() =
+                                    Some("En attente Maschine MK3...".to_string());
+                            }
+                        }
+                    }
+                })
+                .ok();
+        }
+
         stream.play().context("stream play")?;
         log::info!("✓ Audio stream démarré sur '{dev_name}' {actual_rate}Hz (channels={channels})");
 
         Ok(Self {
             _stream: stream,
             _input_stream: input_stream,
+            _router_stop: router_stop,
             device_name: dev_name,
             sample_rate: actual_rate,
             stats,
@@ -333,15 +383,7 @@ fn get_input_candidates(host: &cpal::Host) -> Vec<cpal::Device> {
     let mut candidates = Vec::new();
     let mut seen_names = Vec::new();
 
-    // 1. Device MK3 dédié (carte matérielle ALSA directe)
-    if let Some(dev) = find_mk3_input_device(host) {
-        if let Ok(name) = dev.name() {
-            seen_names.push(name);
-        }
-        candidates.push(dev);
-    }
-
-    // 2. PipeWire / Pulse / Default (connecté au graphe PipeWire avec node MK3 comme default source)
+    // 1. PipeWire / Pulse / Default (capture dans le graphe PipeWire avec resample/bridge transparent vers la DJM)
     if let Ok(devices) = host.input_devices() {
         for dev in devices {
             if let Ok(name) = dev.name() {
@@ -352,6 +394,16 @@ fn get_input_candidates(host: &cpal::Host) -> Vec<cpal::Device> {
                     seen_names.push(name);
                     candidates.push(dev);
                 }
+            }
+        }
+    }
+
+    // 2. Device MK3 dédié (carte matérielle ALSA directe en environnement sans PipeWire)
+    if let Some(dev) = find_mk3_input_device(host) {
+        if let Ok(name) = dev.name() {
+            if !seen_names.iter().any(|n| n == &name) {
+                seen_names.push(name);
+                candidates.push(dev);
             }
         }
     }
@@ -955,8 +1007,7 @@ pub fn play_test_tone(
 }
 
 /// Détecte et configure automatiquement les tables de mixage Pioneer DJM connectées (ex: DJM-250MK2).
-/// Sur Linux/ALSA, la sortie USB 1-2 peut par défaut être routée vers 'Aux' plutôt que 'Ch1',
-/// ce qui rend le son inaudible sur la voie 1. Cette fonction s'assure que Output 1 -> Ch1 et Output 3 -> Aux.
+/// Assure que Output 3 n'est pas en conflit sur 'Aux', préservant le routage géré par le système.
 pub fn auto_configure_djm_routing() {
     let Ok(cards) = std::fs::read_to_string("/proc/asound/cards") else {
         return;
@@ -969,19 +1020,16 @@ pub fn auto_configure_djm_routing() {
                 .and_then(|s| s.strip_prefix("[").and_then(|s| s.strip_suffix("]")))
             {
                 let check = std::process::Command::new("amixer")
-                    .args(["-c", card_id, "sget", "Output 1"])
+                    .args(["-c", card_id, "sget", "Output 3"])
                     .output();
                 if let Ok(out) = check {
                     let out_str = String::from_utf8_lossy(&out.stdout);
                     if out_str.contains("Item0: 'Aux'") {
                         log::info!(
-                            "Pioneer DJM détectée ({card_id}) avec Output 1 sur Aux — routage automatique vers Ch1"
+                            "Pioneer DJM détectée ({card_id}) avec Output 3 sur Aux — correction vers Ch1"
                         );
                         let _ = std::process::Command::new("amixer")
-                            .args(["-c", card_id, "sset", "Output 1", "Ch1"])
-                            .output();
-                        let _ = std::process::Command::new("amixer")
-                            .args(["-c", card_id, "sset", "Output 3", "Aux"])
+                            .args(["-c", card_id, "sset", "Output 3", "Ch1"])
                             .output();
                     }
                 }
@@ -1033,4 +1081,135 @@ pub fn auto_configure_mk3_input() {
             }
         }
     }
+}
+
+/// Lie explicitement les ports de capture de maschine-linux aux ports physiques Line In de la Maschine MK3.
+/// Retourne true si les ports MK3 sont actuellement liés à l'application.
+pub fn sync_pipewire_mk3_links(app_bin_name: &str) -> bool {
+    let Ok(outputs_out) = std::process::Command::new("pw-link").arg("-o").output() else {
+        return false;
+    };
+    let outputs_text = String::from_utf8_lossy(&outputs_out.stdout);
+
+    let Ok(inputs_out) = std::process::Command::new("pw-link").arg("-i").output() else {
+        return false;
+    };
+    let inputs_text = String::from_utf8_lossy(&inputs_out.stdout);
+
+    let Ok(links_out) = std::process::Command::new("pw-link").arg("-l").output() else {
+        return false;
+    };
+    let links_text = String::from_utf8_lossy(&links_out.stdout);
+
+    // 1. Détecter les ports de sortie matériels de la MK3 (prises physiques Line In 1 & 2)
+    let mut mk3_aux0 = None;
+    let mut mk3_aux1 = None;
+    for line in outputs_text.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_lowercase();
+        if (lower.contains("maschine") || lower.contains("mk3") || lower.contains("17cc"))
+            && lower.contains("alsa_input")
+        {
+            if lower.ends_with(":capture_aux0") || lower.ends_with(":capture_fl") {
+                mk3_aux0 = Some(trimmed.to_string());
+            } else if lower.ends_with(":capture_aux1") || lower.ends_with(":capture_fr") {
+                mk3_aux1 = Some(trimmed.to_string());
+            }
+        }
+    }
+
+    let Some(source_line1) = mk3_aux0 else {
+        return false;
+    };
+
+    // 2. Détecter les ports d'entrée de capture de notre application
+    let mut app_in_fl = None;
+    let mut app_in_fr = None;
+    for line in inputs_text.lines() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_lowercase();
+        if lower.contains("alsa_capture")
+            && (lower.contains("maschine") || lower.contains(app_bin_name))
+        {
+            if lower.ends_with(":input_fl") || lower.ends_with(":input_0") {
+                app_in_fl = Some(trimmed.to_string());
+            } else if lower.ends_with(":input_fr") || lower.ends_with(":input_1") {
+                app_in_fr = Some(trimmed.to_string());
+            }
+        }
+    }
+
+    let Some(target_fl) = app_in_fl else {
+        return false;
+    };
+
+    // 3. Analyser les liens actuels vers target_fl
+    let mut current_sources_fl = Vec::new();
+    let mut in_target_block = false;
+    for line in links_text.lines() {
+        let trimmed = line.trim();
+        if !line.starts_with(' ') && !line.starts_with('\t') {
+            in_target_block = trimmed == target_fl;
+        } else if in_target_block {
+            if let Some(src) = trimmed.strip_prefix("|<-") {
+                current_sources_fl.push(src.trim().to_string());
+            }
+        }
+    }
+
+    let mut linked_left = false;
+    if current_sources_fl.len() == 1 && current_sources_fl[0] == source_line1 {
+        linked_left = true;
+    } else {
+        for src in &current_sources_fl {
+            if src != &source_line1 {
+                let _ = std::process::Command::new("pw-link")
+                    .args(["-d", src, &target_fl])
+                    .output();
+            }
+        }
+        if !current_sources_fl.contains(&source_line1) {
+            let res = std::process::Command::new("pw-link")
+                .args([&source_line1, &target_fl])
+                .output();
+            if let Ok(out) = res {
+                if out.status.success() {
+                    log::info!("✓ PipeWire : Line In 1 ({source_line1}) relié à {target_fl}");
+                    linked_left = true;
+                }
+            }
+        } else {
+            linked_left = true;
+        }
+    }
+
+    // Traitement du canal droit (Line In 2)
+    if let (Some(source_line2), Some(target_fr)) = (mk3_aux1, app_in_fr) {
+        let mut current_sources_fr = Vec::new();
+        let mut in_fr_block = false;
+        for line in links_text.lines() {
+            let trimmed = line.trim();
+            if !line.starts_with(' ') && !line.starts_with('\t') {
+                in_fr_block = trimmed == target_fr;
+            } else if in_fr_block {
+                if let Some(src) = trimmed.strip_prefix("|<-") {
+                    current_sources_fr.push(src.trim().to_string());
+                }
+            }
+        }
+        for src in &current_sources_fr {
+            if src != &source_line2 {
+                let _ = std::process::Command::new("pw-link")
+                    .args(["-d", src, &target_fr])
+                    .output();
+            }
+        }
+        if !current_sources_fr.contains(&source_line2) {
+            let _ = std::process::Command::new("pw-link")
+                .args([&source_line2, &target_fr])
+                .output();
+        }
+    }
+
+    linked_left
 }

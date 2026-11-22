@@ -478,6 +478,11 @@ impl GuitarProcessor {
             self.chain
                 .get_param_mut(maschine_dsp::ParamId::MasterVolume)
                 .set_target(1.0);
+            // Gate à -70 dB (valeur normalisée 0.0) : ouvert par défaut pour ne pas tronquer
+            // les micros passifs à faible niveau ou le sustain naturel de la guitare.
+            self.chain
+                .get_param_mut(maschine_dsp::ParamId::GateThreshold)
+                .set_target(0.0);
             self.external_control_set = true;
         }
         let c = &self.runtime.control;

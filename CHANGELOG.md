@@ -2,6 +2,18 @@
 
 All notable changes.
 
+## [0.11.4] - 2026-11-22
+
+### Fixed
+- **Capture guitare PipeWire** : Un thread routeur `mk3-pw-router` relie explicitement les ports physiques Line In 1/2 du MK3 au flux d'entrée de l'app via `pw-link`, corrigeant le problème où le micro du laptop était capturé au lieu de la guitare
+- **Priorité des devices d'entrée** : Les devices virtuels PipeWire/Pulse sont maintenant essayés en premier (avec resampling transparent), repli sur ALSA direct MK3 uniquement en environnement non-PipeWire
+- **Routage DJM** : Ne conflit plus avec le service systemd `djm-fixed-daemon.sh` — ne corrige que les conflits sur Output 3 au lieu de forcer Output 1
+- **Noise gate** : Seuil du gate abaissé à -70 dB (depuis -40 dB) pour ne pas couper les signaux guitare faibles et le sustain naturel
+
+### Improved
+- Thread `mk3-pw-router` en arrière-plan surveille les liens PipeWire chaque seconde et gère le hot-plug/unplug du MK3 automatiquement
+- Le nom du device d'entrée dans la GUI affiche "Maschine MK3 (Line In 1)" quand correctement lié
+
 ## [0.11.3] - 2026-11-21
 
 ### Fixes & Improvements

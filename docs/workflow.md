@@ -101,7 +101,7 @@ Both screens are rendered by the same function (`display_render::render_screens`
   - PATTERN: `PAT <`, `PAT >`, `+ PAT`, `DUPL`, `VIDER`, `SUPPR`, `1 MES`, `2 MES`.
   - STEP: `STEP <</>>` (cursor by one step), `BAR <</>>` (by one bar), `1/2/4/8 BARS`.
   - MIXER: `GRP A..H` (in Group mode) or `PAD 1-8`, `PAD 9-16`, `GROUPES`, `MASTER` (in Pad mode). Pushing 4D encoder **Up** enters pad drill-down; pushing 4D encoder **Down** exits back to group overview or master view. Pad mixer renders 4 wider channel strips per screen with isolated volume and mute.
-  - NOTE REPEAT: buttons 1..8 select rates (`1/32`, `1/24`, `1/16`, `1/12`, `1/8`, `1/6`, `1/4`, `1/2`) with LED indicator on the active rate. `LOCK` latches note repeat active.
+  - NOTE REPEAT (the arpeggiator in KEYBOARD / CHORDS): buttons 1–7 pick the rate (`1/32`, `1/16`, `1/8`, `1/4`, `1/2`, `1/16T`, `1/8T`), lit on the active rate; `OFF` turns it off. In PAD mode held pads repeat; in KEYBOARD / CHORDS the held notes play one at a time, upwards, looping (the first key starts at once). Repeated notes are recorded while REC is on.
   - SAMPLER: `SND <`, `SND >`, `ECOUTE`, `CYC FLT`, `LP`, `HP`, `BP`, `OFF` (instant 1-click filter selection from buttons 5–8 or `Shift + EncoderPush` to cycle).
   - BROWSER: `PRES <</>>`, `SND <</>>`, `LISTEN`, `LOAD`, `METRO`, `LOOP`, plus `PLUGINS` tab with Kick Synth, TB-303, Nexus Wavetable Synth, Guitar Amp, and Sampler.
   - PLUGIN: see [PLUG-IN mode](#plug-in-mode-instruments-and-effects) below — buttons and knobs follow the selected plugin slot and its page.
@@ -213,6 +213,9 @@ the page. Select the Sound with the pads; the 4D push auditions it.
 - **Play range**: non-destructive, stored per zone in the project (`start` /
   `end`, fractions of the sample) and applied by the sampler voice (start
   position and end of playback).
+- **REVERSE, NORMLZ, LOOP**: applied to the sample in memory and stored in the
+  project (`edits` of the Sound), then replayed when the project is opened;
+  the WAV file itself is never modified.
 - **RECORD**: records the MK3 audio input (the capture stream also used by the
   guitar amp, which stays silent while recording) into the focused Sound;
   `SEUIL` waits for the input to cross the threshold. `STOP` writes a 32-bit

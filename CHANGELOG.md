@@ -2,6 +2,26 @@
 
 All notable changes.
 
+## [Unreleased]
+
+### Fixed
+- **Enregistrement avec NOTE REPEAT** : chaque note répétée était écrite dans le pattern depuis le thread audio, ce qui recopiait tout le projet dans le callback (risque de craquements) ; les notes passent par une file, écrite hors du thread audio environ 60 fois par seconde.
+- **Retouches du sample perdues** : `REVERSE`, `NORMLZ` et `LOOP` ne modifiaient que le son en mémoire et disparaissaient à la réouverture du projet ; elles sont gardées dans le projet et rejouées au chargement (le fichier d'origine n'est jamais modifié).
+- **Écran PATTERN** : après un lancement à la mesure suivante, le pattern en cours ne changeait qu'à la prochaine action ; il suit maintenant tout seul.
+- **FIXED VEL** s'applique aussi en KEYBOARD / CHORDS.
+- **PLAY pendant le pré-compte** lançait l'enregistrement à la fin de la mesure ; il annule le pré-compte.
+- **NOTE REPEAT** : le bouton 8 s'appelait `LOCK` mais coupait la répétition ; il s'appelle `OFF`.
+- Noms par défaut en français (`Scène 2`, `Kick copie`) ; la GUI affiche le nom de la scène, comme la MK3.
+
+### Added
+- **Arpégiateur** : en KEYBOARD / CHORDS, `NOTE REPEAT` joue les notes tenues une à une, en montant et en boucle, au débit choisi (boutons 1–7) ; la première touche part tout de suite ; les notes sont enregistrées en REC.
+
+### Changed
+- Dépendances jamais utilisées retirées (tokio, rubato, anyhow, crossbeam-channel, parking_lot, thiserror selon les crates) : compilation plus légère.
+
+### Validation
+- 272 tests, `clippy -D warnings`, vérification sans sampler au vert. Nouveaux tests : `note_repeat_in_keyboard_mode_arpeggiates_held_notes_upwards`, `notes_repeated_by_the_audio_thread_are_written_outside_it`, `sample_edits_survive_save_and_reload`, `boot_progress_bar_spans_both_screens` ; pré-compte annulé par PLAY.
+
 ## [0.15.0] - 2026-11-22
 
 ### Fixed

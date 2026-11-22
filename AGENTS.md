@@ -118,7 +118,14 @@ RUSTFLAGS="-D warnings" cargo check -p maschine-engine --no-default-features --l
   knob band).
 - Scene / pattern changes during playback are queued (`pending_*`), applied on
   the next bar in `advance` and written to the project by `commit_launches`
-  (never from the audio thread).
+  (never from the audio thread). Same for notes the audio thread plays while
+  recording (Note Repeat, Arp): `queue_note` → `pending_notes`.
+  `commit_launches` runs in `handle_event` and in the HID loop (`refresh_leds`,
+  ~60 Hz). Writing the project from `advance` would clone the whole `Arc<Project>`
+  in the audio callback.
+- Sample editor tools (REVERSE, NORMLZ, LOOP) change the sampler and record a
+  flag in `Sound::edits`; `restore_sound_edits` replays them (and the play
+  range) after every project load. Source WAV files are never rewritten.
 - The CI sampler-free check runs with `-D warnings`: items only used under
   `#[cfg(feature = "sampler")]` need the same cfg.
 

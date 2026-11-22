@@ -2,6 +2,14 @@
 
 All notable changes.
 
+## [0.25.0] - 2026-11-22
+
+### Changed
+- **Monitoring live en REC (KEYBOARD)** : quand tu changes de note, la note précédente est coupée nette et la nouvelle attaque immédiatement — plus de glissando dans la voix de monitoring (le pattern, lui, garde ses slides enregistrés). Les longueurs des notes enregistrées sont quantisées à la grille pour coller à ce que tu entends ; le quantize de départ est inchangé.
+
+### Validation
+- 301 tests, `clippy -D warnings`, vérification sans sampler au vert. Nouveau test : `live_monitor_note_changes_instantly_without_portamento`.
+
 ## [0.24.0] - 2026-11-22
 
 ### Fixed

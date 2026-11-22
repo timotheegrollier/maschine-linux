@@ -2,7 +2,7 @@
 
 All notable changes.
 
-## [Unreleased]
+## [0.16.0] - 2026-11-22
 
 ### Fixed
 - **Enregistrement avec NOTE REPEAT** : chaque note répétée était écrite dans le pattern depuis le thread audio, ce qui recopiait tout le projet dans le callback (risque de craquements) ; les notes passent par une file, écrite hors du thread audio environ 60 fois par seconde.

@@ -14,7 +14,7 @@ Maschine Linux is an independent project. It does not include Native
 Instruments code or proprietary assets; it reproduces the documented workflow
 and hardware behavior through a clean-room implementation.
 
-## Current state (0.15.0)
+## Current state (0.16.0)
 
 Cargo workspace with six crates:
 
@@ -35,6 +35,13 @@ Audio uses a 256-frame buffer (64-frame period, about 1.3 ms) at 48 kHz, a
 inside each block, and a drum kit regenerated at the device sample rate.
 Instrumentation: `--debug-latency` (HID→Engine, real buffer size, misses,
 errors) and `--stress` (deliberate engine-lock contention).
+
+### Arpeggiator and safer recording in 0.16.0
+
+- Note Repeat in Keyboard and Chords modes is an arpeggiator (held notes,
+  upwards, at the chosen rate), recorded with REC.
+- Notes repeated while recording are written outside the audio thread; sample
+  edits (reverse, normalize, loop) survive reopening the project.
 
 ### Groups, launches and LEDs in 0.15.0
 

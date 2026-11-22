@@ -4,7 +4,7 @@ Living document: what works, what is partial, what is missing, and what to
 check on real hardware. Update it with every release (see the release steps in
 `AGENTS.md`). Behaviour details live in `workflow.md`; this file is the map.
 
-## Current version: 0.15.0
+## Current version: 0.16.0
 
 ### Done (with tests)
 
@@ -82,7 +82,7 @@ check on real hardware. Update it with every release (see the release steps in
 
 ## History (recent)
 
-- **Unreleased (0.16.0)** — arpeggiator, queued recording of repeated notes,
+- **0.16.0** — arpeggiator, queued recording of repeated notes,
   sample edits persisted, PATTERN screen follows launches, FIXED VEL in
   KEYBOARD, PLAY cancels the count-in, `OFF` label on the note repeat page,
   French default names, unused dependencies removed.

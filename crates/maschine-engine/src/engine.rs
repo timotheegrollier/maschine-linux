@@ -9321,6 +9321,137 @@ mod tests {
     }
 
     #[test]
+    fn rec_pad_sounds_during_hold_like_without_rec() {
+        let mut eng = Engine::new_demo(48000);
+        eng.load_plugin_to_sound(0, 0, 1).unwrap(); // TB-303 sur le pad 0
+                                                    // Sans REC : le son sonne pendant la tenue.
+        eng.handle_event(EngineEvent::Pad {
+            pad: 0,
+            velocity: 110,
+            pressed: true,
+        })
+        .unwrap();
+        let mut block = vec![0.0f32; 2048];
+        let mut peak = 0.0f32;
+        for _ in 0..50 {
+            block.fill(0.0);
+            eng.render_audio(&mut block);
+            peak = peak.max(block.iter().map(|s| s.abs()).fold(0.0f32, f32::max));
+        }
+        eng.handle_event(EngineEvent::Pad {
+            pad: 0,
+            velocity: 0,
+            pressed: false,
+        })
+        .unwrap();
+        // Avec REC : idem.
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: true,
+            stop: false,
+        })
+        .unwrap();
+        eng.handle_event(EngineEvent::Pad {
+            pad: 0,
+            velocity: 110,
+            pressed: true,
+        })
+        .unwrap();
+        let mut peak2 = 0.0f32;
+        for _ in 0..50 {
+            block.fill(0.0);
+            eng.render_audio(&mut block);
+            peak2 = peak2.max(block.iter().map(|s| s.abs()).fold(0.0f32, f32::max));
+        }
+        eng.handle_event(EngineEvent::Pad {
+            pad: 0,
+            velocity: 0,
+            pressed: false,
+        })
+        .unwrap();
+        assert!(
+            peak > 0.02,
+            "sans REC, le son sonne pendant la tenue (peak = {peak})"
+        );
+        assert!(
+            peak2 > 0.02,
+            "pendant REC, le son sonne pendant la tenue (peak = {peak2})"
+        );
+    }
+
+    #[test]
+    fn rec_slide_sounds_during_rec() {
+        let mut eng = Engine::new_demo(48000);
+        eng.load_plugin_to_sound(0, 0, 1).unwrap(); // TB-303 sur le pad 0
+        let mut block = vec![0.0f32; 2048];
+        let mut peak = 0.0f32;
+        let mut capture = |eng: &mut Engine, peak: &mut f32| {
+            for _ in 0..50 {
+                block.fill(0.0);
+                eng.render_audio(&mut block);
+                *peak = peak.max(block.iter().map(|s| s.abs()).fold(0.0f32, f32::max));
+            }
+        };
+        // Sans REC : presser A, tenir, presser B — le son continue (slide).
+        eng.handle_event(EngineEvent::Pad {
+            pad: 0,
+            velocity: 110,
+            pressed: true,
+        })
+        .unwrap();
+        eng.advance(48_000);
+        eng.handle_event(EngineEvent::Pad {
+            pad: 0,
+            velocity: 100,
+            pressed: true,
+        })
+        .unwrap();
+        capture(&mut eng, &mut peak);
+        eng.handle_event(EngineEvent::Pad {
+            pad: 0,
+            velocity: 0,
+            pressed: false,
+        })
+        .unwrap();
+        assert!(
+            peak > 0.02,
+            "sans REC, le son continue pendant le slide (peak = {peak})"
+        );
+        // Avec REC.
+        peak = 0.0;
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: true,
+            stop: false,
+        })
+        .unwrap();
+        eng.handle_event(EngineEvent::Pad {
+            pad: 0,
+            velocity: 110,
+            pressed: true,
+        })
+        .unwrap();
+        eng.advance(48_000);
+        eng.handle_event(EngineEvent::Pad {
+            pad: 0,
+            velocity: 100,
+            pressed: true,
+        })
+        .unwrap();
+        capture(&mut eng, &mut peak);
+        eng.handle_event(EngineEvent::Pad {
+            pad: 0,
+            velocity: 0,
+            pressed: false,
+        })
+        .unwrap();
+        assert!(
+            peak > 0.02,
+            "avec REC, le son continue pendant le slide (peak = {peak})"
+        );
+    }
+
+    #[test]
     fn rec_notes_are_pushed_to_the_undo_history() {
         let mut eng = Engine::new_demo(48000);
         eng.clear_bar(0);

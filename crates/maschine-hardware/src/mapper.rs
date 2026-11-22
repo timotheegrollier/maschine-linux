@@ -2413,13 +2413,10 @@ impl HardwareMapper {
         );
         self.led_state.set_button_raw(
             offsets::MUTE,
-            if self.mute_pad_mode
-                || self.mute_held
-                || (info.muted_groups & (1 << self.group_focus)) != 0
-            {
+            if self.mute_pad_mode || self.mute_held {
                 7
             } else {
-                1
+                0
             },
         );
         self.led_state.set_button_raw(
@@ -2489,8 +2486,9 @@ impl HardwareMapper {
             let col = if base == Color::OFF || muted {
                 Color::OFF
             } else if g == self.group_focus as usize {
-                // Groupe sélectionné : sa couleur assignée, pleine intensité.
-                base
+                // Groupe sélectionné : sa couleur assignée, mais VIVE — plus
+                // illuminé que les autres, pour voir la sélection sur la MK3.
+                bright_pad_color(base)
             } else if playing {
                 // Allumé mais pas focalisé : on voit quel groupe joue.
                 bright_pad_color(base)
@@ -2643,7 +2641,8 @@ impl HardwareMapper {
                         } else if sounding {
                             bright_pad_color(color)
                         } else if i as u8 == info.active_sound {
-                            color
+                            // Pad sélectionné : vif — plus illuminé que les autres.
+                            bright_pad_color(color)
                         } else {
                             dim_pad_color(color)
                         };
@@ -3103,6 +3102,77 @@ mod tests {
     }
 
     #[test]
+    fn mute_button_and_muted_pads_leds_in_mute_mode() {
+        use maschine_proto::hid_output::offsets;
+        let mut m = HardwareMapper::with_default();
+        // Entrer en mode mute via le bouton MUTE.
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
+            id: ButtonId::Mute,
+            pressed: true,
+            ts_ns: 1,
+        });
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
+            id: ButtonId::Mute,
+            pressed: false,
+            ts_ns: 2,
+        });
+        assert!(m.mute_pad_mode);
+        let mut info = SequencerLedInfo::default();
+        info.muted_sounds[0] = 1; // pad 0 du groupe A
+        m.update_leds(&info);
+        // Le bouton MUTE s'allume en mode mute.
+        assert_eq!(m.led_state().button_leds[offsets::MUTE - 1], 7);
+        // Les pads muets sont off ou peu éclairés (atténués).
+        let pad0 = m.led_state().pad_leds[0];
+        assert!(pad0 <= 5, "pad muet trop allumé : {pad0}");
+    }
+
+    #[test]
+    fn group_navigation_leds() {
+        use maschine_proto::hid_output::offsets;
+        let mut m = HardwareMapper::with_default();
+        m.group_focus = 0;
+        // Naviguer vers le groupe B en mode pad.
+        let _ = m.handle_hardware_event(HardwareEvent::Button {
+            id: ButtonId::Group(1),
+            pressed: true,
+            ts_ns: 3,
+        });
+        assert_eq!(m.group_focus, 1);
+        let info = SequencerLedInfo {
+            group_colors: [6, 22, 30, 42, 50, 58, 10, 14],
+            ..SequencerLedInfo::default()
+        };
+        m.update_leds(&info);
+        // Hors mode mute, le bouton MUTE ne s'allume pas.
+        assert_eq!(m.led_state().button_leds[offsets::MUTE - 1], 0);
+        // Le groupe sélectionné est plus illuminé que les autres.
+        let a = m.led_state().button_leds[offsets::GROUP_A - 1];
+        let b = m.led_state().button_leds[offsets::GROUP_B - 1];
+        assert!(b > a, "groupe sélectionné pas plus illuminé (A={a}, B={b})");
+    }
+
+    #[test]
+    fn selected_pad_is_brighter_than_others() {
+        let mut m = HardwareMapper::with_default();
+        let info = SequencerLedInfo {
+            active_sound: 3,
+            ..SequencerLedInfo::default()
+        };
+        m.update_leds(&info);
+        // Le pad sélectionné est vif (plus illuminé que les autres).
+        assert_eq!(
+            m.led_state().pad_leds[3],
+            bright_pad_color(m.pad_colors[3]).to_index()
+        );
+        // Les autres pads sont atténués.
+        assert_eq!(
+            m.led_state().pad_leds[0],
+            dim_pad_color(m.pad_colors[0]).to_index()
+        );
+    }
+
+    #[test]
     fn group_button_lights_when_its_group_plays() {
         use maschine_proto::hid_output::offsets;
         let mut m = HardwareMapper::with_default();
@@ -3115,8 +3185,11 @@ mod tests {
             ..SequencerLedInfo::default()
         };
         m.update_leds(&info);
-        // Groupe focalisé : sa couleur assignée (Rouge = 6).
-        assert_eq!(m.led_state().button_leds[offsets::GROUP_A - 1], 6);
+        // Groupe focalisé : sa couleur assignée, mais VIVE (plus illuminé).
+        assert_eq!(
+            m.led_state().button_leds[offsets::GROUP_A - 1],
+            bright_pad_color(Color::from_index(6).unwrap()).to_index()
+        );
         // Groupe B en lecture mais non focalisé : variante vive (Jaune -> Blanc).
         assert_eq!(m.led_state().button_leds[offsets::GROUP_B - 1], 78);
         // Groupe C au repos : Vert atténué (29).
@@ -3135,11 +3208,11 @@ mod tests {
         // Repos : atténué (pad 0 = Red 6 -> DimRed 5).
         m.update_leds(&info);
         assert_eq!(m.led_state().pad_leds[0], 5);
-        // Pad du Sound sélectionné : intensité normale.
+        // Pad du Sound sélectionné : vif (plus illuminé que les autres).
         assert_eq!(
             m.led_state().pad_leds[3],
-            m.pad_colors[3].to_index(),
-            "Sound sélectionné en couleur normale"
+            bright_pad_color(m.pad_colors[3]).to_index(),
+            "Sound sélectionné vif"
         );
         // Tap éclair franc (press + release aussitôt) : flash garanti, vif.
         let _ = m.handle_hardware_event(pad_ev(0, true, 1));

@@ -4,7 +4,7 @@ Living document: what works, what is partial, what is missing, and what to
 check on real hardware. Update it with every release (see the release steps in
 `AGENTS.md`). Behaviour details live in `workflow.md`; this file is the map.
 
-## Current version: 0.21.0
+## Current version: 0.21.1
 
 ### Done (with tests)
 
@@ -91,6 +91,8 @@ check on real hardware. Update it with every release (see the release steps in
 
 ## History (recent)
 
+- **0.21.1** — sans MK3, l'app ne modifie plus les sources audio (wpctl,
+  entrée guitare, routeur PipeWire désactivés sans contrôleur).
 - **0.21.0** — pendant REC, le pattern rejoue immédiatement (boucle audible)
   et le Sound joué en direct a sa propre voix de monitoring — les deux sonnent
   ensemble sans vol de voix ; quantification auto inchangée.

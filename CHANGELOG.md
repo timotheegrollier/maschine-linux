@@ -2,6 +2,14 @@
 
 All notable changes.
 
+## [0.21.1] - 2026-11-22
+
+### Fixed
+- **Audio sur machine sans MK3 (Nobara, GUI seule)** : l'app ne touche plus aux sources audio toutes seules — `wpctl set-default`, l'entrée guitare et le routeur PipeWire (`pw-link`) ne démarrent que si une Maschine MK3 est réellement détectée (ou si l'ampli guitare est explicitement activé). Plus de coupure ni de changement de source audio après quelques secondes sans contrôleur.
+
+### Validation
+- 295 tests, `clippy -D warnings`, vérification sans sampler au vert.
+
 ## [0.21.0] - 2026-11-22
 
 ### Changed

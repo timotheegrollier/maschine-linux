@@ -2,23 +2,7 @@
 
 All notable changes.
 
-## [0.11.7] - 2026-11-22
-
-### Added
-- **Vélocité fixe réglable et visible sur la MK3** : le bouton `FIXED VEL` applique un niveau fixe (100 par défaut) à tous les pads joués, aux pas posés en mode STEP et aux notes enregistrées en REC. Le niveau se règle directement au 4D (1..127, pas de 10 avec `SHIFT`) et reste affiché dans le bandeau des écrans sous la forme `VEL n FIXE`.
-
-### Changed
-- **Projet démo réorganisé par familles d'instruments** : Groupe A « Kick » (kick seul sur le pad 1), Groupe B « Snare & Cymbals », Groupe C « Synth » (Acid 303 et Wavetable), Groupe D « Bass », puis Percussion, Keys, Vocal et Hits. Chaque groupe possède son propre pattern (« Kick », « Snare & Cymbals », « Synth ») assigné à la Scène 1.
-- **Reset du groove démo** : restaure désormais le pattern initial de tous les groupes, pas seulement du Groupe A.
-- **Nouveau projet** : `FILE → NOUVEAU` repart sur un kit 808 complet et vierge dans le Groupe A.
-
-### Fixed
-- La cible mémorisée du synthé Acid est validée avant réutilisation, afin d'éviter de piloter un pad obsolète après la réorganisation des groupes.
-
-### Validation
-- `cargo fmt --all`, `cargo clippy --workspace --all-targets --locked -- -D warnings` et `cargo test --workspace` au vert.
-
-## [Unreleased]
+## [0.11.8] - 2026-11-22
 
 ### Fixes
 
@@ -37,6 +21,24 @@ All notable changes.
 
 - `cargo test --workspace --locked` (new clean/audible gain and ring-latency tests)
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`
+
+
+## [0.11.7] - 2026-11-22
+
+### Added
+- **Vélocité fixe réglable et visible sur la MK3** : le bouton `FIXED VEL` applique un niveau fixe (100 par défaut) à tous les pads joués, aux pas posés en mode STEP et aux notes enregistrées en REC. Le niveau se règle directement au 4D (1..127, pas de 10 avec `SHIFT`) et reste affiché dans le bandeau des écrans sous la forme `VEL n FIXE`.
+
+### Changed
+- **Projet démo réorganisé par familles d'instruments** : Groupe A « Kick » (kick seul sur le pad 1), Groupe B « Snare & Cymbals », Groupe C « Synth » (Acid 303 et Wavetable), Groupe D « Bass », puis Percussion, Keys, Vocal et Hits. Chaque groupe possède son propre pattern (« Kick », « Snare & Cymbals », « Synth ») assigné à la Scène 1.
+- **Reset du groove démo** : restaure désormais le pattern initial de tous les groupes, pas seulement du Groupe A.
+- **Nouveau projet** : `FILE → NOUVEAU` repart sur un kit 808 complet et vierge dans le Groupe A.
+
+### Fixed
+- La cible mémorisée du synthé Acid est validée avant réutilisation, afin d'éviter de piloter un pad obsolète après la réorganisation des groupes.
+
+### Validation
+- `cargo fmt --all`, `cargo clippy --workspace --all-targets --locked -- -D warnings` et `cargo test --workspace` au vert.
+
 
 ## [0.11.6] - 2026-11-22
 

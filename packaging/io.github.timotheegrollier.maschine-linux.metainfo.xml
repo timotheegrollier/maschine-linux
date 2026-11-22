@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.11.8" date="2026-11-22">
+      <description>
+        <p>Release 0.11.8 fixes guitar amp latency with small capture buffers and a bounded ring, and retunes the preamp gain staging for a clean, audible signal with gradual saturation.</p>
+      </description>
+    </release>
     <release version="0.11.7" date="2026-11-22">
       <description>
         <p>Release 0.11.7 makes fixed velocity adjustable and visible on the MK3, and reorganizes the demo project into Maschine-style instrument groups (kick, snare and cymbals, synth, bass).</p>

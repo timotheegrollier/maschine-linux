@@ -5087,13 +5087,16 @@ impl Engine {
                                     is_wavetable[s] = snd.wavetable_synth.is_some();
                                 }
                             }
-                            // Pendant REC, la lecture du pattern ne doit pas
-                            // voler la voix du Sound joué en direct (synthés
-                            // monophoniques) : sinon la pré-écoute est coupée.
-                            let live_hold = self.transport.state == TransportState::Recording
-                                && (self.arp_held.iter().any(|&v| v > 0)
-                                    || self.rec_sounding.iter().any(|v| v.is_some()));
-                            let skip_sound = if live_hold && gi as u8 == self.group_focus {
+                            // Flow Maschine : pendant REC, le son joué en direct
+                            // reprend la voix sur le pattern. Les synthés (TB-303,
+                            // Kick, Wavetable) sont monophoniques par Sound : si le
+                            // pattern rejouait le même Sound, note_on/note_off se
+                            // voleraient la voix et la pré-écoute serait coupée.
+                            // On ne joue donc pas le pattern de ce Sound pendant
+                            // REC — les autres Sounds et les LEDs restent vivants.
+                            let skip_sound = if self.transport.state == TransportState::Recording
+                                && gi as u8 == self.group_focus
+                            {
                                 Some(self.active_sound)
                             } else {
                                 None
@@ -9574,6 +9577,53 @@ mod tests {
         })
         .unwrap();
         println!("keyboard REC: peak1={peak1} peak2={peak2}");
+    }
+
+    #[test]
+    fn rec_pattern_does_not_cut_live_synth_voice() {
+        let mut eng = Engine::new_demo(48000);
+        eng.clear_bar(0);
+        eng.clear_bar(1);
+        eng.load_plugin_to_sound(0, 0, 1).unwrap(); // TB-303 sur le pad 0
+        eng.handle_event(EngineEvent::SelectSound(0)).unwrap();
+        // Un événement du pattern sur le même Sound, au tick 0, court.
+        {
+            let mut guard = eng.project.write();
+            let proj = project_mut(&mut guard);
+            let pi = proj.active_pattern_index(0, eng.active_scene).unwrap();
+            proj.groups[0].patterns[pi].events.push(PatternEvent {
+                pad: 0,
+                tick: 0,
+                velocity: 100,
+                length_ticks: 120,
+                pitch: 36,
+            });
+        }
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: true,
+            stop: false,
+        })
+        .unwrap();
+        // Tenir une note live sur ce même Sound pendant REC.
+        eng.handle_event(EngineEvent::KeyboardTrigger {
+            note: 60,
+            velocity: 110,
+            pressed: true,
+        })
+        .unwrap();
+        // Rendre au-delà du note_off du pattern (tick 120).
+        let mut block = vec![0.0f32; 2048];
+        for _ in 0..100 {
+            block.fill(0.0);
+            eng.render_audio(&mut block);
+        }
+        assert!(
+            eng.rack.acid[0]
+                .as_ref()
+                .is_some_and(|s| s.synth.is_active()),
+            "la note live doit rester active malgré la lecture du pattern pendant REC"
+        );
     }
 
     #[test]

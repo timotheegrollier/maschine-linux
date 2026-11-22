@@ -24,6 +24,12 @@ different semantics.
 5. **Reachable at any size.** GUI panels collapse (rail `F1`, MK3 deck `F2`,
    workspace `F3`), rows wrap instead of clipping, and every region scrolls as
    a last resort.
+6. **Live wins over the loop while recording.** During `REC` the Sound being
+   played is monitored directly: its pattern events do not retrigger its
+   (single, monophonic) synth voice, so held notes, slides and note effects stay
+   audible — the Maschine MK3 / Maschine flow. Everything else (other Sounds,
+   pad LEDs, screens) keeps mirroring the sequencer, and the GUI shows the same
+   state as the hardware, never a different one.
 
 ## Colour tokens
 

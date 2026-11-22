@@ -191,6 +191,12 @@ Since 0.14.0 both modes follow that reference; see the two sections below. Not i
   then recording starts; `REC` blinks meanwhile, `STOP` cancels; with the
   `COUNT-IN` display button on, plain `REC` counts in too),
   `RESTART` (`SHIFT`: loop), `TAP` (`SHIFT`: metronome).
+- **Recording monitoring (Maschine flow)**: while `REC` runs, the focused Sound
+  is monitored **live** — its pattern events do not retrigger its synthesizer
+  (there is one monophonic voice per Sound: a TB-303 from the loop would cut
+  or slide over the note under your fingers). All other Sounds keep playing
+  their patterns, and the pads still flash for the pattern notes. Notes played
+  during REC keep their held length, slides and knob automation are recorded.
 - **16 Velocities**: `SHIFT + FIXED VEL` — the 16 pads play the selected Sound
   from velocity 7 (pad 1) to 127 (pad 16) without changing the selection; pads
   shaded in its colour, `FIXED VEL` half lit, GUI pads labelled `VEL n`.
@@ -202,8 +208,8 @@ Since 0.14.0 both modes follow that reference; see the two sections below. Not i
   held). When the palette has no brighter variant of a hue, the flash uses
   white, as on the MK3. PATTERN mode: patterns in the group colour, playing one
   bright, queued one blinking. SCENE mode: scenes yellow, active bright, queued
-  blinking. Group buttons: focused group in its assigned colour (full), other
-  groups bright while they play, dim at rest, muted/empty off.
+  blinking. Group buttons: focused group bright in its assigned colour — the
+  most lit of all; other groups dim even while they play; muted/empty off.
 
 ## SAMPLING: sample editor (RECORD, EDIT, SLICE, ZONE)
 

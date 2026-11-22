@@ -2,6 +2,14 @@
 
 All notable changes.
 
+## [0.20.0] - 2026-11-22
+
+### Changed
+- **Flow d'enregistrement Maschine** : pendant `REC`, le Sound joué en direct reprend la voix sur le pattern — ses événements ne rejouent plus le synthé monophonique (TB-303, Kick, Wavetable). Les notes tenues, les slides et les effets restent audibles en pré-écoute temps réel ; les autres Sounds, les LEDs des pads et les écrans suivent toujours le séquenceur. Design et workflow documentés (`docs/design.md`, `docs/workflow.md`).
+
+### Validation
+- 295 tests, `clippy -D warnings`, vérification sans sampler au vert. Nouveau test : `rec_pattern_does_not_cut_live_synth_voice`.
+
 ## [0.19.4] - 2026-11-22
 
 ### Fixed

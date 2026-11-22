@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.20.0" date="2026-11-22">
+      <description>
+        <p>Release 0.20.0: Maschine recording flow — during REC, the Sound played live takes priority over its pattern so held notes, slides and note effects stay audible on monophonic synths (TB-303, Kick, Wavetable). Design and workflow synced with the MK3.</p>
+      </description>
+    </release>
     <release version="0.19.4" date="2026-11-22">
       <description>
         <p>Release 0.19.4: during recording in keyboard mode, pattern playback no longer steals the voice of the Sound being played live, so held notes, slides and note effects stay audible in the real-time preview.</p>

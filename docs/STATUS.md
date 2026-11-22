@@ -4,7 +4,7 @@ Living document: what works, what is partial, what is missing, and what to
 check on real hardware. Update it with every release (see the release steps in
 `AGENTS.md`). Behaviour details live in `workflow.md`; this file is the map.
 
-## Current version: 0.19.4
+## Current version: 0.20.0
 
 ### Done (with tests)
 
@@ -91,6 +91,9 @@ check on real hardware. Update it with every release (see the release steps in
 
 ## History (recent)
 
+- **0.20.0** — flow d'enregistrement Maschine : pendant REC, le live reprend
+  la voix sur le pattern (notes tenues, slides, effets audibles sur synthés
+  monophoniques) ; design et workflow synchronisés avec la MK3.
 - **0.19.4** — pré-écoute temps réel pendant REC en mode KEYBOARD : la lecture
   du pattern ne vole plus la voix du Sound joué en direct (notes tenues,
   slides et effets audibles sur TB-303 / synthés).

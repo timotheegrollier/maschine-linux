@@ -311,11 +311,11 @@ fn sync_mapper_context(
     mapper.has_acid_synth = snap.has_acid_synth;
     mapper.has_wavetable_synth = snap.has_wavetable_synth;
     mapper.delete_project_confirm = snap.delete_project_confirm;
-    mapper.kbd_root = snap.keyboard.root;
-    mapper.kbd_octave = snap.keyboard.octave;
-    mapper.kbd_scale = snap.keyboard.scale;
-    mapper.kbd_chord = snap.keyboard.chord;
-    mapper.kbd_inversion = snap.keyboard.inversion;
+    let (kb, chords) = (snap.keyboard, snap.controller_mode == 2);
+    mapper.kbd_pad_notes = std::array::from_fn(|p| kb.pad_notes(chords, p as u8));
+    mapper.kbd_root_pads = (0..16u8)
+        .filter(|&p| kb.is_root_pad(p))
+        .fold(0, |mask, p| mask | 1 << p);
 }
 
 fn main() -> anyhow::Result<()> {
@@ -1609,8 +1609,13 @@ fn cmd_daemon(
                         .lock()
                         .handle_event(EngineEvent::PluginSlotStep(step));
                 }
-                MapperAction::ToggleCountIn => {
-                    let _ = engine.lock().handle_event(EngineEvent::ToggleCountIn);
+                MapperAction::KeyboardKnob { knob, delta } => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::KeyboardKnob { knob, delta });
+                }
+                MapperAction::CountInRecord => {
+                    let _ = engine.lock().handle_event(EngineEvent::CountInRecord);
                 }
                 MapperAction::EventStep(step) => {
                     let _ = engine.lock().handle_event(EngineEvent::EventStep(step));
@@ -1732,11 +1737,11 @@ fn cmd_daemon(
         let snap = engine.lock().hardware_snapshot();
         // Le mapper suit l'engine (la GUI peut aussi changer groupe/son/onglets).
         sync_mapper_context(mapper, &snap);
-        // Couleurs des pads = couleurs des Sounds du groupe focus (comme Maschine).
+        // Couleurs des pads = couleurs des Sounds du groupe focus (comme Maschine) ;
+        // Sound vide : pad éteint (sinon il gardait une couleur par défaut).
         for (index, color_index) in snap.pad_colors.iter().enumerate() {
-            if let Some(color) = color_index.and_then(maschine_proto::color::Color::from_index) {
-                mapper.set_pad_color(index, color);
-            }
+            let color = color_index.and_then(maschine_proto::color::Color::from_index);
+            mapper.set_pad_color(index, color.unwrap_or(maschine_proto::color::Color::OFF));
         }
         let led_info = SequencerLedInfo {
             is_playing: snap.is_playing,
@@ -1782,6 +1787,7 @@ fn cmd_daemon(
             group_colors: snap.group_colors,
             pending_scene: snap.pending_scene,
             pending_pattern: snap.pending_pattern,
+            count_in: snap.count_in,
         };
         mapper.update_leds(&led_info);
     }

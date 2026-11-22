@@ -61,6 +61,8 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                         .show(ui, |ui| {
                             for (i, scene) in snap.project.scenes.iter().enumerate() {
                                 let is_active = active_scene == Some(i);
+                                // En attente de la mesure suivante : cadre accent, comme l'écran MK3.
+                                let queued = snap.pending_scene == Some(i);
                                 let used = scene.patterns.iter().filter(|p| p.is_some()).count();
                                 let resp = ui.add(
                                     egui::Button::new(
@@ -79,7 +81,11 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                                         ),
                                     )
                                     .fill(if is_active { c.accent } else { c.widget_bg })
-                                    .stroke(egui::Stroke::new(1.0_f32, c.border))
+                                    .stroke(if queued {
+                                        egui::Stroke::new(2.0_f32, c.accent)
+                                    } else {
+                                        egui::Stroke::new(1.0_f32, c.border)
+                                    })
                                     .min_size(egui::vec2(190.0, 28.0)),
                                 );
                                 if resp
@@ -220,7 +226,12 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                                             } else {
                                                 c.surface.gamma_multiply(0.6)
                                             })
-                                            .stroke(egui::Stroke::new(1.0_f32, c.border));
+                                            .stroke(if snap.pending_patterns[g % 8] == Some(col) {
+                                                // Lancé, attend la mesure suivante.
+                                                egui::Stroke::new(2.0_f32, c.accent)
+                                            } else {
+                                                egui::Stroke::new(1.0_f32, c.border)
+                                            });
                                             if !exists {
                                                 btn = btn.stroke(egui::Stroke::new(
                                                     1.0_f32,

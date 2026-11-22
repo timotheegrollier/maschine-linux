@@ -221,7 +221,51 @@ fn main() -> std::io::Result<()> {
     write_ppm(&dir.join("plugin_fx_bypass_left.ppm"), &left)?;
     write_ppm(&dir.join("plugin_fx_bypass_right.ppm"), &right)?;
 
-    // Écran de veille (fermeture / plantage).
+    // KEYBOARD et CHORDS (gamme majeure : accords en gamme).
+    eng.handle_event(E::SetLeftTab(0)).unwrap();
+    eng.handle_event(E::SetControllerMode(1)).unwrap();
+    dump(&eng, "keyboard")?;
+    eng.handle_event(E::SetControllerMode(2)).unwrap();
+    eng.handle_event(E::KeyboardScaleDelta(1)).unwrap();
+    dump(&eng, "chords")?;
+    eng.handle_event(E::SetControllerMode(0)).unwrap();
+
+    // Lancements en attente (lecture) : pattern puis scène « SUIVANT ».
+    eng.handle_event(E::DuplicatePattern {
+        group: 0,
+        pattern: 0,
+    })
+    .unwrap();
+    eng.handle_event(E::PatternSelect {
+        group: 0,
+        pattern: 0,
+    })
+    .unwrap();
+    eng.handle_event(E::AddScene).unwrap();
+    eng.handle_event(E::Scene(0)).unwrap();
+    eng.handle_event(E::Transport {
+        play: true,
+        rec: false,
+        stop: false,
+    })
+    .unwrap();
+    eng.advance(4800);
+    eng.handle_event(E::SetPatternMode(true)).unwrap();
+    eng.handle_event(E::PatternSelect {
+        group: 0,
+        pattern: 1,
+    })
+    .unwrap();
+    dump(&eng, "pattern_pending")?;
+    eng.handle_event(E::SetPatternMode(false)).unwrap();
+    eng.handle_event(E::SetSceneMode(true)).unwrap();
+    eng.handle_event(E::Scene(1)).unwrap();
+    dump(&eng, "scenes_pending")?;
+
+    // Démarrage (étape et progression) et veille (fermeture / plantage).
+    let (left, right) = display_render::render_boot_screens("Synthèse du kit 808", 0.35);
+    write_ppm(&dir.join("boot_left.ppm"), &left)?;
+    write_ppm(&dir.join("boot_right.ppm"), &right)?;
     let (left, right) = display_render::render_shutdown_screens();
     write_ppm(&dir.join("standby_left.ppm"), &left)?;
     write_ppm(&dir.join("standby_right.ppm"), &right)?;

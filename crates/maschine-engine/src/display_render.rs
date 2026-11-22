@@ -259,18 +259,8 @@ fn fmt_hz(hz: f32) -> String {
     }
 }
 
-/// Nom de note MIDI (convention NI : 36 = C1).
-fn note_name(pitch: u8) -> String {
-    const NAMES: [&str; 12] = [
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-    ];
-    let p = pitch as i32;
-    format!(
-        "{}{}",
-        NAMES[(p.rem_euclid(12)) as usize],
-        p.div_euclid(12) - 2
-    )
-}
+// Noms de notes : convention Maschine (C3 = 60), partagée avec la GUI.
+use crate::keyboard::note_name;
 
 /// Longueur d'un pas en notation musicale (1/16, 1/8...) ou en ticks.
 fn fmt_len(ticks: u32) -> String {
@@ -1104,7 +1094,7 @@ pub fn render_pattern_left(snap: &EngineSnapshot) -> DisplayFrame {
         let col = slot / 8;
         let row = slot % 8;
         let x = 8 + col * 236;
-        let cy = y + row * 19;
+        let cy = y + row * 18;
         let exists = slot < count;
         let focused = active == Some(slot);
         let assigned = snap
@@ -1114,23 +1104,19 @@ pub fn render_pattern_left(snap: &EngineSnapshot) -> DisplayFrame {
             .copied()
             .flatten()
             == Some(slot);
+        // Lancé en lecture, il démarrera à la mesure suivante.
+        let pending = snap.pending_patterns[snap.group_focus as usize % 8] == Some(slot);
         let bg = if focused { p.panel2 } else { p.panel };
         fill_rect(&mut frame, x, cy, 226, 17, bg);
-        draw_rect_outline(
-            &mut frame,
-            x,
-            cy,
-            226,
-            17,
-            if focused { p.accent } else { p.border },
-        );
-        if focused {
-            fill_rect(&mut frame, x, cy, 3, 17, p.accent);
-        }
+        let edge = if focused || pending {
+            p.accent
+        } else {
+            p.border
+        };
         draw_text(
             &mut frame,
             x + 7,
-            cy + 4,
+            cy + 1,
             &format!("P{:02}", slot + 1),
             if focused {
                 p.accent
@@ -1146,7 +1132,7 @@ pub fn render_pattern_left(snap: &EngineSnapshot) -> DisplayFrame {
             draw_text(
                 &mut frame,
                 x + 38,
-                cy + 4,
+                cy + 1,
                 &trunc(&pat.name, 13),
                 if focused { p.white } else { p.dim },
                 bg,
@@ -1154,32 +1140,35 @@ pub fn render_pattern_left(snap: &EngineSnapshot) -> DisplayFrame {
             draw_text(
                 &mut frame,
                 x + 148,
-                cy + 4,
+                cy + 1,
                 &format!("{}m", pat.length.bars.max(1)),
                 p.cyan,
                 bg,
             );
-            draw_text(
-                &mut frame,
-                x + 178,
-                cy + 4,
-                &format!("{:>3}ev", pat.events.len().min(999)),
-                p.muted,
-                bg,
-            );
+            let (info, color) = if pending {
+                ("SUIVANT".to_string(), p.accent)
+            } else {
+                (format!("{:>3}ev", pat.events.len().min(999)), p.muted)
+            };
+            draw_text(&mut frame, x + 178, cy + 1, &info, color, bg);
             if assigned {
                 fill_rect(&mut frame, x + 218, cy + 5, 3, 7, p.green);
             }
         } else {
-            draw_text(&mut frame, x + 38, cy + 4, "— libre —", p.muted, bg);
-            draw_text(&mut frame, x + 178, cy + 4, "PAD=+", p.muted, bg);
+            draw_text(&mut frame, x + 38, cy + 1, "— libre —", p.muted, bg);
+            draw_text(&mut frame, x + 178, cy + 1, "PAD=+", p.muted, bg);
+        }
+        // Cadre après le texte : les cellules 8×16 ne le coupent plus.
+        draw_rect_outline(&mut frame, x, cy, 226, 17, edge);
+        if focused {
+            fill_rect(&mut frame, x, cy, 3, 17, p.accent);
         }
     }
 
     draw_text(
         &mut frame,
         8,
-        184,
+        176,
         "PAD VIDE = CREER | DUPLICATE = COPIER | SHIFT+ERASE = VIDER",
         p.muted,
         p.bg,
@@ -2048,21 +2037,17 @@ pub fn render_scenes_left(snap: &EngineSnapshot) -> DisplayFrame {
         let col = i / 8;
         let row = i % 8;
         let x = 8 + col * 236;
-        let cy = y + row * 19;
+        let cy = y + row * 18;
         let focused = snap.active_scene == Some(i);
+        // Lancée en lecture : démarre à la mesure suivante.
+        let pending = snap.pending_scene == Some(i);
         let bg = if focused { p.panel2 } else { p.panel };
         fill_rect(&mut frame, x, cy, 226, 17, bg);
-        draw_rect_outline(
-            &mut frame,
-            x,
-            cy,
-            226,
-            17,
-            if focused { p.accent } else { p.border },
-        );
-        if focused {
-            fill_rect(&mut frame, x, cy, 3, 17, p.accent);
-        }
+        let edge = if focused || pending {
+            p.accent
+        } else {
+            p.border
+        };
         draw_text(
             &mut frame,
             x + 8,
@@ -2073,19 +2058,21 @@ pub fn render_scenes_left(snap: &EngineSnapshot) -> DisplayFrame {
         );
         let count = scene.patterns.iter().filter(|p| p.is_some()).count();
         let secs = snap.project.song.iter().filter(|s| s.scene == i).count();
-        draw_text(
-            &mut frame,
-            x + 150,
-            cy + 1,
-            &format!("{count} pat"),
-            p.muted,
-            bg,
-        );
+        let (info, color) = if pending {
+            ("SUIVANT".to_string(), p.accent)
+        } else {
+            (format!("{count} pat"), p.muted)
+        };
+        draw_text(&mut frame, x + 150, cy + 1, &info, color, bg);
         if secs > 0 {
             draw_text(&mut frame, x + 196, cy + 1, &format!("{secs}s"), p.cyan, bg);
         }
+        draw_rect_outline(&mut frame, x, cy, 226, 17, edge);
+        if focused {
+            fill_rect(&mut frame, x, cy, 3, 17, p.accent);
+        }
     }
-    y += 8 * 19;
+    y += 8 * 18;
     draw_text(
         &mut frame,
         8,
@@ -2165,16 +2152,12 @@ pub fn render_scenes_right(snap: &EngineSnapshot) -> DisplayFrame {
         let focus = gi == snap.group_focus as usize;
         let row_bg = if focus { p.panel2 } else { p.panel };
         let outline_col = if focus { p.accent } else { p.border };
-        fill_rect(&mut frame, 6, y, SCR_W - 12, 16, row_bg);
-        draw_rect_outline(&mut frame, 6, y, SCR_W - 12, 16, outline_col);
-        if focus {
-            fill_rect(&mut frame, 6, y, 3, 16, p.accent);
-        }
+        fill_rect(&mut frame, 6, y, SCR_W - 12, 15, row_bg);
 
         draw_text(
             &mut frame,
             14,
-            y + 2,
+            y,
             &format!(
                 "{} {}",
                 group_letter(gi as u8),
@@ -2199,7 +2182,7 @@ pub fn render_scenes_right(snap: &EngineSnapshot) -> DisplayFrame {
                 draw_text(
                     &mut frame,
                     120,
-                    y + 2,
+                    y,
                     &format!("P{:02} {}", pi + 1, trunc(&pat.name, 13)),
                     if focus { p.cyan } else { p.white },
                     row_bg,
@@ -2207,7 +2190,7 @@ pub fn render_scenes_right(snap: &EngineSnapshot) -> DisplayFrame {
                 draw_text(
                     &mut frame,
                     310,
-                    y + 2,
+                    y,
                     &format!("{}m", pat.length.bars.max(1)),
                     p.dim,
                     row_bg,
@@ -2215,7 +2198,7 @@ pub fn render_scenes_right(snap: &EngineSnapshot) -> DisplayFrame {
                 draw_text(
                     &mut frame,
                     390,
-                    y + 2,
+                    y,
                     &format!("{:>3}ev", pat.events.len().min(999)),
                     p.muted,
                     row_bg,
@@ -2225,14 +2208,19 @@ pub fn render_scenes_right(snap: &EngineSnapshot) -> DisplayFrame {
                 draw_text(
                     &mut frame,
                     120,
-                    y + 2,
+                    y,
                     "-- aucun pattern (muet) --",
                     p.muted,
                     row_bg,
                 );
             }
         }
-        y += 17;
+        // Cadre après le texte : les cellules 8×16 ne le coupent plus.
+        draw_rect_outline(&mut frame, 6, y, SCR_W - 12, 15, outline_col);
+        if focus {
+            fill_rect(&mut frame, 6, y, 3, 15, p.accent);
+        }
+        y += 16;
     }
 
     draw_text(
@@ -4544,12 +4532,6 @@ pub fn render_settings_right(snap: &EngineSnapshot) -> DisplayFrame {
 
 // ── KEYBOARD / CHORDS ──────────────────────────────────────────────────
 
-fn midi_note_name(note: u8) -> String {
-    let names = crate::keyboard::NOTE_NAMES;
-    let octave = (note as i32 / 12) - 1;
-    format!("{}{}", names[note as usize % 12], octave)
-}
-
 #[must_use]
 pub fn render_keyboard_left(snap: &EngineSnapshot) -> DisplayFrame {
     let p = Pal::of(snap);
@@ -4592,9 +4574,15 @@ pub fn render_keyboard_left(snap: &EngineSnapshot) -> DisplayFrame {
                 y,
                 55,
                 70,
-                if active { p.white } else { p.border },
+                if active {
+                    p.white
+                } else if kb.is_root_pad(pad as u8) {
+                    p.accent
+                } else {
+                    p.border
+                },
             );
-            let nn = midi_note_name(note);
+            let nn = note_name(note);
             draw_text_scaled(
                 &mut frame,
                 x + 6,
@@ -4639,7 +4627,7 @@ pub fn render_keyboard_left(snap: &EngineSnapshot) -> DisplayFrame {
         Some((
             "3:OCT",
             format!("{}", kb.octave),
-            kb.octave as f32 / 8.0,
+            f32::from(kb.octave + 2) / 9.0,
             p.cyan,
         )),
         Some((
@@ -4693,7 +4681,7 @@ pub fn render_keyboard_right(snap: &EngineSnapshot) -> DisplayFrame {
         &mut frame,
         10,
         98,
-        "DISPLAY BTN / SOFT KEYS: gammes et fondamentales",
+        "Boutons : gamme, octave, demi-ton (fondamentale)",
         p.dim,
         p.bg,
     );
@@ -4793,10 +4781,16 @@ pub fn render_chords_left(snap: &EngineSnapshot) -> DisplayFrame {
                 y,
                 55,
                 70,
-                if active { p.white } else { p.border },
+                if active {
+                    p.white
+                } else if kb.is_root_pad(pad as u8) {
+                    p.accent
+                } else {
+                    p.border
+                },
             );
             let label = if let Some(n) = notes.first() {
-                midi_note_name(*n)
+                note_name(*n)
             } else {
                 "-".into()
             };
@@ -4908,7 +4902,7 @@ pub fn render_chords_right(snap: &EngineSnapshot) -> DisplayFrame {
         &mut frame,
         10,
         118,
-        "Top buttons: ROOT/SCALE/CHORD/INV.",
+        "Boutons : gamme, accord, octave, demi-ton.",
         p.dim,
         p.bg,
     );
@@ -4916,7 +4910,7 @@ pub fn render_chords_right(snap: &EngineSnapshot) -> DisplayFrame {
         Some((
             "5:OCT",
             format!("{}", kb.octave),
-            kb.octave as f32 / 8.0,
+            f32::from(kb.octave + 2) / 9.0,
             p.cyan,
         )),
         Some(("6:--", String::new(), 0.0, p.border)),

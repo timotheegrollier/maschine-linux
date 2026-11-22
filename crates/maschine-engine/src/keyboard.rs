@@ -90,16 +90,56 @@ pub const CHORDS: &[ChordDef] = &[
     },
 ];
 
+/// Accords en gamme (hors chromatique, comme l'Harmonizer de Maschine) :
+/// degrés de la gamme empilés depuis la note du pad — majeur, mineur ou
+/// diminué selon le degré, toujours dans la gamme.
+pub const SCALE_CHORDS: &[ChordDef] = &[
+    ChordDef {
+        name: "1-3-5",
+        intervals: &[0, 2, 4],
+    },
+    ChordDef {
+        name: "1-3-5-7",
+        intervals: &[0, 2, 4, 6],
+    },
+    ChordDef {
+        name: "1-3",
+        intervals: &[0, 2],
+    },
+    ChordDef {
+        name: "1-5",
+        intervals: &[0, 4],
+    },
+    ChordDef {
+        name: "1-4-5",
+        intervals: &[0, 3, 4],
+    },
+    ChordDef {
+        name: "1-4-7",
+        intervals: &[0, 3, 6],
+    },
+];
+
+/// Nom d'une note MIDI comme dans Maschine (C3 = 60).
+#[must_use]
+pub fn note_name(note: u8) -> String {
+    format!(
+        "{}{}",
+        NOTE_NAMES[note as usize % 12],
+        i32::from(note) / 12 - 2
+    )
+}
+
 /// État musical Keyboard/Chords partagé moteur/snapshot/GUI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct KeyboardState {
     /// Fondamentale 0..11 (C=0).
     pub root: u8,
-    /// Octave de base MIDI (typiquement 1..7, base C1=24..C7=96 selon mapping).
+    /// Octave de la fondamentale, notation Maschine (3 = C3 = MIDI 60), -2..=7.
     pub octave: i8,
     /// Index dans `SCALES`.
     pub scale: u8,
-    /// Index dans `CHORDS` (mode Chords).
+    /// Index dans `chord_list()` (mode Chords).
     pub chord: u8,
     /// Quantité d'inversion d'accord 0..3.
     pub inversion: u8,
@@ -108,10 +148,11 @@ pub struct KeyboardState {
 impl Default for KeyboardState {
     fn default() -> Self {
         Self {
-            root: 0,   // C
-            octave: 3, // base around C3
-            scale: 2,  // Minor Nat
-            chord: 0,  // Triad
+            // C3 en chromatique : le réglage par défaut de la MK3.
+            root: 0,
+            octave: 3,
+            scale: 0,
+            chord: 0,
             inversion: 0,
         }
     }
@@ -120,15 +161,30 @@ impl Default for KeyboardState {
 impl KeyboardState {
     /// Note MIDI de base (fondamentale à l'octave choisie).
     pub fn base_note(self) -> i16 {
-        (self.octave.max(0) as i16) * 12 + (self.root.min(11) as i16)
+        (i16::from(self.octave) + 2) * 12 + i16::from(self.root.min(11))
     }
 
     pub fn scale_def(self) -> &'static ScaleDef {
         &SCALES[self.scale as usize % SCALES.len()]
     }
 
+    fn chromatic(self) -> bool {
+        self.scale_def().intervals.len() == 12
+    }
+
+    /// Accords proposés : intervalles fixes en chromatique, degrés de la
+    /// gamme sinon (la liste change avec la gamme, comme sur Maschine).
+    pub fn chord_list(self) -> &'static [ChordDef] {
+        if self.chromatic() {
+            CHORDS
+        } else {
+            SCALE_CHORDS
+        }
+    }
+
     pub fn chord_def(self) -> &'static ChordDef {
-        &CHORDS[self.chord as usize % CHORDS.len()]
+        let list = self.chord_list();
+        &list[self.chord as usize % list.len()]
     }
 
     pub fn root_name(self) -> &'static str {
@@ -146,14 +202,38 @@ impl KeyboardState {
         note.clamp(0, 127) as u8
     }
 
-    /// Notes d'un pad en mode Chords (accord diatonique sur le degré de la gamme).
+    /// Le pad joue la fondamentale ou une de ses octaves (pad allumé, les
+    /// autres atténués, comme sur la MK3).
+    pub fn is_root_pad(self, pad: u8) -> bool {
+        self.keyboard_note(pad) % 12 == self.root % 12
+    }
+
+    /// Notes jouées par un pad : une note en KEYBOARD, un accord en CHORDS.
+    pub fn pad_notes(self, chords: bool, pad: u8) -> Vec<u8> {
+        if chords {
+            self.chord_notes(pad)
+        } else {
+            vec![self.keyboard_note(pad)]
+        }
+    }
+
+    /// Notes d'un pad en mode Chords : l'accord part de la note du pad (les
+    /// pads montent comme en KEYBOARD) ; hors chromatique, il reste dans la gamme.
     pub fn chord_notes(self, pad: u8) -> Vec<u8> {
-        let scale = self.scale_def().intervals;
-        let len = scale.len() as i16;
-        let degree = (pad as i16).rem_euclid(len) as usize;
-        let root = self.base_note() + scale[degree] as i16;
-        let chord = self.chord_def().intervals;
-        let mut notes: Vec<i16> = chord.iter().map(|&i| root + i as i16).collect();
+        let root = i16::from(self.keyboard_note(pad));
+        let chromatic = self.chromatic();
+        let mut notes: Vec<i16> = self
+            .chord_def()
+            .intervals
+            .iter()
+            .map(|&i| {
+                if chromatic {
+                    root + i16::from(i)
+                } else {
+                    i16::from(self.keyboard_note(pad.saturating_add(i)))
+                }
+            })
+            .collect();
         let inv = (self.inversion as usize).min(notes.len().saturating_sub(1));
         for i in 0..inv {
             if let Some(n) = notes.get_mut(i) {
@@ -169,20 +249,67 @@ impl KeyboardState {
         self.scale = (self.scale as i32 + delta).rem_euclid(len) as u8;
     }
 
+    /// SEMITONE − / + : la fondamentale bouge d'un demi-ton, octave comprise
+    /// (B3 → C4), entre C-2 et B7.
     pub fn cycle_root(&mut self, delta: i32) {
-        self.root = (self.root as i32 + delta).rem_euclid(12) as u8;
+        let n =
+            (i32::from(self.octave) * 12 + i32::from(self.root) + delta).clamp(-24, 7 * 12 + 11);
+        self.octave = n.div_euclid(12) as i8;
+        self.root = n.rem_euclid(12) as u8;
     }
 
     pub fn cycle_octave(&mut self, delta: i32) {
-        self.octave = (self.octave as i32 + delta).clamp(0, 8) as i8;
+        self.octave = (i32::from(self.octave) + delta).clamp(-2, 7) as i8;
     }
 
     pub fn cycle_chord(&mut self, delta: i32) {
-        let len = CHORDS.len() as i32;
+        let len = self.chord_list().len() as i32;
         self.chord = (self.chord as i32 + delta).rem_euclid(len) as u8;
     }
 
     pub fn cycle_inversion(&mut self, delta: i32) {
         self.inversion = (self.inversion as i32 + delta).rem_euclid(4) as u8;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pads_start_on_c3_and_light_the_roots_like_the_mk3() {
+        let kb = KeyboardState::default();
+        // Chromatique depuis C3 (MIDI 60) sur le pad 1.
+        assert_eq!(kb.keyboard_note(0), 60);
+        assert_eq!(note_name(kb.keyboard_note(0)), "C3");
+        assert_eq!(kb.keyboard_note(15), 75);
+        let roots: Vec<u8> = (0..16).filter(|&p| kb.is_root_pad(p)).collect();
+        assert_eq!(roots, vec![0, 12]);
+        // SEMITONE + depuis B3 passe à C4.
+        let mut kb = KeyboardState { root: 11, ..kb };
+        kb.cycle_root(1);
+        assert_eq!((kb.root, kb.octave, kb.keyboard_note(0)), (0, 4, 72));
+        kb.cycle_octave(-9);
+        assert_eq!(kb.octave, -2);
+        assert_eq!(kb.keyboard_note(0), 0);
+    }
+
+    #[test]
+    fn chords_climb_with_the_pads_and_stay_in_the_scale() {
+        // Do majeur, 1-3-5 : C E G, puis D F A (mineur), B D F (diminué).
+        let kb = KeyboardState {
+            scale: 1,
+            ..KeyboardState::default()
+        };
+        assert_eq!(kb.chord_def().name, "1-3-5");
+        assert_eq!(kb.chord_notes(0), vec![60, 64, 67]);
+        assert_eq!(kb.chord_notes(1), vec![62, 65, 69]);
+        assert_eq!(kb.chord_notes(6), vec![71, 74, 77]);
+        // Le pad 8 rejoue le premier degré une octave plus haut.
+        assert_eq!(kb.chord_notes(7), vec![72, 76, 79]);
+        // Chromatique : intervalles fixes (Triad = majeur sur chaque pad).
+        let kb = KeyboardState::default();
+        assert_eq!(kb.chord_notes(2), vec![62, 66, 69]);
+        assert_eq!(kb.pad_notes(false, 2), vec![62]);
     }
 }

@@ -435,8 +435,13 @@ pub enum EngineEvent {
     PluginSlotStep(i8),
     /// Mode EVENTS : événement précédent / suivant (4D).
     EventStep(i32),
-    /// Pré-compte d'une mesure avant l'enregistrement (SHIFT + REC).
-    ToggleCountIn,
+    /// SHIFT + REC : à l'arrêt, une mesure de clics puis l'enregistrement
+    /// démarre ; en lecture, REC simple ; pendant le pré-compte, l'annule.
+    CountInRecord,
+    /// Modes KEYBOARD / CHORDS : knob `knob` tourné de `delta` ticks bruts —
+    /// les réglages affichés au-dessus des knobs (fondamentale, gamme, octave,
+    /// Sound, accord, renversement, groupe, master).
+    KeyboardKnob { knob: u8, delta: i32 },
     /// Éditeur de sample (SAMPLING) : knob `knob` tourné de `delta` ticks
     /// bruts (paramètres de la page RECORD / EDIT / SLICE / ZONE).
     SampleKnob { knob: u8, delta: i32 },
@@ -795,6 +800,8 @@ pub struct HardwareSnapshot {
     /// Lancements en attente : scène, pattern du groupe focalisé.
     pub pending_scene: Option<usize>,
     pub pending_pattern: Option<usize>,
+    /// Pré-compte en cours (REC clignote).
+    pub count_in: bool,
 }
 
 /// Convertit un gain en décibels en multiplicateur linéaire.
@@ -953,18 +960,6 @@ const EVENT_LABELS: [&str; 8] = [
 
 /// Ticks par pas de 16e (960 par noire).
 const TICKS_PER_STEP: u32 = 240;
-
-/// Nom d'une note MIDI (« C3 », « F#4 »…), pour les messages.
-fn note_label(pitch: u8) -> String {
-    const NAMES: [&str; 12] = [
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-    ];
-    format!(
-        "{}{}",
-        NAMES[pitch as usize % 12],
-        i32::from(pitch) / 12 - 2
-    )
-}
 
 /// Une instance de synthé par Sound (groupe × slot), comme dans le logiciel
 /// officiel : chaque groupe joue ses synthés en même temps que les autres,
@@ -1171,6 +1166,8 @@ pub struct Engine {
     /// choisi démarre au début de la mesure suivante, comme sur la MK3.
     pending_scene: Option<usize>,
     pending_patterns: [Option<usize>; 8],
+    /// Pré-compte en cours : samples écoulés (une mesure, puis REC).
+    count_in: Option<u64>,
     /// Patterns lancés par le séquenceur, reportés dans la scène du projet
     /// hors du thread audio (`commit_launches`).
     launched_patterns: [Option<usize>; 8],
@@ -1515,6 +1512,7 @@ impl Engine {
             master_fx: crate::fx::FxChainProcessor::new(sample_rate),
             rack: SynthRack::new(),
             pending_scene: None,
+            count_in: None,
             pending_patterns: [None; 8],
             launched_patterns: [None; 8],
             master_limiter: crate::limiter::MasterLimiter::new(sample_rate),
@@ -2064,6 +2062,7 @@ impl Engine {
             }),
             pending_scene: self.pending_scene,
             pending_pattern: self.pending_patterns[self.group_focus as usize % 8],
+            count_in: self.count_in.is_some(),
         }
     }
 
@@ -2539,13 +2538,20 @@ impl Engine {
                 }
             }
             EngineEvent::Transport { play, rec, stop } => {
-                if play {
-                    self.transport.play();
-                }
-                if rec {
-                    self.transport.record();
+                // REC à l'arrêt avec COUNT-IN activé : une mesure de clics d'abord.
+                if rec && !stop && !self.transport.is_playing() && self.transport.count_in_bars > 0
+                {
+                    self.start_count_in();
+                } else {
+                    if play {
+                        self.transport.play();
+                    }
+                    if rec {
+                        self.transport.record();
+                    }
                 }
                 if stop {
+                    self.count_in = None;
                     // STOP déjà à l'arrêt : retour au début (comme la MK3).
                     if !self.transport.is_playing() {
                         self.transport.tick = 0;
@@ -3545,7 +3551,8 @@ impl Engine {
                 velocity,
                 pressed,
             } => {
-                if self.muted_groups & (1 << self.group_focus) != 0
+                // MUTE et SOLO comme pour les pads (voir `group_audible`).
+                if !self.group_audible(self.group_focus)
                     || self.is_sound_muted(self.group_focus, self.active_sound)
                 {
                     return Ok(());
@@ -4015,17 +4022,19 @@ impl Engine {
             }
             EngineEvent::SelectPluginSlot(index) => self.select_plugin_slot(index),
             EngineEvent::EventStep(step) => self.step_event_cursor(step),
-            EngineEvent::ToggleCountIn => {
-                let on = self.transport.count_in_bars == 0;
-                self.transport.count_in_bars = u8::from(on);
-                self.show_status(
-                    if on {
-                        "Pré-compte : 1 mesure"
-                    } else {
-                        "Pré-compte coupé"
-                    }
-                    .to_string(),
-                );
+            EngineEvent::KeyboardKnob { knob, delta } => {
+                self.turn_keyboard_knob(knob as usize, delta)?
+            }
+            EngineEvent::CountInRecord => {
+                if self.count_in.take().is_some() {
+                    self.show_status("Pré-compte annulé".to_string());
+                } else if self.transport.state == TransportState::Recording {
+                    self.transport.play();
+                } else if self.transport.is_playing() {
+                    self.transport.record();
+                } else {
+                    self.start_count_in();
+                }
             }
             EngineEvent::SampleKnob { knob, delta } => self.turn_sample_knob(knob as usize, delta),
             EngineEvent::EventKnob { knob, delta } => self.turn_event_knob(knob as usize, delta),
@@ -4691,6 +4700,11 @@ impl Engine {
             .play_raw_at(&sample, if accent { 0.5 } else { 0.32 }, start_frame);
     }
 
+    fn start_count_in(&mut self) {
+        self.count_in = Some(0);
+        self.show_status("Pré-compte : 1 mesure, puis enregistrement".to_string());
+    }
+
     /// Avance le transport + séquenceur, déclenche les notes des patterns.
     pub fn advance(&mut self, samples: u64) {
         // Décroissance de l'activité des pads (animation écrans, ~170 ms).
@@ -4751,6 +4765,27 @@ impl Engine {
             }
         }
 
+        // Pré-compte : un clic par temps sur une mesure (accent sur le premier),
+        // puis l'enregistrement démarre. Compteur de samples, sans allocation.
+        // shortcut: mesure en 4/4 fixe, à revoir si les signatures arrivent.
+        if let Some(done) = self.count_in {
+            let beat = (f64::from(self.transport.sample_rate) * 60.0
+                / f64::from(self.transport.bpm.max(1.0))) as u64;
+            let beat = beat.max(1);
+            let end = done + samples;
+            let mut b = done.div_ceil(beat);
+            while b < 4 && b * beat < end {
+                self.trigger_click(b == 0, (b * beat - done) as usize);
+                b += 1;
+            }
+            if end >= 4 * beat {
+                self.count_in = None;
+                self.transport.record();
+                self.revision = self.revision.wrapping_add(1);
+            } else {
+                self.count_in = Some(end);
+            }
+        }
         if !self.transport.is_playing() {
             return;
         }
@@ -4915,6 +4950,42 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// Knobs des modes KEYBOARD / CHORDS : exactement les réglages affichés
+    /// au-dessus d'eux (écrans `render_keyboard_*` / `render_chords_*`).
+    fn turn_keyboard_knob(&mut self, knob: usize, delta: i32) -> crate::Result<()> {
+        use crate::plugin_pages::DETENT_TICKS;
+        let knob = knob.min(7);
+        if knob == 7 {
+            let v = (self.master_volume + delta as f32 / 1536.0).clamp(0.0, 1.0);
+            return self.handle_event(EngineEvent::MasterVolume(v));
+        }
+        let acc = self.event_knob_accum[knob] + delta;
+        let steps = acc / DETENT_TICKS;
+        self.event_knob_accum[knob] = acc - steps * DETENT_TICKS;
+        if steps == 0 {
+            return Ok(());
+        }
+        let kb = &mut self.keyboard;
+        match (self.controller_mode == 2, knob) {
+            (_, 0) => kb.cycle_root(steps),
+            (_, 1) => kb.cycle_scale(steps),
+            (false, 2) | (true, 4) => kb.cycle_octave(steps),
+            (true, 2) => kb.cycle_chord(steps),
+            (true, 3) => kb.cycle_inversion(steps),
+            (false, 3) => {
+                let s = (i32::from(self.active_sound) + steps).clamp(0, 15) as u8;
+                return self.handle_event(EngineEvent::SelectSound(s));
+            }
+            (false, 5) => {
+                let g = (i32::from(self.group_focus) + steps).rem_euclid(8) as u8;
+                return self.handle_event(EngineEvent::GroupFocus(g));
+            }
+            _ => {}
+        }
+        self.revision = self.revision.wrapping_add(1);
+        Ok(())
     }
 
     /// Reporte dans la scène du projet les patterns lancés par le séquenceur
@@ -5513,16 +5584,16 @@ impl Engine {
                 "PAS <", "PAS >", "BAR <", "BAR >", "1 MES", "2 MES", "4 MES", "8 MES",
             ];
         }
+        // KEYBOARD / CHORDS : boutons 5–8 = OCTAVE − / + et SEMITONE − / +
+        // comme sur la MK3 ; 1–4 = gamme (et accord en CHORDS).
         if self.controller_mode == 1 {
-            // KEYBOARD : les boutons haut changent gamme/fondamentale/octave.
             return [
-                "ROOT -", "ROOT +", "SCALE-", "SCALE+", "OCT -", "OCT +", "CHROMA", "MINOR",
+                "CHROMA", "MINOR", "SCALE-", "SCALE+", "OCT -", "OCT +", "SEMI -", "SEMI +",
             ];
         }
         if self.controller_mode == 2 {
-            // CHORDS : gammes/accords/inversions.
             return [
-                "ROOT -", "ROOT +", "SCALE-", "SCALE+", "CHORD-", "CHORD+", "INV -", "INV +",
+                "SCALE-", "SCALE+", "CHORD-", "CHORD+", "OCT -", "OCT +", "SEMI -", "SEMI +",
             ];
         }
         // Page AMPLI GUITARE : les labels annoncent exactement les actions
@@ -6946,7 +7017,10 @@ impl Engine {
                             pat.events.remove(i);
                         }
                     });
-                    self.show_status(format!("Note {} supprimée", note_label(e.pitch)));
+                    self.show_status(format!(
+                        "Note {} supprimée",
+                        crate::keyboard::note_name(e.pitch)
+                    ));
                     let n = self.event_scope().len();
                     self.event_cursor = self.event_cursor.min(n.saturating_sub(1));
                     self.revision = self.revision.wrapping_add(1);
@@ -7416,38 +7490,28 @@ impl Engine {
 
     fn handle_soft_key_keyboard(&mut self, idx: usize) -> crate::Result<()> {
         match idx {
-            0 => self.handle_event(EngineEvent::KeyboardRootDelta(-1)),
-            1 => self.handle_event(EngineEvent::KeyboardRootDelta(1)),
-            2 => self.handle_event(EngineEvent::KeyboardScaleDelta(-1)),
-            3 => self.handle_event(EngineEvent::KeyboardScaleDelta(1)),
-            4 => self.handle_event(EngineEvent::KeyboardOctaveDelta(-1)),
-            5 => self.handle_event(EngineEvent::KeyboardOctaveDelta(1)),
-            6 => self.handle_event(EngineEvent::SetKeyboardState(
+            0 | 1 => self.handle_event(EngineEvent::SetKeyboardState(
                 crate::keyboard::KeyboardState {
-                    scale: 0,
+                    // CHROMA / MINOR (gamme mineure naturelle).
+                    scale: if idx == 0 { 0 } else { 2 },
                     ..self.keyboard
                 },
             )),
-            _ => self.handle_event(EngineEvent::SetKeyboardState(
-                crate::keyboard::KeyboardState {
-                    scale: 2,
-                    ..self.keyboard
-                },
-            )),
+            _ => self.handle_soft_key_chords(idx),
         }
     }
 
+    /// Boutons par paires (− / +) : gamme, accord (CHORDS) ou gamme
+    /// (KEYBOARD), octave, demi-ton — voir `soft_key_labels`.
     fn handle_soft_key_chords(&mut self, idx: usize) -> crate::Result<()> {
-        match idx {
-            0 => self.handle_event(EngineEvent::KeyboardRootDelta(-1)),
-            1 => self.handle_event(EngineEvent::KeyboardRootDelta(1)),
-            2 => self.handle_event(EngineEvent::KeyboardScaleDelta(-1)),
-            3 => self.handle_event(EngineEvent::KeyboardScaleDelta(1)),
-            4 => self.handle_event(EngineEvent::KeyboardChordDelta(-1)),
-            5 => self.handle_event(EngineEvent::KeyboardChordDelta(1)),
-            6 => self.handle_event(EngineEvent::KeyboardInversionDelta(-1)),
-            _ => self.handle_event(EngineEvent::KeyboardInversionDelta(1)),
-        }
+        let dir = if idx.is_multiple_of(2) { -1 } else { 1 };
+        let event = match idx / 2 {
+            1 if self.controller_mode == 2 => EngineEvent::KeyboardChordDelta(dir),
+            0 | 1 => EngineEvent::KeyboardScaleDelta(dir),
+            2 => EngineEvent::KeyboardOctaveDelta(dir),
+            _ => EngineEvent::KeyboardRootDelta(dir),
+        };
+        self.handle_event(event)
     }
 
     fn handle_soft_key_mixer(&mut self, idx: usize) -> crate::Result<()> {
@@ -9027,6 +9091,48 @@ mod tests {
             (pos as i64 - expected).abs() < 32,
             "kick à la frame {pos} au lieu de {expected} (position dans le bloc)"
         );
+    }
+
+    #[test]
+    fn shift_rec_counts_in_one_bar_of_clicks_then_records() {
+        // Projet vide, métronome coupé : seuls les clics du pré-compte sonnent.
+        let mut eng = Engine::new(Project::default(), 48000);
+        eng.handle_event(EngineEvent::CountInRecord).unwrap();
+        assert!(eng.hardware_snapshot().count_in);
+        let mut buf = vec![0.0f32; 1024 * 2];
+        let mut mx = 0.0f32;
+        // Une mesure à 120 BPM = 96 000 samples ; 93 blocs n'y arrivent pas.
+        for _ in 0..93 {
+            eng.advance(1024);
+            eng.render_audio(&mut buf);
+            mx = buf.iter().fold(mx, |a, b| a.max(b.abs()));
+        }
+        assert!(mx > 1e-4, "pré-compte silencieux, max={mx}");
+        assert!(!eng.transport.is_playing(), "REC démarre après la mesure");
+        eng.advance(1024);
+        assert_eq!(eng.transport.state, TransportState::Recording);
+        assert!(!eng.hardware_snapshot().count_in);
+        // STOP annule un pré-compte en cours.
+        let stop = EngineEvent::Transport {
+            play: false,
+            rec: false,
+            stop: true,
+        };
+        eng.handle_event(stop.clone()).unwrap();
+        eng.handle_event(EngineEvent::CountInRecord).unwrap();
+        eng.handle_event(stop).unwrap();
+        eng.advance(100_000);
+        assert!(!eng.transport.is_playing());
+        // COUNT-IN activé : REC simple à l'arrêt passe aussi par le pré-compte.
+        eng.transport.count_in_bars = 1;
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: true,
+            stop: false,
+        })
+        .unwrap();
+        assert!(!eng.transport.is_playing());
+        assert!(eng.hardware_snapshot().count_in);
     }
 
     #[test]
@@ -10620,5 +10726,45 @@ mod tests {
             .active_pattern_index(g as usize, eng.active_scene)
             .expect("pattern placé");
         assert_eq!(proj.groups[g as usize].patterns[pi].events.len(), 1);
+    }
+
+    #[test]
+    fn keyboard_and_chords_knobs_set_what_the_screens_show() {
+        let mut eng = Engine::new_demo(48000);
+        eng.controller_mode = 1; // KEYBOARD
+        let before = eng.keyboard;
+        let turn = |eng: &mut Engine, knob: u8, detents: i32| {
+            eng.handle_event(EngineEvent::KeyboardKnob {
+                knob,
+                delta: detents * crate::plugin_pages::DETENT_TICKS,
+            })
+            .unwrap();
+        };
+        turn(&mut eng, 0, 2); // 1:ROOT
+        turn(&mut eng, 1, 1); // 2:SCALE
+        turn(&mut eng, 2, -1); // 3:OCT
+        assert_eq!(eng.keyboard.root, (before.root + 2) % 12);
+        assert_eq!(
+            eng.keyboard.scale as usize,
+            (before.scale as usize + 1) % crate::keyboard::SCALES.len()
+        );
+        assert_eq!(eng.keyboard.octave, before.octave - 1);
+        turn(&mut eng, 3, 1); // 4:SND
+        assert_eq!(eng.active_sound, 1);
+        // Boutons 5–8 comme la MK3 : OCT − / +, SEMI − / +.
+        let labels = eng.soft_key_labels();
+        assert_eq!(&labels[4..], &["OCT -", "OCT +", "SEMI -", "SEMI +"]);
+        let root = eng.keyboard.root;
+        eng.handle_event(EngineEvent::SoftKey(8)).unwrap(); // SEMI + (boutons 1-based)
+        assert_eq!(eng.keyboard.root, (root + 1) % 12);
+        eng.handle_event(EngineEvent::SoftKey(7)).unwrap(); // SEMI -
+                                                            // CHORDS : 3:CHORD, 4:INV, 5:OCT.
+        eng.controller_mode = 2;
+        turn(&mut eng, 2, 1);
+        turn(&mut eng, 3, 1);
+        turn(&mut eng, 4, 1);
+        assert_eq!(eng.keyboard.chord, 1);
+        assert_eq!(eng.keyboard.inversion, 1);
+        assert_eq!(eng.keyboard.octave, before.octave);
     }
 }

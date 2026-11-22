@@ -286,6 +286,7 @@ fn fuzz_full_workflow_no_panic() {
             group_colors: [0; 8],
             pending_scene: None,
             pending_pattern: None,
+            count_in: false,
         };
         mapper.update_leds(&info);
         let ls = mapper.led_state().clone();

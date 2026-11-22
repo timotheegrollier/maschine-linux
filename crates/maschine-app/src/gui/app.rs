@@ -903,10 +903,6 @@ impl GuiApp {
         press: &mut Option<(u8, u8, bool)>,
         release: &mut Option<u8>,
     ) {
-        const KEYBOARD_LABELS: [&str; 16] = [
-            "C3", "D3", "D#3", "F3", "G3", "G#3", "A#3", "C4", "D4", "D#4", "F4", "G4", "G#4",
-            "A#4", "C5", "D5",
-        ];
         const SHIFT_PAD_LABELS: [&str; 16] = [
             "UNDO",
             "REDO",
@@ -959,10 +955,10 @@ impl GuiApp {
                             format!("PAS {:02}", index + 1),
                             index as usize == snap.step_cursor % 16,
                         )
-                    } else if snap.controller_mode == 1 {
-                        (KEYBOARD_LABELS[index as usize].to_string(), false)
-                    } else if snap.controller_mode == 2 {
-                        (format!("ACC {}", (index % 7) + 1), false)
+                    } else if snap.controller_mode == 1 || snap.controller_mode == 2 {
+                        // Note (ou fondamentale de l'accord) du pad, comme à l'écran.
+                        let note = keyboard_notes(snap, index).first().copied().unwrap_or(0);
+                        (maschine_engine::keyboard::note_name(note), false)
                     } else {
                         (name, index == snap.active_sound)
                     };
@@ -1829,11 +1825,7 @@ impl eframe::App for GuiApp {
 
 /// Notes jouées par un pad en mode KEYBOARD (une note) ou CHORDS (accord).
 fn keyboard_notes(snap: &maschine_engine::EngineSnapshot, pad: u8) -> Vec<u8> {
-    if snap.controller_mode == 2 {
-        snap.keyboard.chord_notes(pad)
-    } else {
-        vec![snap.keyboard.keyboard_note(pad)]
-    }
+    snap.keyboard.pad_notes(snap.controller_mode == 2, pad)
 }
 
 /// Largeur d'un panneau latéral en proportion de la fenêtre : elle suit

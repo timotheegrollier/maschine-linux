@@ -393,8 +393,10 @@ pub enum MapperAction {
     EventStep(i32),
     /// Mode EVENTS : knob de l'événement sélectionné (ticks bruts).
     EventKnob { knob: u8, delta: i32 },
-    /// SHIFT + REC : pré-compte avant l'enregistrement.
-    ToggleCountIn,
+    /// SHIFT + REC : une mesure de pré-compte puis enregistrement.
+    CountInRecord,
+    /// Modes KEYBOARD / CHORDS : knob des réglages de jeu (ticks bruts).
+    KeyboardKnob { knob: u8, delta: i32 },
     /// SAMPLING : knob de la page de l'éditeur de sample (ticks bruts).
     SampleKnob { knob: u8, delta: i32 },
     /// Soft key d'écran (1..8) — action contextuelle décidée par l'Engine
@@ -503,6 +505,8 @@ pub struct SequencerLedInfo {
     /// Lancements en attente (clignotent) : scène, pattern du groupe focalisé.
     pub pending_scene: Option<usize>,
     pub pending_pattern: Option<usize>,
+    /// Pré-compte en cours : REC clignote.
+    pub count_in: bool,
 }
 
 /// Mapper — convertit `HardwareEvent` → `MidiEvent` + `LedState` + actions Engine.
@@ -569,11 +573,12 @@ pub struct HardwareMapper {
     /// Confirmation de suppression de projet
     pub delete_project_confirm: bool,
     /// État musical Keyboard/Chords (miroir moteur).
-    pub kbd_root: u8,
-    pub kbd_octave: i8,
-    pub kbd_scale: u8,
-    pub kbd_chord: u8,
-    pub kbd_inversion: u8,
+    /// Notes de chaque pad en KEYBOARD / CHORDS, calculées par le moteur
+    /// (`KeyboardState` : seule source des gammes et des accords).
+    pub kbd_pad_notes: [Vec<u8>; 16],
+    /// Pads qui jouent la fondamentale ou ses octaves (bit = pad) : allumés,
+    /// les autres atténués, comme sur la MK3.
+    pub kbd_root_pads: u16,
     /// Notes réellement jouées par pad en Keyboard/Chords (pour note-off).
     pad_played: HashMap<u8, Vec<u8>>,
     /// Mesure sélectionnée (0-indexed)
@@ -679,11 +684,9 @@ impl HardwareMapper {
             has_acid_synth: false,
             has_wavetable_synth: false,
             delete_project_confirm: false,
-            kbd_root: 0,
-            kbd_octave: 3,
-            kbd_scale: 2,
-            kbd_chord: 0,
-            kbd_inversion: 0,
+            // C3 chromatique, comme le moteur au démarrage.
+            kbd_pad_notes: std::array::from_fn(|i| vec![60 + i as u8]),
+            kbd_root_pads: 1 | 1 << 12,
             pad_played: HashMap::new(),
             selected_bar: 0,
             pattern_bars: 2,
@@ -829,65 +832,6 @@ impl HardwareMapper {
         let whole = self.knob_carry[idx].trunc();
         self.knob_carry[idx] -= whole;
         whole as i32
-    }
-
-    fn kbd_base_note(&self) -> i16 {
-        (self.kbd_octave.max(0) as i16) * 12 + (self.kbd_root.min(11) as i16)
-    }
-
-    fn kbd_scale_intervals(&self) -> &'static [u8] {
-        const S: [&[u8]; 8] = [
-            &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
-            &[0, 2, 4, 5, 7, 9, 11],
-            &[0, 2, 3, 5, 7, 8, 10],
-            &[0, 2, 3, 5, 7, 8, 11],
-            &[0, 2, 3, 5, 7, 9, 10],
-            &[0, 2, 4, 5, 7, 9, 10],
-            &[0, 3, 5, 7, 10],
-            &[0, 2, 4, 7, 9],
-        ];
-        S[self.kbd_scale as usize % S.len()]
-    }
-
-    fn kbd_chord_intervals(&self) -> &'static [u8] {
-        const C: [&[u8]; 8] = [
-            &[0, 4, 7],
-            &[0, 3, 7],
-            &[0, 2, 7],
-            &[0, 5, 7],
-            &[0, 4, 7, 10],
-            &[0, 3, 7, 10],
-            &[0, 4, 7, 11],
-            &[0, 12],
-        ];
-        C[self.kbd_chord as usize % C.len()]
-    }
-
-    fn keyboard_note_for_pad(&self, pad: u8) -> u8 {
-        let scale = self.kbd_scale_intervals();
-        let degree = pad as i16;
-        let len = scale.len() as i16;
-        let octave_shift = degree.div_euclid(len);
-        let idx = degree.rem_euclid(len) as usize;
-        let note = self.kbd_base_note() + octave_shift * 12 + scale[idx] as i16;
-        note.clamp(0, 127) as u8
-    }
-
-    fn chord_notes_for_pad(&self, pad: u8) -> Vec<u8> {
-        let scale = self.kbd_scale_intervals();
-        let len = scale.len() as i16;
-        let degree = (pad as i16).rem_euclid(len) as usize;
-        let root = self.kbd_base_note() + scale[degree] as i16;
-        let chord = self.kbd_chord_intervals();
-        let mut notes: Vec<i16> = chord.iter().map(|&i| root + i as i16).collect();
-        let inv = (self.kbd_inversion as usize).min(notes.len().saturating_sub(1));
-        for i in 0..inv {
-            if let Some(n) = notes.get_mut(i) {
-                *n += 12;
-            }
-        }
-        notes.sort_unstable();
-        notes.into_iter().map(|n| n.clamp(0, 127) as u8).collect()
     }
 
     pub fn handle_hardware_event(&mut self, ev: HardwareEvent) -> Vec<MapperAction> {
@@ -1042,7 +986,7 @@ impl HardwareMapper {
             ButtonId::Rec => {
                 // SHIFT + REC : pré-compte (COUNT-IN), comme sur la MK3.
                 actions.push(if self.shift_held {
-                    MapperAction::ToggleCountIn
+                    MapperAction::CountInRecord
                 } else {
                     MapperAction::RecordToggle
                 });
@@ -1785,9 +1729,12 @@ impl HardwareMapper {
 
     fn handle_arrange_knobs(&mut self, idx: usize, delta: i32) -> Vec<MapperAction> {
         let mut actions = Vec::new();
-        if self.scene_select_mode {
+        // SCENE : knobs 5–7 = PATTERN / LONGUEUR / VOL SND (comme affichés) ; les autres
+        // gardent TEMPO, SWING, VOL GRP, PAN GRP, VOL SND, MASTER affichés à
+        // l'écran (la scène se choisit au 4D ou aux pads).
+        if self.scene_select_mode && (4..=6).contains(&idx) {
             match idx {
-                0 => actions.push(MapperAction::SceneStep(delta.clamp(-1, 1))),
+                6 => actions.push(MapperAction::SoundVolumeDelta(delta as f32)),
                 4 => {
                     let d = self.knob_steps(idx, delta, 0.03125).clamp(-1, 1);
                     if d != 0 {
@@ -1807,7 +1754,6 @@ impl HardwareMapper {
                         actions.push(MapperAction::SetPatternBars((self.pattern_bars / 2).max(1)));
                     }
                 }
-                7 => actions.push(MapperAction::MasterVolumeDelta(delta as f32)),
                 _ => {}
             }
             return actions;
@@ -1836,6 +1782,16 @@ impl HardwareMapper {
         // EVENTS prend les deux écrans : les knobs éditent la note choisie.
         if self.right_tab == 1 {
             return vec![MapperAction::EventKnob {
+                knob: idx as u8,
+                delta,
+            }];
+        }
+        // KEYBOARD / CHORDS : les knobs règlent ce que l'écran affiche
+        // (fondamentale, gamme, octave, accord…), pas les réglages d'ARRANGE.
+        if matches!(self.mode, ControllerMode::Keyboard | ControllerMode::Chords)
+            && self.left_tab == 0
+        {
+            return vec![MapperAction::KeyboardKnob {
                 knob: idx as u8,
                 delta,
             }];
@@ -2091,17 +2047,8 @@ impl HardwareMapper {
                         step: p.pad as usize,
                     });
                 }
-                ControllerMode::Keyboard => {
-                    let mel_note = self.keyboard_note_for_pad(p.pad);
-                    self.pad_played.insert(p.pad, vec![mel_note]);
-                    actions.push(MapperAction::KeyboardTrigger {
-                        note: mel_note,
-                        velocity: vel,
-                        pressed: true,
-                    });
-                }
-                ControllerMode::Chords => {
-                    let notes = self.chord_notes_for_pad(p.pad);
+                ControllerMode::Keyboard | ControllerMode::Chords => {
+                    let notes = self.kbd_pad_notes[p.pad as usize % 16].clone();
                     for &n in &notes {
                         actions.push(MapperAction::KeyboardTrigger {
                             note: n,
@@ -2207,8 +2154,15 @@ impl HardwareMapper {
             .set_button_raw(offsets::PLAY, if info.is_playing { 7 } else { 2 });
         self.led_state
             .set_button_raw(offsets::STOP, if info.is_stopped { 7 } else { 1 });
-        self.led_state
-            .set_button_raw(offsets::REC, if info.is_recording { 7 } else { 0 });
+        self.led_state.set_button_raw(
+            offsets::REC,
+            match (info.count_in, info.is_recording) {
+                (true, _) if self.blink_phase(Instant::now()) => 7,
+                (true, _) => 2,
+                (false, true) => 7,
+                (false, false) => 0,
+            },
+        );
         self.led_state
             .set_button_raw(offsets::RESTART, if info.loop_enabled { 7 } else { 2 });
 
@@ -2598,38 +2552,35 @@ impl HardwareMapper {
                         } else {
                             dim_pad_color(color)
                         };
+                        // Sound vide : éteint, mais blanc quand on le frappe ou
+                        // le sélectionne (sinon aucun retour sous le doigt).
+                        let led = if color == Color::OFF
+                            && !is_muted
+                            && (hit || i as u8 == info.active_sound)
+                        {
+                            white
+                        } else {
+                            led
+                        };
                         self.led_state.set_pad(i, led);
                     }
                 }
-                ControllerMode::Keyboard => {
-                    // Gamme mineure : Pads 0, 7, 14 sont fondamentales (C3, C4, C5)
-                    let dim_turquoise = Color::from_index(27).unwrap_or(Color::OFF); // DimTurquoise
-                    for i in 0..16 {
-                        if self.pad_flash(i, now) {
-                            self.led_state.set_pad(i, white); // Blanc flash
-                        } else if i == 0 || i == 7 || i == 14 {
-                            self.led_state
-                                .set_pad(i, Color::from_index(42).unwrap_or(Color::OFF));
-                        // Bleu fondamental
-                        } else {
-                            self.led_state.set_pad(i, dim_turquoise);
-                            // Turquoise atténué
-                        }
+                ControllerMode::Keyboard | ControllerMode::Chords => {
+                    // Comme la MK3 : couleur du Sound joué, fondamentale et
+                    // ses octaves allumées, autres pads atténués, frappe vive.
+                    let mut color = self.pad_colors[self.active_sound as usize % 16];
+                    if color == Color::OFF {
+                        color = white;
                     }
-                }
-                ControllerMode::Chords => {
-                    let dim_purple = Color::from_index(53).unwrap_or(Color::OFF); // DimPurple
-                    let dim_magenta = Color::from_index(57).unwrap_or(Color::OFF); // DimMagenta
                     for i in 0..16 {
-                        if self.pad_flash(i, now) {
-                            self.led_state.set_pad(i, white);
-                        } else if i % 2 == 0 {
-                            self.led_state.set_pad(i, dim_purple);
-                        // Violet atténué
+                        let led = if self.pad_flash(i, now) {
+                            bright_pad_color(color)
+                        } else if self.kbd_root_pads & (1 << i) != 0 {
+                            color
                         } else {
-                            self.led_state.set_pad(i, dim_magenta);
-                            // Magenta atténué
-                        }
+                            dim_pad_color(color)
+                        };
+                        self.led_state.set_pad(i, led);
                     }
                 }
                 ControllerMode::Step => {
@@ -3003,6 +2954,19 @@ mod tests {
         };
         m.update_leds(&muted);
         assert_eq!(m.led_state().pad_leds[0], 0);
+        // Sound vide : éteint au repos, blanc une fois sélectionné.
+        m.set_pad_color(5, Color::OFF);
+        m.update_leds(&info);
+        assert_eq!(m.led_state().pad_leds[5], 0, "pad vide éteint");
+        m.update_leds(&SequencerLedInfo {
+            active_sound: 5,
+            ..SequencerLedInfo::default()
+        });
+        assert_eq!(
+            m.led_state().pad_leds[5],
+            78,
+            "pad vide sélectionné en blanc"
+        );
     }
 
     #[test]
@@ -3382,6 +3346,37 @@ mod tests {
                 delta: 4.0
             }]
         );
+    }
+
+    #[test]
+    fn scene_mode_knobs_match_their_labels() {
+        let mut m = HardwareMapper::with_default();
+        m.scene_select_mode = true;
+        // 1:TEMPO, 7:VOL SND, 8:MASTER comme affichés sur les écrans SCENE.
+        assert_eq!(
+            m.handle_display_knob(0, 4),
+            vec![MapperAction::BpmDelta(4.0)]
+        );
+        assert_eq!(
+            m.handle_display_knob(6, 4),
+            vec![MapperAction::SoundVolumeDelta(4.0)]
+        );
+        assert_eq!(
+            m.handle_display_knob(7, 4),
+            vec![MapperAction::MasterVolumeDelta(4.0)]
+        );
+    }
+
+    #[test]
+    fn keyboard_and_chords_knobs_go_to_the_engine_settings() {
+        let mut m = HardwareMapper::with_default();
+        for mode in [ControllerMode::Keyboard, ControllerMode::Chords] {
+            m.mode = mode;
+            assert_eq!(
+                m.handle_display_knob(0, 32),
+                vec![MapperAction::KeyboardKnob { knob: 0, delta: 32 }]
+            );
+        }
     }
 
     #[test]

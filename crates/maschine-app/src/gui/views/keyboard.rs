@@ -9,13 +9,8 @@ use crate::gui::theme::{card, MachColors};
 use crate::gui::widgets::chip;
 use eframe::egui;
 
-use maschine_engine::keyboard::{CHORDS, NOTE_NAMES, SCALES};
+use maschine_engine::keyboard::{note_name, SCALES};
 use maschine_engine::EngineEvent;
-
-fn note_name(note: u8) -> String {
-    let octave = (note as i32 / 12) - 1;
-    format!("{}{}", NOTE_NAMES[note as usize % 12], octave)
-}
 
 pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::EngineSnapshot) {
     let c = MachColors::dark();
@@ -134,7 +129,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                 if snap.controller_mode == 2 {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(egui::RichText::new("Accords :").small().color(c.text_muted));
-                        for (i, chord) in CHORDS.iter().enumerate() {
+                        for (i, chord) in kb.chord_list().iter().enumerate() {
                             if chip(ui, chord.name, i == kb.chord as usize, c.success) {
                                 app.send(EngineEvent::KeyboardChordDelta(i as i32 - kb.chord as i32));
                             }

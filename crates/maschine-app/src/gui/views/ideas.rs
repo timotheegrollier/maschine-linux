@@ -66,10 +66,11 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                                 let used = scene.patterns.iter().filter(|p| p.is_some()).count();
                                 let resp = ui.add(
                                     egui::Button::new(
+                                        // Même nom que sur l'écran SCENE de la MK3.
                                         egui::RichText::new(format!(
-                                            "{:02}   Scène {}",
+                                            "{:02}   {}",
                                             i + 1,
-                                            i + 1
+                                            scene.name
                                         ))
                                         .strong()
                                         .color(

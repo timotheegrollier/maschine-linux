@@ -522,7 +522,7 @@ impl Project {
         }
 
         p.scenes.push(Scene {
-            name: "Scene 1".to_string(),
+            name: "Scène 1".to_string(),
             color: 22,
             patterns: vec![Some(0); 8],
         });
@@ -735,6 +735,24 @@ pub struct Sound {
     /// Chaîne d'effets du Pad
     #[serde(default)]
     pub fx_chain: Vec<crate::fx::FxSlot>,
+    /// Retouches de l'éditeur de sample (REVERSE, NORMLZ, LOOP).
+    #[serde(default)]
+    pub edits: SampleEdits,
+}
+
+/// Retouches du sample d'un Sound, rejouées au chargement du projet : le
+/// fichier d'origine reste intact (sans elles, elles se perdaient).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SampleEdits {
+    /// REVERSE : lu à l'envers.
+    #[serde(default)]
+    pub reversed: bool,
+    /// NORMLZ : crête ramenée à 0 dBFS.
+    #[serde(default)]
+    pub normalized: bool,
+    /// LOOP : en boucle au lieu de One-Shot.
+    #[serde(default)]
+    pub looped: bool,
 }
 
 fn default_poly() -> u8 {
@@ -761,6 +779,7 @@ impl Sound {
             kick_synth: None,
             wavetable_synth: None,
             fx_chain: Vec::new(),
+            edits: SampleEdits::default(),
         }
     }
 }

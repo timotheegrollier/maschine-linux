@@ -6691,6 +6691,22 @@ mod tests {
     }
 
     #[test]
+    fn boot_progress_bar_spans_both_screens() {
+        let (l0, r0) = render_boot_screens("Démarrage", 0.0);
+        let (l1, r1) = render_boot_screens("Démarrage", 1.0);
+        let y = SCR_H / 2 + 46;
+        let px = |f: &DisplayFrame, x: usize| f.pixels[y * SCR_W + x];
+        // Vide à 0 %, pleine à 100 %, de la même couleur sur les deux écrans.
+        assert_ne!(px(&l0, 300), px(&l1, 300));
+        assert_ne!(px(&r0, 200), px(&r1, 200));
+        assert_eq!(px(&l1, 300), px(&r1, 200));
+        // À 50 %, la barre s'arrête au bord du premier écran.
+        let (l5, r5) = render_boot_screens("Démarrage", 0.5);
+        assert_eq!(px(&l5, 470), px(&l1, 470));
+        assert_eq!(px(&r5, 200), px(&r0, 200));
+    }
+
+    #[test]
     fn sampler_page_restores_sampler_on_right_after_events_overlay() {
         let mut eng = Engine::new_demo(48000);
         eng.handle_event(crate::engine::EngineEvent::SetRightTab(1))

@@ -1734,7 +1734,13 @@ fn cmd_daemon(
 
     // Helper : calcule l'état de toutes les LEDs dans le mapper, sans l'envoyer.
     fn refresh_leds(engine: &Arc<Mutex<Engine>>, mapper: &mut HardwareMapper) {
-        let snap = engine.lock().hardware_snapshot();
+        let snap = {
+            let mut eng = engine.lock();
+            // ~60 Hz, hors du thread audio : lancements et notes répétées
+            // passent dans le projet même sans autre action de l'utilisateur.
+            eng.commit_launches();
+            eng.hardware_snapshot()
+        };
         // Le mapper suit l'engine (la GUI peut aussi changer groupe/son/onglets).
         sync_mapper_context(mapper, &snap);
         // Couleurs des pads = couleurs des Sounds du groupe focus (comme Maschine) ;

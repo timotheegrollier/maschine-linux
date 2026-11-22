@@ -823,11 +823,25 @@ pub fn event_scope(pat: &crate::project::Pattern, pad: Option<u8>) -> Vec<usize>
 }
 
 /// Plages de lecture enregistrées dans le projet → sampler (chargement).
-fn restore_ranges(sampler: &mut Sampler, project: &Project) {
+/// Rejoue sur un sampler fraîchement chargé ce que le projet garde des
+/// éditions de sample : plage de lecture et retouches (REVERSE, NORMLZ, LOOP).
+fn restore_sound_edits(sampler: &mut Sampler, project: &Project) {
     for (g, group) in project.groups.iter().enumerate().take(8) {
         for (s, snd) in group.sounds.iter().enumerate().take(16) {
-            if let Some(z) = snd.as_ref().and_then(|snd| snd.zones.first()) {
-                sampler.set_sound_range(sampler_sound_id(g as u8, s as u8), z.start, z.end);
+            let Some(snd) = snd.as_ref() else { continue };
+            let id = sampler_sound_id(g as u8, s as u8);
+            if let Some(z) = snd.zones.first() {
+                sampler.set_sound_range(id, z.start, z.end);
+            }
+            if snd.edits.reversed {
+                sampler.reverse_sound(id);
+            }
+            if snd.edits.normalized {
+                sampler.normalize_sound(id);
+            }
+            if snd.edits.looped {
+                // Les zones chargées partent en One-Shot.
+                sampler.toggle_sound_one_shot(id);
             }
         }
     }
@@ -960,6 +974,16 @@ const EVENT_LABELS: [&str; 8] = [
 
 /// Ticks par pas de 16e (960 par noire).
 const TICKS_PER_STEP: u32 = 240;
+
+/// Note jouée par le thread audio, à écrire dans le pattern hors du callback.
+#[derive(Debug, Clone, Copy)]
+struct PendingNote {
+    group: u8,
+    pad: u8,
+    pitch: u8,
+    velocity: u8,
+    tick: u64,
+}
 
 /// Une instance de synthé par Sound (groupe × slot), comme dans le logiciel
 /// officiel : chaque groupe joue ses synthés en même temps que les autres,
@@ -1168,6 +1192,14 @@ pub struct Engine {
     pending_patterns: [Option<usize>; 8],
     /// Pré-compte en cours : samples écoulés (une mesure, puis REC).
     count_in: Option<u64>,
+    /// Notes jouées par le thread audio (Note Repeat, Arp) pendant REC,
+    /// écrites dans le pattern par `commit_launches` (jamais dans le callback :
+    /// écrire le projet le recopie en entier).
+    pending_notes: [Option<PendingNote>; 64],
+    /// KEYBOARD / CHORDS : vélocité des notes MIDI tenues (0 = relâchée).
+    arp_held: [u8; 128],
+    /// Dernière note jouée par l'arpégiateur (relâchée au pas suivant).
+    arp_last: Option<u8>,
     /// Patterns lancés par le séquenceur, reportés dans la scène du projet
     /// hors du thread audio (`commit_launches`).
     launched_patterns: [Option<usize>; 8],
@@ -1290,7 +1322,7 @@ fn ensure_active_scene(project: &mut Project, active_scene: &mut Option<usize>) 
     if project.scenes.is_empty() {
         project
             .scenes
-            .push(Scene::new("Scene 1", project.groups.len()));
+            .push(Scene::new("Scène 1", project.groups.len()));
     }
     let scene_idx = active_scene
         .unwrap_or(0)
@@ -1513,6 +1545,9 @@ impl Engine {
             rack: SynthRack::new(),
             pending_scene: None,
             count_in: None,
+            pending_notes: [None; 64],
+            arp_held: [0; 128],
+            arp_last: None,
             pending_patterns: [None; 8],
             launched_patterns: [None; 8],
             master_limiter: crate::limiter::MasterLimiter::new(sample_rate),
@@ -2168,7 +2203,7 @@ impl Engine {
                 self.sampler.add_zone(sound_id, zone);
             }
         }
-        restore_ranges(&mut self.sampler, &project);
+        restore_sound_edits(&mut self.sampler, &project);
         // `clear_sound` réinitialise la polyphonie : on la restaure depuis le
         // projet après le rechargement des zones personnalisées.
         for (group_index, group) in project.groups.iter().enumerate() {
@@ -2543,6 +2578,7 @@ impl Engine {
                 {
                     self.start_count_in();
                 } else {
+                    self.count_in = None;
                     if play {
                         self.transport.play();
                     }
@@ -2603,7 +2639,7 @@ impl Engine {
                 let group_count = project.groups.len();
                 project
                     .scenes
-                    .push(Scene::new(&format!("Scene {}", index + 1), group_count));
+                    .push(Scene::new(&format!("Scène {}", index + 1), group_count));
                 self.active_scene = Some(index);
                 self.song_mode = false;
             }
@@ -2704,7 +2740,7 @@ impl Engine {
                         sampler.add_zone(sound_id, zone);
                     }
                 }
-                restore_ranges(&mut sampler, &p);
+                restore_sound_edits(&mut sampler, &p);
                 self.sampler = sampler;
                 self.transport.bpm = p.bpm;
                 let proj_name = p.name.clone();
@@ -2821,7 +2857,7 @@ impl Engine {
                 let src = pattern.min(g.patterns.len() - 1);
                 let insert = src + 1;
                 let mut copy = g.patterns[src].clone();
-                copy.name = format!("{} copy", copy.name);
+                copy.name = format!("{} copie", copy.name);
                 g.patterns.insert(insert, copy);
                 shift_scene_refs_after_insert(proj, group_idx, insert);
                 assign_pattern_to_active_scene(proj, &mut self.active_scene, group_idx, insert);
@@ -3340,7 +3376,7 @@ impl Engine {
                         project.song.insert(
                             insert,
                             Section {
-                                name: format!("{} copy", sec.name),
+                                name: format!("{} copie", sec.name),
                                 ..sec
                             },
                         );
@@ -3381,7 +3417,7 @@ impl Engine {
                         project.scenes.insert(
                             insert,
                             Scene {
-                                name: format!("{} copy", scene.name),
+                                name: format!("{} copie", scene.name),
                                 ..scene
                             },
                         );
@@ -3397,7 +3433,7 @@ impl Engine {
                     if let Some(scene) = project.scenes.get(idx).cloned() {
                         let insert = idx + 1;
                         let mut new_scene = Scene {
-                            name: format!("{} copy", scene.name),
+                            name: format!("{} copie", scene.name),
                             color: scene.color,
                             patterns: vec![None; project.groups.len()],
                         };
@@ -3481,7 +3517,7 @@ impl Engine {
                     let idx = project.scenes.len();
                     project
                         .scenes
-                        .push(Scene::new(&format!("Scene {}", idx + 1), group_count));
+                        .push(Scene::new(&format!("Scène {}", idx + 1), group_count));
                 }
                 self.active_scene = Some(target);
                 self.song_mode = false;
@@ -3548,9 +3584,12 @@ impl Engine {
             }
             EngineEvent::KeyboardTrigger {
                 note,
-                velocity,
+                mut velocity,
                 pressed,
             } => {
+                if self.fixed_velocity && pressed {
+                    velocity = self.fixed_velocity_level;
+                }
                 // MUTE et SOLO comme pour les pads (voir `group_audible`).
                 if !self.group_audible(self.group_focus)
                     || self.is_sound_muted(self.group_focus, self.active_sound)
@@ -3558,7 +3597,20 @@ impl Engine {
                     return Ok(());
                 }
                 let note = note.min(127);
-                if pressed {
+                let first_key = self.arp_held.iter().all(|&v| v == 0);
+                self.arp_held[note as usize] = if pressed { velocity.max(1) } else { 0 };
+                if self.note_repeat_enabled {
+                    // NOTE REPEAT en KEYBOARD / CHORDS = arpégiateur (comme la
+                    // MK3) : les notes tenues sont jouées une à une, en montant.
+                    if pressed && first_key {
+                        self.note_repeat_samples = 0;
+                        self.arp_step();
+                    } else if !pressed && self.arp_held.iter().all(|&v| v == 0) {
+                        if let Some(last) = self.arp_last.take() {
+                            self.release_sound_voice(self.active_sound, last);
+                        }
+                    }
+                } else if pressed {
                     self.trigger_sound_voice(self.active_sound, note, velocity);
                     if self.transport.state == TransportState::Recording {
                         // Keyboard/Chords : enregistre la hauteur jouée (accords = plusieurs événements).
@@ -4296,12 +4348,20 @@ impl Engine {
                 if !enabled {
                     self.note_repeat_held_pads = [None; 16];
                     self.note_repeat_samples = 0;
+                    if let Some(last) = self.arp_last.take() {
+                        self.release_sound_voice(self.active_sound, last);
+                    }
                 }
-                self.status_message = Some(if enabled {
-                    "Note Repeat: ACTIF".to_string()
+                // Sur la MK3, NOTE REPEAT devient l'arpégiateur en KEYBOARD / CHORDS.
+                let name = if matches!(self.controller_mode, 1 | 2) {
+                    "Arp"
                 } else {
-                    "Note Repeat: DÉSACTIVÉ".to_string()
-                });
+                    "Note Repeat"
+                };
+                self.status_message = Some(format!(
+                    "{name} : {}",
+                    if enabled { "ACTIF" } else { "DÉSACTIVÉ" }
+                ));
                 self.status_expires_at =
                     std::time::Instant::now() + std::time::Duration::from_millis(1500);
                 self.revision = self.revision.wrapping_add(1);
@@ -4732,35 +4792,37 @@ impl Engine {
         const NOTE_REPEAT_TICKS: [u32; 8] = [120, 240, 480, 960, 1920, 160, 320, 640];
         let rep_rate_ticks = NOTE_REPEAT_TICKS[self.note_repeat_rate.min(7) as usize];
         if self.note_repeat_enabled {
-            if self.transport.is_playing() {
-                let prev_div = prev_tick / rep_rate_ticks as u64;
-                let new_div = new_tick / rep_rate_ticks as u64;
-                if new_div > prev_div {
-                    let held = self.note_repeat_held_pads;
-                    for (pad, opt_v) in held.iter().enumerate() {
-                        if let Some(vel) = *opt_v {
-                            self.trigger_pad_voice(pad as u8, vel);
-                            if self.transport.state == TransportState::Recording {
-                                self.record_pad_event(pad as u8, vel);
-                            }
-                        }
-                    }
-                }
-            } else if self.note_repeat_held_pads.iter().any(|v| v.is_some()) {
+            let arp_on = self.arp_held.iter().any(|&v| v > 0);
+            let due = if self.transport.is_playing() {
+                new_tick / rep_rate_ticks as u64 > prev_tick / rep_rate_ticks as u64
+            } else if arp_on || self.note_repeat_held_pads.iter().any(|v| v.is_some()) {
                 let bpm = self.transport.bpm.max(1.0) as f64;
                 let samples_per_repeat = ((rep_rate_ticks as f64 / 960.0)
                     * (60.0 / bpm)
                     * self.transport.sample_rate.max(1) as f64)
                     as u64;
                 self.note_repeat_samples += samples;
-                if self.note_repeat_samples >= samples_per_repeat {
+                let due = self.note_repeat_samples >= samples_per_repeat;
+                if due {
                     self.note_repeat_samples %= samples_per_repeat.max(1);
-                    let held = self.note_repeat_held_pads;
-                    for (pad, opt_v) in held.iter().enumerate() {
-                        if let Some(vel) = *opt_v {
-                            self.trigger_pad_voice(pad as u8, vel);
+                }
+                due
+            } else {
+                false
+            };
+            if due {
+                let recording = self.transport.state == TransportState::Recording;
+                let held = self.note_repeat_held_pads;
+                for (pad, opt_v) in held.iter().enumerate() {
+                    if let Some(vel) = *opt_v {
+                        self.trigger_pad_voice(pad as u8, vel);
+                        if recording {
+                            self.queue_note(pad as u8, 36 + pad as u8, vel);
                         }
                     }
+                }
+                if arp_on || self.arp_last.is_some() {
+                    self.arp_step();
                 }
             }
         }
@@ -4992,18 +5054,61 @@ impl Engine {
     /// (appelé hors du thread audio : à chaque événement et par les boucles
     /// de l'interface).
     pub fn commit_launches(&mut self) {
-        if self.launched_patterns.iter().all(Option::is_none) {
+        let notes = self.pending_notes;
+        if self.launched_patterns.iter().all(Option::is_none) && notes.iter().all(Option::is_none) {
             return;
         }
-        let mut guard = self.project.write();
-        let proj = project_mut(&mut guard);
-        for g in 0..8 {
-            if let Some(p) = self.launched_patterns[g].take() {
-                assign_pattern_to_active_scene(proj, &mut self.active_scene, g, p);
+        self.pending_notes = [None; 64];
+        {
+            let mut guard = self.project.write();
+            let proj = project_mut(&mut guard);
+            for g in 0..8 {
+                if let Some(p) = self.launched_patterns[g].take() {
+                    assign_pattern_to_active_scene(proj, &mut self.active_scene, g, p);
+                }
             }
         }
-        drop(guard);
+        for n in notes.into_iter().flatten() {
+            self.record_note_at(n.group, n.pad, n.pitch, n.velocity, n.tick);
+        }
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Met en file une note jouée par le thread audio (voir `pending_notes`).
+    fn queue_note(&mut self, pad: u8, pitch: u8, velocity: u8) {
+        let note = PendingNote {
+            group: self.group_focus,
+            pad,
+            pitch,
+            velocity,
+            tick: self.transport.tick,
+        };
+        // shortcut: 64 notes entre deux validations (~16 ms), au-delà elles sont perdues.
+        if let Some(slot) = self.pending_notes.iter_mut().find(|n| n.is_none()) {
+            *slot = Some(note);
+        }
+    }
+
+    /// Pas de l'arpégiateur (vers le haut) : relâche la note précédente et
+    /// joue la note tenue suivante, en boucle.
+    fn arp_step(&mut self) {
+        let start = self.arp_last.map_or(0, |n| n as usize + 1);
+        let next = (start..128).chain(0..start).find(|&n| self.arp_held[n] > 0);
+        if let Some(last) = self.arp_last.take() {
+            self.release_sound_voice(self.active_sound, last);
+        }
+        let Some(note) = next else {
+            return;
+        };
+        if !self.group_audible(self.group_focus) {
+            return;
+        }
+        let (note, velocity) = (note as u8, self.arp_held[note]);
+        self.trigger_sound_voice(self.active_sound, note, velocity);
+        self.arp_last = Some(note);
+        if self.transport.state == TransportState::Recording {
+            self.queue_note(self.active_sound, note, velocity);
+        }
     }
 
     /// Un groupe s'entend-il ? Ni muet (MUTE), ni écarté par un SOLO.
@@ -5180,7 +5285,11 @@ impl Engine {
     }
 
     fn record_note_event(&mut self, pad: u8, pitch: u8, velocity: u8) {
-        let focus = self.group_focus as usize;
+        self.record_note_at(self.group_focus, pad, pitch, velocity, self.transport.tick);
+    }
+
+    fn record_note_at(&mut self, group: u8, pad: u8, pitch: u8, velocity: u8, tick: u64) {
+        let focus = group as usize;
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
         // Comme le logiciel officiel : enregistrer sur un groupe sans pattern
@@ -5190,7 +5299,7 @@ impl Engine {
             if let Some(idx) = pat_idx {
                 if let Some(pat) = group.patterns.get_mut(idx) {
                     let pat_len = pat.length.to_ticks().max(1);
-                    let tick_in_pat = (self.transport.tick % pat_len as u64) as u32;
+                    let tick_in_pat = (tick % pat_len as u64) as u32;
                     let q_tick = self.sequencer.grid.quantize(tick_in_pat);
                     // évite les doublons exacts (même son + tick + hauteur)
                     pat.events
@@ -5492,7 +5601,7 @@ impl Engine {
     #[must_use]
     pub fn soft_key_labels(&self) -> [&'static str; 8] {
         if self.note_repeat_enabled {
-            return ["1/32", "1/16", "1/8", "1/4", "1/2", "1/16T", "1/8T", "LOCK"];
+            return ["1/32", "1/16", "1/8", "1/4", "1/2", "1/16T", "1/8T", "OFF"];
         }
         // Mode EVENTS : les deux écrans éditent les notes du pattern.
         if self.right_tab == 1 {
@@ -5674,8 +5783,7 @@ impl Engine {
                 return self.fx_soft_key_lit(fx, label);
             }
             if self.note_repeat_enabled {
-                return RATES.get(self.note_repeat_rate as usize) == Some(&label)
-                    || (label == "LOCK" && self.lock_active);
+                return RATES.get(self.note_repeat_rate as usize) == Some(&label);
             }
             let number = |s: Option<&str>| s.and_then(|n| n.parse::<usize>().ok());
             if let Some(n) = number(label.strip_prefix("BAR ")) {
@@ -6375,6 +6483,24 @@ impl Engine {
             ),
         };
         self.status_message = Some(if ok { done } else { missing }.to_string());
+        if ok {
+            // Gardé dans le projet : rejoué au prochain chargement.
+            let (g, s) = (self.group_focus as usize, self.active_sound as usize);
+            let mut guard = self.project.write();
+            if let Some(edits) = project_mut(&mut guard)
+                .groups
+                .get_mut(g)
+                .and_then(|grp| grp.sounds.get_mut(s))
+                .and_then(Option::as_mut)
+                .map(|snd| &mut snd.edits)
+            {
+                match tool {
+                    0 => edits.reversed = !edits.reversed,
+                    1 => edits.looped = !edits.looped,
+                    _ => edits.normalized = true,
+                }
+            }
+        }
         self.revision = self.revision.wrapping_add(1);
         Ok(())
     }
@@ -8581,6 +8707,45 @@ mod tests {
     }
 
     #[test]
+    fn sample_edits_survive_save_and_reload() {
+        let dir = test_temp_dir("sample-edits");
+        std::fs::create_dir_all(dir.join("samples")).unwrap();
+        write_test_wav(
+            &dir.join("samples/ramp.wav"),
+            &[1000, 2000, 3000, 4000],
+            48000,
+        );
+        let project_path = dir.join("project.json");
+        let mut project = Project::new_demo();
+        project.groups[0].sounds[0].as_mut().unwrap().zones[0].sample_path =
+            Some("samples/ramp.wav".to_string());
+        project.save_json(&project_path).unwrap();
+
+        let mut engine = Engine::new_demo(48000);
+        engine
+            .handle_event(EngineEvent::Load(project_path.clone()))
+            .unwrap();
+        engine.sample_tool(0).unwrap(); // REVERSE
+        engine.sample_tool(1).unwrap(); // LOOP
+        engine
+            .handle_event(EngineEvent::Save(project_path.clone()))
+            .unwrap();
+
+        let mut reopened = Engine::new_demo(48000);
+        reopened
+            .handle_event(EngineEvent::Load(project_path.clone()))
+            .unwrap();
+        let zone = reopened
+            .sampler_mut()
+            .zone_mapping(sampler_sound_id(0, 0))
+            .unwrap();
+        let sample = zone.sample.unwrap();
+        assert!(sample[0] > sample[3], "REVERSE rejoué au chargement");
+        assert!(!zone.is_one_shot, "LOOP rejoué au chargement");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn loading_project_rehydrates_relative_sample_paths() {
         let dir = test_temp_dir("project-sample");
         let samples_dir = dir.join("samples");
@@ -9123,6 +9288,22 @@ mod tests {
         eng.handle_event(stop).unwrap();
         eng.advance(100_000);
         assert!(!eng.transport.is_playing());
+        // PLAY pendant le pré-compte : lecture simple, sans REC surprise.
+        eng.handle_event(EngineEvent::CountInRecord).unwrap();
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: false,
+            stop: false,
+        })
+        .unwrap();
+        eng.advance(100_000);
+        assert_eq!(eng.transport.state, TransportState::Playing);
+        eng.handle_event(EngineEvent::Transport {
+            play: false,
+            rec: false,
+            stop: true,
+        })
+        .unwrap();
         // COUNT-IN activé : REC simple à l'arrêt passe aussi par le pré-compte.
         eng.transport.count_in_bars = 1;
         eng.handle_event(EngineEvent::Transport {
@@ -9133,6 +9314,82 @@ mod tests {
         .unwrap();
         assert!(!eng.transport.is_playing());
         assert!(eng.hardware_snapshot().count_in);
+    }
+
+    #[test]
+    fn note_repeat_in_keyboard_mode_arpeggiates_held_notes_upwards() {
+        let mut eng = Engine::new_demo(48000);
+        eng.controller_mode = 1;
+        eng.handle_event(EngineEvent::SetNoteRepeat(true)).unwrap();
+        eng.handle_event(EngineEvent::SetNoteRepeatRate(1)).unwrap(); // 1/16
+        let key = |eng: &mut Engine, note: u8, pressed: bool| {
+            eng.handle_event(EngineEvent::KeyboardTrigger {
+                note,
+                velocity: 100,
+                pressed,
+            })
+            .unwrap();
+        };
+        // FIXED VEL s'applique aussi au clavier.
+        eng.fixed_velocity = true;
+        eng.fixed_velocity_level = 127;
+        // La première touche part tout de suite, la seconde entre dans le cycle.
+        key(&mut eng, 64, true);
+        key(&mut eng, 60, true);
+        assert_eq!(eng.arp_last, Some(64));
+        assert_eq!(eng.arp_held[64], 127);
+        // 1/16 à 120 BPM = 6000 samples : E3 → C3 → E3 → C3 (en montant, en boucle).
+        let mut seq = Vec::new();
+        for _ in 0..3 {
+            eng.advance(6000);
+            seq.push(eng.arp_last);
+        }
+        assert_eq!(seq, vec![Some(60), Some(64), Some(60)]);
+        // Toutes les touches relâchées : la note en cours s'arrête.
+        key(&mut eng, 64, false);
+        key(&mut eng, 60, false);
+        assert_eq!(eng.arp_last, None);
+        eng.advance(6000);
+        assert_eq!(eng.arp_last, None);
+    }
+
+    #[test]
+    fn notes_repeated_by_the_audio_thread_are_written_outside_it() {
+        let mut eng = Engine::new_demo(48000);
+        let count = |eng: &Engine| {
+            let proj = eng.project.read();
+            let idx = proj.active_pattern_index(0, eng.active_scene).unwrap();
+            proj.groups[0].patterns[idx]
+                .events
+                .iter()
+                .filter(|e| e.pad == 3)
+                .count()
+        };
+        eng.handle_event(EngineEvent::SetNoteRepeat(true)).unwrap();
+        eng.handle_event(EngineEvent::SetNoteRepeatRate(1)).unwrap();
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: true,
+            stop: false,
+        })
+        .unwrap();
+        eng.handle_event(EngineEvent::Pad {
+            pad: 3,
+            velocity: 100,
+            pressed: true,
+        })
+        .unwrap();
+        let before = count(&eng);
+        // Un pas de 1/16 : la note répétée est jouée et mise en file…
+        eng.advance(6000);
+        assert_eq!(
+            count(&eng),
+            before,
+            "le callback audio n'écrit pas le projet"
+        );
+        // … puis écrite hors du thread audio.
+        eng.commit_launches();
+        assert_eq!(count(&eng), before + 1);
     }
 
     #[test]
@@ -9294,7 +9551,7 @@ mod tests {
         assert_eq!(snap.project.groups[group].patterns.len(), initial_len + 2);
         assert!(snap.project.groups[group].patterns[copy]
             .name
-            .contains("copy"));
+            .contains("copie"));
         assert_eq!(
             snap.project
                 .active_pattern_index(group, snap.active_scene)

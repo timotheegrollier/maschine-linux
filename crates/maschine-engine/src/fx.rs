@@ -8,6 +8,9 @@
 //!   tonalité dans la réinjection
 //! - Reverb : Freeverb stéréo (8 peignes + 4 passe-tout par canal),
 //!   pré-délai et largeur
+//! - EQ : 3 bandes (plateau grave, cloche médium réglable, plateau aigu)
+//! - Chorus : double ligne modulée en quadrature (chorus, flanger, ensemble)
+//! - Lo-Fi : réduction de résolution et d'échantillonnage, tonalité
 //!
 //! Chaque slot d'une chaîne a son propre état DSP : deux filtres dans la même
 //! chaîne ne partagent plus leurs mémoires. [`FxChainProcessor::prepare`]
@@ -25,6 +28,9 @@ pub enum FxType {
     Distortion,
     Filter,
     Compressor,
+    Eq,
+    Chorus,
+    LoFi,
 }
 
 impl FxType {
@@ -37,6 +43,9 @@ impl FxType {
             Self::Distortion => "DISTO",
             Self::Filter => "FILTER",
             Self::Compressor => "COMP",
+            Self::Eq => "EQ",
+            Self::Chorus => "CHORUS",
+            Self::LoFi => "LO-FI",
         }
     }
 
@@ -49,14 +58,21 @@ impl FxType {
             Self::Distortion => "Distortion",
             Self::Filter => "Filter",
             Self::Compressor => "Compressor",
+            Self::Eq => "EQ",
+            Self::Chorus => "Chorus",
+            Self::LoFi => "Lo-Fi",
         }
     }
 
-    /// Tous les effets, dans l'ordre de la chaîne de signal usuelle.
-    pub const ALL: [Self; 5] = [
+    /// Tous les effets, dans l'ordre de la chaîne de signal usuelle (et des
+    /// huit boutons de l'emplacement « + effet »).
+    pub const ALL: [Self; 8] = [
         Self::Filter,
+        Self::Eq,
         Self::Distortion,
         Self::Compressor,
+        Self::LoFi,
+        Self::Chorus,
         Self::Delay,
         Self::Reverb,
     ];
@@ -70,12 +86,16 @@ pub struct FxSlot {
     /// Dry/Wet (0 = 100 % dry, 1 = 100 % wet).
     pub mix: f32,
     /// Reverb Size 0..1 / Delay Time ms / Drive 0..1 / Cutoff Hz / Threshold dB
+    /// / EQ Low dB / Chorus Rate Hz / Lo-Fi Bits
     pub p1: f32,
     /// Reverb Damp 0..1 / Delay Feedback 0..0.95 / Tone 0..1 / Reso 0..1 / Ratio
+    /// / EQ Mid dB / Chorus Depth 0..1 / Lo-Fi Rate Hz
     pub p2: f32,
-    /// Reverb Pre-delay ms / Delay Tone Hz / Type (0 soft, 1 hard) / Mode (0 LP, 1 HP, 2 BP) / Attack ms
+    /// Reverb Pre-delay ms / Delay Tone Hz / Type (0 soft, 1 hard) / Mode (0 LP,
+    /// 1 HP, 2 BP) / Attack ms / EQ Mid Hz / Chorus Delay ms / Lo-Fi Tone Hz
     pub p3: f32,
     /// Reverb Width 0..1 / Ping-pong (0/1) / Output dB / — / Release ms
+    /// / EQ High dB / Chorus Feedback 0..0.9 / —
     pub p4: f32,
 }
 
@@ -89,6 +109,9 @@ impl FxSlot {
             FxType::Distortion => (1.0, 0.35, 0.60, 0.0, 0.0),
             FxType::Filter => (1.0, 1800.0, 0.25, 0.0, 0.0),
             FxType::Compressor => (1.0, -18.0, 4.0, 10.0, 120.0),
+            FxType::Eq => (1.0, 0.0, 0.0, 1000.0, 0.0),
+            FxType::Chorus => (0.5, 0.8, 0.5, 12.0, 0.0),
+            FxType::LoFi => (1.0, 10.0, 12_000.0, 9000.0, 0.0),
         };
         Self {
             fx_type,
@@ -161,6 +184,9 @@ impl FxChainProcessor {
                 SlotDsp::Compressor(c) => c.process(buffer, slot, sr),
                 SlotDsp::Delay(d) => d.process(buffer, slot, sr),
                 SlotDsp::Reverb(r) => r.process(buffer, slot),
+                SlotDsp::Eq(e) => e.process(buffer, slot, sr),
+                SlotDsp::Chorus(c) => c.process(buffer, slot, sr),
+                SlotDsp::LoFi(l) => l.process(buffer, slot, sr),
             }
         }
     }
@@ -173,6 +199,9 @@ enum SlotDsp {
     Compressor(Comp),
     Delay(Box<StereoDelay>),
     Reverb(Box<Reverb>),
+    Eq(Eq3),
+    Chorus(Box<Chorus>),
+    LoFi(LoFi),
 }
 
 impl SlotDsp {
@@ -183,6 +212,9 @@ impl SlotDsp {
             FxType::Compressor => Self::Compressor(Comp::default()),
             FxType::Delay => Self::Delay(Box::new(StereoDelay::new(sr))),
             FxType::Reverb => Self::Reverb(Box::new(Reverb::new(sr))),
+            FxType::Eq => Self::Eq(Eq3::default()),
+            FxType::Chorus => Self::Chorus(Box::new(Chorus::new(sr))),
+            FxType::LoFi => Self::LoFi(LoFi::default()),
         }
     }
 
@@ -193,6 +225,9 @@ impl SlotDsp {
             Self::Compressor(_) => FxType::Compressor,
             Self::Delay(_) => FxType::Delay,
             Self::Reverb(_) => FxType::Reverb,
+            Self::Eq(_) => FxType::Eq,
+            Self::Chorus(_) => FxType::Chorus,
+            Self::LoFi(_) => FxType::LoFi,
         }
     }
 }
@@ -617,6 +652,226 @@ impl Reverb {
     }
 }
 
+// ── EQ 3 bandes ─────────────────────────────────────────────────────────
+
+/// Coefficients normalisés d'un biquad (a0 = 1).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Biquad {
+    pub b: [f32; 3],
+    pub a: [f32; 2],
+}
+
+impl Biquad {
+    /// Plateau grave / aigu (RBJ, pente S = 1) ou cloche (Q donné), gain en dB.
+    #[must_use]
+    pub fn shelf_or_peak(kind: u8, freq: f32, gain_db: f32, q: f32, sr: f32) -> Self {
+        let a = 10f32.powf(gain_db / 40.0);
+        let w0 = 2.0 * PI * freq.clamp(10.0, sr * 0.45) / sr;
+        let (sn, cs) = w0.sin_cos();
+        let (b0, b1, b2, a0, a1, a2) = match kind {
+            // Plateau grave
+            0 => {
+                let alpha = sn / 2.0 * std::f32::consts::SQRT_2;
+                let k = 2.0 * a.sqrt() * alpha;
+                (
+                    a * ((a + 1.0) - (a - 1.0) * cs + k),
+                    2.0 * a * ((a - 1.0) - (a + 1.0) * cs),
+                    a * ((a + 1.0) - (a - 1.0) * cs - k),
+                    (a + 1.0) + (a - 1.0) * cs + k,
+                    -2.0 * ((a - 1.0) + (a + 1.0) * cs),
+                    (a + 1.0) + (a - 1.0) * cs - k,
+                )
+            }
+            // Plateau aigu
+            2 => {
+                let alpha = sn / 2.0 * std::f32::consts::SQRT_2;
+                let k = 2.0 * a.sqrt() * alpha;
+                (
+                    a * ((a + 1.0) + (a - 1.0) * cs + k),
+                    -2.0 * a * ((a - 1.0) + (a + 1.0) * cs),
+                    a * ((a + 1.0) + (a - 1.0) * cs - k),
+                    (a + 1.0) - (a - 1.0) * cs + k,
+                    2.0 * ((a - 1.0) - (a + 1.0) * cs),
+                    (a + 1.0) - (a - 1.0) * cs - k,
+                )
+            }
+            // Cloche
+            _ => {
+                let alpha = sn / (2.0 * q.max(0.1));
+                (
+                    1.0 + alpha * a,
+                    -2.0 * cs,
+                    1.0 - alpha * a,
+                    1.0 + alpha / a,
+                    -2.0 * cs,
+                    1.0 - alpha / a,
+                )
+            }
+        };
+        Self {
+            b: [b0 / a0, b1 / a0, b2 / a0],
+            a: [a1 / a0, a2 / a0],
+        }
+    }
+
+    /// Gain (linéaire) à la fréquence `freq` (courbes des écrans).
+    #[must_use]
+    pub fn magnitude(&self, freq: f32, sr: f32) -> f32 {
+        let w = 2.0 * PI * freq / sr;
+        let (s1, c1) = w.sin_cos();
+        let (s2, c2) = (2.0 * w).sin_cos();
+        let nr = self.b[0] + self.b[1] * c1 + self.b[2] * c2;
+        let ni = -(self.b[1] * s1 + self.b[2] * s2);
+        let dr = 1.0 + self.a[0] * c1 + self.a[1] * c2;
+        let di = -(self.a[0] * s1 + self.a[1] * s2);
+        ((nr * nr + ni * ni) / (dr * dr + di * di).max(1e-12)).sqrt()
+    }
+}
+
+/// Les trois bandes d'un réglage d'EQ (grave 120 Hz, médium, aigu 8 kHz).
+#[must_use]
+pub fn eq_bands(slot: &FxSlot, sr: f32) -> [Biquad; 3] {
+    [
+        Biquad::shelf_or_peak(0, 120.0, slot.p1.clamp(-18.0, 18.0), 0.7, sr),
+        Biquad::shelf_or_peak(
+            1,
+            slot.p3.clamp(80.0, 12_000.0),
+            slot.p2.clamp(-18.0, 18.0),
+            0.9,
+            sr,
+        ),
+        Biquad::shelf_or_peak(2, 8000.0, slot.p4.clamp(-18.0, 18.0), 0.7, sr),
+    ]
+}
+
+/// EQ 3 bandes en série (forme directe II transposée par canal).
+#[derive(Debug, Clone, Copy, Default)]
+struct Eq3 {
+    z: [[[f32; 2]; 3]; 2],
+    mix: Ramp,
+}
+
+impl Eq3 {
+    fn process(&mut self, buf: &mut [f32], slot: &FxSlot, sr: f32) {
+        let bands = eq_bands(slot, sr);
+        let frames = buf.len() / 2;
+        let (mut mix, dmix) = self.mix.begin(slot.mix.clamp(0.0, 1.0), frames);
+        for frame in buf.as_chunks_mut::<2>().0 {
+            for (c, s) in frame.iter_mut().enumerate() {
+                let mut x = *s;
+                for (k, q) in bands.iter().enumerate() {
+                    let z = &mut self.z[c][k];
+                    let y = q.b[0] * x + z[0];
+                    z[0] = flush(q.b[1] * x - q.a[0] * y + z[1]);
+                    z[1] = flush(q.b[2] * x - q.a[1] * y);
+                    x = y;
+                }
+                *s += (x - *s) * mix;
+            }
+            mix += dmix;
+        }
+    }
+}
+
+// ── Chorus / flanger ────────────────────────────────────────────────────
+
+/// Ligne à retard modulée par deux LFO en quadrature (gauche / droite) :
+/// chorus (quelques ms, sans réinjection) jusqu'au flanger (retard court,
+/// réinjection forte).
+#[derive(Debug, Clone)]
+struct Chorus {
+    buf: [Vec<f32>; 2],
+    pos: usize,
+    phase: f32,
+    mix: Ramp,
+}
+
+impl Chorus {
+    fn new(sr: f32) -> Self {
+        let n = (sr * 0.06) as usize + 4;
+        Self {
+            buf: [vec![0.0; n], vec![0.0; n]],
+            pos: 0,
+            phase: 0.0,
+            mix: Ramp::default(),
+        }
+    }
+
+    fn process(&mut self, buf: &mut [f32], slot: &FxSlot, sr: f32) {
+        let n = self.buf[0].len();
+        let rate = slot.p1.clamp(0.05, 10.0);
+        let depth_ms = slot.p2.clamp(0.0, 1.0) * 6.0;
+        let base_ms = slot.p3.clamp(0.5, 30.0);
+        let feedback = slot.p4.clamp(0.0, 0.9);
+        let inc = rate / sr;
+        let frames = buf.len() / 2;
+        let (mut mix, dmix) = self.mix.begin(slot.mix.clamp(0.0, 1.0), frames);
+        for frame in buf.as_chunks_mut::<2>().0 {
+            let mut wet = [0.0f32; 2];
+            for (c, w) in wet.iter_mut().enumerate() {
+                let lfo = (2.0 * PI * (self.phase + c as f32 * 0.25)).sin();
+                let delay = ((base_ms + depth_ms * 0.5 * (1.0 + lfo)) * 0.001 * sr)
+                    .clamp(1.0, n as f32 - 3.0);
+                let rp = self.pos as f32 + n as f32 - delay;
+                let i = rp as usize;
+                let frac = rp - i as f32;
+                let a = self.buf[c][i % n];
+                let b = self.buf[c][(i + 1) % n];
+                *w = a + (b - a) * frac;
+            }
+            for c in 0..2 {
+                self.buf[c][self.pos] = flush(frame[c] + soft_clip(wet[c] * feedback));
+            }
+            self.pos = (self.pos + 1) % n;
+            self.phase = (self.phase + inc).fract();
+            // MIX 50 % = chorus classique, 100 % = vibrato.
+            for (s, w) in frame.iter_mut().zip(wet) {
+                *s += (w - *s) * mix;
+            }
+            mix += dmix;
+        }
+    }
+}
+
+// ── Lo-Fi ───────────────────────────────────────────────────────────────
+
+/// Réduction de résolution (bits) et d'échantillonnage (échantillonneur-
+/// bloqueur), puis tonalité : le grain des boîtes à rythmes 8/12 bits.
+#[derive(Debug, Clone, Copy, Default)]
+struct LoFi {
+    held: [f32; 2],
+    acc: f32,
+    tone: [f32; 2],
+    mix: Ramp,
+}
+
+impl LoFi {
+    fn process(&mut self, buf: &mut [f32], slot: &FxSlot, sr: f32) {
+        let levels = 2f32.powf(slot.p1.clamp(2.0, 16.0).round() - 1.0);
+        let step = (slot.p2.clamp(500.0, sr) / sr).min(1.0);
+        let g = (PI * slot.p3.clamp(200.0, sr * 0.45) / sr).tan();
+        let tone_g = g / (1.0 + g);
+        let frames = buf.len() / 2;
+        let (mut mix, dmix) = self.mix.begin(slot.mix.clamp(0.0, 1.0), frames);
+        for frame in buf.as_chunks_mut::<2>().0 {
+            self.acc += step;
+            if self.acc >= 1.0 {
+                self.acc -= 1.0;
+                for c in 0..2 {
+                    self.held[c] = (frame[c].clamp(-1.0, 1.0) * levels).round() / levels;
+                }
+            }
+            for (c, s) in frame.iter_mut().enumerate() {
+                let v = (self.held[c] - self.tone[c]) * tone_g;
+                let y = v + self.tone[c];
+                self.tone[c] = flush(y + v);
+                *s += (y - *s) * mix;
+            }
+            mix += dmix;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -731,6 +986,64 @@ mod tests {
         let tail = peak(&out[SR as usize / 2..SR as usize]);
         assert!(tail > 1e-4, "queue de réverbe");
         assert!(peak(&out) < 2.0);
+    }
+
+    #[test]
+    fn flat_eq_is_transparent_and_bands_move_their_region() {
+        let flat = FxSlot::default_for(FxType::Eq);
+        let input = sine(1000.0, 0.5, 9600);
+        let out = run(std::slice::from_ref(&flat), &input);
+        assert!(
+            (peak(&out[4800..]) - 0.5).abs() < 0.01,
+            "EQ à plat : transparent"
+        );
+        let bass = FxSlot {
+            p1: 12.0,
+            ..flat.clone()
+        };
+        let bands = eq_bands(&bass, SR as f32);
+        let gain = |f: f32| {
+            bands
+                .iter()
+                .map(|b| b.magnitude(f, SR as f32))
+                .product::<f32>()
+        };
+        assert!(gain(40.0) > 3.0, "plateau grave +12 dB");
+        assert!((gain(5000.0) - 1.0).abs() < 0.1, "aigus intacts");
+    }
+
+    #[test]
+    fn lofi_quantizes_and_chorus_modulates() {
+        let input = sine(200.0, 0.9, 4800);
+        let error = |bits: f32| {
+            let lofi = FxSlot {
+                p1: bits,
+                p2: SR as f32,
+                p3: 20_000.0,
+                ..FxSlot::default_for(FxType::LoFi)
+            };
+            let out = run(&[lofi], &input);
+            out[2000..]
+                .iter()
+                .zip(&input[2000..])
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0, f32::max)
+        };
+        assert!(error(3.0) > 0.1, "3 bits : marches audibles");
+        assert!(
+            error(16.0) < 0.05,
+            "16 bits pleine fréquence : quasi transparent"
+        );
+        let chorus = FxSlot::default_for(FxType::Chorus);
+        let input = sine(440.0, 0.5, 48_000);
+        let out = run(&[chorus], &input);
+        let diff = out
+            .iter()
+            .zip(&input)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
+        assert!(diff > 0.05, "le chorus modifie le signal");
+        assert!(peak(&out) < 1.0);
     }
 
     #[test]

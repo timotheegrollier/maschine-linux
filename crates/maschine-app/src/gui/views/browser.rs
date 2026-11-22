@@ -567,13 +567,7 @@ fn render_effects(
                 );
             } else {
                 for (slot_idx, fx) in snap.focus_sound_fx.iter().enumerate() {
-                    let fx_name = match fx.fx_type {
-                        FxType::Reverb => "Reverb",
-                        FxType::Delay => "Delay",
-                        FxType::Distortion => "Drive",
-                        FxType::Filter => "Filter",
-                        FxType::Compressor => "Comp",
-                    };
+                    let fx_name = fx.fx_type.label();
                     ui.label(
                         egui::RichText::new(format!("{}. {}", slot_idx + 1, fx_name))
                             .small()
@@ -599,13 +593,7 @@ fn render_effects(
                 );
             } else {
                 for (slot_idx, fx) in snap.focus_group_fx.iter().enumerate() {
-                    let fx_name = match fx.fx_type {
-                        FxType::Reverb => "Reverb",
-                        FxType::Delay => "Delay",
-                        FxType::Distortion => "Drive",
-                        FxType::Filter => "Filter",
-                        FxType::Compressor => "Comp",
-                    };
+                    let fx_name = fx.fx_type.label();
                     ui.label(
                         egui::RichText::new(format!("{}. {}", slot_idx + 1, fx_name))
                             .small()
@@ -657,6 +645,30 @@ fn render_effects(
             "Filtre résonant modélisé avec coupure de 20 Hz à 20 kHz et résonance prononcée pour sculptage spectral dynamique.",
             "FILTRE",
             c.warning,
+        ),
+        (
+            FxType::Eq,
+            "ÉGALISEUR 3 BANDES",
+            "GRAVE · MÉDIUM RÉGLABLE · AIGU",
+            "Plateau grave à 120 Hz, cloche médium de 80 Hz à 12 kHz et plateau aigu à 8 kHz, ±18 dB : creuser, éclaircir ou faire « radio ».",
+            "TIMBRE",
+            c.warning,
+        ),
+        (
+            FxType::Chorus,
+            "CHORUS / FLANGER",
+            "MODULATION STÉRÉO",
+            "Double ligne à retard modulée en quadrature : chorus épais, flanger à réinjection ou ensemble de cordes.",
+            "MODULATION",
+            c.accent_cyan,
+        ),
+        (
+            FxType::LoFi,
+            "LO-FI / BITCRUSHER",
+            "RÉSOLUTION & ÉCHANTILLONNAGE",
+            "Réduit les bits et la fréquence d'échantillonnage comme les machines 8 et 12 bits (SP-1200), avec un filtre de tonalité.",
+            "GRAIN",
+            c.error,
         ),
         (
             FxType::Compressor,

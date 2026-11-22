@@ -790,6 +790,56 @@ pub static FX_REVERB_PAGES: [Page<FxSlot>; 1] = [Page {
     buttons: ["PIÈCE", "SALLE", "HALL", ""],
 }];
 
+const EQ_DB: Scale = lin(-18.0, 18.0, Unit::Db);
+
+pub static FX_EQ_PAGES: [Page<FxSlot>; 1] = [Page {
+    name: "EQ",
+    sections: ["ÉGALISEUR", "AIGUS"],
+    params: [
+        field!("MIX", PCT, mix),
+        field!("LOW", EQ_DB, p1),
+        field!("MID", EQ_DB, p2),
+        field!("MID FREQ", log(80.0, 12_000.0, Unit::Hz), p3),
+        field!("HIGH", EQ_DB, p4),
+        None,
+        None,
+        None,
+    ],
+    buttons: ["FLAT", "LOUDNESS", "RADIO", ""],
+}];
+
+pub static FX_CHORUS_PAGES: [Page<FxSlot>; 1] = [Page {
+    name: "CHORUS",
+    sections: ["MODULATION", "RÉINJECTION"],
+    params: [
+        field!("MIX", PCT, mix),
+        field!("RATE", log(0.05, 10.0, Unit::Hz), p1),
+        field!("DEPTH", PCT, p2),
+        field!("DELAY", log(0.5, 30.0, Unit::Ms), p3),
+        field!("FEEDBACK", lin(0.0, 0.9, Unit::Percent), p4),
+        None,
+        None,
+        None,
+    ],
+    buttons: ["CHORUS", "FLANGER", "ENSEMBLE", ""],
+}];
+
+pub static FX_LOFI_PAGES: [Page<FxSlot>; 1] = [Page {
+    name: "LO-FI",
+    sections: ["RÉSOLUTION", ""],
+    params: [
+        field!("MIX", PCT, mix),
+        field!("BITS", steps(2.0, 16.0, Unit::Count), p1),
+        field!("RATE", log(500.0, 48_000.0, Unit::Hz), p2),
+        field!("TONE", log(200.0, 20_000.0, Unit::Hz), p3),
+        None,
+        None,
+        None,
+        None,
+    ],
+    buttons: ["8-BIT", "SP-1200", "CRUSH", ""],
+}];
+
 /// Pages de paramètres d'un effet.
 #[must_use]
 pub fn fx_pages(t: FxType) -> &'static [Page<FxSlot>] {
@@ -799,6 +849,9 @@ pub fn fx_pages(t: FxType) -> &'static [Page<FxSlot>] {
         FxType::Compressor => &FX_COMPRESSOR_PAGES,
         FxType::Delay => &FX_DELAY_PAGES,
         FxType::Reverb => &FX_REVERB_PAGES,
+        FxType::Eq => &FX_EQ_PAGES,
+        FxType::Chorus => &FX_CHORUS_PAGES,
+        FxType::LoFi => &FX_LOFI_PAGES,
     }
 }
 

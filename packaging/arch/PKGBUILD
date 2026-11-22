@@ -48,6 +48,10 @@ package() {
     # Udev rules (plug & play)
     install -Dm644 packaging/udev/99-maschine-mk3.rules "$pkgdir/usr/lib/udev/rules.d/99-maschine-mk3.rules"
 
+    # Écran de veille au branchement (service utilisateur lancé par udev)
+    install -Dm644 packaging/systemd/maschine-linux-standby.service \
+        "$pkgdir/usr/lib/systemd/user/maschine-linux-standby.service"
+
     # Limites temps réel audio
     install -Dm644 packaging/limits/99-realtime-audio.conf "$pkgdir/etc/security/limits.d/99-realtime-audio.conf"
 

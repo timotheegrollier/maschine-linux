@@ -1,0 +1,14 @@
+[Unit]
+Description=Maschine MK3 standby screen when the controller is plugged in
+Documentation=https://github.com/timotheegrollier/maschine-linux
+
+# Démarré par la règle udev 99-maschine-mk3.rules (SYSTEMD_USER_WANTS) au
+# branchement de la MK3 : l'écran de veille remplace le logo du firmware même
+# si l'application n'a jamais été lancée. Écrans déjà pris par l'application,
+# ou MK3 absente : la commande ne fait rien.
+
+[Service]
+Type=oneshot
+# Laisse le firmware finir son démarrage (logo) avant de dessiner.
+ExecStartPre=/bin/sh -c 'sleep 3'
+ExecStart=/usr/bin/maschine-linux standby

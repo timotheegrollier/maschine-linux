@@ -14,7 +14,7 @@ Maschine Linux is an independent project. It does not include Native
 Instruments code or proprietary assets; it reproduces the documented workflow
 and hardware behavior through a clean-room implementation.
 
-## Current state (0.13.0)
+## Current state (0.13.1)
 
 Cargo workspace with six crates:
 
@@ -44,8 +44,8 @@ errors) and `--stress` (deliberate engine-lock contention).
   transition banner.
 - **Plugin chain like the official software**: the 4D encoder walks through
   the instrument, then the insert effects of the Sound, its Group and the
-  Master; a free `+ effet` slot inserts **Filter, Distortion, Compressor,
-  Delay or Reverb**; `< TYPE`, `TYPE >`, `BYPASS` and `SUPPR` on the buttons,
+  Master; a free `+ effet` slot inserts **Filter, EQ, Distortion, Compressor,
+  Lo-Fi, Chorus, Delay or Reverb** (0.13.1: EQ, Chorus, Lo-Fi); `< TYPE`, `TYPE >`, `BYPASS` and `SUPPR` on the buttons,
   knob 1 always MIX. Effects really process the audio, each slot with its own
   state.
 - **Cleaner sound everywhere**: transparent master limiter instead of a
@@ -62,7 +62,9 @@ errors) and `--stress` (deliberate engine-lock contention).
   size.
 - **Held notes and LEDs**: a pad held firmly keeps its note, releasing one pad
   no longer cuts a synth note held on another, pads light in their Sound colour.
-- **Standby screen** on quit and on crash: almost black, a dim word mark.
+- **Standby screen** on quit and on crash: almost black, a dim word mark — and
+  since 0.13.1 as soon as the MK3 is plugged in, even before the first launch
+  (udev rule + `maschine-linux-standby.service`, installed by the packages).
 
 ### Guitar amp on the MK3 input
 

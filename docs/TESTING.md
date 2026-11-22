@@ -17,6 +17,7 @@ This guide pairs each documented promise with a concrete check. Cargo tests cove
 | WAV import and playback | `cargo test -p maschine-engine` | Signed 32-bit PCM WAV, state preserved if import fails, cached waveform, Group isolation, writing mappings into the project and reloading a relative path. |
 | Mixing during playback | `cargo test -p maschine-engine sound_and_group_mix_edits_reach_active_voices_immediately` | Sound/Group volume and pan are reflected on voices already triggered. |
 | PLUG-IN chain and effects | `cargo test -p maschine-engine plugin_chain`; `cargo test -p maschine-engine sound_group_and_master_inserts`; `cargo test -p maschine-engine fx::` | 4D slot navigation, `+ effet` insertion from the buttons, knob 2 = cutoff, `BYPASS`/`SUPPR`, lit mode buttons; Sound, Group and Master inserts really process the audio; every effect bounded and NaN-free at extreme settings, bypass and unprepared slots transparent, independent state for two identical effects, delay echo time, reverb tail, state kept across `prepare`. |
+| New effects | `cargo test -p maschine-engine fx::tests::flat_eq`; `cargo test -p maschine-engine fx::tests::lofi` | Flat EQ transparent, +12 dB low shelf lifts 40 Hz and leaves 5 kHz alone; 3-bit Lo-Fi audibly stepped, 16-bit full-rate transparent; chorus modulates without exceeding full scale. |
 | Plugin parameter tables | `cargo test -p maschine-engine plugin_pages` | Every instrument and effect parameter reads back within its bounds; continuous knobs, one value per detent for choices, Shift = fine. |
 | Master limiter | `cargo test -p maschine-engine limiter` | Quiet material passes bit-exact after the 1 ms look-ahead; loud material never exceeds -1 dBFS, NaN-safe, gain recovers. |
 | Sampler interpolation, synth oscillators | `cargo test -p maschine-engine hermite`; `cargo test -p maschine-engine wavetable` | 4-point Hermite exact on samples, accurate between them; wavetable presets still audible with PolyBLEP saw/square. |
@@ -52,7 +53,8 @@ GitHub CI runs these checks in parallel jobs: `metadata` (desktop-entry and AppS
 
 ## Visual checks (no hardware)
 
-- MK3 screens: `cargo run -p maschine-engine --example dump_screens -- /tmp/screens` writes every screen pair as PPM (ARRANGE, PATTERN, STEP, MIXER, SAMPLER, BROWSER, all PLUG-IN pages, the `+ effet` slot, each effect, a bypassed effect, the page transition and the standby screen).
+- MK3 screens: `cargo run -p maschine-engine --example dump_screens -- /tmp/screens` writes every screen pair as PPM (ARRANGE, PATTERN, STEP, MIXER, SAMPLER, BROWSER, all PLUG-IN pages, the `+ effet` slot, each of the eight effects, a bypassed effect, the page transition and the standby screen).
+- Standby on plug-in (hardware): with the package installed, unplug and replug the MK3 while the application is closed; after about 3 s both screens show the standby screen (`journalctl --user -u maschine-linux-standby`).
 - GUI: run `maschine-linux gui --no-hardware --no-audio` and resize the window from 420 × 340 to full HD: no panel, button or label may be cut — rows wrap, panels collapse (`F1`/`F2`/`F3`) and every region scrolls. Release captures are taken under Xvfb at 1920×1080, 1366×768, 1024×640 and 800×600.
 
 ## MK3 Shift-pad matrix and desktop parity

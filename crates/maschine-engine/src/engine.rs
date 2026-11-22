@@ -5403,7 +5403,8 @@ impl Engine {
     fn fx_soft_labels(&self) -> Option<[&'static str; 8]> {
         match self.current_plugin_slot() {
             PluginSlot::Instrument => None,
-            PluginSlot::Add(_) => Some(["FILTER", "DISTO", "COMP", "", "DELAY", "REVERB", "", ""]),
+            // Les huit effets, un par bouton, dans l'ordre de la chaîne.
+            PluginSlot::Add(_) => Some(crate::fx::FxType::ALL.map(crate::fx::FxType::name)),
             PluginSlot::Fx(..) => {
                 let (_, _, fx) = self.selected_fx()?;
                 let b = crate::plugin_pages::fx_pages(fx.fx_type)[0].buttons;
@@ -5492,6 +5493,21 @@ impl Engine {
                         (T::Reverb, "PIÈCE") => (s.p1, s.p2, s.p3, s.p4) = (0.35, 0.55, 4.0, 0.7),
                         (T::Reverb, "SALLE") => (s.p1, s.p2, s.p3, s.p4) = (0.65, 0.4, 14.0, 0.9),
                         (T::Reverb, "HALL") => (s.p1, s.p2, s.p3, s.p4) = (0.88, 0.25, 30.0, 1.0),
+                        (T::Eq, "FLAT") => (s.p1, s.p2, s.p3, s.p4) = (0.0, 0.0, 1000.0, 0.0),
+                        (T::Eq, "LOUDNESS") => (s.p1, s.p2, s.p3, s.p4) = (5.0, -2.5, 800.0, 4.0),
+                        (T::Eq, "RADIO") => (s.p1, s.p2, s.p3, s.p4) = (-18.0, 7.0, 1500.0, -18.0),
+                        (T::Chorus, "CHORUS") => {
+                            (s.mix, s.p1, s.p2, s.p3, s.p4) = (0.5, 0.8, 0.5, 12.0, 0.0)
+                        }
+                        (T::Chorus, "FLANGER") => {
+                            (s.mix, s.p1, s.p2, s.p3, s.p4) = (0.5, 0.25, 0.7, 2.0, 0.6)
+                        }
+                        (T::Chorus, "ENSEMBLE") => {
+                            (s.mix, s.p1, s.p2, s.p3, s.p4) = (0.45, 1.6, 0.35, 18.0, 0.0)
+                        }
+                        (T::LoFi, "8-BIT") => (s.p1, s.p2, s.p3) = (8.0, 11_025.0, 6000.0),
+                        (T::LoFi, "SP-1200") => (s.p1, s.p2, s.p3) = (12.0, 26_040.0, 12_000.0),
+                        (T::LoFi, "CRUSH") => (s.p1, s.p2, s.p3) = (4.0, 4000.0, 3000.0),
                         _ => {}
                     }),
                 }

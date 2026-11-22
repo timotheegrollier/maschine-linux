@@ -171,11 +171,9 @@ pub(crate) fn transport_master(
     value_label(ui, format!("{:>3.0}%", snap.master_volume * 100.0), c.text);
     let mut master = snap.master_volume;
     ui.spacing_mut().slider_width = if wide { 120.0 } else { 80.0 };
-    let resp = ui.add(
-        egui::Slider::new(&mut master, 0.0..=1.0)
-            .show_value(false)
-            .text("Master"),
-    );
+    // Libellé et curseur séparés : chacun passe à la ligne s'il le faut.
+    let resp = ui.add(egui::Slider::new(&mut master, 0.0..=1.0).show_value(false));
+    ui.label("Master");
     if resp.changed() {
         let _ = app
             .engine

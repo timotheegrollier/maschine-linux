@@ -65,6 +65,10 @@ pub struct GuiApp {
     last_window_w: f32,
     /// Rail masqué automatiquement par une fenêtre étroite (réaffiché en grandissant).
     nav_auto_hidden: bool,
+    /// Pont MK3 replié automatiquement (fenêtre trop basse) ; revient quand
+    /// la fenêtre regrandit, sauf si l'utilisateur l'a rouvert entre-temps.
+    deck_auto_hidden: bool,
+    last_window_h: f32,
     /// Largeurs du rail et du panneau MK3 en proportion de la fenêtre.
     nav_frac: f32,
     /// Buffer de renommage du pattern actif.
@@ -153,6 +157,8 @@ impl GuiApp {
             show_mk3: true,
             last_window_w: 0.0,
             nav_auto_hidden: false,
+            deck_auto_hidden: false,
+            last_window_h: 0.0,
             nav_frac: 0.12,
             pattern_name_buf: String::new(),
             pattern_name_target: None,
@@ -214,6 +220,8 @@ impl GuiApp {
             show_mk3: true,
             last_window_w: 0.0,
             nav_auto_hidden: false,
+            deck_auto_hidden: false,
+            last_window_h: 0.0,
             nav_frac: 0.12,
             pattern_name_buf: String::new(),
             pattern_name_target: None,
@@ -1178,7 +1186,26 @@ impl eframe::App for GuiApp {
                 self.show_nav = true;
                 self.nav_auto_hidden = false;
             }
+
             self.last_window_w = window_w;
+        }
+
+        // Fenêtre basse : le pont MK3 se replie quand la hauteur passe sous
+        // 620 px pour laisser la vue de travail lisible (F2 le rouvre), et
+        // revient au-delà de 700 px. Seul le franchissement du seuil agit :
+        // un pont rouvert à la main reste ouvert.
+        let window_h = ctx.screen_rect().height();
+        if (window_h - self.last_window_h).abs() > 0.5 {
+            let crossed_down =
+                window_h < 620.0 && (self.last_window_h >= 620.0 || self.last_window_h == 0.0);
+            if crossed_down && self.show_mk3 && self.show_workspace {
+                self.show_mk3 = false;
+                self.deck_auto_hidden = true;
+            } else if window_h >= 700.0 && self.deck_auto_hidden {
+                self.show_mk3 = true;
+                self.deck_auto_hidden = false;
+            }
+            self.last_window_h = window_h;
         }
 
         self.handle_keyboard(ctx);

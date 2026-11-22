@@ -65,6 +65,7 @@ install -D -p -m 0644 packaging/wireplumber/51-maschine-mk3.conf %{buildroot}%{_
 
 # Install systemd user service (for background daemon mode)
 install -D -p -m 0644 packaging/systemd/maschine-linux.service %{buildroot}%{_prefix}/lib/systemd/user/maschine-linux.service
+install -D -p -m 0644 packaging/systemd/maschine-linux-standby.service %{buildroot}%{_prefix}/lib/systemd/user/maschine-linux-standby.service
 
 %check
 desktop-file-validate %{buildroot}%{_datadir}/applications/maschine-linux.desktop
@@ -96,6 +97,7 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/maschine-linux.deskto
 %{_datadir}/pipewire/pipewire.conf.d/99-maschine-lowlatency.conf
 %{_datadir}/wireplumber/wireplumber.conf.d/51-maschine-mk3.conf
 %{_prefix}/lib/systemd/user/maschine-linux.service
+%{_prefix}/lib/systemd/user/maschine-linux-standby.service
 
 %changelog
 * Sun Nov 08 2026 timotheegrollier <timo@example.com> - 0.9.12-1

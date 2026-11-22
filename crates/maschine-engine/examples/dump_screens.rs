@@ -193,10 +193,13 @@ fn main() -> std::io::Result<()> {
     write_ppm(&dir.join("plugin_add_right.ppm"), &right)?;
     for (button, name) in [
         (1u8, "filter"),
-        (2, "disto"),
-        (3, "comp"),
-        (5, "delay"),
-        (6, "reverb"),
+        (2, "eq"),
+        (3, "disto"),
+        (4, "comp"),
+        (5, "lofi"),
+        (6, "chorus"),
+        (7, "delay"),
+        (8, "reverb"),
     ] {
         // Emplacement libre du Sound → bouton de l'effet → l'effet est sélectionné.
         while !eng.snapshot().plugin_slots[eng.snapshot().plugin_slot].empty {

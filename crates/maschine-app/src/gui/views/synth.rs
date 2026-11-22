@@ -20,6 +20,8 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
         .auto_shrink([false, false])
         .show(ui, |ui| {
             render_header(ui, app, snap);
+            ui.add_space(6.0);
+            render_chain(ui, app, snap);
             ui.add_space(8.0);
             if snap.plugin_page == 0 {
                 render_sound_page(ui, app, snap);
@@ -33,6 +35,103 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                 render_sound_page(ui, app, snap);
             }
         });
+}
+
+/// Chaîne de plugins (comme l'écran gauche de la MK3) : un clic choisit
+/// l'emplacement ; sur `+ effet` les huit effets à insérer, sur un effet
+/// TYPE / BYPASS / SUPPR. Les actions passent par les boutons d'écran : la
+/// GUI et la MK3 font exactement la même chose.
+fn render_chain(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::EngineSnapshot) {
+    if snap.plugin_slots.is_empty() {
+        return;
+    }
+    let c = MachColors::dark();
+    crate::gui::theme::card(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                egui::RichText::new("Chaîne")
+                    .family(crate::gui::theme::bold_family())
+                    .size(15.0),
+            );
+            let mut level = None;
+            for (i, slot) in snap.plugin_slots.iter().enumerate() {
+                if level != Some(slot.level) {
+                    level = Some(slot.level);
+                    let name = match slot.level {
+                        0 => format!("Sound {}", snap.active_sound + 1),
+                        1 => format!(
+                            "Groupe {}",
+                            crate::gui::views::group_char(snap.group_focus as usize)
+                        ),
+                        _ => "Master".to_string(),
+                    };
+                    ui.separator();
+                    ui.label(egui::RichText::new(name).small().color(c.text_muted));
+                }
+                let on = i == snap.plugin_slot;
+                let mut text = egui::RichText::new(&slot.name);
+                if slot.bypassed {
+                    text = text.strikethrough().color(c.text_muted);
+                } else if slot.empty {
+                    text = text.color(c.text_dim);
+                } else if on {
+                    text = text.color(crate::gui::theme::ink_on(c.accent));
+                }
+                let button = egui::Button::new(text).fill(if on { c.accent } else { c.widget_bg });
+                if ui
+                    .add(button)
+                    .on_hover_text("Choisir cet emplacement (4D sur la MK3)")
+                    .clicked()
+                {
+                    app.send(EngineEvent::SelectPluginSlot(i));
+                }
+            }
+        });
+        // Actions de l'emplacement : ce sont les boutons d'écran 1–8.
+        let selected = snap.plugin_slots.get(snap.plugin_slot);
+        if selected.is_some_and(|s| s.empty || snap.plugin_fx.is_some()) {
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                for (n, label) in snap.soft_labels.iter().enumerate() {
+                    if label.is_empty() {
+                        continue;
+                    }
+                    let lit = snap.soft_active[n];
+                    let button = egui::Button::new(egui::RichText::new(*label).color(if lit {
+                        crate::gui::theme::ink_on(c.accent)
+                    } else {
+                        c.text
+                    }))
+                    .fill(if lit { c.accent } else { c.surface });
+                    if ui
+                        .add(button)
+                        .on_hover_text(format!("Bouton {} de la MK3", n + 1))
+                        .clicked()
+                    {
+                        app.send(EngineEvent::SoftKey(n as u8 + 1));
+                    }
+                }
+            });
+            if let Some(fx) = &snap.plugin_fx {
+                let view = maschine_engine::plugin_pages::view(
+                    maschine_engine::plugin_pages::fx_pages(fx.fx_type),
+                    0,
+                    fx,
+                );
+                ui.horizontal_wrapped(|ui| {
+                    for (k, pv) in view.params.iter().enumerate() {
+                        let Some(pv) = pv else { continue };
+                        ui.label(
+                            egui::RichText::new(format!("{} {}", pv.name, pv.value))
+                                .small()
+                                .color(c.text_dim),
+                        )
+                        .on_hover_text(format!("Knob {} de la MK3", k + 1));
+                    }
+                });
+            }
+        }
+    });
 }
 
 fn render_header(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::EngineSnapshot) {

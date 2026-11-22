@@ -2,6 +2,23 @@
 
 All notable changes.
 
+## [0.13.1] - 2026-11-22
+
+### Added
+- **Trois nouveaux effets** dans la chaîne de plugins : **EQ** 3 bandes (plateau grave 120 Hz, cloche médium réglable, plateau aigu 8 kHz, ±18 dB ; `FLAT`, `LOUDNESS`, `RADIO`), **Chorus** (deux lignes modulées en quadrature ; `CHORUS`, `FLANGER`, `ENSEMBLE`) et **Lo-Fi** (bits, fréquence d'échantillonnage, tonalité ; `8-BIT`, `SP-1200`, `CRUSH`). L'emplacement `+ effet` propose désormais les huit effets, un par bouton d'écran, dans l'ordre de la chaîne ; chacun a son visuel (réponse de l'EQ, modulation du chorus, marches du Lo-Fi).
+- **Écran de veille dès le branchement** : `maschine-linux standby` dessine l'écran de veille ; les paquets RPM, DEB et Arch installent une règle udev et le service utilisateur `maschine-linux-standby.service` qui le lancent au branchement de la MK3 — la veille personnalisée apparaît même si l'application n'a jamais été démarrée (sans effet si l'application tient déjà les écrans).
+- **Chaîne d'effets dans la GUI** : bandeau « Chaîne » en tête de la vue PLUGIN, cliquable comme l'écran gauche de la MK3 ; sur `+ effet` les huit effets, sur un effet `< TYPE`, `TYPE >`, `BYPASS`, `SUPPR`, ses raccourcis et ses valeurs — les mêmes actions que les boutons d'écran.
+
+### Changed
+- **Grille PATTERN** (écran droit par défaut) redessinée : cases de pas à coins adoucis, temps forts plus clairs, notes dans la couleur du Sound selon la vélocité, tête de lecture en colonne voilée de la couleur du groupe.
+- **Contours arrondis et lissés** sur tous les écrans MK3 (cartes, cases, sélection).
+- **Fenêtre basse** : sous 620 px de haut, le pont MK3 se replie de lui-même pour laisser la vue de travail lisible (`F2` le rouvre) et revient au-delà de 700 px.
+- Libellé « Master » séparé de son curseur dans l'en-tête : il passe à la ligne au lieu d'être coupé.
+
+### Validation
+- `cargo fmt`, `cargo clippy -D warnings` et `cargo test --workspace` au vert ; nouveaux tests EQ (à plat transparent, plateau grave), Lo-Fi (marches à 3 bits, transparent à 16 bits) et chorus, bornes et absence de NaN pour les huit effets, tables de paramètres des nouveaux effets.
+- Rendu de chaque effet et de la grille PATTERN via `dump_screens` ; captures GUI de la vue PLUGIN (1600×900, 1366×600 avec pont replié).
+
 ## [0.13.0] - 2026-11-22
 
 ### Added

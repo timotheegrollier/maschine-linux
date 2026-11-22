@@ -152,6 +152,7 @@ else
 
     echo "==> Installation du service systemd utilisateur..."
     sudo install -D -p -m 0644 "${ROOT_DIR}/packaging/systemd/maschine-linux.service" /usr/lib/systemd/user/maschine-linux.service 2>/dev/null || true
+    sudo install -D -p -m 0644 "${ROOT_DIR}/packaging/systemd/maschine-linux-standby.service" /usr/lib/systemd/user/maschine-linux-standby.service 2>/dev/null || true
 
     # Mise à jour des caches
     sudo update-desktop-database -q /usr/share/applications || true

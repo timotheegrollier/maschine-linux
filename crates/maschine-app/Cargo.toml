@@ -72,6 +72,7 @@ assets = [
     { source = "../../packaging/pipewire/99-maschine-lowlatency.conf", dest = "/usr/share/pipewire/pipewire.conf.d/99-maschine-lowlatency.conf", mode = "644" },
     { source = "../../packaging/wireplumber/51-maschine-mk3.conf", dest = "/usr/share/wireplumber/wireplumber.conf.d/51-maschine-mk3.conf", mode = "644" },
     { source = "../../packaging/systemd/maschine-linux.service", dest = "/usr/lib/systemd/user/maschine-linux.service", mode = "644" },
+    { source = "../../packaging/systemd/maschine-linux-standby.service", dest = "/usr/lib/systemd/user/maschine-linux-standby.service", mode = "644" },
 ]
 post_install_script = "../../packaging/rpm/post_install.sh"
 post_uninstall_script = "../../packaging/rpm/post_uninstall.sh"
@@ -101,5 +102,6 @@ assets = [
     ["../../packaging/pipewire/99-maschine-lowlatency.conf", "usr/share/pipewire/pipewire.conf.d/", "644"],
     ["../../packaging/wireplumber/51-maschine-mk3.conf", "usr/share/wireplumber/wireplumber.conf.d/", "644"],
     ["../../packaging/systemd/maschine-linux.service", "usr/lib/systemd/user/", "644"],
+    ["../../packaging/systemd/maschine-linux-standby.service", "usr/lib/systemd/user/", "644"],
 ]
 

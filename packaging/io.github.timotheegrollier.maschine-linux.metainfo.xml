@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.13.1" date="2026-11-22">
+      <description>
+        <p>Release 0.13.1 adds EQ, Chorus and Lo-Fi effects (eight effects in the plugin chain), shows the standby screen as soon as the MK3 is plugged in, adds a clickable effect chain to the GUI plugin view, and redraws the pattern grid of the MK3 screens.</p>
+      </description>
+    </release>
     <release version="0.13.0" date="2026-11-22">
       <description>
         <p>Release 0.13.0 shows every plugin parameter on the MK3 screens with page navigation, adds a Maschine-style plugin chain with Filter, Distortion, Compressor, Delay and Reverb inserts on Sounds, Groups and the Master, cleans up the sound (transparent master limiter, rewritten effects, fixed guitar amp oversampling), and redesigns both the MK3 screens and the GUI around one design system.</p>

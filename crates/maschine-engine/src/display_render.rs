@@ -51,7 +51,7 @@ pub fn fill_rect(
     }
 }
 
-/// Dessine le contour d'un rectangle.
+/// Contour d'un rectangle, coins arrondis (trait lissé de 1 px).
 pub fn draw_rect_outline(
     frame: &mut DisplayFrame,
     x: usize,
@@ -60,13 +60,13 @@ pub fn draw_rect_outline(
     h: usize,
     color: DisplayPixel,
 ) {
-    if w == 0 || h == 0 {
+    if w < 2 || h < 2 {
         return;
     }
-    fill_rect(frame, x, y, w, 1, color);
-    fill_rect(frame, x, y + h - 1, w, 1, color);
-    fill_rect(frame, x, y, 1, h, color);
-    fill_rect(frame, x + w - 1, y, 1, h, color);
+    let (xf, yf) = (x as f32 + 0.5, y as f32 + 0.5);
+    if let Some(path) = screen_vector::round_rect(xf, yf, w as f32 - 1.0, h as f32 - 1.0, 3.0) {
+        screen_vector::stroke(frame, &path, 1.0, screen_vector::Paint::Solid(color, 1.0));
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1288,12 +1288,12 @@ pub fn render_daw_right(snap: &EngineSnapshot) -> DisplayFrame {
         if is_active {
             fill_rect(&mut frame, 0, y - 2, SCR_W, 9, row_bg);
         }
+        let row_used =
+            focus_group(snap).is_some_and(|g| g.sounds.get(snd).is_some_and(Option::is_some));
         // Puce couleur du Sound (slot vide = piste) : 9 px de pas ne laissent
         // pas lire une police 8×16 ; le nom du Sound actif suit la boucle.
-        let used =
-            focus_group(snap).is_some_and(|g| g.sounds.get(snd).is_some_and(Option::is_some));
-        let chip = if used { hue_color(snd) } else { p.track };
-        fill_rect(&mut frame, 6, y - 1, 12, 5, chip);
+        let chip = if row_used { hue_color(snd) } else { p.track };
+        cell(&mut frame, 6, y - 2, 12, 7, chip, row_bg);
         // LED d'activité du Sound (jeu + séquenceur).
         let act = snap.pad_activity[snd].clamp(0.0, 1.0);
         if act > 0.02 {
@@ -1306,28 +1306,38 @@ pub fn render_daw_right(snap: &EngineSnapshot) -> DisplayFrame {
             );
             fill_rect(&mut frame, 76, y - 4, 3, 8, col);
         }
+        // Grille de pas : case discrète partout (plus claire sur les temps),
+        // note pleine dans la couleur du Sound, intensité selon la vélocité.
         for (st, vel) in row.iter().enumerate() {
-            let x = gx + st * cw;
-            let cell_y = y - 2;
-            let cell_h = 8usize;
-            if *vel > 0 {
-                // Hauteur ∝ vélocité : les frappes fortes se voient à l'œil.
-                let h = (2 + (*vel as usize * (cell_h - 2)) / 127).clamp(2, cell_h);
-                let col = hue_color(snd);
-                fill_rect(&mut frame, x + 2, cell_y + (cell_h - h), cw - 6, h, col);
-                fill_rect(&mut frame, x + 2, cell_y + (cell_h - h), cw - 6, 1, p.white);
+            let x = gx + st * cw + 1;
+            let color = if *vel > 0 {
+                mix(
+                    p.track,
+                    hue_color(snd),
+                    0.45 + 0.55 * f32::from(*vel) / 127.0,
+                )
+            } else if !row_used {
+                p.panel
             } else if st % 4 == 0 {
-                fill_rect(&mut frame, x + 2, cell_y + cell_h / 2, cw - 6, 2, p.track);
-            }
+                p.track
+            } else {
+                p.panel2
+            };
+            cell(&mut frame, x, y - 2, cw - 4, 7, color, row_bg);
         }
         y += 9;
     }
 
-    // Playhead : ligne verticale sur la colonne courante (fin et nette).
+    // Tête de lecture : colonne voilée de la couleur du groupe.
     if show_playhead {
-        let x = gx + cur_step * cw - 2;
-        fill_rect(&mut frame, x, 48, 1, 144, p.accent);
-        fill_rect(&mut frame, x + cw - 1, 48, 1, 144, p.accent);
+        let x = (gx + cur_step * cw - 1) as f32;
+        if let Some(path) = screen_vector::round_rect(x, 47.0, cw as f32, 146.0, 3.0) {
+            screen_vector::fill(
+                &mut frame,
+                &path,
+                screen_vector::Paint::Solid(p.accent, 0.22),
+            );
+        }
     }
 
     // Nom du Sound actif, lisible, posé sur sa ligne.
@@ -5103,6 +5113,33 @@ fn mix(a: DisplayPixel, b: DisplayPixel, t: f32) -> DisplayPixel {
     DisplayPixel::from_rgb(m(ar, br), m(ag, bg), m(ab, bb))
 }
 
+/// Petite case pleine aux coins adoucis (grilles de pas) : rapide, sans
+/// rastérisation, les coins sont mêlés au fond `bg`.
+fn cell(
+    frame: &mut DisplayFrame,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    color: DisplayPixel,
+    bg: DisplayPixel,
+) {
+    if w < 3 || h < 3 {
+        fill_rect(frame, x, y, w, h, color);
+        return;
+    }
+    fill_rect(frame, x, y, w, h, color);
+    let soft = mix(bg, color, 0.45);
+    for (cx, cy) in [
+        (x, y),
+        (x + w - 1, y),
+        (x, y + h - 1),
+        (x + w - 1, y + h - 1),
+    ] {
+        fill_rect(frame, cx, cy, 1, 1, soft);
+    }
+}
+
 /// Titre de section au-dessus d'une rangée de 4 knobs, avec un filet.
 fn section_title(frame: &mut DisplayFrame, p: &Pal, text: &str, color: DisplayPixel) {
     let y = SCR_H - FOOTER_H - ENC_H - 20;
@@ -5467,18 +5504,30 @@ fn plugin_chain(
 /// Emplacement libre : les effets qu'on peut insérer, avec leur bouton.
 fn add_fx_help(frame: &mut DisplayFrame, p: &Pal, (x, y, w, h): (usize, usize, usize, usize)) {
     panel(frame, p, x, y, w, h);
+    // Même ordre que les boutons : 1–4 à gauche, 5–8 à droite.
     let items = [
         ("FILTER", "filtre résonant"),
+        ("EQ", "3 bandes"),
         ("DISTO", "saturation"),
         ("COMP", "dynamique"),
+        ("LO-FI", "bits & fréquence"),
+        ("CHORUS", "modulation"),
         ("DELAY", "écho stéréo"),
         ("REVERB", "espace"),
     ];
     let col_w = w / 2;
     for (i, (name, what)) in items.iter().enumerate() {
-        let (cx, cy) = (x + 12 + (i / 3) * col_w, y + 22 + (i % 3) * 28);
-        bold(frame, cx as f32, cy as f32, name, 15.0, p.white);
-        label(frame, cx as f32, cy as f32 + 13.0, what, 12.0, p.muted, 1.0);
+        let (cx, cy) = (x + 12 + (i / 4) * col_w, y + 20 + (i % 4) * 23);
+        let nw = bold(frame, cx as f32, cy as f32, name, 14.0, p.white);
+        label(
+            frame,
+            cx as f32 + nw + 8.0,
+            cy as f32,
+            what,
+            12.0,
+            p.muted,
+            1.0,
+        );
     }
 }
 
@@ -5586,6 +5635,56 @@ fn draw_fx_visual(
                         (xf + i as f32 / 96.0 * wf, yf + hf - a * hf)
                     })
                     .collect()
+            }
+            T::Eq => {
+                // Réponse des trois bandes (±18 dB), échelle log 20 Hz–20 kHz.
+                let bands = crate::fx::eq_bands(fx, 48_000.0);
+                fill_rect(frame, x + 8, y + h / 2, w - 16, 1, p.track);
+                (0..=96)
+                    .map(|i| {
+                        let f = 20.0 * 1000f32.powf(i as f32 / 96.0);
+                        let g: f32 = bands.iter().map(|b| b.magnitude(f, 48_000.0)).product();
+                        let db = (20.0 * g.max(1e-4).log10()).clamp(-18.0, 18.0);
+                        (
+                            xf + i as f32 / 96.0 * wf,
+                            yf + hf / 2.0 - db / 18.0 * hf / 2.0,
+                        )
+                    })
+                    .collect()
+            }
+            T::Chorus => {
+                // Retard modulé des deux canaux (quadrature) sur deux cycles.
+                let base = fx.p3.clamp(0.5, 30.0);
+                let depth = fx.p2.clamp(0.0, 1.0) * 6.0;
+                let curve = |offset: f32| -> Vec<(f32, f32)> {
+                    (0..=96)
+                        .map(|i| {
+                            let t = i as f32 / 96.0 * 2.0;
+                            let lfo = (2.0 * std::f32::consts::PI * (t + offset)).sin();
+                            let ms = base + depth * 0.5 * (1.0 + lfo);
+                            (xf + i as f32 / 96.0 * wf, yf + hf - ms / 36.0 * hf)
+                        })
+                        .collect()
+                };
+                if let Some(path) = screen_vector::polyline(&curve(0.25)) {
+                    screen_vector::stroke(frame, &path, 2.0, Paint::Solid(p.cyan, 0.9));
+                }
+                curve(0.0)
+            }
+            T::LoFi => {
+                // Une période de sinus échantillonnée-bloquée et quantifiée.
+                let levels = 2f32.powf(fx.p1.clamp(2.0, 16.0).round() - 1.0);
+                let steps = (fx.p2.clamp(500.0, 48_000.0) / 1000.0).clamp(4.0, 48.0) as usize;
+                fill_rect(frame, x + 8, y + h / 2, w - 16, 1, p.track);
+                let mut pts = Vec::new();
+                for k in 0..steps {
+                    let t = k as f32 / steps as f32;
+                    let v = ((2.0 * std::f32::consts::PI * t).sin() * levels).round() / levels;
+                    let py = yf + hf / 2.0 - v * hf * 0.45;
+                    pts.push((xf + t * wf, py));
+                    pts.push((xf + (k + 1) as f32 / steps as f32 * wf, py));
+                }
+                pts
             }
             T::Filter => Vec::new(),
         };

@@ -96,6 +96,7 @@ EOF
     cp packaging/pipewire/99-maschine-lowlatency.conf "${DEB_DIR}/usr/share/pipewire/pipewire.conf.d/"
     cp packaging/wireplumber/51-maschine-mk3.conf "${DEB_DIR}/usr/share/wireplumber/wireplumber.conf.d/"
     cp packaging/systemd/maschine-linux.service "${DEB_DIR}/usr/lib/systemd/user/"
+    cp packaging/systemd/maschine-linux-standby.service "${DEB_DIR}/usr/lib/systemd/user/"
 
     dpkg-deb --build "${DEB_DIR}" "${OUT_DIR}/maschine-linux_${VERSION}_amd64.deb"
     echo "✓ DEB créé avec succès dans ${OUT_DIR}/"

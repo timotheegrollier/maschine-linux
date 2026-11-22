@@ -173,6 +173,11 @@ enum Commands {
     /// le hardware. Ajoutez `-v` pour voir aussi les suppressions
     /// (diaphonie, rebond, continuation de rafale, capteur bloqué).
     PadMonitor,
+    /// Affiche l'écran de veille sur les deux écrans puis rend la main.
+    /// Lancé par udev/systemd au branchement de la MK3 (voir
+    /// `packaging/systemd/maschine-linux-standby.service`) : l'écran de veille
+    /// apparaît même si l'application n'a jamais été démarrée.
+    Standby,
     /// Test écrans bulk (couleur solide)
     DisplayTest {
         /// Couleur R
@@ -348,6 +353,7 @@ fn main() -> anyhow::Result<()> {
         Commands::PadMonitor => cmd_pad_monitor()?,
         Commands::DisplayTest { r, g, b, duration } => cmd_display_test(r, g, b, duration)?,
         Commands::DisplayProbe => cmd_display_probe()?,
+        Commands::Standby => cmd_standby(),
         Commands::AudioList => cmd_audio_list()?,
         Commands::AudioTest {
             freq,
@@ -2501,6 +2507,32 @@ fn cmd_display_test(r: u8, g: u8, b: u8, duration: u64) -> anyhow::Result<()> {
         let _ = (r, g, b, duration);
         anyhow::bail!("feature `usb` non activée — rebuild avec --features usb,display (sudo dnf install libusb1-devel)");
     }
+}
+
+/// Écran de veille au branchement. Ne fait jamais échouer le service : MK3
+/// absente ou écrans déjà pris par l'application → rien à faire.
+fn cmd_standby() {
+    #[cfg(feature = "usb")]
+    {
+        let mut bulk = match maschine_hardware::usb::BulkHandle::open() {
+            Ok(bulk) => bulk,
+            Err(e) => {
+                log::info!("Veille : écrans indisponibles ({e}) — rien à faire");
+                return;
+            }
+        };
+        let (left, right) = maschine_engine::display_render::render_shutdown_screens();
+        for frame in [&left, &right] {
+            if let Err(e) = bulk.send_frame(frame) {
+                log::warn!("Veille : envoi impossible ({e})");
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        bulk.release_interface();
+        println!("✓ Écran de veille affiché");
+    }
+    #[cfg(not(feature = "usb"))]
+    log::info!("Veille : feature `usb` absente, rien à afficher");
 }
 
 fn cmd_display_probe() -> anyhow::Result<()> {

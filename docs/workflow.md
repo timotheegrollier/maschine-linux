@@ -118,7 +118,7 @@ Both screens are rendered by the same function (`display_render::render_screens`
 - **Fonctions Shift + pads MK3** : le séquenceur desktop affiche les mêmes libellés sur sa grille de pads lorsque Shift est tenu. Pad 1–16 (Pad 1 en bas à gauche) : `UNDO`, `REDO`, `STEP UNDO`, `STEP REDO`, `QUANTIZE`, `QUANT 50%`, `NUDGE ←`, `NUDGE →`, `CLEAR`, `CLEAR AUTO`, `COPY`, `PASTE`, `− SEMI`, `+ SEMI`, `− OCT`, `+ OCT`. Les actions ciblent le pattern focalisé; le presse-papiers copie/colle sa liste d'événements. Le projet ne possède pas encore de piste d'automation, donc `CLEAR AUTO` affiche un message d'indisponibilité.
 - **Effacer les notes d'un Sound** : dans le séquenceur desktop, clic droit ou `Maj+clic` sur l'en-tête d'une ligne (clic droit sur un pad) retire les notes de ce Sound du pattern actif. Sur MK3, `ERASE + EVENTS + pad` fait la même chose; le Sound et ses réglages restent en place.
 - **Supprimer un Sound du slot** : `SHIFT + ERASE + pad` vide le slot et retire ses événements. Sur le desktop, utiliser le menu contextuel de la ligne permet de faire l'action équivalente; cette suppression est destructive pour les réglages du Sound.
-- **Clean shutdown and standby**: closing the GUI or stopping the daemon draws a sober standby screen (almost black, a dim `MASCHINE | MK3` word mark across both screens), releases the display interface without a USB reset, and sends an all-off LED report. A panic does the same before the process exits. The controller firmware shows its own logo until the application has drawn once: the standby screen cannot appear before the first launch, and a `SIGKILL` leaves the last frame on screen.
+- **Clean shutdown and standby**: closing the GUI or stopping the daemon draws a sober standby screen (almost black, a dim `MASCHINE | MK3` word mark across both screens), releases the display interface without a USB reset, and sends an all-off LED report. A panic does the same before the process exits. With the RPM, DEB or Arch package, plugging the MK3 in also shows the standby screen — even if the application was never started — through the udev rule and the `maschine-linux-standby.service` user unit (`maschine-linux standby`, which does nothing when the application already owns the screens). A `SIGKILL` leaves the last frame on screen.
 - **GUI and hardware controls synchronized**: before mapping each new HID event, the application re-reads the group, sound and tabs from the engine. The first knob detent after a page change therefore already performs the new page's action.
 - **Live editing**: volume, pan, filter and ADSR changes also reach voices already playing; Group/Sound gains and pans combine without overwriting the neighboring level.
 - **LCD alignment**: each USB rectangle must have an even width, because the Bulk counter represents pairs of RGB565 pixels. Differential rectangles are expanded to the neighboring pixel; odd windows are rejected before sending. See [the hardware protocol](HARDWARE_DISPLAY_PROTOCOL.md).
@@ -147,7 +147,7 @@ Buttons per slot:
 | Sampler | `SND <` `SND >` `ECOUTE` `BROWSER` | page shortcuts (`LP/HP/BP` `NOTCH` `PEAK` `OFF`, `REVERSE` `LOOP` `NORMLZ` `CYC FLT`) |
 | TB-303 / Kick / Nexus | `PRESET <` `PRESET >` `ECOUTE` `BROWSER` | page shortcuts (presets, waveform, filter modes, `OSC 2`, …) |
 | effect | `< TYPE` `TYPE >` `BYPASS` `SUPPR` | the effect's modes or quick settings |
-| `+ effet` | `FILTER` `DISTO` `COMP` | `DELAY` `REVERB` |
+| `+ effet` | `FILTER` `EQ` `DISTO` `COMP` | `LO-FI` `CHORUS` `DELAY` `REVERB` |
 
 Every effect uses the same knob layout — **knob 1 is always MIX** (dry/wet),
 the effect's own settings follow:
@@ -155,8 +155,11 @@ the effect's own settings follow:
 | Effect | Knobs | Buttons 5–8 |
 |---|---|---|
 | Filter (resonant SVF) | MIX, CUTOFF, RESO, MODE | `LP` `HP` `BP` |
+| EQ (low shelf 120 Hz, mid bell, high shelf 8 kHz, ±18 dB) | MIX, LOW, MID, MID FREQ, HIGH | `FLAT` `LOUDNESS` `RADIO` |
 | Distortion (anti-aliased, level-compensated) | MIX, DRIVE, TONE, TYPE, OUTPUT | `SOFT` `HARD` |
 | Compressor (soft knee, auto make-up) | MIX, THRESH, RATIO, ATTACK, RELEASE | `DOUX` `PUNCH` `SQUASH` |
+| Lo-Fi (bit depth, sample rate, tone) | MIX, BITS, RATE, TONE | `8-BIT` `SP-1200` `CRUSH` |
+| Chorus (two quadrature-modulated delays) | MIX, RATE, DEPTH, DELAY, FEEDBACK | `CHORUS` `FLANGER` `ENSEMBLE` |
 | Delay (stereo / ping-pong, up to 2 s) | MIX, TIME, FEEDBACK, TONE, PING-PONG | `PING-PONG` `1/16` `1/8` `1/4` (tempo-synced times) |
 | Reverb (stereo Freeverb) | MIX, SIZE, DAMP, PRE-DLY, WIDTH | `PIÈCE` `SALLE` `HALL` |
 

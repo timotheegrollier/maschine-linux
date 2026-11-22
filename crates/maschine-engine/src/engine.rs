@@ -1223,6 +1223,9 @@ pub struct Engine {
     /// Ticks des notes enregistrées pendant REC : par pad, le tick de
     /// l'événement enregistré (relâchement = fin de la note tenue).
     rec_pad_press: [Option<u32>; 16],
+    /// Note tenue sur chaque pad pendant REC (tick de l'événement enregistré),
+    /// pour enregistrer les slides (glissando legato) du TB-303.
+    rec_sounding: [Option<u32>; 16],
     /// Notes clavier tenues enregistrées pendant REC : par note, le
     /// (groupe, Sound, tick de l'événement enregistré).
     rec_key_press: [Option<(u8, u8, u32)>; 128],
@@ -1583,6 +1586,7 @@ impl Engine {
             count_in: None,
             pending_notes: [None; 64],
             rec_pad_press: [None; 16],
+            rec_sounding: [None; 16],
             rec_key_press: [None; 128],
             arp_held: [0; 128],
             arp_last: None,
@@ -2621,11 +2625,21 @@ impl Engine {
                     }
                     // si Recording, ajoute event au pattern actif
                     if self.transport.state == TransportState::Recording && (pad as usize) < 16 {
-                        self.rec_pad_press[pad as usize] = self.record_pad_event(pad, velocity);
+                        // Slide : la note précédente du même pad est encore
+                        // sonore (tenue) — on étend son événement enregistré
+                        // jusqu'à ce nouvel événement (glissando legato TB-303).
+                        let prev = self.rec_sounding[pad as usize].take();
+                        let q_new = self.record_pad_event(pad, velocity);
+                        if let (Some(q_prev), Some(q_new)) = (prev, q_new) {
+                            self.extend_recorded_note(self.group_focus, pad, q_prev, q_new);
+                        }
+                        self.rec_pad_press[pad as usize] = q_new;
+                        self.rec_sounding[pad as usize] = q_new;
                     }
                 } else {
                     if (pad as usize) < 16 {
                         self.note_repeat_held_pads[pad as usize] = None;
+                        self.rec_sounding[pad as usize] = None;
                         if let Some(q) = self.rec_pad_press[pad as usize].take() {
                             self.set_recorded_length(self.group_focus, pad, q, self.transport.tick);
                         }
@@ -5413,6 +5427,10 @@ impl Engine {
         tick: u64,
     ) -> Option<u32> {
         let focus = group as usize;
+        // Pendant REC : l'historique couvre les notes ajoutées (Shift + Undo).
+        if self.transport.state == TransportState::Recording {
+            self.push_project_history();
+        }
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
         // Comme le logiciel officiel : enregistrer sur un groupe sans pattern
@@ -5468,10 +5486,36 @@ impl Engine {
         }
     }
 
+    /// Étend l'événement enregistré pendant REC jusqu'à un nouveau tick
+    /// (slide legato : le portamento du TB-303 continue jusqu'à la nouvelle
+    /// note au lieu d'être coupé).
+    fn extend_recorded_note(&mut self, group: u8, pad: u8, q_prev: u32, q_new: u32) {
+        if q_new <= q_prev {
+            return;
+        }
+        let focus = group as usize;
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
+        if let Some(pat) = proj
+            .active_pattern_index(focus, self.active_scene)
+            .and_then(|i| proj.groups.get_mut(focus)?.patterns.get_mut(i))
+        {
+            if let Some(e) = pat
+                .events
+                .iter_mut()
+                .rev()
+                .find(|e| e.pad == pad && e.tick == q_prev)
+            {
+                e.length_ticks = (q_new - q_prev).min(3840 * 8);
+            }
+        }
+    }
+
     /// Efface les marques de notes tenues en cours d'enregistrement (REC).
     fn clear_rec_press_marks(&mut self) {
         self.rec_pad_press = [None; 16];
         self.rec_key_press = [None; 128];
+        self.rec_sounding = [None; 16];
     }
 
     /// Enregistre un point d'automation pendant REC (knob du Sound actif) dans
@@ -9226,6 +9270,83 @@ mod tests {
             .expect("la note enregistrée doit exister");
         assert_eq!(ev.velocity, 90);
         assert_eq!(ev.pitch, 41);
+    }
+
+    #[test]
+    fn rec_pad_slides_are_recorded() {
+        let mut eng = Engine::new_demo(48000);
+        eng.clear_bar(0);
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: true,
+            stop: false,
+        })
+        .unwrap();
+        // Note A sur le pad 5, 2 temps de tenue, puis note B (slide TB-303).
+        eng.handle_event(EngineEvent::Pad {
+            pad: 5,
+            velocity: 90,
+            pressed: true,
+        })
+        .unwrap();
+        eng.advance(48_000);
+        eng.handle_event(EngineEvent::Pad {
+            pad: 5,
+            velocity: 100,
+            pressed: true,
+        })
+        .unwrap();
+        eng.advance(48_000);
+        eng.handle_event(EngineEvent::Pad {
+            pad: 5,
+            velocity: 0,
+            pressed: false,
+        })
+        .unwrap();
+        let guard = eng.project_handle();
+        let proj = guard.read();
+        let mut evs: Vec<&PatternEvent> = proj.groups[0].patterns[0]
+            .events
+            .iter()
+            .filter(|e| e.pad == 5)
+            .collect();
+        assert_eq!(evs.len(), 2, "les deux notes du slide sont enregistrées");
+        evs.sort_by_key(|e| e.tick);
+        let (first, second) = (evs[0], evs[1]);
+        assert_eq!(first.velocity, 90);
+        assert_eq!(second.velocity, 100);
+        // Le portamento est enregistré : la première note couvre jusqu'à la
+        // seconde au lieu d'être coupée directement.
+        assert_eq!(first.length_ticks, second.tick - first.tick);
+    }
+
+    #[test]
+    fn rec_notes_are_pushed_to_the_undo_history() {
+        let mut eng = Engine::new_demo(48000);
+        eng.clear_bar(0);
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: true,
+            stop: false,
+        })
+        .unwrap();
+        let before = eng.undo_history.len();
+        eng.handle_event(EngineEvent::Pad {
+            pad: 5,
+            velocity: 90,
+            pressed: true,
+        })
+        .unwrap();
+        assert!(
+            eng.undo_history.len() > before,
+            "les notes enregistrées poussent l'historique (Shift + Undo)"
+        );
+        eng.handle_event(EngineEvent::Undo).unwrap();
+        let has_note = eng.project_handle().read().groups[0].patterns[0]
+            .events
+            .iter()
+            .any(|e| e.pad == 5);
+        assert!(!has_note, "Shift + Undo annule la note enregistrée");
     }
 
     #[test]

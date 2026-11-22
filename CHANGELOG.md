@@ -2,6 +2,19 @@
 
 All notable changes.
 
+## [0.23.0] - 2026-11-22
+
+### Added
+- **Bouton AUTO MK3** : allume sa LED, arme l'enregistrement des automations pendant REC et ouvre deux écrans dédiés sur la MK3 (liste des automations du pattern actif et courbe des points du knob focalisé), dans le style du design system partagé. L'enregistrement d'un point exige AUTO allumé.
+- **Chaînage de patterns dans la GUI** : deux pads pressés à moins de 900 ms chaînent tout l'intervalle, comme sur la MK3.
+- **Kick Synth** : la saturation suit l'enveloppe d'amplitude (plus de grésillement en fin de son) et deux nouveaux presets (House Soft Sub, Breakbeat Snap).
+
+### Fixed
+- **Updater in-app** : libellés et boutons aux couleurs du design system, fond sombre — plus de texte noir sur noir.
+
+### Validation
+- 300 tests, `clippy -D warnings`, vérification sans sampler au vert. Nouveaux tests : `auto_button_arms_automation_recording`, `auto_button_sends_toggle_action`.
+
 ## [0.22.0] - 2026-11-22
 
 ### Added

@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.23.0" date="2026-11-22">
+      <description>
+        <p>Release 0.23.0: the MK3 AUTO button arms automation recording (LED on) and opens two dedicated automation screens; pattern chaining works in the GUI; the Kick Synth tail is clean with two new presets; the in-app updater text is readable.</p>
+      </description>
+    </release>
     <release version="0.22.0" date="2026-11-22">
       <description>
         <p>Release 0.22.0: MK3 pattern workflow — SHIFT + a pattern pad switches immediately during playback, and two pads pressed together chain the whole interval (up to 16 patterns). PipeWire routing only runs when the guitar amp is in use.</p>

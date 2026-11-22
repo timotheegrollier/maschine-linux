@@ -2482,17 +2482,13 @@ impl HardwareMapper {
         for g in 0usize..8 {
             let base = Color::from_index(info.group_colors[g]).unwrap_or(Color::OFF);
             let muted = info.muted_groups & (1 << g) != 0;
-            let playing = info.group_levels.get(g).copied().unwrap_or(0.0) > 0.01;
             let col = if base == Color::OFF || muted {
                 Color::OFF
             } else if g == self.group_focus as usize {
-                // Groupe sélectionné : sa couleur assignée, mais VIVE — plus
-                // illuminé que les autres, pour voir la sélection sur la MK3.
-                bright_pad_color(base)
-            } else if playing {
-                // Allumé mais pas focalisé : on voit quel groupe joue.
+                // Groupe sélectionné : vif — le plus illuminé des groupes.
                 bright_pad_color(base)
             } else {
+                // Autres : atténués même en lecture — le sélectionné est plus illuminé.
                 dim_pad_color(base)
             };
             self.led_state
@@ -3185,13 +3181,16 @@ mod tests {
             ..SequencerLedInfo::default()
         };
         m.update_leds(&info);
-        // Groupe focalisé : sa couleur assignée, mais VIVE (plus illuminé).
+        // Groupe focalisé : sa couleur assignée, mais VIVE — le plus illuminé des groupes.
         assert_eq!(
             m.led_state().button_leds[offsets::GROUP_A - 1],
             bright_pad_color(Color::from_index(6).unwrap()).to_index()
         );
-        // Groupe B en lecture mais non focalisé : variante vive (Jaune -> Blanc).
-        assert_eq!(m.led_state().button_leds[offsets::GROUP_B - 1], 78);
+        // Groupe B en lecture mais non focalisé : atténué (le sélectionné est plus illuminé).
+        assert_eq!(
+            m.led_state().button_leds[offsets::GROUP_B - 1],
+            dim_pad_color(Color::from_index(22).unwrap()).to_index()
+        );
         // Groupe C au repos : Vert atténué (29).
         assert_eq!(m.led_state().button_leds[offsets::GROUP_C - 1], 29);
     }

@@ -14,7 +14,7 @@ Maschine Linux is an independent project. It does not include Native
 Instruments code or proprietary assets; it reproduces the documented workflow
 and hardware behavior through a clean-room implementation.
 
-## Current state (0.16.0)
+## Current state (0.17.0)
 
 Cargo workspace with six crates:
 
@@ -35,6 +35,13 @@ Audio uses a 256-frame buffer (64-frame period, about 1.3 ms) at 48 kHz, a
 inside each block, and a drum kit regenerated at the device sample rate.
 Instrumentation: `--debug-latency` (HID→Engine, real buffer size, misses,
 errors) and `--stress` (deliberate engine-lock contention).
+
+### 16 Velocities, arpeggiator modes and multi-note editing in 0.17.0
+
+- Shift + Fixed Vel plays the selected Sound at sixteen velocities across the
+  pads, like the MK3.
+- Arpeggiator modes on knob 7 (up, down, up-down, one or two octaves).
+- Events mode edits every note of the Sound at once (knob 6).
 
 ### Arpeggiator and safer recording in 0.16.0
 

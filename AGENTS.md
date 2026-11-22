@@ -109,6 +109,9 @@ RUSTFLAGS="-D warnings" cargo check -p maschine-engine --no-default-features --l
   `wavetable_synth` are only the *editing* copies shown on the PLUG-IN pages;
   never render or trigger them.
 - `SoundId` packs the group in the high byte: decode with `>> 8` / `& 0xFF`.
+- 16 Velocities is remapped in the engine (`EngineEvent::Pad`: pad → velocity
+  of the selected Sound) so the GUI gets it too; the mapper and the app's
+  `PadTrigger` handler must not select the pressed pad while `sixteen_vel`.
 - KEYBOARD / CHORDS notes come only from `keyboard::KeyboardState`
   (`pad_notes`, `is_root_pad`); the mapper receives them as `kbd_pad_notes` /
   `kbd_root_pads` in `sync_mapper_context`. Note names use the Maschine

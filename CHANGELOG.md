@@ -2,6 +2,16 @@
 
 All notable changes.
 
+## [0.17.0] - 2026-11-22
+
+### Added
+- **16 vélocités** (`SHIFT + FIXED VEL`, comme sur la MK3) : les 16 pads jouent le Sound sélectionné, du plus doux (pad 1, vélocité 7) au plus fort (pad 16, 127), sans changer la sélection ; pads en dégradé de sa couleur, `FIXED VEL` à mi-intensité ; la GUI affiche la vélocité de chaque pad. Exclusif avec `FIXED VEL`.
+- **Modes de l'arpégiateur** sur le knob 7 de KEYBOARD / CHORDS (`7:ARP`) : `HAUT`, `BAS`, `H-B` (aller-retour), et les mêmes sur deux octaves (`HAUT 2`…).
+- **EVENTS : toutes les notes d'un coup** — le knob 6 (`SÉLECTION`) passe d'une note à toutes les notes parcourues (le Sound, ou tous avec `TOUS`) : position, hauteur, vélocité, longueur, `QUANT`, `NUDGE` et `SUPPR` s'appliquent à toutes, chacune du même écart ; toutes sont surlignées.
+
+### Validation
+- 277 tests, `clippy -D warnings`, vérification sans sampler au vert. Nouveaux tests : `sixteen_velocities_play_the_selected_sound_at_sixteen_levels`, `sixteen_velocities_keep_the_selection_and_shade_the_pads`, `arp_modes_go_down_bounce_and_add_the_octave`, `events_knob_six_selects_every_note_for_relative_edits` ; écran EVENTS « toutes les notes » ajouté à `dump_screens`.
+
 ## [0.16.0] - 2026-11-22
 
 ### Fixed

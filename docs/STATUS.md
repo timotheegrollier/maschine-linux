@@ -4,7 +4,7 @@ Living document: what works, what is partial, what is missing, and what to
 check on real hardware. Update it with every release (see the release steps in
 `AGENTS.md`). Behaviour details live in `workflow.md`; this file is the map.
 
-## Current version: 0.16.0
+## Current version: 0.17.0
 
 ### Done (with tests)
 
@@ -20,6 +20,9 @@ check on real hardware. Update it with every release (see the release steps in
 | LEDs | Pads: off / dim / normal (selected) / bright (hit, sequencer); patterns in group colour; queued items blink; group buttons in group colours | `pad_hit_flashes_white_then_falls_back_to_dim` |
 | Arpeggiator | NOTE REPEAT in KEYBOARD / CHORDS plays the held notes one at a time, upwards, at the repeat rate (`arp_held`, `arp_step`) | `note_repeat_in_keyboard_mode_arpeggiates_held_notes_upwards` |
 | Audio-thread recording | Notes repeated by the audio thread (Note Repeat, Arp) are queued (`pending_notes`) and written by `commit_launches` (handle_event + HID loop at 60 Hz) | `notes_repeated_by_the_audio_thread_are_written_outside_it` |
+| 16 Velocities | `SHIFT + FIXED VEL`: engine remaps pad → velocity of the selected Sound (MK3 and GUI); mapper keeps the selection, shades the pads | `sixteen_velocities_*` (engine and mapper) |
+| Arp modes | Knob 7 in KEYBOARD / CHORDS: up, down, up-down, one or two octaves (`ARP_MODES`) | `arp_modes_go_down_bounce_and_add_the_octave` |
+| EVENTS multi-edit | Knob 6 `SÉLECTION`: one note ↔ every note in scope, relative edits, `SUPPR` all | `events_knob_six_selects_every_note_for_relative_edits` |
 | Count-in | `SHIFT + REC` (or `REC` with `COUNT-IN` on): one 4/4 bar of clicks in `advance`, then `record()`; REC LED blinks | `shift_rec_counts_in_one_bar_of_clicks_then_records` |
 | KEYBOARD / CHORDS | One source for pad notes (`KeyboardState`, synced to the mapper as `kbd_pad_notes`), C3 = MIDI 60 chromatic default, OCT / SEMI buttons 5–8, root pads lit, in-scale chords (Harmonizer-like), knobs = on-screen settings | `pads_start_on_c3_*`, `chords_climb_*`, `keyboard_and_chords_knobs_*` |
 | Held notes | Firm holds without HID reports, note-off only for the owning synth, menus keep held pads | `replay_firm_hold_without_reports_keeps_the_note` |
@@ -32,17 +35,21 @@ check on real hardware. Update it with every release (see the release steps in
   REVERSE and NORMALIZE, stored in `Sound::edits` and replayed on load), one recording source (the MK3 / default capture
   input), the guitar amp is muted while recording, no slice-to-pattern, the
   synthesized 808 kit cannot be sliced (no file).
-- **EVENTS**: one note at a time (no multi-selection, no velocity ramps).
+- **EVENTS**: one note or every note in scope (knob 6); no arbitrary subset,
+  no velocity ramps, `DUPLIQ` copies one note.
 - **Zones**: ZONE edits all zones of the Sound together; no multi-zone editing
   from the controller.
 - **LED levels**: the MK3 palette is used as dim / normal / bright per hue
   (index `4k+1..4k+3`); the exact official levels are not documented by NI and
   remain to be checked on hardware.
 - **Keyboard / Chords**: no scale banks (8 scales), no Chord Set / User Chords
-  modes; the arpeggiator only plays upwards (no Arp type, octaves, gate or
-  sequence settings); display buttons 1–4 are our own (scale and chord
-  shortcuts), the official ones are not documented.
-- **16 Velocities** (SHIFT + FIXED VEL on the MK3) is not implemented.
+  modes; the arpeggiator has up / down / up-down over one or two octaves, no
+  gate, sequence or "order played"; display buttons 1–4 are our own (scale
+  and chord shortcuts), the official ones are not documented.
+- **Destructive sample editing** (cut, paste, fades on the audio) is not
+  planned for now: the play range, the ADSR (2 ms attack by default) and the
+  3 ms anti-click fade at the end of the range cover clicks without rewriting
+  files.
 - **Long press on pads**: the engine sustains synth notes while a pad is held
   (tests); if notes still stop early on hardware, capture `hid-dump` with a held
   pad — the tracker releases a pad when it disappears from the 0x02 report.
@@ -82,6 +89,7 @@ check on real hardware. Update it with every release (see the release steps in
 
 ## History (recent)
 
+- **0.17.0** — 16 Velocities, arpeggiator modes, EVENTS multi-note editing.
 - **0.16.0** — arpeggiator, queued recording of repeated notes,
   sample edits persisted, PATTERN screen follows launches, FIXED VEL in
   KEYBOARD, PLAY cancels the count-in, `OFF` label on the note repeat page,

@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.17.0" date="2026-11-22">
+      <description>
+        <p>Release 0.17.0 adds 16 Velocities mode (Shift + Fixed Vel), arpeggiator modes (up, down, up-down, over one or two octaves) and editing of all notes at once in Events mode.</p>
+      </description>
+    </release>
     <release version="0.16.0" date="2026-11-22">
       <description>
         <p>Release 0.16.0 adds an arpeggiator to Keyboard and Chords modes (Note Repeat), writes repeated notes outside the audio thread while recording, keeps sample edits (reverse, normalize, loop) in the project, lets the Pattern screen follow queued launches, applies fixed velocity to Keyboard mode, and removes unused dependencies.</p>

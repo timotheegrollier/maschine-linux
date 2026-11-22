@@ -98,7 +98,9 @@ with `try_lock`.
   - **STEP mode**: silent step sequencer (no stray playback when placing/removing steps), active step LEDs + live white playhead cursor.
   - **KEYBOARD mode**: melodic playing from C3 (chromatic by default; `OCT` / `SEMI` buttons 5–8, scale on buttons 1–4 and knob 2) with sustained notes; root pads are lit.
   - **CHORDS mode**: one chord per pad, climbing like the keyboard; in a scale the chords stay in key (`1-3-5`, `1-3-5-7`…), in Chromatic they use fixed types (Triad, Minor, Sus…).
-  - **Arpeggiator**: in KEYBOARD or CHORDS, press `NOTE REPEAT` and hold notes: they play one at a time, upwards, at the rate chosen with buttons 1–7 (`OFF` on button 8).
+  - **Arpeggiator**: in KEYBOARD or CHORDS, press `NOTE REPEAT` and hold notes: they play one at a time at the rate chosen with buttons 1–7 (`OFF` on button 8); knob 7 picks the direction (up, down, up-down) and one or two octaves.
+  - **16 Velocities**: `SHIFT + FIXED VEL` spreads the selected Sound over the 16 pads, from softest (pad 1) to loudest (pad 16).
+  - **EVENTS**: knob 6 switches between editing one note and every note of the Sound at once.
 - **NOTE REPEAT & LOCK**:
   - Pressing `NOTE REPEAT` activates real-time note repetition.
   - Pressing `LOCK` latches Note Repeat mode on with illuminated physical LED feedback.

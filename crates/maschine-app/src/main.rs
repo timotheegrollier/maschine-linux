@@ -1547,7 +1547,28 @@ fn cmd_daemon(
                     let n = engine.lock().snapshot().project.scenes.len();
                     if i < n {
                         let _ = engine.lock().handle_event(EngineEvent::Scene(i));
+                    } else {
+                        let _ = engine.lock().handle_event(EngineEvent::CreateSceneAt(i));
                     }
+                }
+                MapperAction::DuplicateScene => {
+                    let _ = engine.lock().handle_event(EngineEvent::DuplicateScene);
+                }
+                MapperAction::DuplicateSceneUnique => {
+                    let _ = engine
+                        .lock()
+                        .handle_event(EngineEvent::DuplicateSceneUnique);
+                }
+                MapperAction::MakeSceneUnique => {
+                    if let Some(s) = engine.lock().snapshot().active_scene {
+                        let _ = engine.lock().handle_event(EngineEvent::MakeSceneUnique(s));
+                    }
+                }
+                MapperAction::SceneChain(indices) => {
+                    let _ = engine.lock().handle_event(EngineEvent::SceneChain(indices));
+                }
+                MapperAction::SceneStep(delta) => {
+                    let _ = engine.lock().handle_event(EngineEvent::SceneStep(delta));
                 }
                 MapperAction::PatternTrigger { group, pattern } => {
                     // Pad existant = sélection ; pad vide = création du slot

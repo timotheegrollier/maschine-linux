@@ -2,6 +2,28 @@
 
 All notable changes.
 
+## [0.11.5] - 2026-11-22
+
+### Added
+- **Workflow officiel Scènes & Patterns sur Maschine MK3** :
+  - **Écran droit dédié en mode SCENE (`render_scenes_right`)** : Matrice complète des 8 Groupes (A..H) affichant pour la scène active le pattern assigné, son nom, sa longueur en mesures, le nombre d'événements/notes et le groupe focus.
+  - **Séparation et duplication de patterns indépendants (`DuplicateSceneUnique` & `MakeSceneUnique`)** : Permet de dupliquer une scène ou de rendre ses patterns uniques, créant des copies indépendantes dans chaque groupe pour pouvoir éditer et créer des variations sans écraser la scène d'origine.
+  - **Création rapide de scènes par les pads (`CreateSceneAt`)** : En mode SCENE, appuyer sur un pad vide (1..16) crée immédiatement la scène à cet emplacement et la sélectionne.
+  - **Enchaînement de scènes multi-pads (`SceneChain`)** : Maintenir deux pads simultanément en mode SCENE enchaîne automatiquement la plage de scènes dans la timeline Song / Arranger et lance la lecture séquencée.
+  - **Contrôles hardware complets en mode SCENE** :
+    - Bouton `DUPLICATE` du MK3 duplique la scène active (et `SHIFT + DUPLICATE` duplique avec patterns uniques).
+    - Encodeur 4D et flèches directionnelles (`Left` / `Right` / `Up` / `Down`) naviguent pas-à-pas entre les scènes (`SceneStep`).
+    - Potentiomètre d'écran 5 ajuste et cycle en direct le pattern du groupe focus dans la scène active.
+  - **Touches Soft Keys 1..8 contextuelles pour les scènes** :
+    - Mode normal : `SCN <`, `SCN >`, `+ SCN` (créer), `DUPL` (dupliquer), `UNIQUE` (séparer les patterns), `SUPPR` (supprimer), `ENCHAIN` (ajouter au Song), `SONG` (basculer Arranger/Ideas).
+    - Mode Shift : `SCN 1`, `SCN DER`, `TOUT UNI`, `DUPL UNI`, `VIDER`, `SUPPR`, `ENCH TOUT`, `SONG`.
+  - **Synchronisation GUI Ideas** : Nouveaux raccourcis interactifs dans l'interface graphique ("DUPL UNIQUE", "RENDRE UNIQUE", "ENCHAÎNER TOUT") avec rafraîchissement 60 FPS immédiat synchronisé avec le contrôleur MK3.
+
+### Validation
+- 222 tests réussis (`cargo test --workspace`)
+- `cargo clippy --workspace --all-targets -- -D warnings` propre sans avertissement
+- `cargo fmt --all -- --check` propre
+
 ## [0.11.4] - 2026-11-22
 
 ### Fixed

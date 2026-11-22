@@ -99,6 +99,25 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                         if chip(ui, "DUPLIQUER", false, c.accent_cyan) {
                             let _ = app.engine.lock().handle_event(EngineEvent::DuplicateScene);
                         }
+                        if chip(ui, "DUPL UNIQUE", false, c.accent) {
+                            let _ = app
+                                .engine
+                                .lock()
+                                .handle_event(EngineEvent::DuplicateSceneUnique);
+                        }
+                        if chip(ui, "RENDRE UNIQUE", false, c.accent_cyan) {
+                            if let Some(s) = active_scene {
+                                let _ = app
+                                    .engine
+                                    .lock()
+                                    .handle_event(EngineEvent::MakeSceneUnique(s));
+                            }
+                        }
+                        if chip(ui, "ENCHAÎNER TOUT", false, c.warning) {
+                            let n = snap.project.scenes.len();
+                            let all: Vec<usize> = (0..n).collect();
+                            let _ = app.engine.lock().handle_event(EngineEvent::SceneChain(all));
+                        }
                         if chip(ui, "SUPPRIMER", false, c.error) {
                             let _ = app.engine.lock().handle_event(EngineEvent::DeleteScene);
                         }

@@ -214,6 +214,16 @@ pub enum MapperAction {
     },
     /// Déclenche une scène (mode SCENE, pads 1..16 -> scènes 0..15)
     SceneTrigger(usize),
+    /// Duplique la scène active (bouton DUPLICATE en mode SCENE)
+    DuplicateScene,
+    /// Duplique la scène active en créant de nouveaux patterns indépendants (SHIFT + DUPLICATE)
+    DuplicateSceneUnique,
+    /// Rend les patterns de la scène active indépendants
+    MakeSceneUnique,
+    /// Enchaîne plusieurs scènes consécutives dans le Song (sélection multi-pads en mode SCENE)
+    SceneChain(Vec<usize>),
+    /// Scène précédente/suivante (4D ou flèches en mode SCENE)
+    SceneStep(i32),
     /// Sélectionne un pattern du groupe focus pour la scène active (mode PATTERN)
     PatternTrigger { group: u8, pattern: usize },
     /// Duplique le pattern actif du groupe focus (bouton DUPLICATE en mode PATTERN)
@@ -1267,7 +1277,13 @@ impl HardwareMapper {
 
             // Actions d'édition
             ButtonId::Duplicate => {
-                if self.pattern_select_mode {
+                if self.scene_select_mode {
+                    if self.shift_held {
+                        actions.push(MapperAction::DuplicateSceneUnique);
+                    } else {
+                        actions.push(MapperAction::DuplicateScene);
+                    }
+                } else if self.pattern_select_mode {
                     actions.push(MapperAction::DuplicatePattern {
                         group: self.group_focus,
                     });
@@ -1369,7 +1385,9 @@ impl HardwareMapper {
         match id {
             // Navigation 4D & Flèches < >
             ButtonId::FourWayLeft | ButtonId::Left => {
-                if self.left_tab == 1 {
+                if self.scene_select_mode {
+                    actions.push(MapperAction::SceneStep(-1));
+                } else if self.left_tab == 1 {
                     // Mode MIXER : navigation 4D entre sous-vues
                     if self.mixer_mode == 1 {
                         self.mixer_mode = 0;
@@ -1396,7 +1414,9 @@ impl HardwareMapper {
                 true
             }
             ButtonId::FourWayRight | ButtonId::Right => {
-                if self.left_tab == 1 {
+                if self.scene_select_mode {
+                    actions.push(MapperAction::SceneStep(1));
+                } else if self.left_tab == 1 {
                     // Mode MIXER : navigation 4D vers les pads du groupe
                     if self.mixer_mode >= 2 {
                         self.mixer_mode = 0;
@@ -1425,7 +1445,9 @@ impl HardwareMapper {
                 true
             }
             ButtonId::FourWayUp => {
-                if self.left_tab == 3 {
+                if self.scene_select_mode {
+                    actions.push(MapperAction::SceneStep(-1));
+                } else if self.left_tab == 3 {
                     actions.push(MapperAction::BrowsePresetStep(-1));
                 } else if self.left_tab == 1 {
                     if self.mixer_mode >= 2 {
@@ -1448,7 +1470,9 @@ impl HardwareMapper {
                 true
             }
             ButtonId::FourWayDown => {
-                if self.left_tab == 3 {
+                if self.scene_select_mode {
+                    actions.push(MapperAction::SceneStep(1));
+                } else if self.left_tab == 3 {
                     actions.push(MapperAction::BrowsePresetStep(1));
                 } else if self.left_tab == 1 {
                     if self.mixer_mode < 2 {
@@ -1542,7 +1566,14 @@ impl HardwareMapper {
 
     fn handle_main_4d_encoder(&mut self, delta: i8) -> Vec<MapperAction> {
         let mut actions = Vec::new();
-        if self.left_tab == 1 {
+        if self.scene_select_mode {
+            actions.push(MapperAction::SceneStep(delta as i32));
+        } else if self.pattern_select_mode {
+            actions.push(MapperAction::PatternStep {
+                group: self.group_focus,
+                delta: delta as i32,
+            });
+        } else if self.left_tab == 1 {
             // Mode MIXER : l'encodeur 4D scrolle les pistes (banques 1-8 / 9-16 ou groupes)
             if self.mixer_mode == 0 && delta > 0 {
                 self.mixer_mode = 1;
@@ -1834,6 +1865,33 @@ impl HardwareMapper {
 
     fn handle_arrange_knobs(&mut self, idx: usize, delta: i32) -> Vec<MapperAction> {
         let mut actions = Vec::new();
+        if self.scene_select_mode {
+            match idx {
+                0 => actions.push(MapperAction::SceneStep(delta.clamp(-1, 1))),
+                4 => {
+                    let d = self.knob_steps(idx, delta, 0.03125).clamp(-1, 1);
+                    if d != 0 {
+                        actions.push(MapperAction::PatternStep {
+                            group: self.group_focus,
+                            delta: d,
+                        });
+                    }
+                }
+                5 => {
+                    let d = self.knob_steps(idx, delta, 0.03125).clamp(-1, 1);
+                    if d > 0 {
+                        actions.push(MapperAction::SetPatternBars(
+                            (self.pattern_bars * 2).min(16),
+                        ));
+                    } else if d < 0 {
+                        actions.push(MapperAction::SetPatternBars((self.pattern_bars / 2).max(1)));
+                    }
+                }
+                7 => actions.push(MapperAction::MasterVolumeDelta(delta as f32)),
+                _ => {}
+            }
+            return actions;
+        }
         if self.shift_held && (idx == 5 || idx == 6) {
             actions.push(MapperAction::CycleSoundFilterKind);
         } else {
@@ -2012,6 +2070,33 @@ impl HardwareMapper {
 
             // Modes workflow prioritaires (façon Maschine) — avant les modes de jeu.
             if self.scene_select_mode {
+                if self.duplicate_held {
+                    if self.shift_held {
+                        actions.push(MapperAction::DuplicateSceneUnique);
+                    } else {
+                        actions.push(MapperAction::DuplicateScene);
+                    }
+                    return actions;
+                }
+                let other_held = self
+                    .pad_pressed
+                    .iter()
+                    .enumerate()
+                    .any(|(i, &held)| held && i != p.pad as usize);
+                if other_held {
+                    let mut held_indices: Vec<usize> = self
+                        .pad_pressed
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, &held)| if held { Some(i) } else { None })
+                        .collect();
+                    held_indices.push(p.pad as usize);
+                    let min = *held_indices.iter().min().unwrap_or(&(p.pad as usize));
+                    let max = *held_indices.iter().max().unwrap_or(&(p.pad as usize));
+                    let range: Vec<usize> = (min..=max).collect();
+                    actions.push(MapperAction::SceneChain(range));
+                    return actions;
+                }
                 actions.push(MapperAction::SceneTrigger(p.pad as usize));
                 return actions;
             }
@@ -3445,6 +3530,33 @@ mod tests {
         assert!(!m.scene_select_mode);
         assert!(scene_off.contains(&MapperAction::SetSceneMode(false)));
         assert!(scene_off.contains(&MapperAction::NavigateView(nav::PATTERN)));
+    }
+
+    #[test]
+    fn scene_mode_duplicate_step_and_chain() {
+        let mut m = HardwareMapper::with_default();
+        let _ = press_button(&mut m, maschine_proto::ButtonId::Scene);
+        assert!(m.scene_select_mode);
+
+        // DUPLICATE en mode SCENE émet DuplicateScene
+        let dup = press_button(&mut m, maschine_proto::ButtonId::Duplicate);
+        assert_eq!(dup, vec![MapperAction::DuplicateScene]);
+
+        // Shift + DUPLICATE émet DuplicateSceneUnique
+        m.shift_held = true;
+        let dup_u = press_button(&mut m, maschine_proto::ButtonId::Duplicate);
+        assert_eq!(dup_u, vec![MapperAction::DuplicateSceneUnique]);
+        m.shift_held = false;
+
+        // Flèches gauche/droite et haut/bas émettent SceneStep
+        let left = press_button(&mut m, maschine_proto::ButtonId::FourWayLeft);
+        assert_eq!(left, vec![MapperAction::SceneStep(-1)]);
+        let right = press_button(&mut m, maschine_proto::ButtonId::FourWayRight);
+        assert_eq!(right, vec![MapperAction::SceneStep(1)]);
+        let up = press_button(&mut m, maschine_proto::ButtonId::FourWayUp);
+        assert_eq!(up, vec![MapperAction::SceneStep(-1)]);
+        let down = press_button(&mut m, maschine_proto::ButtonId::FourWayDown);
+        assert_eq!(down, vec![MapperAction::SceneStep(1)]);
     }
 
     #[test]

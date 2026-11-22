@@ -2629,6 +2629,178 @@ pub fn render_scenes_left(snap: &EngineSnapshot) -> DisplayFrame {
     frame
 }
 
+/// Écran droit — vue SCENES : matrice Groupes × Patterns pour la scène active.
+#[must_use]
+pub fn render_scenes_right(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::new();
+    let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
+
+    let active_idx = snap.active_scene.unwrap_or(0);
+    let scene_opt = snap.project.scenes.get(active_idx);
+    let scene_name = scene_opt.map(|s| s.name.as_str()).unwrap_or("--");
+    let n_active_groups = scene_opt
+        .map(|s| s.patterns.iter().filter(|p| p.is_some()).count())
+        .unwrap_or(0);
+    let n_sections = snap
+        .project
+        .song
+        .iter()
+        .filter(|s| s.scene == active_idx)
+        .count();
+
+    header(
+        &mut frame,
+        &p,
+        snap,
+        "MATRICE SCÈNE",
+        &format!(
+            "SCENE {} \"{}\" | {} GRP | {} SEC",
+            active_idx + 1,
+            trunc(scene_name, 12),
+            n_active_groups,
+            n_sections
+        ),
+    );
+
+    // Titres de colonnes
+    draw_text(&mut frame, 8, 30, "GROUPE", p.muted, p.bg);
+    draw_text(&mut frame, 120, 30, "PATTERN ASSIGNÉ", p.muted, p.bg);
+    draw_text(&mut frame, 310, 30, "MESURES", p.muted, p.bg);
+    draw_text(&mut frame, 390, 30, "NOTES", p.muted, p.bg);
+    fill_rect(&mut frame, 0, 42, SCR_W, 1, p.border);
+
+    let mut y = 45usize;
+    for gi in 0..8usize {
+        let focus = gi == snap.group_focus as usize;
+        let row_bg = if focus { p.panel2 } else { p.panel };
+        let outline_col = if focus { p.accent } else { p.border };
+        fill_rect(&mut frame, 6, y, SCR_W - 12, 16, row_bg);
+        draw_rect_outline(&mut frame, 6, y, SCR_W - 12, 16, outline_col);
+        if focus {
+            fill_rect(&mut frame, 6, y, 3, 16, p.accent);
+        }
+
+        draw_text(
+            &mut frame,
+            14,
+            y + 2,
+            &format!(
+                "{} {}",
+                group_letter(gi as u8),
+                trunc(&group_name(snap, gi), 8)
+            ),
+            if focus { p.white } else { p.dim },
+            row_bg,
+        );
+
+        let pat_info = scene_opt
+            .and_then(|s| s.patterns.get(gi).copied().flatten())
+            .and_then(|pi| {
+                snap.project
+                    .groups
+                    .get(gi)
+                    .and_then(|g| g.patterns.get(pi))
+                    .map(|pat| (pi, pat))
+            });
+
+        match pat_info {
+            Some((pi, pat)) => {
+                draw_text(
+                    &mut frame,
+                    120,
+                    y + 2,
+                    &format!("P{:02} {}", pi + 1, trunc(&pat.name, 13)),
+                    if focus { p.cyan } else { p.white },
+                    row_bg,
+                );
+                draw_text(
+                    &mut frame,
+                    310,
+                    y + 2,
+                    &format!("{}m", pat.length.bars.max(1)),
+                    p.dim,
+                    row_bg,
+                );
+                draw_text(
+                    &mut frame,
+                    390,
+                    y + 2,
+                    &format!("{:>3}ev", pat.events.len().min(999)),
+                    p.muted,
+                    row_bg,
+                );
+            }
+            None => {
+                draw_text(
+                    &mut frame,
+                    120,
+                    y + 2,
+                    "-- aucun pattern (muet) --",
+                    p.muted,
+                    row_bg,
+                );
+            }
+        }
+        y += 17;
+    }
+
+    draw_text(
+        &mut frame,
+        8,
+        y + 2,
+        "GROUP A-H = FOCUS | KNOB 5 = PATTERN | SOFT 5 = UNIQUE",
+        p.muted,
+        p.bg,
+    );
+
+    let active_pat_bars = focus_group(snap)
+        .and_then(|g| {
+            let pi = scene_opt?
+                .patterns
+                .get(snap.group_focus as usize)?
+                .as_ref()?;
+            g.patterns.get(*pi)
+        })
+        .map(|p| p.length.bars as f32)
+        .unwrap_or(2.0);
+    let s_db = focus_sound(snap).map(|s| s.volume_db).unwrap_or(0.0);
+    let slots = [
+        Some((
+            "5:PATTERN",
+            focus_group(snap)
+                .and_then(|_g| {
+                    let pi = scene_opt?
+                        .patterns
+                        .get(snap.group_focus as usize)?
+                        .as_ref()?;
+                    Some(format!("P{}", pi + 1))
+                })
+                .unwrap_or_else(|| "--".to_string()),
+            0.5,
+            p.cyan,
+        )),
+        Some((
+            "6:LONGUEUR",
+            format!("{:.0} MES", active_pat_bars),
+            (active_pat_bars / 8.0).clamp(0.0, 1.0),
+            p.cyan,
+        )),
+        Some(("7:VOL SND", fmt_db(s_db), db_norm(s_db), p.cyan)),
+        Some((
+            "8:MASTER",
+            format!("{:.0}%", snap.master_volume * 100.0),
+            snap.master_volume,
+            p.accent,
+        )),
+    ];
+    encoder_row(&mut frame, &p, &slots);
+
+    let mut active = [false; 8];
+    active[7] = snap.song_mode;
+    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    frame
+}
+
 // ── MIXER ──────────────────────────────────────────────────────────────
 
 fn render_pad_mixer_strips(
@@ -6814,6 +6986,8 @@ pub fn render_screens_with_guitar(
     };
     let right = if snap.song_mode {
         render_arranger_right(snap)
+    } else if snap.scene_mode && snap.left_tab == 0 && snap.right_tab == 0 {
+        render_scenes_right(snap)
     } else if snap.left_tab == 4 && snap.right_tab == 0 && snap.plugin_page == 0 {
         render_sampler_right(snap)
     } else if snap.left_tab == 4 && snap.right_tab == 0 && snap.plugin_page == 2 {

@@ -260,6 +260,16 @@ pub enum EngineEvent {
     },
     /// Duplique la scène active (patterns compris)
     DuplicateScene,
+    /// Duplique la scène active en créant de nouveaux patterns indépendants
+    DuplicateSceneUnique,
+    /// Rend les patterns de la scène active indépendants (clonage des patterns)
+    MakeSceneUnique(usize),
+    /// Enchaîne une liste de scènes dans le Song
+    SceneChain(Vec<usize>),
+    /// Scène précédente / suivante
+    SceneStep(i32),
+    /// Crée ou sélectionne une scène à l'index donné
+    CreateSceneAt(usize),
     /// Supprime la scène active (au moins une scène conservée)
     DeleteScene,
     /// Activer un pattern spécifique (group, pattern idx)
@@ -2761,8 +2771,106 @@ impl Engine {
                             },
                         );
                         self.active_scene = Some(insert);
+                        self.revision = self.revision.wrapping_add(1);
                     }
                 }
+            }
+            EngineEvent::DuplicateSceneUnique => {
+                let mut guard = self.project.write();
+                let project = project_mut(&mut guard);
+                if let Some(idx) = self.active_scene {
+                    if let Some(scene) = project.scenes.get(idx).cloned() {
+                        let insert = idx + 1;
+                        let mut new_scene = Scene {
+                            name: format!("{} copy", scene.name),
+                            color: scene.color,
+                            patterns: vec![None; project.groups.len()],
+                        };
+                        for (gi, pat_opt) in scene.patterns.iter().enumerate() {
+                            if let Some(pi) = *pat_opt {
+                                if let Some(group) = project.groups.get_mut(gi) {
+                                    if pi < group.patterns.len() {
+                                        let mut pat_copy = group.patterns[pi].clone();
+                                        pat_copy.name =
+                                            format!("{} (Scn {})", pat_copy.name, insert + 1);
+                                        group.patterns.push(pat_copy);
+                                        new_scene.patterns[gi] = Some(group.patterns.len() - 1);
+                                    }
+                                }
+                            }
+                        }
+                        project.scenes.insert(insert, new_scene);
+                        self.active_scene = Some(insert);
+                        self.revision = self.revision.wrapping_add(1);
+                    }
+                }
+            }
+            EngineEvent::MakeSceneUnique(scene_idx) => {
+                let mut guard = self.project.write();
+                let project = project_mut(&mut guard);
+                if let Some(scene) = project.scenes.get_mut(scene_idx) {
+                    for gi in 0..project.groups.len() {
+                        if let Some(Some(pi)) = scene.patterns.get(gi).copied() {
+                            if let Some(group) = project.groups.get_mut(gi) {
+                                if pi < group.patterns.len() {
+                                    let mut pat_copy = group.patterns[pi].clone();
+                                    pat_copy.name =
+                                        format!("{} (Scn {})", pat_copy.name, scene_idx + 1);
+                                    group.patterns.push(pat_copy);
+                                    let new_idx = group.patterns.len() - 1;
+                                    scene.patterns[gi] = Some(new_idx);
+                                }
+                            }
+                        }
+                    }
+                }
+                self.revision = self.revision.wrapping_add(1);
+            }
+            EngineEvent::SceneChain(indices) => {
+                if !indices.is_empty() {
+                    let mut guard = self.project.write();
+                    let project = project_mut(&mut guard);
+                    project.song.clear();
+                    for (sec_idx, &scene_idx) in indices.iter().enumerate() {
+                        if scene_idx < project.scenes.len() {
+                            project.song.push(Section {
+                                scene: scene_idx,
+                                length: BarsBeatsTicks::new(2, 0, 0),
+                                name: format!("Section {}", sec_idx + 1),
+                            });
+                        }
+                    }
+                    if !project.song.is_empty() {
+                        self.active_section = Some(0);
+                        self.active_scene = Some(project.song[0].scene);
+                        self.song_mode = true;
+                    }
+                    self.revision = self.revision.wrapping_add(1);
+                }
+            }
+            EngineEvent::SceneStep(delta) => {
+                let len = self.project.read().scenes.len();
+                if len > 0 {
+                    let current = self.active_scene.unwrap_or(0) as i32;
+                    let next = (current + delta).rem_euclid(len as i32) as usize;
+                    self.active_scene = Some(next);
+                    self.revision = self.revision.wrapping_add(1);
+                }
+            }
+            EngineEvent::CreateSceneAt(target) => {
+                let target = target.min(15);
+                let mut guard = self.project.write();
+                let project = project_mut(&mut guard);
+                let group_count = project.groups.len();
+                while project.scenes.len() <= target {
+                    let idx = project.scenes.len();
+                    project
+                        .scenes
+                        .push(Scene::new(&format!("Scene {}", idx + 1), group_count));
+                }
+                self.active_scene = Some(target);
+                self.song_mode = false;
+                self.revision = self.revision.wrapping_add(1);
             }
             EngineEvent::DeleteScene => {
                 let mut guard = self.project.write();
@@ -4588,6 +4696,18 @@ impl Engine {
             return ["1/32", "1/16", "1/8", "1/4", "1/2", "1/16T", "1/8T", "LOCK"];
         }
         if self.shift_held {
+            if self.scene_mode {
+                return [
+                    "SCN 1",
+                    "SCN DER",
+                    "TOUT UNI",
+                    "DUPL UNI",
+                    "VIDER",
+                    "SUPPR",
+                    "ENCH TOUT",
+                    "SONG",
+                ];
+            }
             if self.pattern_mode {
                 return [
                     "DOUBLE", "HALF", "QUANT", "HUMAN", "VIDER", "SUPPR", "4 MES", "8 MES",
@@ -4681,7 +4801,7 @@ impl Engine {
         }
         if self.scene_mode {
             return [
-                "SCN 1", "SCN 2", "SCN 3", "SCN 4", "SCN 5", "SCN 6", "SCN 7", "SCN 8",
+                "SCN <", "SCN >", "+ SCN", "DUPL", "UNIQUE", "SUPPR", "ENCHAIN", "SONG",
             ];
         }
         if self.pattern_mode {
@@ -4849,6 +4969,41 @@ impl Engine {
     }
 
     fn handle_soft_key_shift(&mut self, idx: usize) -> crate::Result<()> {
+        if self.scene_mode {
+            return match idx {
+                0 => self.handle_event(EngineEvent::Scene(0)),
+                1 => {
+                    let len = self.project.read().scenes.len();
+                    self.handle_event(EngineEvent::Scene(len.saturating_sub(1)))
+                }
+                2 => {
+                    let len = self.project.read().scenes.len();
+                    for s in 0..len {
+                        let _ = self.handle_event(EngineEvent::MakeSceneUnique(s));
+                    }
+                    Ok(())
+                }
+                3 => self.handle_event(EngineEvent::DuplicateSceneUnique),
+                4 => {
+                    if let Some(s) = self.active_scene {
+                        let mut guard = self.project.write();
+                        let proj = project_mut(&mut guard);
+                        if let Some(scene) = proj.scenes.get_mut(s) {
+                            scene.patterns.fill(None);
+                        }
+                        self.revision = self.revision.wrapping_add(1);
+                    }
+                    Ok(())
+                }
+                5 => self.handle_event(EngineEvent::DeleteScene),
+                6 => {
+                    let len = self.project.read().scenes.len();
+                    let all: Vec<usize> = (0..len).collect();
+                    self.handle_event(EngineEvent::SceneChain(all))
+                }
+                _ => self.handle_event(EngineEvent::ToggleSongMode),
+            };
+        }
         if self.pattern_mode {
             return match idx {
                 0 => self.double_pattern_length(),
@@ -5520,10 +5675,22 @@ impl Engine {
             return self.handle_soft_key_song(idx);
         }
         if self.scene_mode {
-            // Mode SCENES : les 8 soft keys sélectionnent les scènes 1..8.
-            let n_scenes = self.project.read().scenes.len();
-            let scene = idx.min(n_scenes.saturating_sub(1));
-            return self.handle_event(EngineEvent::Scene(scene));
+            return match idx {
+                0 => self.handle_event(EngineEvent::SceneStep(-1)),
+                1 => self.handle_event(EngineEvent::SceneStep(1)),
+                2 => self.handle_event(EngineEvent::AddScene),
+                3 => self.handle_event(EngineEvent::DuplicateScene),
+                4 => {
+                    if let Some(s) = self.active_scene {
+                        self.handle_event(EngineEvent::MakeSceneUnique(s))
+                    } else {
+                        Ok(())
+                    }
+                }
+                5 => self.handle_event(EngineEvent::DeleteScene),
+                6 => self.handle_event(EngineEvent::AddSection),
+                _ => self.handle_event(EngineEvent::ToggleSongMode),
+            };
         }
         if self.pattern_mode {
             return self.handle_soft_key_pattern(idx);
@@ -7115,6 +7282,104 @@ mod tests {
             eng.handle_event(EngineEvent::DeleteSection).unwrap();
         }
         assert_eq!(eng.snapshot().active_section, None);
+    }
+
+    #[test]
+    fn scene_duplicate_unique_creates_independent_patterns() {
+        let mut eng = Engine::new_demo(48000);
+        let group_idx = 0usize;
+
+        // Scène 0 active avec pattern 0
+        assert_eq!(eng.snapshot().active_scene, Some(0));
+        let init_pat_len = eng.snapshot().project.groups[group_idx].patterns.len();
+
+        // Dupliquer la scène en mode UNIQUE
+        eng.handle_event(EngineEvent::DuplicateSceneUnique).unwrap();
+        let snap = eng.snapshot();
+        assert_eq!(snap.active_scene, Some(1));
+        assert_eq!(snap.project.scenes.len(), 2);
+        // Le groupe 0 doit maintenant avoir un pattern supplémentaire (clone indépendant)
+        let new_pat_len = snap.project.groups[group_idx].patterns.len();
+        assert_eq!(new_pat_len, init_pat_len + 1);
+
+        // La nouvelle scène pointe sur le nouveau pattern
+        let scene1_pat = snap.project.scenes[1].patterns[group_idx];
+        assert_eq!(scene1_pat, Some(new_pat_len - 1));
+        // L'ancienne scène pointe toujours sur l'original
+        let scene0_pat = snap.project.scenes[0].patterns[group_idx];
+        assert_ne!(scene1_pat, scene0_pat);
+
+        // MakeSceneUnique sur scène 0
+        eng.handle_event(EngineEvent::Scene(0)).unwrap();
+        eng.handle_event(EngineEvent::MakeSceneUnique(0)).unwrap();
+        let snap2 = eng.snapshot();
+        assert_eq!(
+            snap2.project.groups[group_idx].patterns.len(),
+            new_pat_len + 1
+        );
+    }
+
+    #[test]
+    fn scene_create_at_pads_and_step_navigation() {
+        let mut eng = Engine::new_demo(48000);
+        // Créer slot scène 3 (équivalent pad 4 en mode SCENE)
+        eng.handle_event(EngineEvent::CreateSceneAt(3)).unwrap();
+        let snap = eng.snapshot();
+        assert_eq!(snap.project.scenes.len(), 4);
+        assert_eq!(snap.active_scene, Some(3));
+
+        // Navigation pas-à-pas SceneStep (+1 et -1)
+        eng.handle_event(EngineEvent::SceneStep(-1)).unwrap();
+        assert_eq!(eng.snapshot().active_scene, Some(2));
+        eng.handle_event(EngineEvent::SceneStep(1)).unwrap();
+        assert_eq!(eng.snapshot().active_scene, Some(3));
+        // Wrap
+        eng.handle_event(EngineEvent::SceneStep(1)).unwrap();
+        assert_eq!(eng.snapshot().active_scene, Some(0));
+
+        // Enchaîner scènes 0, 1, 2
+        eng.handle_event(EngineEvent::SceneChain(vec![0, 1, 2]))
+            .unwrap();
+        let snap_chain = eng.snapshot();
+        assert!(snap_chain.song_mode);
+        assert_eq!(snap_chain.project.song.len(), 3);
+        assert_eq!(snap_chain.project.song[0].scene, 0);
+        assert_eq!(snap_chain.project.song[1].scene, 1);
+        assert_eq!(snap_chain.project.song[2].scene, 2);
+    }
+
+    #[test]
+    fn scene_soft_keys_and_labels_workflow() {
+        let mut eng = Engine::new_demo(48000);
+        eng.handle_event(EngineEvent::SetSceneMode(true)).unwrap();
+        assert_eq!(
+            eng.soft_key_labels(),
+            ["SCN <", "SCN >", "+ SCN", "DUPL", "UNIQUE", "SUPPR", "ENCHAIN", "SONG"]
+        );
+
+        // Soft key 3 = + SCN : ajoute une scène
+        eng.handle_event(EngineEvent::SoftKey(3)).unwrap();
+        assert_eq!(eng.snapshot().project.scenes.len(), 2);
+
+        // Soft key 4 = DUPL : duplique
+        eng.handle_event(EngineEvent::SoftKey(4)).unwrap();
+        assert_eq!(eng.snapshot().project.scenes.len(), 3);
+
+        // Avec Shift
+        eng.handle_event(EngineEvent::SetShiftHeld(true)).unwrap();
+        assert_eq!(
+            eng.soft_key_labels(),
+            [
+                "SCN 1",
+                "SCN DER",
+                "TOUT UNI",
+                "DUPL UNI",
+                "VIDER",
+                "SUPPR",
+                "ENCH TOUT",
+                "SONG"
+            ]
+        );
     }
 
     #[test]

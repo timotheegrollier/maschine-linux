@@ -2354,7 +2354,7 @@ dependencies = [
 
 [[package]]
 name = "maschine-app"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "anyhow",
  "atomic_float",
@@ -2383,7 +2383,7 @@ dependencies = [
 
 [[package]]
 name = "maschine-dsp"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "anyhow",
  "atomic_float",
@@ -2397,7 +2397,7 @@ dependencies = [
 
 [[package]]
 name = "maschine-engine"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "anyhow",
  "cpal",
@@ -2415,7 +2415,7 @@ dependencies = [
 
 [[package]]
 name = "maschine-guitar-standalone"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "anyhow",
  "atomic_float",
@@ -2438,7 +2438,7 @@ dependencies = [
 
 [[package]]
 name = "maschine-hardware"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "alsa",
  "anyhow",
@@ -2457,7 +2457,7 @@ dependencies = [
 
 [[package]]
 name = "maschine-proto"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "serde",
  "serde_json",

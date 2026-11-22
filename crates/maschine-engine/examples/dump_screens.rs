@@ -177,6 +177,41 @@ fn main() -> std::io::Result<()> {
     eng.handle_event(E::PluginPageStep(-1)).unwrap();
     dump(&eng, "plugin_transition")?;
 
+    // Chaîne de plugins (4D) : emplacement libre, puis un effet de chaque
+    // type inséré sur le Sound, un sur le groupe, et un effet contourné.
+    eng.handle_event(E::GroupFocus(0)).unwrap();
+    eng.handle_event(E::SelectSound(0)).unwrap();
+    eng.handle_event(E::PluginSlotStep(1)).unwrap();
+    let still = |eng: &maschine_engine::Engine| {
+        let mut snap = eng.snapshot();
+        snap.page_flash = 0.0;
+        snap.status_message = None;
+        display_render::render_screens(&snap)
+    };
+    let (left, right) = still(&eng);
+    write_ppm(&dir.join("plugin_add_left.ppm"), &left)?;
+    write_ppm(&dir.join("plugin_add_right.ppm"), &right)?;
+    for (button, name) in [
+        (1u8, "filter"),
+        (2, "disto"),
+        (3, "comp"),
+        (5, "delay"),
+        (6, "reverb"),
+    ] {
+        // Emplacement libre du Sound → bouton de l'effet → l'effet est sélectionné.
+        while !eng.snapshot().plugin_slots[eng.snapshot().plugin_slot].empty {
+            eng.handle_event(E::PluginSlotStep(1)).unwrap();
+        }
+        eng.handle_event(E::SoftKey(button)).unwrap();
+        let (left, right) = still(&eng);
+        write_ppm(&dir.join(format!("plugin_fx_{name}_left.ppm")), &left)?;
+        write_ppm(&dir.join(format!("plugin_fx_{name}_right.ppm")), &right)?;
+    }
+    eng.handle_event(E::SoftKey(3)).unwrap(); // BYPASS de la réverbe
+    let (left, right) = still(&eng);
+    write_ppm(&dir.join("plugin_fx_bypass_left.ppm"), &left)?;
+    write_ppm(&dir.join("plugin_fx_bypass_right.ppm"), &right)?;
+
     // Écran de veille (fermeture / plantage).
     let (left, right) = display_render::render_shutdown_screens();
     write_ppm(&dir.join("standby_left.ppm"), &left)?;

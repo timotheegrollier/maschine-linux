@@ -14,6 +14,7 @@ pub mod plugin_pages;
 pub mod project;
 pub mod sampler;
 pub mod screen_text;
+pub mod screen_vector;
 pub mod sequencer;
 pub mod transport;
 pub mod wavetable_synth;

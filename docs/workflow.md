@@ -104,10 +104,7 @@ Both screens are rendered by the same function (`display_render::render_screens`
   - NOTE REPEAT: buttons 1..8 select rates (`1/32`, `1/24`, `1/16`, `1/12`, `1/8`, `1/6`, `1/4`, `1/2`) with LED indicator on the active rate. `LOCK` latches note repeat active.
   - SAMPLER: `SND <`, `SND >`, `ECOUTE`, `CYC FLT`, `LP`, `HP`, `BP`, `OFF` (instant 1-click filter selection from buttons 5–8 or `Shift + EncoderPush` to cycle).
   - BROWSER: `PRES <</>>`, `SND <</>>`, `LISTEN`, `LOAD`, `METRO`, `LOOP`, plus `PLUGINS` tab with Kick Synth, TB-303, Nexus Wavetable Synth, Guitar Amp, and Sampler.
-  - PLUGIN SOUND: `SND <`, `SND >`, `PAGE TB`, `LISTEN`, `APPLY`, `RESET`, `VOL -`, `VOL +`.
-  - PLUGIN KICK SYNTH: `DRV TYPE`, `FLT MODE`, `TECHNO`, `909`, `HARDCORE`, `808 SUB`, `INDUSTRIAL`, `BROWSER`. Knobs 1..8 control Tune, Decay, Snap, Sweep, Click, Drive (Shift: Filter Cutoff), Sub (Shift: Filter Reso), Volume.
-  - PLUGIN NEXUS SYNTH: `PRES <`, `PRES >`, `PIANO`, `M1 PIANO`, `808 SUB`, `REESE`, `TITANIUM`, `STRINGS`. Knobs 1..8 control Filter Cutoff, Reso, Env Amt, Drive, Attack, Decay, Sustain, Release.
-  - PLUGIN TB-303: `SAW/SQR`, `OCT -`, `OCT +`, `SLIDE`, `CLASSIC`, `SQUELCH`, `PAGE SND`, `DUB`.
+  - PLUGIN: see [PLUG-IN mode](#plug-in-mode-instruments-and-effects) below — buttons and knobs follow the selected plugin slot and its page.
   - **PLUGIN GUITAR AMP (page 2)** — deux écrans dédiés (`GUITAR AMP | PREAMP` et `GUITAR AMP | ANALYSE`) :
     - Soft keys 1–4 (écran gauche) : `AMP <`, `AMP >` (choix du modèle Vox AC30 / Fender Blackface / Tweed / High Gain), `CAB <`, `CAB >` (Vox 12 / Fender 12 / Modern 12 / Flat).
     - Soft keys 5–8 (écran droit) : `BYPASS`, `MONITOR`, `RESET`, `PAGE SND` (retour à la page PLUGIN SOUND).
@@ -121,11 +118,53 @@ Both screens are rendered by the same function (`display_render::render_screens`
 - **Fonctions Shift + pads MK3** : le séquenceur desktop affiche les mêmes libellés sur sa grille de pads lorsque Shift est tenu. Pad 1–16 (Pad 1 en bas à gauche) : `UNDO`, `REDO`, `STEP UNDO`, `STEP REDO`, `QUANTIZE`, `QUANT 50%`, `NUDGE ←`, `NUDGE →`, `CLEAR`, `CLEAR AUTO`, `COPY`, `PASTE`, `− SEMI`, `+ SEMI`, `− OCT`, `+ OCT`. Les actions ciblent le pattern focalisé; le presse-papiers copie/colle sa liste d'événements. Le projet ne possède pas encore de piste d'automation, donc `CLEAR AUTO` affiche un message d'indisponibilité.
 - **Effacer les notes d'un Sound** : dans le séquenceur desktop, clic droit ou `Maj+clic` sur l'en-tête d'une ligne (clic droit sur un pad) retire les notes de ce Sound du pattern actif. Sur MK3, `ERASE + EVENTS + pad` fait la même chose; le Sound et ses réglages restent en place.
 - **Supprimer un Sound du slot** : `SHIFT + ERASE + pad` vide le slot et retire ses événements. Sur le desktop, utiliser le menu contextuel de la ligne permet de faire l'action équivalente; cette suppression est destructive pour les réglages du Sound.
-- **Clean shutdown**: closing the GUI or stopping the daemon sends a final splash, releases the display interface without a USB reset, and sends an all-off LED report. The MK3 firmware can repaint its default logo and the pads return to their idle state.
+- **Clean shutdown and standby**: closing the GUI or stopping the daemon draws a sober standby screen (almost black, a dim `MASCHINE | MK3` word mark across both screens), releases the display interface without a USB reset, and sends an all-off LED report. A panic does the same before the process exits. The controller firmware shows its own logo until the application has drawn once: the standby screen cannot appear before the first launch, and a `SIGKILL` leaves the last frame on screen.
 - **GUI and hardware controls synchronized**: before mapping each new HID event, the application re-reads the group, sound and tabs from the engine. The first knob detent after a page change therefore already performs the new page's action.
 - **Live editing**: volume, pan, filter and ADSR changes also reach voices already playing; Group/Sound gains and pans combine without overwriting the neighboring level.
 - **LCD alignment**: each USB rectangle must have an even width, because the Bulk counter represents pairs of RGB565 pixels. Differential rectangles are expanded to the neighboring pixel; odd windows are rejected before sending. See [the hardware protocol](HARDWARE_DISPLAY_PROTOCOL.md).
 - **Real validation**: tests check encoding, rendering and control routing. An accepted USB transfer does not prove that the pixels are visible; check both LCDs on the MK3 after launching.
+
+## PLUG-IN mode: instruments and effects
+
+`PLUG-IN` shows the plugin chain of the focused Sound, like the official
+software: its instrument (Sampler, TB-303, Kick Synth or Nexus Wavetable),
+then the insert effects of the Sound, of its Group and of the Master, each
+chain ending with a free `+ effet` slot. The left screen lists the chain and
+shows the selected slot in large with a live visual; the right screen shows
+the page tabs and the page visual.
+
+| Control | Action |
+|---|---|
+| **4D encoder (turn)** | previous / next slot of the chain (GUI: `◀ SLOT` / `SLOT ▶`) |
+| **Page ◄ ►** (and 4D left/right) | previous / next parameter page of the slot (LEDs lit when a page exists) |
+| **Knobs 1–8** | the eight parameters shown above them; integer and choice parameters move one value per detent, `SHIFT` = fine |
+| **4D push** | audition the Sound |
+
+Buttons per slot:
+
+| Slot | Buttons 1–4 | Buttons 5–8 |
+|---|---|---|
+| Sampler | `SND <` `SND >` `ECOUTE` `BROWSER` | page shortcuts (`LP/HP/BP` `NOTCH` `PEAK` `OFF`, `REVERSE` `LOOP` `NORMLZ` `CYC FLT`) |
+| TB-303 / Kick / Nexus | `PRESET <` `PRESET >` `ECOUTE` `BROWSER` | page shortcuts (presets, waveform, filter modes, `OSC 2`, …) |
+| effect | `< TYPE` `TYPE >` `BYPASS` `SUPPR` | the effect's modes or quick settings |
+| `+ effet` | `FILTER` `DISTO` `COMP` | `DELAY` `REVERB` |
+
+Every effect uses the same knob layout — **knob 1 is always MIX** (dry/wet),
+the effect's own settings follow:
+
+| Effect | Knobs | Buttons 5–8 |
+|---|---|---|
+| Filter (resonant SVF) | MIX, CUTOFF, RESO, MODE | `LP` `HP` `BP` |
+| Distortion (anti-aliased, level-compensated) | MIX, DRIVE, TONE, TYPE, OUTPUT | `SOFT` `HARD` |
+| Compressor (soft knee, auto make-up) | MIX, THRESH, RATIO, ATTACK, RELEASE | `DOUX` `PUNCH` `SQUASH` |
+| Delay (stereo / ping-pong, up to 2 s) | MIX, TIME, FEEDBACK, TONE, PING-PONG | `PING-PONG` `1/16` `1/8` `1/4` (tempo-synced times) |
+| Reverb (stereo Freeverb) | MIX, SIZE, DAMP, PRE-DLY, WIDTH | `PIÈCE` `SALLE` `HALL` |
+
+Audio routing: each Sound with effects plays into its own bus, processed by
+its chain, then into its Group bus (Group effects), then into the Master
+(Master effects), then through the transparent Master limiter (ceiling
+-1 dBFS, 1 ms look-ahead). Every slot keeps its own DSP state, allocated off
+the audio thread when the chain changes.
 
 ### Official reference and current scope
 

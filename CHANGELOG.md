@@ -2,6 +2,33 @@
 
 All notable changes.
 
+## [0.13.0] - 2026-11-22
+
+### Added
+- **Tous les paramètres des plugins sur la MK3** : pages Sampler (SON, VOIX), TB-303 (MAIN, OSC & SORTIE), Kick Synth (CORPS, TIMBRE, DÉTAILS) et Nexus (FILTRE & AMP, OSCILLATEURS, UNISON & VOIX, ENV FILTRE & LFO, EFFETS) sur les deux écrans : huit paramètres par page, nom et valeur au-dessus de chaque knob, boutons 5–8 propres à la page. Les boutons `Page ◄ ►` (et le 4D gauche/droite) changent de page, leurs LEDs s'allument quand une page existe, un bandeau de transition affiche la nouvelle page. Une seule table par plugin pilote l'affichage et les knobs : ce qui est affiché est ce qui est réglé.
+- **Chaîne de plugins façon Maschine** : en PLUG-IN, l'encodeur 4D parcourt l'instrument puis les effets du Sound, du groupe et du Master ; un emplacement `+ effet` en fin de chaque chaîne insère **Filter, Distortion, Compressor, Delay ou Reverb** depuis les boutons. Sur un effet : `< TYPE`, `TYPE >`, `BYPASS`, `SUPPR` et les raccourcis de l'effet (`LP/HP/BP`, `SOFT/HARD`, `DOUX/PUNCH/SQUASH`, `PING-PONG` et temps calés sur le tempo, `PIÈCE/SALLE/HALL`) ; knob 1 toujours MIX. L'écran gauche liste la chaîne (effets contournés barrés), l'écran droit dessine l'effet (réponse du filtre, courbe de saturation et de compression, échos, décroissance). Dans la GUI : `◀ SLOT` / `SLOT ▶`.
+- **Effets réellement appliqués** : chaque Sound à effets joue dans son bus, traité puis envoyé au bus de son groupe, puis au Master. Auparavant les effets d'un Sound n'étaient jamais appliqués et ceux du groupe focalisé l'étaient au mix entier. Effets du Master enregistrés dans le projet.
+- **Limiteur Master transparent** (plafond -1 dBFS, anticipation 1 ms) à la place du waveshaper qui saturait tout signal au-dessus de -3 dBFS.
+- **Écran de veille** sobre (presque noir, mot-symbole discret) à la fermeture et en cas de plantage (hook de panique).
+- **Système de design commun** écrans + GUI ([docs/design.md](docs/design.md)) : police Barlow Semi Condensed (OFL) embarquée, couleur d'accent = couleur du groupe focalisé, formes lissées par `tiny-skia` avec tramage RGB565.
+
+### Changed
+- **Écrans MK3 redessinés** : noir des pixels éteints, libellés de boutons en pastille couleur du groupe quand ils sont allumés, valeurs en grand, barres de valeur arrondies, courbes (enveloppes, filtres, formes d'onde) lissées avec fondu, texte proportionnel partout.
+- **GUI redessinée** façon logiciel Maschine : un seul en-tête (transport, position et tempo en grand, modes, master, panneaux), rail des vues avec les huit groupes en couleur, **pont MK3 en bas** (les deux écrans côte à côte avec leurs boutons et knobs, groupes et pads à droite), redimensionnable et repliable. Rien n'est coupé de 420 × 340 au plein écran : les rangées passent à la ligne, les panneaux se replient, tout défile.
+- **Effets réécrits** : filtre SVF topologie TPT à coupure lissée, distorsion anti-repliement (ADAA) à gain compensé avec tonalité et sortie, compresseur à genou doux et compensation automatique, delay stéréo/ping-pong jusqu'à 2 s à temps lissé et réinjection filtrée, réverbe Freeverb stéréo avec pré-délai et largeur ; un état DSP par slot, alloué hors du thread audio.
+- **Sampler** : interpolation Hermite 4 points (transpositions sans grain métallique). **Nexus** : scie et carré anti-repliés (PolyBLEP).
+- **Pads** : un pad frappé ou tenu s'allume dans la couleur pleine de son Sound (plus de flash blanc).
+
+### Fixed
+- **Ampli guitare qui saturait et sonnait mal** : le suréchantillonneur polyphase lisait une entrée sur quatre (filtre d'interpolation faux, -12 dB) ; corrigé. GAIN en dB (-6 à +36 dB) avec compensation de niveau tenant compte de la saturation, étages moins chauds, plus de `tanh` final, baffle en Butterworth 24 dB/oct. Du clair au saturé, le niveau reste dans 12 dB et ne clippe jamais.
+- **Notes tenues coupées** : un pad tenu fermement sans nouveau rapport HID n'est plus relâché après le délai de silence (repli à 60 s) ; relâcher un pad ne coupe plus le synthé joué par un autre pad de même hauteur ; entrer dans un menu ne fait plus oublier un pad tenu ; le clavier GUI et les pads GUI en mode KEYBOARD tiennent la note tant que le bouton est enfoncé.
+- En-tête GUI qui se chevauchait ou prenait toute la hauteur sur fenêtre étroite ; pont MK3 qui empilait des écrans minuscules.
+
+### Validation
+- `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked` (253 tests) et `cargo check -p maschine-engine --no-default-features` au vert.
+- Nouveaux tests : chaîne de plugins (`plugin_chain_inserts_edits_and_bypasses_effects_from_soft_keys`), inserts Sound/Groupe/Master audibles (`sound_group_and_master_inserts_process_the_audio`), sept tests d'effets, limiteur, Hermite, suréchantillonneur et niveaux de l'ampli, tenue d'un pad sans rapports, accent suivant le groupe, formes lissées.
+- Rendu de tous les écrans (dont chaque effet, l'emplacement `+ effet`, un effet contourné et la veille) via `dump_screens` ; captures de la GUI sous Xvfb en 1920×1080, 1366×768, 1024×640 et 800×600.
+
 ## [0.12.0] - 2026-11-22
 
 ### Added

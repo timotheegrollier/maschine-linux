@@ -1,6 +1,6 @@
 //! Rendu de texte et éléments UI pour les 2 écrans 480×272 de la MK3.
 
-use crate::screen_text;
+use crate::{screen_text, screen_vector};
 use maschine_proto::display::{DisplayFrame, DisplayId, DisplayPixel};
 
 /// Dessine un caractère dans sa cellule 8×16 (fond `bg`, glyphe lissé).
@@ -101,7 +101,10 @@ struct Pal {
     dim: DisplayPixel,
     muted: DisplayPixel,
     white: DisplayPixel,
+    /// Couleur du groupe focalisé (celle de ses pads) : sélection, état actif.
     accent: DisplayPixel,
+    /// Texte posé sur `accent` (noir ou blanc selon sa clarté).
+    ink: DisplayPixel,
     cyan: DisplayPixel,
     green: DisplayPixel,
     red: DisplayPixel,
@@ -110,23 +113,40 @@ struct Pal {
 }
 
 impl Pal {
-    // Mêmes teintes que le thème de la GUI (`gui::theme::MachColors`) :
-    // graphite neutre, un orange d'accent, cyan pour les infos.
+    /// Palette par défaut (accent orange) — écrans sans projet.
     fn new() -> Self {
+        Self::with_accent(DisplayPixel::from_rgb(255, 154, 31))
+    }
+
+    /// Palette d'un écran : noir des pixels éteints, graphite pour la
+    /// structure, et un accent qui prend la couleur du groupe focalisé — la
+    /// même que ses pads : on sait toujours dans quel groupe on travaille.
+    fn of(snap: &EngineSnapshot) -> Self {
+        focus_group(snap)
+            .and_then(|g| maschine_proto::PaletteIndex::from_u8(g.color))
+            .map(|c| c.to_rgb())
+            .filter(|&(r, g, b)| u16::from(r) + u16::from(g) + u16::from(b) > 60)
+            .map_or_else(Self::new, |(r, g, b)| {
+                Self::with_accent(screen_color(r, g, b))
+            })
+    }
+
+    fn with_accent(accent: DisplayPixel) -> Self {
         Self {
-            bg: DisplayPixel::from_rgb(14, 14, 16),
-            panel: DisplayPixel::from_rgb(30, 30, 33),
-            panel2: DisplayPixel::from_rgb(42, 42, 47),
-            border: DisplayPixel::from_rgb(56, 56, 62),
-            dim: DisplayPixel::from_rgb(162, 162, 171),
-            muted: DisplayPixel::from_rgb(108, 108, 117),
-            white: DisplayPixel::WHITE,
-            accent: DisplayPixel::from_rgb(255, 154, 31),
-            cyan: DisplayPixel::from_rgb(38, 198, 245),
-            green: DisplayPixel::from_rgb(60, 207, 126),
-            red: DisplayPixel::from_rgb(240, 82, 77),
-            yellow: DisplayPixel::from_rgb(242, 178, 51),
-            track: DisplayPixel::from_rgb(40, 40, 45),
+            bg: DisplayPixel::from_rgb(0, 0, 0),
+            panel: DisplayPixel::from_rgb(20, 22, 26),
+            panel2: DisplayPixel::from_rgb(32, 35, 41),
+            border: DisplayPixel::from_rgb(46, 50, 58),
+            dim: DisplayPixel::from_rgb(166, 172, 183),
+            muted: DisplayPixel::from_rgb(104, 110, 122),
+            white: DisplayPixel::from_rgb(240, 242, 245),
+            accent,
+            ink: ink_for(accent),
+            cyan: DisplayPixel::from_rgb(72, 200, 240),
+            green: DisplayPixel::from_rgb(52, 214, 110),
+            red: DisplayPixel::from_rgb(255, 72, 62),
+            yellow: DisplayPixel::from_rgb(255, 184, 64),
+            track: DisplayPixel::from_rgb(36, 39, 46),
         }
     }
 
@@ -139,6 +159,26 @@ impl Pal {
         } else {
             self.green
         }
+    }
+}
+
+/// Couleur de LED (saturée) → couleur d'écran lisible sur noir : les teintes
+/// sombres (bleu, violet) sont éclaircies, les autres à peine adoucies.
+fn screen_color(r: u8, g: u8, b: u8) -> DisplayPixel {
+    let luma = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
+    let t = if luma < 110.0 { 0.38 } else { 0.12 };
+    let lift = |c: u8| (f32::from(c) + (255.0 - f32::from(c)) * t) as u8;
+    DisplayPixel::from_rgb(lift(r), lift(g), lift(b))
+}
+
+/// Texte lisible sur un fond `bg` : noir sur les couleurs claires.
+fn ink_for(bg: DisplayPixel) -> DisplayPixel {
+    let (r, g, b) = rgb565_to_rgb(bg);
+    let luma = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
+    if luma > 120.0 {
+        DisplayPixel::from_rgb(0, 0, 0)
+    } else {
+        DisplayPixel::from_rgb(245, 246, 248)
     }
 }
 
@@ -252,7 +292,9 @@ fn fmt_len(ticks: u32) -> String {
     format!("{ticks}t")
 }
 
-/// Texte sur la grille 8×16 agrandie `scale` fois (titres, gros chiffres).
+/// Texte posé sur la grille historique (cellules 8×16 peintes en `bg`, pour
+/// que les mises en page en `len × 8` restent valables) ; le texte lui-même
+/// est en Barlow, plus étroite que la cellule : il ne déborde pas.
 fn draw_text_scaled(
     frame: &mut DisplayFrame,
     x: usize,
@@ -265,48 +307,27 @@ fn draw_text_scaled(
     let scale = scale.max(1);
     let cells = text.chars().count();
     fill_rect(frame, x, y, cells * 8 * scale, 16 * scale, bg);
-    let px = screen_text::mono_px(8.0 * scale as f32);
-    let baseline = y as f32 + screen_text::ascent(screen_text::Face::Mono, px);
+    let k = scale as f32;
     screen_text::draw(
         frame,
         x as f32,
-        baseline,
+        y as f32 + 12.5 * k,
         text,
-        screen_text::Face::Mono,
-        px,
+        screen_text::Face::Sans,
+        14.5 * k,
         fg,
-        1.15,
+        1.0,
     );
 }
 
-/// Tracé de segment (Bresenham).
-fn line(frame: &mut DisplayFrame, mut x0: i32, mut y0: i32, x1: i32, y1: i32, color: DisplayPixel) {
-    let fw = frame.w as usize;
-    let fh = frame.h as usize;
-    let dx = (x1 - x0).abs();
-    let dy = -(y1 - y0).abs();
-    let sx = if x0 < x1 { 1 } else { -1 };
-    let sy = if y0 < y1 { 1 } else { -1 };
-    let mut err = dx + dy;
-    loop {
-        if x0 >= 0 && y0 >= 0 && (x0 as usize) < fw && (y0 as usize) < fh {
-            let idx = y0 as usize * fw + x0 as usize;
-            if idx < frame.pixels.len() {
-                frame.pixels[idx] = color;
-            }
-        }
-        if x0 == x1 && y0 == y1 {
-            break;
-        }
-        let e2 = 2 * err;
-        if e2 >= dy {
-            err += dy;
-            x0 += sx;
-        }
-        if e2 <= dx {
-            err += dx;
-            y0 += sy;
-        }
+/// Segment lissé de 1 px (net à l'horizontale et à la verticale).
+fn line(frame: &mut DisplayFrame, x0: i32, y0: i32, x1: i32, y1: i32, color: DisplayPixel) {
+    let pts = [
+        (x0 as f32 + 0.5, y0 as f32 + 0.5),
+        (x1 as f32 + 0.5, y1 as f32 + 0.5),
+    ];
+    if let Some(path) = screen_vector::polyline(&pts) {
+        screen_vector::stroke(frame, &path, 1.2, screen_vector::Paint::Solid(color, 1.0));
     }
 }
 
@@ -319,7 +340,8 @@ fn header(frame: &mut DisplayFrame, p: &Pal, snap: &EngineSnapshot, title: &str,
     header_colored(frame, p, snap, title, right, p.accent);
 }
 
-/// Bandeau titre dont le liseré gauche prend une couleur (Sound, groupe).
+/// Bandeau de contexte sous les libellés de boutons : repère de couleur
+/// (Sound ou groupe), titre, info de contexte, activité des pads, VU master.
 fn header_colored(
     frame: &mut DisplayFrame,
     p: &Pal,
@@ -330,63 +352,52 @@ fn header_colored(
 ) {
     use screen_text::Face;
     const H: usize = 26;
-    fill_rect(frame, 0, 0, SCR_W, H, p.panel);
-    fill_rect(frame, 0, 0, 4, H, color);
-    let title = fit_text(title, Face::Sans, 17.0, 300.0);
-    let mut left_end = 12.0 + label(frame, 12.0, 19.0, &title, 17.0, p.white, 1.8);
+    fill_rect(frame, 0, 0, SCR_W, H, p.bg);
+    screen_vector::fill_round_rect(frame, 8.0, 6.0, 4.0, 14.0, 2.0, color);
+    let title = fit_text(title, Face::Bold, 18.0, 290.0);
+    let mut left_end = 18.0 + bold(frame, 18.0, 19.5, &title, 18.0, p.white);
 
-    // Vélocité fixe : niveau visible en permanence quand FIXED VEL est actif
-    // (réglable au 4D sur la MK3).
+    // Vélocité fixe : niveau visible en permanence (réglable au 4D).
     if snap.fixed_velocity {
         let text = format!("VEL {} FIXE", snap.fixed_velocity_level);
-        left_end += 10.0 + label(frame, left_end + 10.0, 18.0, &text, 13.0, p.accent, 1.6);
+        left_end += 10.0 + bold(frame, left_end + 10.0, 18.5, &text, 13.0, p.accent);
     }
 
-    // Feedback temporaire (sauvegarde/chargement) — prioritaire et visible.
+    // Retour d'action (sauvegarde, effet ajouté…) : prioritaire et visible.
     if let Some(msg) = snap.status_message.as_deref() {
-        let msg = fit_text(msg, Face::Sans, 14.0, 250.0);
-        let w = screen_text::width(&msg, Face::Sans, 14.0).ceil() as usize + 16;
-        let mx = SCR_W.saturating_sub(w + 6);
-        fill_rect(frame, mx, 3, w, H - 6, p.accent);
-        label(frame, mx as f32 + 8.0, 18.0, &msg, 14.0, p.bg, 1.7);
+        let msg = fit_text(msg, Face::Bold, 14.0, 250.0);
+        let w = screen_text::width(&msg, Face::Bold, 14.0).ceil() + 18.0;
+        let mx = SCR_W as f32 - w - 6.0;
+        screen_vector::fill_round_rect(frame, mx, 4.0, w, H as f32 - 8.0, 4.0, p.accent);
+        bold(frame, mx + 9.0, 18.0, &msg, 14.0, p.ink);
         fill_rect(frame, 0, H, SCR_W, 1, p.border);
         return;
     }
 
-    // Ruban d'activité 16 pads (segments 2 px) — la « vie » du morceau.
-    let seg_w = 2usize;
-    let gap = 1usize;
+    // Activité des 16 pads (flashs du jeu et du séquenceur).
+    let (seg_w, gap) = (2usize, 1usize);
     let strip_w = 16 * seg_w + 15 * gap;
     let strip_x = SCR_W - 10 - strip_w;
-    let strip_y = 8usize;
     for (i, activity) in snap.pad_activity.iter().enumerate() {
         let x = strip_x + i * (seg_w + gap);
         let act = activity.clamp(0.0, 1.0);
         let col = if act > 0.02 {
-            let base = hue_color(i);
-            // Intensité ≈ vélocité : on éclaircit le segment actif.
-            let (r, g, b) = rgb565_to_rgb(base);
-            let f = 0.35 + 0.65 * act;
-            DisplayPixel::from_rgb(
-                (r as f32 * f) as u8,
-                (g as f32 * f) as u8,
-                (b as f32 * f) as u8,
-            )
+            mix(p.track, hue_color(i), 0.35 + 0.65 * act)
         } else {
             p.track
         };
-        fill_rect(frame, x, strip_y, seg_w, H - strip_y - 6, col);
+        fill_rect(frame, x, 9, seg_w, 9, col);
     }
 
-    // Mini VU master vertical (niveau + peak hold).
+    // Mini VU master (niveau + crête).
     let vu_x = strip_x - 10;
     vu_v(
         frame,
         p,
         vu_x,
-        5,
-        5,
-        H - 11,
+        6,
+        4,
+        H - 12,
         snap.master_level,
         snap.master_peak,
     );
@@ -395,11 +406,12 @@ fn header_colored(
     let room = (vu_x as f32 - 10.0 - (left_end + 14.0)).max(0.0);
     let txt = fit_text(right, Face::Sans, 14.0, room);
     let w = screen_text::width(&txt, Face::Sans, 14.0);
-    label(frame, vu_x as f32 - 10.0 - w, 18.0, &txt, 14.0, p.dim, 1.5);
+    label(frame, vu_x as f32 - 10.0 - w, 18.5, &txt, 14.0, p.dim, 1.0);
     fill_rect(frame, 0, H, SCR_W, 1, p.border);
 }
 
-/// Texte Ubuntu lissé (titres, libellés) ; renvoie la largeur dessinée.
+/// Texte Barlow lissé ; renvoie la largeur dessinée. Un `weight` ≥ 1,75
+/// (anciens appels « gras ») choisit la graisse SemiBold.
 fn label(
     frame: &mut DisplayFrame,
     x: f32,
@@ -409,20 +421,43 @@ fn label(
     color: DisplayPixel,
     weight: f32,
 ) -> f32 {
+    let face = if weight >= 1.75 {
+        screen_text::Face::Bold
+    } else {
+        screen_text::Face::Sans
+    };
+    screen_text::draw(frame, x, baseline, text, face, px, color, 1.0)
+}
+
+/// Texte SemiBold (titres, valeurs) ; renvoie la largeur dessinée.
+fn bold(
+    frame: &mut DisplayFrame,
+    x: f32,
+    baseline: f32,
+    text: &str,
+    px: f32,
+    color: DisplayPixel,
+) -> f32 {
     screen_text::draw(
         frame,
         x,
         baseline,
         text,
-        screen_text::Face::Sans,
+        screen_text::Face::Bold,
         px,
         color,
-        weight,
+        1.0,
     )
 }
 
-/// Tronque `text` (avec « … ») pour tenir dans `max_w` pixels.
+/// Tronque `text` (avec « … ») pour tenir dans `max_w` pixels. Mesuré en
+/// SemiBold (la plus large) : le texte tient quelle que soit sa graisse.
 fn fit_text(text: &str, face: screen_text::Face, px: f32, max_w: f32) -> String {
+    let face = if face == screen_text::Face::Sans {
+        screen_text::Face::Bold
+    } else {
+        face
+    };
     if screen_text::width(text, face, px) <= max_w {
         return text.to_string();
     }
@@ -450,10 +485,10 @@ fn rgb565_to_rgb(px: DisplayPixel) -> (u8, u8, u8) {
     )
 }
 
-/// Panneau sombre avec bordure (bloc de contenu).
+/// Bloc de contenu : fond graphite aux coins arrondis.
 fn panel(frame: &mut DisplayFrame, p: &Pal, x: usize, y: usize, w: usize, h: usize) {
-    fill_rect(frame, x, y, w, h, p.panel);
-    draw_rect_outline(frame, x, y, w, h, p.border);
+    fill_rect(frame, x, y, w, h, p.bg);
+    screen_vector::fill_round_rect(frame, x as f32, y as f32, w as f32, h as f32, 4.0, p.panel);
 }
 
 /// Hauteur de la bande des libellés de boutons, en haut de chaque écran.
@@ -463,6 +498,9 @@ pub const SOFT_KEYS_H: usize = FOOTER_H + 2;
 /// écran. Sur la MK3 les boutons 1–8 sont au-dessus des écrans et les knobs
 /// en dessous : la bande, tracée en bas, remonte tout en haut sous les
 /// boutons et le reste descend d'autant (encodeurs juste au-dessus des knobs).
+///
+/// Bouton actif : pastille pleine couleur du groupe ; disponible : texte
+/// clair ; sans fonction : rien (et LED éteinte).
 fn finish_soft_keys(
     frame: &mut DisplayFrame,
     p: &Pal,
@@ -470,44 +508,50 @@ fn finish_soft_keys(
     start: usize,
     active: &[bool; 8],
 ) {
+    use screen_text::Face;
     let y = SCR_H - FOOTER_H;
     fill_rect(frame, 0, y - 2, SCR_W, SOFT_KEYS_H, p.bg);
     for i in 0..4 {
         let idx = start + i;
-        let x = i * 120;
-        // Repère discret entre deux boutons.
+        let x = (i * 120) as f32;
         if i > 0 {
-            fill_rect(frame, x, y + 4, 1, FOOTER_H - 12, p.border);
+            fill_rect(frame, i * 120, y + 6, 1, 11, p.border);
         }
         let text = labels[idx];
-        // Bouton sans fonction : rien d'affiché (et LED éteinte).
         if text.is_empty() {
             continue;
         }
         let on = active.get(idx).copied().unwrap_or(false);
-        let (bg, fg) = if on {
-            (p.accent, p.bg)
-        } else {
-            (p.panel, p.dim)
-        };
-        fill_rect(frame, x + 3, y, 114, FOOTER_H - 4, bg);
-        let text = fit_text(text, screen_text::Face::Sans, 15.0, 106.0);
-        let w = screen_text::width(&text, screen_text::Face::Sans, 15.0);
-        let weight = if on { 1.9 } else { 1.5 };
-        label(
+        let face = if on { Face::Bold } else { Face::Sans };
+        let text = fit_text(text, face, 15.0, 104.0);
+        let w = screen_text::width(&text, face, 15.0);
+        if on {
+            screen_vector::fill_round_rect(
+                frame,
+                x + 5.0,
+                y as f32 + 1.0,
+                110.0,
+                20.0,
+                4.0,
+                p.accent,
+            );
+        }
+        let fg = if on { p.ink } else { p.white };
+        screen_text::draw(
             frame,
-            x as f32 + 60.0 - w / 2.0,
-            y as f32 + 15.0,
+            x + 60.0 - w / 2.0,
+            y as f32 + 16.0,
             &text,
+            face,
             15.0,
             fg,
-            weight,
+            1.0,
         );
     }
     frame.pixels.rotate_right(SOFT_KEYS_H * SCR_W);
 }
 
-/// Barre horizontale de valeur avec graduations (25/50/75 %).
+/// Barre horizontale de valeur (piste arrondie, remplissage, curseur).
 #[allow(clippy::too_many_arguments)] // helpers de dessin : coordonnées explicites
 fn bar_h(
     frame: &mut DisplayFrame,
@@ -519,17 +563,12 @@ fn bar_h(
     frac: f32,
     color: DisplayPixel,
 ) {
-    fill_rect(frame, x, y, w, h, p.track);
-    // Graduations discrètes sous la barre (repères de réglage).
-    for q in [25usize, 50, 75] {
-        let tick = x + w * q / 100;
-        fill_rect(frame, tick, y + h - 2, 1, 2, p.bg);
-    }
-    let f = (frac.clamp(0.0, 1.0) * w as f32) as usize;
-    if f > 0 {
-        fill_rect(frame, x, y, f.min(w), h, color);
-        // Liseré clair sur le dessus de la barre (relief).
-        fill_rect(frame, x, y, f.min(w), 1, p.white);
+    let (xf, yf, wf, hf) = (x as f32, y as f32, w as f32, h as f32);
+    let r = hf / 2.0;
+    screen_vector::fill_round_rect(frame, xf, yf, wf, hf, r, p.track);
+    let f = frac.clamp(0.0, 1.0) * wf;
+    if f > 0.5 {
+        screen_vector::fill_round_rect(frame, xf, yf, f.max(hf), hf, r, color);
     }
 }
 
@@ -611,12 +650,26 @@ fn pill(
     color: DisplayPixel,
     on: bool,
 ) {
-    let bg = if on { color } else { p.panel2 };
-    let fg = if on { p.bg } else { p.muted };
-    fill_rect(frame, x, y, w, 16, bg);
-    draw_rect_outline(frame, x, y, w, 16, if on { color } else { p.border });
-    let tx = x + (w.saturating_sub(label.len() * 8)) / 2;
-    draw_text(frame, tx, y, label, fg, bg);
+    use screen_text::Face;
+    let (bg, fg, face) = if on {
+        (color, ink_for(color), Face::Bold)
+    } else {
+        (p.panel2, p.muted, Face::Sans)
+    };
+    fill_rect(frame, x, y, w, 16, p.bg);
+    screen_vector::fill_round_rect(frame, x as f32, y as f32, w as f32, 16.0, 3.0, bg);
+    let text = fit_text(label, face, 13.0, w as f32 - 4.0);
+    let tw = screen_text::width(&text, face, 13.0);
+    screen_text::draw(
+        frame,
+        x as f32 + (w as f32 - tw) / 2.0,
+        y as f32 + 12.5,
+        &text,
+        face,
+        13.0,
+        fg,
+        1.0,
+    );
 }
 
 /// Texte centré horizontalement.
@@ -635,56 +688,34 @@ pub fn knob_slot_center(i: usize) -> usize {
     8 + i * 116 + 55
 }
 
-/// Rangée de 4 encodeurs (bas de chaque écran, au-dessus des knobs) : nom du
-/// paramètre, valeur en grand, barre fine — comme les écrans de la MK3.
+/// Rangée de 4 paramètres (bas de chaque écran, juste au-dessus des knobs) :
+/// nom, valeur en grand, barre de valeur couleur du paramètre.
 fn encoder_row(frame: &mut DisplayFrame, p: &Pal, slots: &[EncSlot<'_>; 4]) {
+    use screen_text::Face;
     let y = SCR_H - FOOTER_H - ENC_H - 6;
-    fill_rect(frame, 0, y, SCR_W, ENC_H, p.bg);
+    fill_rect(frame, 0, y, SCR_W, ENC_H + 6, p.bg);
     for (i, slot) in slots.iter().enumerate() {
         let x = knob_slot_center(i) - 55;
         if i > 0 {
-            fill_rect(frame, x - 3, y + 6, 1, ENC_H - 12, p.border);
+            fill_rect(frame, x - 3, y + 8, 1, ENC_H - 14, p.border);
         }
         let Some((name, value, norm, color)) = slot else {
             continue;
         };
         // Le numéro de knob (« 1: ») n'est pas affiché : le knob est dessous.
         let name = name.split_once(':').map_or(*name, |(_, n)| n);
-        fill_rect(frame, x, y + 3, 3, 12, *color);
-        let name = fit_text(name, screen_text::Face::Sans, 13.0, 100.0);
-        label(
-            frame,
-            x as f32 + 8.0,
-            y as f32 + 14.0,
-            &name,
-            13.0,
-            p.dim,
-            1.5,
-        );
-        let value = fit_text(value, screen_text::Face::Sans, 19.0, 104.0);
-        label(
-            frame,
-            x as f32 + 6.0,
-            y as f32 + 35.0,
-            &value,
-            19.0,
-            p.white,
-            1.5,
-        );
-        let bw = 104usize;
-        fill_rect(frame, x + 3, y + 41, bw, 3, p.track);
-        let f = (norm.clamp(0.0, 1.0) * bw as f32) as usize;
-        if f > 0 {
-            fill_rect(frame, x + 3, y + 41, f.min(bw), 3, *color);
-            fill_rect(
-                frame,
-                x + 3 + f.min(bw).saturating_sub(2),
-                y + 40,
-                2,
-                5,
-                p.white,
-            );
+        let (xf, yf) = (x as f32 + 3.0, y as f32);
+        let name = fit_text(name, Face::Sans, 13.0, 104.0);
+        label(frame, xf, yf + 14.0, &name, 13.0, p.dim, 1.0);
+        let value = fit_text(value, Face::Bold, 21.0, 104.0);
+        bold(frame, xf, yf + 36.0, &value, 21.0, p.white);
+        let (bw, by) = (104.0, yf + 42.0);
+        screen_vector::fill_round_rect(frame, xf, by, bw, 3.0, 1.5, p.track);
+        let f = norm.clamp(0.0, 1.0) * bw;
+        if f > 0.5 {
+            screen_vector::fill_round_rect(frame, xf, by, f.max(3.0), 3.0, 1.5, *color);
         }
+        screen_vector::fill_round_rect(frame, xf + f - 1.5, by - 2.0, 3.0, 7.0, 1.5, p.white);
     }
 }
 
@@ -745,7 +776,7 @@ fn tick_step(snap: &EngineSnapshot) -> usize {
 
 // ── Sous-blocs réutilisables ───────────────────────────────────────────
 
-/// Waveform du Sound actif (enveloppe min/max par colonne).
+/// Forme d'onde d'un sample (enveloppe min/max lissée, couleur du groupe).
 fn draw_waveform(
     frame: &mut DisplayFrame,
     p: &Pal,
@@ -755,50 +786,44 @@ fn draw_waveform(
     h: usize,
     buckets: &[(f32, f32)],
 ) {
-    fill_rect(frame, x, y, w, h, p.panel);
-    draw_rect_outline(frame, x, y, w, h, p.border);
-    let cy = y + h / 2;
-    fill_rect(frame, x + 1, cy, w - 2, 1, p.track);
-    // Repères d'amplitude (±50 %) — lisibilité du niveau.
-    for q in [1usize, 3] {
-        fill_rect(frame, x + 1, y + h * q / 4, w - 2, 1, p.panel2);
-    }
+    panel(frame, p, x, y, w, h);
+    let cy = (y + h / 2) as f32;
+    fill_rect(frame, x + 6, y + h / 2, w - 12, 1, p.track);
     if buckets.is_empty() {
-        center_text(frame, y + h / 2 - 8, "AUCUN SAMPLE", p.muted, p.panel);
-        center_text(
+        let msg = "Aucun sample : BROWSER pour en charger un";
+        let mw = screen_text::width(msg, screen_text::Face::Sans, 14.0);
+        label(
             frame,
-            y + h / 2 + 10,
-            "BROWSER POUR CHARGER",
+            (x + w / 2) as f32 - mw / 2.0,
+            cy + 5.0,
+            msg,
+            14.0,
             p.muted,
-            p.panel,
+            1.0,
         );
         return;
     }
-    let n = buckets.len().max(1);
-    let half = (h / 2 - 8) as f32;
-    for (i, (mn, mx)) in buckets.iter().enumerate() {
-        let px = x + 2 + (i * (w - 4)) / n;
-        let top = cy as i32 - (mx.clamp(-1.0, 1.0) * half) as i32;
-        let bot = cy as i32 - (mn.clamp(-1.0, 1.0) * half) as i32;
-        let (t, b) = if top <= bot { (top, bot) } else { (bot, top) };
-        let t = t.max(y as i32 + 1) as usize;
-        let b = b.min((y + h) as i32 - 2) as usize;
-        if b >= t {
-            // Dégradé par amplitude : crête jaune, corps vert, bas cyan.
-            let amp = mn.abs().max(mx.abs()).clamp(0.0, 1.0);
-            let color = if amp > 0.72 {
-                p.yellow
-            } else if amp > 0.4 {
-                p.green
-            } else {
-                p.cyan
-            };
-            fill_rect(frame, px, t, 2, b - t + 1, color);
-        }
+    let n = buckets.len();
+    let half = (h as f32 / 2.0 - 8.0).max(4.0);
+    let px = |i: usize| x as f32 + 4.0 + (i as f32 / (n - 1).max(1) as f32) * (w as f32 - 8.0);
+    let mut outline: Vec<(f32, f32)> = buckets
+        .iter()
+        .enumerate()
+        .map(|(i, (_, mx))| (px(i), cy - mx.clamp(-1.0, 1.0) * half - 0.5))
+        .collect();
+    outline.extend(
+        buckets
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(i, (mn, _))| (px(i), cy - mn.clamp(-1.0, 1.0) * half + 0.5)),
+    );
+    if let Some(path) = screen_vector::polyline(&outline) {
+        screen_vector::fill(frame, &path, screen_vector::Paint::Solid(p.accent, 0.9));
     }
 }
 
-/// Courbe ADSR (A/D/S/R) avec vraies valeurs.
+/// Enveloppe ADSR (vraies durées) : surface en fondu, tracé, points.
 fn draw_adsr(
     frame: &mut DisplayFrame,
     p: &Pal,
@@ -808,92 +833,47 @@ fn draw_adsr(
     h: usize,
     adsr: &Adsr,
 ) {
-    fill_rect(frame, x, y, w, h, p.panel);
-    draw_rect_outline(frame, x, y, w, h, p.border);
-
+    use screen_vector::Paint;
+    panel(frame, p, x, y, w, h);
     let a = (adsr.attack_ms / 500.0).clamp(0.0, 1.0);
     let d = (adsr.decay_ms / 1000.0).clamp(0.0, 1.0);
     let s = adsr.sustain.clamp(0.0, 1.0);
     let r = (adsr.release_ms / 2000.0).clamp(0.0, 1.0);
     let total = (a + d + 0.4 + r).max(0.001);
-    let iw = w.saturating_sub(16);
-    let ih = h.saturating_sub(20);
-    let x0 = x + 8;
-    let yb = y + h - 10;
-    let yt = yb - ((s * ih as f32) as usize).max(2);
-    let xa = x0 + ((a / total) * iw as f32) as usize;
-    let xd = xa + ((d / total) * iw as f32) as usize;
-    let xs = xd + ((0.4 / total) * iw as f32) as usize;
-    let xr = (x0 + iw).min(xs + ((r / total) * iw as f32) as usize);
-
-    // Aire sous l'enveloppe (lecture immédiate) : colonnes interpolées.
-    let lerp_y = |x0: usize, y0: usize, x1: usize, y1: usize, x: usize| -> usize {
-        if x1 <= x0 {
-            return y1;
-        }
-        let t = (x.saturating_sub(x0)) as f32 / (x1 - x0) as f32;
-        (y0 as f32 + (y1 as f32 - y0 as f32) * t) as usize
-    };
-    let ytop = y + 8;
-    for px in x0..=xr {
-        let cy = if px <= xa {
-            lerp_y(x0, yb, xa, ytop, px)
-        } else if px <= xd {
-            lerp_y(xa, ytop, xd, yt, px)
-        } else if px <= xs {
-            yt
-        } else {
-            lerp_y(xs, yt, xr, yb, px)
+    let iw = w as f32 - 20.0;
+    let x0 = x as f32 + 10.0;
+    let yb = (y + h) as f32 - 24.0;
+    let ytop = y as f32 + 10.0;
+    let ys = yb - s * (yb - ytop);
+    let xa = x0 + a / total * iw;
+    let xd = xa + d / total * iw;
+    let xs = xd + 0.4 / total * iw;
+    let xr = xs + r / total * iw;
+    let pts = [(x0, yb), (xa, ytop), (xd, ys), (xs, ys), (xr, yb)];
+    if let Some(path) = screen_vector::area(&pts, yb) {
+        let fade = Paint::Fade {
+            color: p.accent,
+            top: 0.42,
+            bottom: 0.06,
+            y0: ytop,
+            y1: yb,
         };
-        if cy < yb {
-            fill_rect(frame, px, cy, 1, yb - cy, p.panel2);
-        }
+        screen_vector::fill(frame, &path, fade);
     }
-
-    line(
-        frame,
-        x0 as i32,
-        yb as i32,
-        xa as i32,
-        ytop as i32,
-        p.accent,
-    );
-    line(
-        frame,
-        xa as i32,
-        ytop as i32,
-        xd as i32,
-        yt as i32,
-        p.accent,
-    );
-    line(frame, xd as i32, yt as i32, xs as i32, yt as i32, p.accent);
-    line(frame, xs as i32, yt as i32, xr as i32, yb as i32, p.accent);
-    // Points de rupture (A/D/S/R) : repères blancs.
-    for (px, py) in [(x0, yb), (xa, ytop), (xd, yt), (xs, yt), (xr, yb)] {
-        fill_rect(
-            frame,
-            px.saturating_sub(1),
-            py.saturating_sub(1),
-            3,
-            3,
-            p.white,
-        );
+    if let Some(path) = screen_vector::polyline(&pts) {
+        screen_vector::stroke(frame, &path, 2.0, Paint::Solid(p.accent, 1.0));
     }
-    fill_rect(frame, x0, yb, iw, 1, p.track);
-    draw_text(
-        frame,
-        x + 6,
-        y + h - 18,
-        &format!(
-            "A{} D{} S{:.0}% R{}",
-            fmt_ms(adsr.attack_ms),
-            fmt_ms(adsr.decay_ms),
-            adsr.sustain * 100.0,
-            fmt_ms(adsr.release_ms)
-        ),
-        p.muted,
-        p.panel,
+    for (px, py) in pts {
+        screen_vector::fill_round_rect(frame, px - 2.5, py - 2.5, 5.0, 5.0, 2.5, p.white);
+    }
+    let text = format!(
+        "A {}   D {}   S {:.0} %   R {}",
+        fmt_ms(adsr.attack_ms),
+        fmt_ms(adsr.decay_ms),
+        adsr.sustain * 100.0,
+        fmt_ms(adsr.release_ms)
     );
+    label(frame, x0, (y + h) as f32 - 7.0, &text, 13.0, p.dim, 1.0);
 }
 
 // ── ARRANGE (écran gauche) ─────────────────────────────────────────────
@@ -901,7 +881,7 @@ fn draw_adsr(
 /// Écran gauche — vue ARRANGE : 8 groupes, pattern de la scène, VU réels.
 #[must_use]
 pub fn render_daw_left(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
     let playing = snap.transport.is_playing();
     let recording = snap.transport.state == TransportState::Recording;
@@ -1095,7 +1075,7 @@ pub fn render_daw_left(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran gauche — mode PATTERN : les 16 slots du groupe focus.
 #[must_use]
 pub fn render_pattern_left(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
     let group = focus_group(snap);
     let count = group.map(|g| g.patterns.len()).unwrap_or(0);
@@ -1234,7 +1214,7 @@ pub fn render_pattern_left(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran droit — vue PATTERN : grille 16 Sons x 16 pas de la mesure choisie.
 #[must_use]
 pub fn render_daw_right(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     let playing = snap.transport.is_playing();
     let pat = active_pattern(snap);
@@ -1391,7 +1371,7 @@ pub fn render_daw_right(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran droit — vue STEP : pas du Sound actif (vélocités) de la mesure.
 #[must_use]
 pub fn render_step_right(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     let playing = snap.transport.is_playing();
     let name = sound_name(snap, snap.active_sound as usize);
@@ -1568,7 +1548,7 @@ pub fn render_step_right(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran gauche — vue STEP : pas sélectionné + grille du pattern complet.
 #[must_use]
 pub fn render_step_left(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
     let total_steps = snap.pattern_bars.max(1) * 16;
     let cursor = snap.step_cursor.min(total_steps.saturating_sub(1));
@@ -1799,7 +1779,7 @@ pub fn render_step_left(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran gauche — vue SONG : sections de l'arrangement.
 #[must_use]
 pub fn render_arranger_left(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
     let active_sec = snap.active_section.unwrap_or(0);
     header(
@@ -1891,7 +1871,7 @@ pub fn render_arranger_left(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran droit — vue SONG : timeline des sections + contenu de la section.
 #[must_use]
 pub fn render_arranger_right(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     let total_bars: u64 = snap
         .project
@@ -2043,7 +2023,7 @@ pub fn render_arranger_right(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran gauche — vue SCENES (IDEAS) : scènes + pads = scènes.
 #[must_use]
 pub fn render_scenes_left(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
     header(
         &mut frame,
@@ -2133,7 +2113,7 @@ pub fn render_scenes_left(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran droit — vue SCENES : matrice Groupes × Patterns pour la scène active.
 #[must_use]
 pub fn render_scenes_right(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
 
     let active_idx = snap.active_scene.unwrap_or(0);
@@ -2394,7 +2374,7 @@ fn render_pad_mixer_strips(
 /// Écran gauche — vue MIXER : groupes A-D (VU, dB, pan, M/S).
 #[must_use]
 pub fn render_mixer_left(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
     if snap.mixer_mode == 0 || snap.mixer_mode == 1 {
         let bank_pad = if snap.mixer_mode == 0 { 0 } else { 8 };
@@ -2549,7 +2529,7 @@ pub fn render_mixer_left(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran droit — vue MIXER : master + groupe focus + sound focus.
 #[must_use]
 pub fn render_mixer_right(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     if snap.mixer_mode == 0 || snap.mixer_mode == 1 {
         let bank_pad = if snap.mixer_mode == 0 { 4 } else { 12 };
@@ -2810,7 +2790,7 @@ pub fn render_mixer_right(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran gauche — vue SAMPLER : waveform + ADSR + infos du Sound actif.
 #[must_use]
 pub fn render_sampler_left(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
     let s_name = sound_name(snap, snap.active_sound as usize);
     let dur = snap.sample_duration;
@@ -2948,7 +2928,7 @@ pub fn render_sampler_left(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran droit — vue SAMPLER : ADSR plein écran + réglages du Sound.
 #[must_use]
 pub fn render_sampler_right(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     let s_name = sound_name(snap, snap.active_sound as usize);
     header(
@@ -3067,7 +3047,7 @@ pub fn render_sampler_right(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran gauche — vue BROWSER : presets du kit 808.
 #[must_use]
 pub fn render_browser_left(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
 
     if snap.browser_kind == 2 {
@@ -3270,7 +3250,7 @@ pub fn render_browser_left(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran droit — vue BROWSER : preset sélectionné + cible de chargement.
 #[must_use]
 pub fn render_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
 
     if snap.browser_kind == 2 {
@@ -3529,7 +3509,7 @@ pub fn render_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran gauche — navigateur de projets (FILE).
 #[must_use]
 pub fn render_project_browser_left(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
     let entries = &snap.project_entries;
     let total = entries.len();
@@ -3657,7 +3637,7 @@ pub fn render_project_browser_left(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran droit — détails et actions du projet sélectionné (FILE).
 #[must_use]
 pub fn render_project_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     let entry = snap.project_entries.get(snap.project_selected);
     header(&mut frame, &p, snap, "FILE | ACTIONS", "PROJET SELECTIONNE");
@@ -3819,7 +3799,7 @@ pub fn render_project_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran droit — vue EVENTS : événements du pattern (mesure sélectionnée).
 #[must_use]
 pub fn render_events_right(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     let pat = active_pattern(snap);
     let (pat_name, total) = match pat {
@@ -3993,7 +3973,7 @@ pub fn render_events_right(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran droit — vue MACRO : macros master / groupe.
 #[must_use]
 pub fn render_macro_right(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     header(&mut frame, &p, snap, "MACRO", "MASTER / GROUPE");
 
@@ -4060,7 +4040,7 @@ pub fn render_macro_right(snap: &EngineSnapshot) -> DisplayFrame {
 /// Écran droit — vue SETTINGS : infos projet / transport / modes.
 #[must_use]
 pub fn render_settings_right(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     header(&mut frame, &p, snap, "SETTINGS", "PROJET / TRANSPORT");
 
@@ -4297,7 +4277,7 @@ fn midi_note_name(note: u8) -> String {
 
 #[must_use]
 pub fn render_keyboard_left(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
     let kb = snap.keyboard;
     let scale = kb.scale_def();
@@ -4401,7 +4381,7 @@ pub fn render_keyboard_left(snap: &EngineSnapshot) -> DisplayFrame {
 
 #[must_use]
 pub fn render_keyboard_right(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     let kb = snap.keyboard;
     let scale = kb.scale_def();
@@ -4504,7 +4484,7 @@ pub fn render_keyboard_right(snap: &EngineSnapshot) -> DisplayFrame {
 
 #[must_use]
 pub fn render_chords_left(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
     let kb = snap.keyboard;
     let scale = kb.scale_def();
@@ -4606,7 +4586,7 @@ pub fn render_chords_left(snap: &EngineSnapshot) -> DisplayFrame {
 
 #[must_use]
 pub fn render_chords_right(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     let kb = snap.keyboard;
     let scale = kb.scale_def();
@@ -4756,7 +4736,7 @@ fn guitar_pct(v: f32) -> String {
 /// Écran gauche — page AMPLI GUITARE : préampli, saturation et tone stack.
 #[must_use]
 pub fn render_guitar_amp_left(snap: &EngineSnapshot, g: &GuitarScreenData) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
     let model = GUITAR_AMP_NAMES[(g.model as usize) % GUITAR_AMP_NAMES.len()];
     header(
@@ -4890,7 +4870,7 @@ pub fn render_guitar_amp_left(snap: &EngineSnapshot, g: &GuitarScreenData) -> Di
 /// Écran droit — page AMPLI GUITARE : baffle, analyse et diagnostics.
 #[must_use]
 pub fn render_guitar_amp_right(snap: &EngineSnapshot, g: &GuitarScreenData) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     let cab = GUITAR_CAB_NAMES[(g.cab as usize) % GUITAR_CAB_NAMES.len()];
     header(
@@ -5127,7 +5107,7 @@ fn mix(a: DisplayPixel, b: DisplayPixel, t: f32) -> DisplayPixel {
 fn section_title(frame: &mut DisplayFrame, p: &Pal, text: &str, color: DisplayPixel) {
     let y = SCR_H - FOOTER_H - ENC_H - 20;
     fill_rect(frame, 0, y, SCR_W, 14, p.bg);
-    let w = label(frame, 8.0, y as f32 + 11.0, text, 13.0, color, 1.6);
+    let w = bold(frame, 8.0, y as f32 + 11.0, text, 12.0, color);
     let x = if text.is_empty() {
         8
     } else {
@@ -5136,22 +5116,30 @@ fn section_title(frame: &mut DisplayFrame, p: &Pal, text: &str, color: DisplayPi
     fill_rect(frame, x, y + 6, (SCR_W - 8).saturating_sub(x), 1, p.border);
 }
 
-/// Écran gauche PLUGIN : l'instrument (preset, visuel) et la liste de ses
-/// pages, parcourues avec les boutons Page ◄ ► ; knobs 1–4 de la page.
+/// Écran gauche PLUGIN : la chaîne de plugins (instrument du Sound, puis
+/// effets du Sound, du groupe et du Master — parcourue au 4D) et l'élément
+/// sélectionné en grand avec son visuel ; knobs 1–4 de sa page.
 #[must_use]
 pub fn render_plugin_left(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
-    let Some((inst, page, view)) = plugin_page_view(snap) else {
+    let Some((inst, _, view)) = plugin_page_view(snap) else {
         return render_sampler_left(snap);
     };
     let snd = snap.active_sound as usize;
     let tint = hue_color(snd);
+    let fx = snap.plugin_fx.as_ref();
+    let adding = selected_slot(snap).is_some_and(|s| s.empty);
+    let title = match (fx, adding) {
+        (Some(fx), _) => fx.fx_type.label(),
+        (None, true) => "Insérer un effet",
+        (None, false) => inst.title(),
+    };
     header_colored(
         &mut frame,
         &p,
         snap,
-        inst.title(),
+        title,
         &format!(
             "{} {:02} {}",
             group_letter(snap.group_focus),
@@ -5161,54 +5149,61 @@ pub fn render_plugin_left(snap: &EngineSnapshot) -> DisplayFrame {
         tint,
     );
 
-    // Les « panneaux » de l'instrument, comme les pages du logiciel.
-    label(&mut frame, 10.0, 42.0, "PAGES", 12.0, p.muted, 1.4);
-    for (i, name) in inst.page_names().iter().enumerate() {
-        let y = 48 + i * 21;
-        let on = i == page;
-        if on {
-            fill_rect(&mut frame, 6, y, 134, 19, p.panel2);
-            fill_rect(&mut frame, 6, y, 3, 19, tint);
+    plugin_chain(&mut frame, &p, snap, (6, 32, 142, 152));
+
+    let (vx, vw) = (158usize, SCR_W - 166);
+    match (fx, adding) {
+        (Some(fx), _) => {
+            let owner = selected_slot(snap).map_or(0, |s| s.level);
+            bold(
+                &mut frame,
+                vx as f32,
+                50.0,
+                fx.fx_type.label(),
+                22.0,
+                p.white,
+            );
+            let info = format!(
+                "Insert {}  ·  {}",
+                level_name(snap, owner),
+                if fx.enabled { "actif" } else { "contourné" }
+            );
+            label(&mut frame, vx as f32, 67.0, &info, 14.0, p.dim, 1.0);
+            draw_fx_visual(&mut frame, &p, fx, (vx, 76, vw, 104), p.accent);
         }
-        let text = fit_text(name, screen_text::Face::Sans, 14.0, 112.0);
-        label(
-            &mut frame,
-            14.0,
-            y as f32 + 14.0,
-            &format!("{}", i + 1),
-            14.0,
-            p.muted,
-            1.4,
-        );
-        let (fg, weight) = if on { (p.white, 1.9) } else { (p.dim, 1.4) };
-        label(&mut frame, 28.0, y as f32 + 14.0, &text, 14.0, fg, weight);
-    }
-    label(&mut frame, 10.0, 172.0, "< PAGE >", 12.0, p.muted, 1.3);
-
-    // Identité : preset ou son, puis un visuel propre à l'instrument.
-    let (vx, vy, vw, vh) = (150usize, 70usize, SCR_W - 158, 102usize);
-    let (title, info) = instrument_caption(snap, inst);
-    let title = fit_text(&title, screen_text::Face::Sans, 21.0, vw as f32);
-    label(&mut frame, vx as f32, 47.0, &title, 21.0, p.white, 1.9);
-    let info = fit_text(&info, screen_text::Face::Sans, 13.0, vw as f32);
-    label(&mut frame, vx as f32, 63.0, &info, 13.0, p.dim, 1.4);
-    if view.is_some() {
-        draw_instrument_visual(&mut frame, &p, snap, inst, (vx, vy, vw, vh), tint);
-    } else {
-        fill_rect(&mut frame, vx, vy, vw, vh, p.panel);
-        let msg = "PAD VIDE";
-        let w = screen_text::width(msg, screen_text::Face::Sans, 20.0);
-        label(
-            &mut frame,
-            (vx + vw / 2) as f32 - w / 2.0,
-            (vy + vh / 2 + 7) as f32,
-            msg,
-            20.0,
-            p.muted,
-            1.6,
-        );
+        (None, true) => {
+            let owner = selected_slot(snap).map_or(0, |s| s.level);
+            bold(&mut frame, vx as f32, 50.0, "Nouvel effet", 22.0, p.white);
+            let info = format!("en fin de chaîne {}", level_name(snap, owner));
+            label(&mut frame, vx as f32, 67.0, &info, 14.0, p.dim, 1.0);
+            add_fx_help(&mut frame, &p, (vx, 80, vw, 100));
+        }
+        (None, false) => {
+            let (title, info) = instrument_caption(snap, inst);
+            let title = fit_text(&title, screen_text::Face::Bold, 22.0, vw as f32);
+            bold(&mut frame, vx as f32, 50.0, &title, 22.0, p.white);
+            let info = fit_text(&info, screen_text::Face::Sans, 14.0, vw as f32);
+            label(&mut frame, vx as f32, 67.0, &info, 14.0, p.dim, 1.0);
+            if view.is_some() {
+                draw_instrument_visual(&mut frame, &p, snap, inst, (vx, 76, vw, 104), tint);
+            } else {
+                panel(&mut frame, &p, vx, 76, vw, 104);
+                let msg = "Pad vide";
+                let w = screen_text::width(msg, screen_text::Face::Bold, 20.0);
+                bold(
+                    &mut frame,
+                    (vx + vw / 2) as f32 - w / 2.0,
+                    134.0,
+                    msg,
+                    20.0,
+                    p.muted,
+                );
+            }
+        }
     }
 
+    let fx_view = fx.map(|fx| pp::view(pp::fx_pages(fx.fx_type), 0, fx));
+    let view = fx_view.or(if adding || fx.is_some() { None } else { view });
     let section = view.as_ref().map_or("", |v| v.sections[0]);
     section_title(&mut frame, &p, section, tint);
     encoder_row(&mut frame, &p, &page_slots(view.as_ref(), 0, tint));
@@ -5216,99 +5211,130 @@ pub fn render_plugin_left(snap: &EngineSnapshot) -> DisplayFrame {
     frame
 }
 
-/// Écran droit PLUGIN : onglets des pages, courbe de la page affichée,
-/// bandeau de transition au changement de page ; knobs 5–8.
+/// Écran droit PLUGIN : onglets des pages (Page ◄ ►), visuel de la page,
+/// bandeau de transition au changement de page ou d'emplacement ; knobs 5–8.
 #[must_use]
 pub fn render_plugin_right(snap: &EngineSnapshot) -> DisplayFrame {
-    let p = Pal::new();
+    let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
     let Some((inst, page, view)) = plugin_page_view(snap) else {
         return render_sampler_right(snap);
     };
     let tint = hue_color(snap.active_sound as usize);
-    let names = inst.page_names();
+    let fx = snap.plugin_fx.as_ref();
+    let adding = selected_slot(snap).is_some_and(|s| s.empty);
+    let fx_view = fx.map(|fx| pp::view(pp::fx_pages(fx.fx_type), 0, fx));
+    let (names, page, view) = match (fx, adding) {
+        (Some(fx), _) => (vec![pp::fx_pages(fx.fx_type)[0].name], 0, fx_view),
+        (None, true) => (vec!["EFFETS"], 0, None),
+        (None, false) => (inst.page_names(), page, view),
+    };
+    let slot_info = format!(
+        "SLOT {}/{}",
+        snap.plugin_slot + 1,
+        snap.plugin_slots.len().max(1)
+    );
     header_colored(
         &mut frame,
         &p,
         snap,
         names[page],
-        &format!("PAGE {}/{}", page + 1, names.len()),
+        &format!("PAGE {}/{}  ·  {slot_info}", page + 1, names.len()),
         tint,
     );
 
-    // Onglets : toutes les pages, la page courante en couleur du Sound.
+    // Onglets : toutes les pages, la page courante en couleur du groupe.
     let tw = (SCR_W - 16) / names.len().max(1);
     for (i, name) in names.iter().enumerate() {
         let x = 8 + i * tw;
         let on = i == page;
-        fill_rect(
+        let bg = if on { p.accent } else { p.panel };
+        screen_vector::fill_round_rect(
             &mut frame,
-            x + 1,
-            32,
-            tw - 2,
-            20,
-            if on { tint } else { p.panel },
+            x as f32 + 1.0,
+            32.0,
+            tw as f32 - 2.0,
+            20.0,
+            4.0,
+            bg,
         );
-        let text = fit_text(name, screen_text::Face::Sans, 13.0, (tw - 8) as f32);
-        let w = screen_text::width(&text, screen_text::Face::Sans, 13.0);
-        let fg = if on { p.bg } else { p.dim };
-        label(
+        let face = if on {
+            screen_text::Face::Bold
+        } else {
+            screen_text::Face::Sans
+        };
+        let text = fit_text(name, face, 14.0, (tw - 10) as f32);
+        let w = screen_text::width(&text, face, 14.0);
+        let fg = if on { p.ink } else { p.dim };
+        screen_text::draw(
             &mut frame,
             (x + tw / 2) as f32 - w / 2.0,
-            46.0,
+            46.5,
             &text,
-            13.0,
+            face,
+            14.0,
             fg,
-            1.6,
+            1.0,
         );
     }
 
-    match view.as_ref() {
-        Some(v) => draw_page_visual(&mut frame, &p, v, (8, 60, SCR_W - 16, 114), tint),
-        None => {
-            let msg = "PAD VIDE : CHARGE UN SON DEPUIS LE BROWSER";
-            let w = screen_text::width(msg, screen_text::Face::Sans, 14.0);
+    let rect = (8, 60, SCR_W - 16, 114);
+    match (fx, adding, view.as_ref()) {
+        (Some(fx), _, _) => draw_fx_visual(&mut frame, &p, fx, rect, p.accent),
+        (None, true, _) => add_fx_help(&mut frame, &p, rect),
+        (None, false, Some(v)) => draw_page_visual(&mut frame, &p, v, rect, tint),
+        (None, false, None) => {
+            let msg = "Pad vide : charge un son depuis le BROWSER";
+            let w = screen_text::width(msg, screen_text::Face::Sans, 15.0);
             label(
                 &mut frame,
                 (SCR_W as f32 - w) / 2.0,
                 120.0,
                 msg,
-                14.0,
+                15.0,
                 p.dim,
-                1.5,
+                1.0,
             );
         }
     }
 
-    // Transition : le nom de la nouvelle page s'affiche un court instant.
+    // Transition : le nom de la page (ou de l'effet) s'affiche un instant.
     if snap.page_flash > 0.3 {
-        let (x, y, w, h) = (110usize, 76usize, 260usize, 72usize);
-        fill_rect(&mut frame, x, y, w, h, p.panel2);
-        draw_rect_outline(&mut frame, x, y, w, h, tint);
-        fill_rect(&mut frame, x, y, w, 3, tint);
-        let name = fit_text(names[page], screen_text::Face::Sans, 26.0, (w - 24) as f32);
-        let nw = screen_text::width(&name, screen_text::Face::Sans, 26.0);
-        label(
+        let (x, y, w, h) = (110.0f32, 76.0f32, 260.0f32, 72.0f32);
+        screen_vector::fill_round_rect(
             &mut frame,
-            (x + w / 2) as f32 - nw / 2.0,
-            y as f32 + 38.0,
+            x - 1.0,
+            y - 1.0,
+            w + 2.0,
+            h + 2.0,
+            8.0,
+            p.accent,
+        );
+        screen_vector::fill_round_rect(
+            &mut frame,
+            x + 1.0,
+            y + 1.0,
+            w - 2.0,
+            h - 2.0,
+            7.0,
+            p.panel2,
+        );
+        let name = fit_text(names[page], screen_text::Face::Bold, 26.0, w - 24.0);
+        let nw = screen_text::width(&name, screen_text::Face::Bold, 26.0);
+        bold(
+            &mut frame,
+            x + w / 2.0 - nw / 2.0,
+            y + 38.0,
             &name,
             26.0,
             p.white,
-            1.9,
         );
         let n = names.len();
-        let dots_w = n * 14 - 6;
+        let dots_w = (n * 14 - 6) as f32;
         for i in 0..n {
-            let dx = x + (w - dots_w) / 2 + i * 14;
-            fill_rect(
-                &mut frame,
-                dx,
-                y + 52,
-                8,
-                8,
-                if i == page { tint } else { p.track },
-            );
+            let dx = x + (w - dots_w) / 2.0 + (i * 14) as f32;
+            let c = if i == page { p.accent } else { p.track };
+            screen_vector::fill_round_rect(&mut frame, dx, y + 50.0, 8.0, 8.0, 4.0, c);
         }
     }
 
@@ -5317,6 +5343,290 @@ pub fn render_plugin_right(snap: &EngineSnapshot) -> DisplayFrame {
     encoder_row(&mut frame, &p, &page_slots(view.as_ref(), 4, tint));
     finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
     frame
+}
+
+/// Emplacement sélectionné de la chaîne de plugins.
+fn selected_slot(snap: &EngineSnapshot) -> Option<&crate::engine::PluginSlotView> {
+    snap.plugin_slots.get(snap.plugin_slot)
+}
+
+/// Nom d'un niveau de la chaîne : Sound, groupe ou Master.
+fn level_name(snap: &EngineSnapshot, level: u8) -> String {
+    match level {
+        0 => format!("Sound {}", snap.active_sound + 1),
+        1 => format!("Groupe {}", group_letter(snap.group_focus)),
+        _ => "Master".to_string(),
+    }
+}
+
+/// Chaîne de plugins (gauche) : titres de niveau, emplacements, sélection.
+/// Fait défiler la liste pour garder la sélection visible.
+fn plugin_chain(
+    frame: &mut DisplayFrame,
+    p: &Pal,
+    snap: &EngineSnapshot,
+    (x, y, w, h): (usize, usize, usize, usize),
+) {
+    enum Row<'a> {
+        Level(u8),
+        Slot(usize, &'a crate::engine::PluginSlotView),
+    }
+    let mut rows = Vec::new();
+    let mut level = None;
+    for (i, slot) in snap.plugin_slots.iter().enumerate() {
+        if level != Some(slot.level) {
+            level = Some(slot.level);
+            rows.push(Row::Level(slot.level));
+        }
+        rows.push(Row::Slot(i, slot));
+    }
+    let row_h = |r: &Row| if matches!(r, Row::Level(_)) { 16 } else { 19 };
+    // Défilement : la ligne sélectionnée reste dans la fenêtre.
+    let sel = rows
+        .iter()
+        .position(|r| matches!(r, Row::Slot(i, _) if *i == snap.plugin_slot))
+        .unwrap_or(0);
+    let mut first = 0;
+    while first < sel && rows[first..=sel].iter().map(row_h).sum::<usize>() > h {
+        first += 1;
+    }
+    let mut cy = y;
+    for row in &rows[first..] {
+        let rh = row_h(row);
+        if cy + rh > y + h {
+            break;
+        }
+        match row {
+            Row::Level(l) => {
+                let text = level_name(snap, *l).to_uppercase();
+                bold(
+                    frame,
+                    (x + 2) as f32,
+                    (cy + 12) as f32,
+                    &text,
+                    11.0,
+                    p.muted,
+                );
+            }
+            Row::Slot(i, slot) => {
+                let on = *i == snap.plugin_slot;
+                if on {
+                    screen_vector::fill_round_rect(
+                        frame, x as f32, cy as f32, w as f32, 18.0, 4.0, p.panel2,
+                    );
+                    screen_vector::fill_round_rect(
+                        frame,
+                        x as f32,
+                        cy as f32 + 3.0,
+                        3.0,
+                        12.0,
+                        1.5,
+                        p.accent,
+                    );
+                }
+                let fg = if slot.empty || slot.bypassed {
+                    p.muted
+                } else if on {
+                    p.white
+                } else {
+                    p.dim
+                };
+                let face = if on {
+                    screen_text::Face::Bold
+                } else {
+                    screen_text::Face::Sans
+                };
+                let text = fit_text(&slot.name, face, 15.0, (w - 18) as f32);
+                let tw = screen_text::draw(
+                    frame,
+                    (x + 9) as f32,
+                    (cy + 14) as f32,
+                    &text,
+                    face,
+                    15.0,
+                    fg,
+                    1.0,
+                );
+                if slot.bypassed {
+                    fill_rect(frame, x + 9, cy + 9, tw as usize, 1, p.muted);
+                }
+            }
+        }
+        cy += rh;
+    }
+    if first > 0 {
+        // Liste défilée : petit triangle « plus haut ».
+        let (tx, ty) = ((x + w - 10) as f32, (y + 3) as f32);
+        let tri = [(tx, ty + 6.0), (tx + 4.0, ty), (tx + 8.0, ty + 6.0)];
+        if let Some(path) = screen_vector::polyline(&tri) {
+            screen_vector::fill(frame, &path, screen_vector::Paint::Solid(p.muted, 1.0));
+        }
+    }
+}
+
+/// Emplacement libre : les effets qu'on peut insérer, avec leur bouton.
+fn add_fx_help(frame: &mut DisplayFrame, p: &Pal, (x, y, w, h): (usize, usize, usize, usize)) {
+    panel(frame, p, x, y, w, h);
+    let items = [
+        ("FILTER", "filtre résonant"),
+        ("DISTO", "saturation"),
+        ("COMP", "dynamique"),
+        ("DELAY", "écho stéréo"),
+        ("REVERB", "espace"),
+    ];
+    let col_w = w / 2;
+    for (i, (name, what)) in items.iter().enumerate() {
+        let (cx, cy) = (x + 12 + (i / 3) * col_w, y + 22 + (i % 3) * 28);
+        bold(frame, cx as f32, cy as f32, name, 15.0, p.white);
+        label(frame, cx as f32, cy as f32 + 13.0, what, 12.0, p.muted, 1.0);
+    }
+}
+
+/// Visuel d'un effet : réponse du filtre, courbe de saturation, courbe de
+/// compression, échos du delay, décroissance de la réverbe.
+fn draw_fx_visual(
+    frame: &mut DisplayFrame,
+    p: &Pal,
+    fx: &crate::fx::FxSlot,
+    (x, y, w, h): (usize, usize, usize, usize),
+    color: DisplayPixel,
+) {
+    use crate::fx::FxType as T;
+    use screen_vector::Paint;
+    if fx.fx_type == T::Filter {
+        let kind = ["LP", "HP", "BP"][(fx.p3.round().clamp(0.0, 2.0)) as usize];
+        draw_filter_curve(frame, p, (x, y, w, h), fx.p1, fx.p2, kind, color);
+    } else {
+        panel(frame, p, x, y, w, h);
+        let (xf, yf, wf, hf) = (
+            x as f32 + 8.0,
+            y as f32 + 8.0,
+            w as f32 - 16.0,
+            h as f32 - 16.0,
+        );
+        let curve: Vec<(f32, f32)> = match fx.fx_type {
+            T::Distortion => {
+                // Entrée -1..1 → sortie (gain compensé, comme le DSP).
+                let pre = 10f32.powf(fx.p1.clamp(0.0, 1.0) * 36.0 / 20.0);
+                let out = 10f32.powf(fx.p4.clamp(-24.0, 24.0) / 20.0) / pre.sqrt();
+                fill_rect(frame, x + 8, y + h / 2, w - 16, 1, p.track);
+                (0..=64)
+                    .map(|i| {
+                        let xin = -1.0 + 2.0 * i as f32 / 64.0;
+                        let shaped = if fx.p3 > 0.5 {
+                            (xin * pre).clamp(-1.0, 1.0)
+                        } else {
+                            (xin * pre).tanh()
+                        };
+                        let yv = (shaped * out * pre.sqrt().min(4.0)).clamp(-1.0, 1.0);
+                        (xf + (xin + 1.0) / 2.0 * wf, yf + hf / 2.0 - yv * hf / 2.0)
+                    })
+                    .collect()
+            }
+            T::Compressor => {
+                // Entrée -48..0 dB → sortie, genou doux et compensation.
+                let (t, r) = (fx.p1.clamp(-48.0, 0.0), fx.p2.clamp(1.0, 20.0));
+                let slope = 1.0 / r - 1.0;
+                let makeup = -0.5 * slope * -t;
+                let tx = xf + (t + 48.0) / 48.0 * wf;
+                fill_rect(frame, tx as usize, y + 8, 1, h - 16, p.track);
+                (0..=48)
+                    .map(|i| {
+                        let db = -48.0 + i as f32;
+                        let over = db - t;
+                        let gr = if 2.0 * over < -6.0 {
+                            0.0
+                        } else if 2.0 * over.abs() <= 6.0 {
+                            slope * (over + 3.0).powi(2) / 12.0
+                        } else {
+                            slope * over
+                        };
+                        let out = (db + gr + makeup).clamp(-48.0, 0.0);
+                        (
+                            xf + i as f32 / 48.0 * wf,
+                            yf + hf - (out + 48.0) / 48.0 * hf,
+                        )
+                    })
+                    .collect()
+            }
+            T::Delay => {
+                // Échos successifs sur 2 s : hauteur = réinjection^n.
+                let step = fx.p1.clamp(10.0, 2000.0) / 2000.0 * wf;
+                let mut amp = 1.0f32;
+                let mut k = 0;
+                while k < 24 && amp > 0.02 {
+                    let ex = xf + step * k as f32;
+                    if ex > xf + wf {
+                        break;
+                    }
+                    let side = if fx.p4 > 0.5 && k % 2 == 1 {
+                        p.cyan
+                    } else {
+                        color
+                    };
+                    let bh = amp * hf;
+                    screen_vector::fill_round_rect(frame, ex, yf + hf - bh, 4.0, bh, 2.0, side);
+                    amp *= fx.p2.clamp(0.0, 0.95);
+                    k += 1;
+                }
+                Vec::new()
+            }
+            T::Reverb => {
+                // Décroissance (taille → durée), pré-délai décalé à gauche.
+                let decay_s = 0.4 + 3.6 * fx.p1.clamp(0.0, 1.0);
+                let pre = fx.p3.clamp(0.0, 100.0) / 1000.0;
+                (0..=96)
+                    .map(|i| {
+                        let t = i as f32 / 96.0 * 4.0;
+                        let a = if t < pre {
+                            0.0
+                        } else {
+                            (-(t - pre) * 6.9 / decay_s).exp()
+                        };
+                        (xf + i as f32 / 96.0 * wf, yf + hf - a * hf)
+                    })
+                    .collect()
+            }
+            T::Filter => Vec::new(),
+        };
+        if fx.fx_type == T::Reverb {
+            if let Some(path) = screen_vector::area(&curve, yf + hf) {
+                let fade = Paint::Fade {
+                    color,
+                    top: 0.45,
+                    bottom: 0.05,
+                    y0: yf,
+                    y1: yf + hf,
+                };
+                screen_vector::fill(frame, &path, fade);
+            }
+        }
+        if fx.fx_type == T::Compressor {
+            let diag = [(xf, yf + hf), (xf + wf, yf)];
+            if let Some(path) = screen_vector::polyline(&diag) {
+                screen_vector::stroke(frame, &path, 1.0, Paint::Solid(p.border, 1.0));
+            }
+        }
+        if let Some(path) = screen_vector::polyline(&curve) {
+            screen_vector::stroke(frame, &path, 2.0, Paint::Solid(color, 1.0));
+        }
+    }
+    if !fx.enabled {
+        // Contourné : voile et mention explicite.
+        if let Some(path) = screen_vector::round_rect(x as f32, y as f32, w as f32, h as f32, 4.0) {
+            screen_vector::fill(frame, &path, Paint::Solid(p.bg, 0.6));
+        }
+        let msg = "BYPASS";
+        let mw = screen_text::width(msg, screen_text::Face::Bold, 22.0);
+        bold(
+            frame,
+            (x + w / 2) as f32 - mw / 2.0,
+            (y + h / 2 + 8) as f32,
+            msg,
+            22.0,
+            p.white,
+        );
+    }
 }
 
 /// Grand titre et ligne d'info de l'instrument (preset, forme d'onde…).
@@ -5601,10 +5911,11 @@ fn draw_filter_curve(
     kind: &str,
     color: DisplayPixel,
 ) {
-    fill_rect(frame, x, y, w, h, p.panel);
+    use screen_vector::Paint;
+    panel(frame, p, x, y, w, h);
     // Repères : 100 Hz, 1 kHz, 10 kHz.
     for f in [100.0f32, 1000.0, 10000.0] {
-        fill_rect(frame, x + log_x(f, w), y + 4, 1, h - 8, p.track);
+        fill_rect(frame, x + log_x(f, w), y + 6, 1, h - 12, p.track);
     }
     let q = 0.7 + reso.clamp(0.0, 1.0) * 8.0;
     let fc = cutoff.max(10.0);
@@ -5620,28 +5931,41 @@ fn draw_filter_curve(
             _ => lp,
         }
     };
-    let zero = y + h * 2 / 5;
-    fill_rect(frame, x, zero, w, 1, p.border);
-    let mut prev = None;
-    for i in 0..w {
-        let f = 20.0 * 1000f32.powf(i as f32 / (w - 1) as f32);
-        let db = (20.0 * gain(f).max(1e-4).log10()).clamp(-36.0, 18.0);
-        let py = (zero as f32 - db / 36.0 * (h * 3 / 5) as f32) as i32;
-        let py = py.clamp(y as i32 + 2, (y + h) as i32 - 3);
-        fill_rect(
-            frame,
-            x + i,
-            py as usize,
-            1,
-            (y + h - 2).saturating_sub(py as usize),
-            mix(p.panel, color, 0.22),
-        );
-        if let Some((px, qy)) = prev {
-            line(frame, px, qy, (x + i) as i32, py, color);
-        }
-        prev = Some(((x + i) as i32, py));
+    let zero = (y + h * 2 / 5) as f32;
+    fill_rect(frame, x + 4, zero as usize, w - 8, 1, p.border);
+    let (top, bottom) = (y as f32 + 4.0, (y + h) as f32 - 4.0);
+    let pts: Vec<(f32, f32)> = (0..w)
+        .step_by(2)
+        .map(|i| {
+            let f = 20.0 * 1000f32.powf(i as f32 / (w - 1) as f32);
+            let db = (20.0 * gain(f).max(1e-4).log10()).clamp(-36.0, 18.0);
+            let py = (zero - db / 36.0 * (h as f32 * 0.6)).clamp(top, bottom);
+            ((x + i) as f32 + 0.5, py)
+        })
+        .collect();
+    if let Some(path) = screen_vector::area(&pts, bottom) {
+        let fade = Paint::Fade {
+            color,
+            top: 0.38,
+            bottom: 0.04,
+            y0: top,
+            y1: bottom,
+        };
+        screen_vector::fill(frame, &path, fade);
     }
-    fill_rect(frame, x + log_x(fc, w), y + 4, 1, h - 8, color);
+    if let Some(path) = screen_vector::polyline(&pts) {
+        screen_vector::stroke(frame, &path, 2.0, Paint::Solid(color, 1.0));
+    }
+    let cx = (x + log_x(fc, w)) as f32;
+    screen_vector::fill_round_rect(
+        frame,
+        cx - 1.0,
+        top + 2.0,
+        2.0,
+        bottom - top - 4.0,
+        1.0,
+        p.white,
+    );
 }
 
 /// Forme d'un cycle d'oscillateur wavetable (aperçu, `t` en cycles).
@@ -5991,16 +6315,37 @@ mod tests {
     /// libellés de boutons en haut, slots d'encodeurs en bas.
     #[test]
     fn button_labels_on_top_and_knob_slots_at_bottom() {
-        let p = Pal::new();
         let snap = Engine::new_demo(48000).snapshot();
+        let p = Pal::of(&snap);
         let (left, _) = render_screens(&snap);
         assert_eq!(snap.selected_bar, 0, "BAR 1 actif sur le bouton 1");
-        // Fond du bouton 1 actif, juste sous le bouton physique.
+        // Pastille du bouton 1 actif (couleur du groupe), sous le bouton physique.
         assert_eq!(left.pixels[10 * SCR_W + 8], p.accent);
-        // Encoche du knob 1 (TEMPO), juste au-dessus du knob physique.
-        assert_eq!(left.pixels[(SCR_H - ENC_H + 1) * SCR_W + 9], p.accent);
+        // Piste de la barre de valeur du knob 1, juste au-dessus du knob.
+        assert_eq!(left.pixels[263 * SCR_W + 113], p.track);
         // L'ancien emplacement du bouton 1, en bas, n'est plus une soft key.
         assert_ne!(left.pixels[(SCR_H - 12) * SCR_W + 8], p.accent);
+    }
+
+    #[test]
+    fn accent_follows_the_focused_group_colour() {
+        let mut eng = Engine::new_demo(48000);
+        let snap = eng.snapshot();
+        let a = Pal::of(&snap).accent;
+        // Premier groupe d'une autre couleur que A dans la démo.
+        let other = (1..8u8)
+            .find(|&g| snap.project.groups[g as usize].color != snap.project.groups[0].color)
+            .expect("la démo a des groupes de couleurs différentes");
+        eng.handle_event(crate::EngineEvent::GroupFocus(other))
+            .unwrap();
+        let d = Pal::of(&eng.snapshot()).accent;
+        assert_ne!(a, d, "l'accent suit la couleur du groupe");
+        // Texte lisible sur l'accent : noir sur clair, blanc sur sombre.
+        for c in [a, d] {
+            let ink = ink_for(c);
+            let black = DisplayPixel::from_rgb(0, 0, 0);
+            assert!(ink == black || ink == DisplayPixel::from_rgb(245, 246, 248));
+        }
     }
 
     /// Rendu déterministe : un même snapshot donne des pixels identiques.

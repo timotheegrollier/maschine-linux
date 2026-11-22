@@ -1,31 +1,41 @@
 //! Texte anti-aliasé des écrans MK3.
 //!
-//! Mêmes polices que la GUI (embarquées par `epaint_default_fonts`) :
-//! Hack, à chasse fixe, remplace l'ancienne police bitmap 8×16 sans changer
-//! les mises en page (8 px par caractère) ; Ubuntu sert aux titres, libellés
-//! de boutons et noms de paramètres. Les glyphes rastérisés par `ab_glyph`
-//! sont mis en cache : un écran redessine souvent les mêmes caractères.
+//! Une seule famille pour les écrans et la GUI : Barlow Semi Condensed
+//! (licence OFL, `assets/fonts`), grotesque étroite au dessin « DIN » des
+//! sérigraphies de la MK3 — huit libellés tiennent sur 2 × 480 px et restent
+//! lisibles à bout de bras. Medium pour le texte, SemiBold pour les titres et
+//! les valeurs. Hack (chasse fixe) reste disponible pour les rares alignements
+//! en colonnes. Les glyphes rastérisés par `ab_glyph` sont mis en cache.
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use maschine_proto::display::{DisplayFrame, DisplayPixel};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
+/// Barlow Semi Condensed Medium (texte, libellés).
+pub const FONT_MEDIUM: &[u8] = include_bytes!("../assets/fonts/BarlowSemiCondensed-Medium.ttf");
+/// Barlow Semi Condensed SemiBold (titres, valeurs).
+pub const FONT_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/BarlowSemiCondensed-SemiBold.ttf");
+
 /// Police utilisée.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Face {
-    /// Hack : chasse fixe, valeurs et texte courant.
+    /// Hack : chasse fixe (colonnes).
     Mono,
-    /// Ubuntu : titres, boutons, noms de paramètres.
+    /// Barlow Semi Condensed Medium : texte courant, boutons, noms.
     Sans,
+    /// Barlow Semi Condensed SemiBold : titres, valeurs, état actif.
+    Bold,
 }
 
 fn font(face: Face) -> &'static FontRef<'static> {
     static MONO: OnceLock<FontRef<'static>> = OnceLock::new();
     static SANS: OnceLock<FontRef<'static>> = OnceLock::new();
+    static BOLD: OnceLock<FontRef<'static>> = OnceLock::new();
     let (cell, bytes) = match face {
         Face::Mono => (&MONO, epaint_default_fonts::HACK_REGULAR),
-        Face::Sans => (&SANS, epaint_default_fonts::UBUNTU_LIGHT),
+        Face::Sans => (&SANS, FONT_MEDIUM),
+        Face::Bold => (&BOLD, FONT_SEMIBOLD),
     };
     cell.get_or_init(|| FontRef::try_from_slice(bytes).expect("police embarquée valide"))
 }
@@ -84,7 +94,7 @@ fn glyph(face: Face, c: char, px: f32) -> Arc<Glyph> {
     glyph
 }
 
-fn rgb(px: DisplayPixel) -> (f32, f32, f32) {
+pub(crate) fn rgb(px: DisplayPixel) -> (f32, f32, f32) {
     let v = px.0;
     (
         f32::from(((v >> 11) & 0x1F) as u8) / 31.0,
@@ -93,7 +103,7 @@ fn rgb(px: DisplayPixel) -> (f32, f32, f32) {
     )
 }
 
-fn blend(frame: &mut DisplayFrame, x: i32, y: i32, color: DisplayPixel, alpha: f32) {
+pub(crate) fn blend(frame: &mut DisplayFrame, x: i32, y: i32, color: DisplayPixel, alpha: f32) {
     let (w, h) = (frame.w as i32, frame.h as i32);
     if x < 0 || y < 0 || x >= w || y >= h || alpha <= 0.0 {
         return;

@@ -13,33 +13,8 @@ use eframe::egui;
 use maschine_engine::transport::TransportState;
 use maschine_engine::EngineEvent;
 
-/// Dessine la barre de transport en haut de l'application : une seule ligne
-/// compacte (comme l'en-tête du logiciel Maschine) ; les infos secondaires
-/// s'effacent quand la fenêtre est étroite.
-pub fn render_transport(
-    ui: &mut egui::Ui,
-    app: &mut GuiApp,
-    snap: &maschine_engine::EngineSnapshot,
-) {
-    let wide = ui.available_width() >= 1400.0;
-    // Étroit : les réglages master passent sur une seconde ligne.
-    if ui.available_width() < 1100.0 {
-        ui.horizontal_wrapped(|ui| {
-            transport_controls(ui, app, snap, wide);
-        });
-        ui.horizontal(|ui| transport_master(ui, app, snap, wide));
-    } else {
-        ui.horizontal(|ui| {
-            transport_controls(ui, app, snap, wide);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                transport_master(ui, app, snap, wide);
-            });
-        });
-    }
-}
-
 /// Transport, position, tempo, swing, boucle/métronome/song.
-fn transport_controls(
+pub(crate) fn transport_controls(
     ui: &mut egui::Ui,
     app: &mut GuiApp,
     snap: &maschine_engine::EngineSnapshot,
@@ -102,7 +77,12 @@ fn transport_controls(
     ui.separator();
 
     // ── Position ─────────────────────────────────────────────────
-    value_label(ui, format!("{}", snap.bbt), c.text);
+    ui.label(
+        egui::RichText::new(format!("{}", snap.bbt))
+            .family(crate::gui::theme::bold_family())
+            .size(19.0)
+            .color(c.text),
+    );
     if wide {
         caption(
             ui,
@@ -117,12 +97,20 @@ fn transport_controls(
 
     // ── Tempo / swing ────────────────────────────────────────────
     let mut bpm = snap.transport.bpm;
-    let resp = ui.add(
-        egui::DragValue::new(&mut bpm)
-            .speed(0.5)
-            .range(20.0..=300.0)
-            .custom_formatter(|v, _| format!("{v:.1} BPM")),
-    );
+    let resp = ui
+        .scope(|ui| {
+            ui.style_mut().text_styles.insert(
+                egui::TextStyle::Button,
+                egui::FontId::new(19.0, crate::gui::theme::bold_family()),
+            );
+            ui.add(
+                egui::DragValue::new(&mut bpm)
+                    .speed(0.5)
+                    .range(20.0..=300.0)
+                    .custom_formatter(|v, _| format!("{v:.1} BPM")),
+            )
+        })
+        .inner;
     if resp
         .on_hover_text("Tempo : glisser ou double-clic")
         .changed()
@@ -161,7 +149,7 @@ fn transport_controls(
 }
 
 /// Master, réglages audio et mises à jour.
-fn transport_master(
+pub(crate) fn transport_master(
     ui: &mut egui::Ui,
     app: &mut GuiApp,
     snap: &maschine_engine::EngineSnapshot,

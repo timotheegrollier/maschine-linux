@@ -67,7 +67,6 @@ pub struct GuiApp {
     nav_auto_hidden: bool,
     /// Largeurs du rail et du panneau MK3 en proportion de la fenêtre.
     nav_frac: f32,
-    mk3_frac: f32,
     /// Buffer de renommage du pattern actif.
     pub pattern_name_buf: String,
     /// Cible du buffer de renommage (groupe, pattern).
@@ -155,7 +154,6 @@ impl GuiApp {
             last_window_w: 0.0,
             nav_auto_hidden: false,
             nav_frac: 0.12,
-            mk3_frac: 0.36,
             pattern_name_buf: String::new(),
             pattern_name_target: None,
             confirm_clear_sound: None,
@@ -217,7 +215,6 @@ impl GuiApp {
             last_window_w: 0.0,
             nav_auto_hidden: false,
             nav_frac: 0.12,
-            mk3_frac: 0.36,
             pattern_name_buf: String::new(),
             pattern_name_target: None,
             confirm_clear_sound: None,
@@ -699,7 +696,70 @@ impl GuiApp {
     /// Miroir MK3 dans l'ordre du contrôleur : boutons d'écran (en haut des
     /// écrans), 2 écrans, 8 knobs, puis groupes + pads. Tout s'ajuste à la
     /// largeur ET à la hauteur disponibles ; défilement en dernier recours.
-    fn render_mk3(&mut self, ui: &mut egui::Ui, snap: &maschine_engine::EngineSnapshot) {
+    /// Fin de l'en-tête : panneaux (MK3, centre) puis master et réglages.
+    fn header_tail(
+        &mut self,
+        ui: &mut egui::Ui,
+        snap: &maschine_engine::EngineSnapshot,
+        wide: bool,
+    ) {
+        let lit = MachColors::dark().text_dim;
+        if crate::gui::widgets::chip_tooltip(
+            ui,
+            "MK3",
+            self.show_mk3,
+            lit,
+            "Pont MK3 : écrans, boutons, knobs, pads (F2)",
+        ) {
+            self.show_mk3 = !self.show_mk3;
+        }
+        if crate::gui::widgets::chip_tooltip(
+            ui,
+            "CENTRE",
+            self.show_workspace,
+            lit,
+            "Vue de travail (F3) — masquée, la MK3 prend toute la fenêtre",
+        ) {
+            self.show_workspace = !self.show_workspace;
+        }
+        ui.separator();
+        crate::gui::transport::transport_master(ui, self, snap, wide);
+    }
+
+    /// Pont MK3 : écrans + knobs à gauche, groupes + pads à droite quand la
+    /// largeur le permet (comme le contrôleur), sinon tout empilé.
+    fn render_deck(&mut self, ui: &mut egui::Ui, snap: &maschine_engine::EngineSnapshot) {
+        let w = ui.available_width();
+        let h = ui.available_height();
+        if self.mk3_pads && w >= 1000.0 {
+            let pads_w = (h * 1.15).clamp(300.0, 520.0).min(w * 0.36);
+            let screens_w = w - pads_w - 16.0;
+            // Colonnes verticales explicites : dans une rangée, un enfant
+            // hériterait de la disposition horizontale.
+            let column = egui::Layout::top_down(egui::Align::Min);
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
+                ui.allocate_ui_with_layout(egui::vec2(screens_w, h), column, |ui| {
+                    ui.set_width(screens_w);
+                    self.render_mk3(ui, snap, false);
+                });
+                ui.allocate_ui_with_layout(egui::vec2(pads_w, h), column, |ui| {
+                    ui.set_width(pads_w);
+                    self.render_pads(ui, snap);
+                });
+            });
+        } else {
+            let pads = self.mk3_pads;
+            self.render_mk3(ui, snap, pads);
+        }
+    }
+
+    fn render_mk3(
+        &mut self,
+        ui: &mut egui::Ui,
+        snap: &maschine_engine::EngineSnapshot,
+        pads_below: bool,
+    ) {
         self.refresh_screens(ui.ctx(), snap);
         let c = MachColors::dark();
         // Sections masquables (petits écrans) : écrans + knobs, groupes + pads.
@@ -730,6 +790,20 @@ impl GuiApp {
                     self.press_hardware_button(id);
                 }
             }
+            // Mode PLUGIN : la chaîne (instrument, effets) se parcourt à
+            // l'encodeur 4D sur la MK3 ; ici, deux boutons.
+            if snap.left_tab == 4 && snap.plugin_page != 2 {
+                let n = snap.plugin_slots.len();
+                for (text, step, can) in [
+                    ("◀ SLOT", -1i8, snap.plugin_slot > 0),
+                    ("SLOT ▶", 1, snap.plugin_slot + 1 < n),
+                ] {
+                    let tip = "Emplacement précédent / suivant de la chaîne (encodeur 4D)";
+                    if crate::gui::widgets::chip_tooltip(ui, text, can, c.text_dim, tip) && can {
+                        self.send(EngineEvent::PluginSlotStep(step));
+                    }
+                }
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if crate::gui::widgets::chip(ui, "PADS", self.mk3_pads, c.accent) {
                     self.mk3_pads = !self.mk3_pads;
@@ -743,12 +817,13 @@ impl GuiApp {
         let sp = ui.spacing().item_spacing.y;
         let w = ui.available_width();
         let h = ui.available_height();
-        // Côte à côte (comme le matériel) dès que chaque écran garde 75 %.
-        let side_by_side = w >= 960.0 * 0.75 + gap;
+        // Côte à côte (comme le matériel) dès que chaque écran garde 50 % :
+        // le pont est large et bas, empiler les écrans les rapetisserait.
+        let side_by_side = w >= 960.0 * 0.5 + gap;
         let knob = (w / if side_by_side { 8.0 } else { 4.0 } * 0.42).clamp(28.0, 52.0);
         // Tout ce qui n'est pas écran : rangées de knobs, espacements, pads.
         let rows = if side_by_side { 1.0 } else { 2.0 };
-        let pads = if self.mk3_pads {
+        let pads = if pads_below {
             gap + 4.0 * PAD_MIN + 3.0 * 6.0 + sp
         } else {
             0.0
@@ -760,8 +835,8 @@ impl GuiApp {
             w / 480.0
         };
         let fit_h = (h - fixed) / (272.0 * rows);
-        // Sous 75 % le texte 8×16 devient illisible : on défile plutôt.
-        let scale = fit_w.min(fit_h.max(0.75));
+        // Texte lissé : lisible jusqu'à la moitié ; en dessous on défile.
+        let scale = fit_w.min(fit_h.max(0.5));
         let screen_w = 480.0 * scale;
         let block_w = if side_by_side {
             2.0 * screen_w + gap
@@ -789,7 +864,7 @@ impl GuiApp {
                 }
             });
         }
-        if self.mk3_pads {
+        if pads_below {
             ui.add_space(gap);
             self.render_pads(ui, snap);
         }
@@ -1116,6 +1191,21 @@ impl eframe::App for GuiApp {
 
         let is_playing = snap.transport.is_playing();
 
+        // L'accent de l'interface suit la couleur du groupe focalisé, comme
+        // ses pads et les écrans MK3.
+        if let Some(rgb) = snap
+            .project
+            .groups
+            .get(snap.group_focus as usize)
+            .and_then(|g| maschine_proto::PaletteIndex::from_u8(g.color))
+            .map(|c| c.to_rgb())
+            .filter(|&(r, g, b)| u16::from(r) + u16::from(g) + u16::from(b) > 60)
+        {
+            if crate::gui::theme::set_accent(crate::gui::theme::ui_color(rgb)) {
+                crate::gui::theme::apply_theme(ctx);
+            }
+        }
+
         // Synchro onglet gauche provenant du hardware (boutons écran MK3).
         if snap.left_tab != self.last_left_tab {
             self.last_left_tab = snap.left_tab;
@@ -1149,48 +1239,58 @@ impl eframe::App for GuiApp {
             self.view = StudioView::Plugin;
         }
 
-        // ── Barre d'application : vues rapides + panneaux + états latchés ──
-        // Fenêtre étroite : la barre passe à la ligne au lieu de rogner.
-        let narrow = window_w < 1100.0;
-        egui::TopBottomPanel::top("appbar")
-            .min_height(38.0)
+        // ── En-tête unique : marque, transport, modes, master, panneaux ──
+        // Une seule barre (comme le logiciel Maschine) qui passe à la ligne
+        // sur une fenêtre étroite au lieu de rogner quoi que ce soit.
+        // Sous ~1560 px, tout s'enchaîne à la ligne (pas de bloc calé à
+        // droite qui viendrait chevaucher le transport).
+        let narrow = window_w < 1560.0;
+        let wide = window_w >= 1500.0;
+        egui::TopBottomPanel::top("header")
+            .frame(
+                egui::Frame::NONE
+                    .fill(MachColors::dark().bg)
+                    .inner_margin(egui::Margin::symmetric(10, 7)),
+            )
             .show(ctx, |ui| {
                 let c = MachColors::dark();
-                let row = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(narrow);
-                ui.with_layout(row, |ui| {
-                    // Bascules de panneaux allumées en blanc, comme les boutons MK3.
+                // `horizontal_wrapped` part d'une seule rangée et grandit à la
+                // demande (une disposition « wrap » prendrait toute la hauteur).
+                ui.horizontal_wrapped(|ui| {
                     let lit = c.text_dim;
                     if crate::gui::widgets::chip_tooltip(
                         ui,
                         "VUES",
                         self.show_nav,
                         lit,
-                        "Rail des vues (F1)",
+                        "Rail des vues et des groupes (F1)",
                     ) {
                         self.show_nav = !self.show_nav;
                         self.nav_auto_hidden = false;
                     }
-                    ui.separator();
-                    ui.colored_label(c.accent, egui::RichText::new("MASCHINE").strong());
-                    ui.label(egui::RichText::new("MK3 LINUX").small().color(c.text_muted));
-
-                    let mut selected = self.view;
-                    egui::ComboBox::from_id_salt("view_picker")
-                        .selected_text(
-                            egui::RichText::new(selected.short_label())
-                                .strong()
-                                .size(11.5),
-                        )
-                        .width(132.0)
-                        .show_ui(ui, |ui| {
-                            for view in StudioView::ALL {
-                                ui.selectable_value(&mut selected, view, view.label());
-                            }
-                        });
-                    if selected != self.view {
-                        self.switch_view(selected);
+                    ui.label(
+                        egui::RichText::new("MASCHINE")
+                            .family(crate::gui::theme::bold_family())
+                            .size(19.0)
+                            .color(c.accent),
+                    );
+                    // Rail masqué : la vue se choisit ici.
+                    if !self.show_nav {
+                        let mut selected = self.view;
+                        egui::ComboBox::from_id_salt("view_picker")
+                            .selected_text(egui::RichText::new(selected.short_label()).strong())
+                            .width(140.0)
+                            .show_ui(ui, |ui| {
+                                for view in StudioView::ALL {
+                                    ui.selectable_value(&mut selected, view, view.label());
+                                }
+                            });
+                        if selected != self.view {
+                            self.switch_view(selected);
+                        }
                     }
-
+                    ui.separator();
+                    crate::gui::transport::transport_controls(ui, self, &snap, wide);
                     for (on, label, color) in [
                         (snap.pattern_mode, "PATTERN", c.accent),
                         (snap.scene_mode, "SCENE", c.success),
@@ -1204,56 +1304,21 @@ impl eframe::App for GuiApp {
                                 color,
                                 egui::RichText::new(format!("● {label}"))
                                     .strong()
-                                    .size(10.5),
+                                    .size(12.0),
                             );
                         }
                     }
-
-                    let tail = if narrow {
-                        egui::Layout::left_to_right(egui::Align::Center)
+                    // Large : master et panneaux calés à droite ; sinon à la
+                    // suite (une sous-disposition ici étirerait la barre).
+                    if narrow {
+                        ui.separator();
+                        self.header_tail(ui, &snap, wide);
                     } else {
-                        egui::Layout::right_to_left(egui::Align::Center)
-                    };
-                    ui.with_layout(tail, |ui| {
-                        if crate::gui::widgets::chip_tooltip(
-                            ui,
-                            "MK3",
-                            self.show_mk3,
-                            lit,
-                            "Miroir MK3 : écrans, knobs, pads (F2)",
-                        ) {
-                            self.show_mk3 = !self.show_mk3;
-                        }
-                        if crate::gui::widgets::chip_tooltip(
-                            ui,
-                            "CENTRE",
-                            self.show_workspace,
-                            lit,
-                            "Vue de travail (F3) — masquée, la MK3 prend toute la fenêtre",
-                        ) {
-                            self.show_workspace = !self.show_workspace;
-                        }
-                        let all_visible = self.show_nav && self.show_workspace && self.show_mk3;
-                        if crate::gui::widgets::chip_tooltip(
-                            ui,
-                            "TOUT",
-                            all_visible,
-                            lit,
-                            "Afficher ou masquer les trois panneaux",
-                        ) {
-                            let show = !all_visible;
-                            self.show_nav = show;
-                            self.nav_auto_hidden = false;
-                            self.show_workspace = show;
-                            self.show_mk3 = show;
-                        }
-                    });
+                        let right = egui::Layout::right_to_left(egui::Align::Center);
+                        ui.with_layout(right, |ui| self.header_tail(ui, &snap, wide));
+                    }
                 });
             });
-
-        egui::TopBottomPanel::top("transport").show(ctx, |ui| {
-            crate::gui::transport::render_transport(ui, self, &snap);
-        });
 
         // Rail gauche : vues + groupes. Repliable ; largeur proportionnelle.
         let nav_w = fit_side_panel(
@@ -1293,38 +1358,73 @@ impl eframe::App for GuiApp {
                         ui.separator();
                         ui.add_space(8.0);
 
-                        ui.colored_label(
-                            MachColors::dark().accent_cyan,
-                            egui::RichText::new("GROUPE FOCUS").strong().small(),
-                        );
-                        egui::Grid::new("nav_groups")
-                            .spacing(egui::vec2(4.0, 4.0))
-                            .show(ui, |ui| {
-                                for row in 0..2usize {
-                                    for col in 0..4usize {
-                                        let g = row * 4 + col;
-                                        let active = g == snap.group_focus as usize;
-                                        let muted = (snap.muted_groups & (1 << g)) != 0;
-                                        let label = format!("{}", crate::gui::views::group_char(g));
-                                        let mut btn =
-                                            egui::Button::new(egui::RichText::new(label).strong())
-                                                .min_size(egui::vec2(38.0, 28.0));
-                                        if active {
-                                            btn = btn.fill(MachColors::dark().accent);
-                                        }
-                                        if muted {
-                                            btn = btn.stroke(egui::Stroke::new(
-                                                1.5_f32,
-                                                MachColors::dark().warning,
-                                            ));
-                                        }
-                                        if ui.add(btn).clicked() {
-                                            self.send(EngineEvent::GroupFocus(g as u8));
-                                        }
-                                    }
-                                    ui.end_row();
-                                }
-                            });
+                        crate::gui::theme::caption(ui, "Groupes");
+                        for g in 0..8usize {
+                            let group = snap.project.groups.get(g);
+                            let color = group
+                                .and_then(|grp| maschine_proto::PaletteIndex::from_u8(grp.color))
+                                .map(|p| crate::gui::theme::ui_color(p.to_rgb()))
+                                .map(|(r, gg, b)| egui::Color32::from_rgb(r, gg, b))
+                                .unwrap_or(c.text_muted);
+                            let active = g == snap.group_focus as usize;
+                            let muted = (snap.muted_groups & (1 << g)) != 0;
+                            let name = group.map_or("—", |grp| grp.name.as_str());
+                            let (rect, resp) = ui.allocate_exact_size(
+                                egui::vec2(ui.available_width(), 28.0),
+                                egui::Sense::click(),
+                            );
+                            let painter = ui.painter();
+                            if active {
+                                painter.rect_filled(rect, 5.0, color);
+                            } else if resp.hovered() {
+                                painter.rect_filled(rect, 5.0, c.widget_bg);
+                            }
+                            let chip = egui::Rect::from_min_size(
+                                rect.min + egui::vec2(6.0, 6.0),
+                                egui::vec2(16.0, 16.0),
+                            );
+                            let ink = crate::gui::theme::ink_on(color);
+                            painter.rect_filled(chip, 4.0, if active { ink } else { color });
+                            painter.text(
+                                chip.center(),
+                                egui::Align2::CENTER_CENTER,
+                                crate::gui::views::group_char(g),
+                                egui::FontId::new(12.0, crate::gui::theme::bold_family()),
+                                if active { color } else { ink },
+                            );
+                            let fg = if active {
+                                ink
+                            } else if muted {
+                                c.text_muted
+                            } else {
+                                c.text
+                            };
+                            painter.text(
+                                egui::pos2(chip.right() + 8.0, rect.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                name,
+                                egui::FontId::proportional(14.5),
+                                fg,
+                            );
+                            if muted {
+                                painter.text(
+                                    egui::pos2(rect.right() - 8.0, rect.center().y),
+                                    egui::Align2::RIGHT_CENTER,
+                                    "M",
+                                    egui::FontId::new(12.0, crate::gui::theme::bold_family()),
+                                    c.warning,
+                                );
+                            }
+                            let resp = resp
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .on_hover_text(format!(
+                                    "Groupe {} : {name}",
+                                    crate::gui::views::group_char(g)
+                                ));
+                            if resp.clicked() {
+                                self.send(EngineEvent::GroupFocus(g as u8));
+                            }
+                        }
 
                         ui.add_space(10.0);
                         ui.separator();
@@ -1352,37 +1452,6 @@ impl eframe::App for GuiApp {
                         }
                     });
             });
-
-        // Rail droit : miroir MK3, largeur proportionnelle à la fenêtre. Centre
-        // masqué (F3) : la MK3 prend toute la place, écrans côte à côte.
-        if self.show_workspace {
-            let mk3_max = (window_w * 0.62).max(380.0);
-            let mk3_w = fit_side_panel(
-                ctx,
-                "mk3_panel",
-                &mut self.mk3_frac,
-                window_changed,
-                380.0..=mk3_max,
-            );
-            egui::SidePanel::right("mk3_panel")
-                .resizable(true)
-                .default_width(mk3_w)
-                .width_range(380.0..=mk3_max)
-                .show_animated(ctx, self.show_mk3, |ui| {
-                    egui::ScrollArea::both()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| self.render_mk3(ui, &snap));
-                });
-            egui::CentralPanel::default().show(ctx, |ui| {
-                crate::gui::views::render_view(ui, self, &snap, is_playing);
-            });
-        } else if self.show_mk3 {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                egui::ScrollArea::both()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| self.render_mk3(ui, &snap));
-            });
-        }
 
         // Barre de statut basse.
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
@@ -1423,6 +1492,37 @@ impl eframe::App for GuiApp {
                 }
             });
         });
+
+        // MK3 en bas, comme le contrôleur posé sous l'écran : écrans côte à
+        // côte avec leurs boutons et knobs, pads à droite. Redimensionnable,
+        // repliable (F2) ; centre masqué (F3) : la MK3 prend toute la place.
+        let window_h = ctx.screen_rect().height();
+        if self.show_workspace {
+            let deck_max = (window_h * 0.72).max(180.0);
+            egui::TopBottomPanel::bottom("mk3_deck")
+                .resizable(true)
+                .default_height((window_h * 0.38).clamp(170.0, 430.0))
+                .height_range(120.0..=deck_max)
+                .frame(
+                    egui::Frame::NONE
+                        .fill(MachColors::dark().bg)
+                        .inner_margin(egui::Margin::symmetric(10, 8)),
+                )
+                .show_animated(ctx, self.show_mk3, |ui| {
+                    egui::ScrollArea::both()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| self.render_deck(ui, &snap));
+                });
+            egui::CentralPanel::default().show(ctx, |ui| {
+                crate::gui::views::render_view(ui, self, &snap, is_playing);
+            });
+        } else if self.show_mk3 {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                egui::ScrollArea::both()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.render_deck(ui, &snap));
+            });
+        }
 
         // Fenêtre réglages audio (HEAD).
         #[cfg(feature = "audio")]
@@ -1665,13 +1765,14 @@ pub fn run_native_gui(
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1560.0, 960.0])
-            .with_min_inner_size([640.0, 480.0]),
+            .with_min_inner_size([420.0, 340.0]),
         ..Default::default()
     };
     eframe::run_native(
         "Maschine MK3 Linux",
         options,
         Box::new(move |cc| {
+            crate::gui::theme::install_fonts(&cc.egui_ctx);
             crate::gui::theme::apply_theme(&cc.egui_ctx);
             Ok(
                 Box::new(GuiApp::new(engine, Some(audio), repaint, guitar, mirror))
@@ -1693,13 +1794,14 @@ pub fn run_native_gui(
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1560.0, 960.0])
-            .with_min_inner_size([640.0, 480.0]),
+            .with_min_inner_size([420.0, 340.0]),
         ..Default::default()
     };
     eframe::run_native(
         "Maschine MK3 Linux",
         options,
         Box::new(move |cc| {
+            crate::gui::theme::install_fonts(&cc.egui_ctx);
             crate::gui::theme::apply_theme(&cc.egui_ctx);
             Ok(Box::new(GuiApp::new(engine, repaint, guitar, mirror)) as Box<dyn eframe::App>)
         }),

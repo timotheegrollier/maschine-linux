@@ -4,6 +4,81 @@
 //! contrôleur (`display_render::Pal`), et un cyan pour les infos.
 
 use eframe::egui;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+
+/// Accent courant (RGB packé) : couleur du groupe focalisé — la même que
+/// ses pads et que l'accent des écrans MK3. On sait toujours où l'on est.
+static ACCENT: AtomicU32 = AtomicU32::new(0x00FF_9A1F);
+
+/// Change l'accent ; renvoie `true` s'il a changé (thème à réappliquer).
+pub fn set_accent(rgb: (u8, u8, u8)) -> bool {
+    let v = (u32::from(rgb.0) << 16) | (u32::from(rgb.1) << 8) | u32::from(rgb.2);
+    ACCENT.swap(v, Ordering::Relaxed) != v
+}
+
+fn accent() -> egui::Color32 {
+    let v = ACCENT.load(Ordering::Relaxed);
+    egui::Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
+}
+
+/// Couleur de LED d'un groupe → couleur d'interface lisible sur graphite
+/// (mêmes règles que les écrans : teintes sombres éclaircies).
+#[must_use]
+pub fn ui_color(rgb: (u8, u8, u8)) -> (u8, u8, u8) {
+    let (r, g, b) = rgb;
+    let luma = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
+    let t = if luma < 110.0 { 0.38 } else { 0.12 };
+    let lift = |c: u8| (f32::from(c) + (255.0 - f32::from(c)) * t) as u8;
+    (lift(r), lift(g), lift(b))
+}
+
+/// Texte lisible posé sur `bg` (noir sur couleurs claires).
+#[must_use]
+pub fn ink_on(bg: egui::Color32) -> egui::Color32 {
+    let luma = 0.2126 * f32::from(bg.r()) + 0.7152 * f32::from(bg.g()) + 0.0722 * f32::from(bg.b());
+    if luma > 120.0 {
+        egui::Color32::BLACK
+    } else {
+        egui::Color32::from_rgb(0xF5, 0xF6, 0xF8)
+    }
+}
+
+/// Famille SemiBold (titres, valeurs) — Barlow Semi Condensed, comme la MK3.
+#[must_use]
+pub fn bold_family() -> egui::FontFamily {
+    egui::FontFamily::Name("bold".into())
+}
+
+/// Polices de l'interface : Barlow Semi Condensed (Medium pour le texte,
+/// SemiBold pour les titres), les mêmes que sur les écrans de la MK3. Les
+/// polices d'egui restent en secours (symboles ▶ ■ ●, emoji).
+pub fn install_fonts(ctx: &egui::Context) {
+    use maschine_engine::screen_text::{FONT_MEDIUM, FONT_SEMIBOLD};
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "barlow".into(),
+        Arc::new(egui::FontData::from_static(FONT_MEDIUM)),
+    );
+    fonts.font_data.insert(
+        "barlow-bold".into(),
+        Arc::new(egui::FontData::from_static(FONT_SEMIBOLD)),
+    );
+    let fallback = fonts
+        .families
+        .get(&egui::FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "barlow".into());
+    let mut bold = vec!["barlow-bold".to_string()];
+    bold.extend(fallback);
+    fonts.families.insert(bold_family(), bold);
+    ctx.set_fonts(fonts);
+}
 
 /// Couleurs du thème.
 pub struct MachColors {
@@ -28,23 +103,25 @@ pub struct MachColors {
 
 impl MachColors {
     pub fn dark() -> Self {
+        // Graphite (aluminium anodisé de la MK3) pour la structure ; la
+        // couleur est réservée à l'identité (groupe) et aux états.
         Self {
-            bg: egui::Color32::from_rgb(0x17, 0x17, 0x19),
-            panel: egui::Color32::from_rgb(0x1E, 0x1E, 0x21),
-            surface: egui::Color32::from_rgb(0x26, 0x26, 0x2A),
-            widget_bg: egui::Color32::from_rgb(0x30, 0x30, 0x35),
-            border: egui::Color32::from_rgb(0x38, 0x38, 0x3E),
-            border_active: egui::Color32::from_rgb(0x4C, 0x4C, 0x54),
-            border_hover: egui::Color32::from_rgb(0xFF, 0x9A, 0x1F),
-            text: egui::Color32::from_rgb(0xE9, 0xE9, 0xEC),
-            text_dim: egui::Color32::from_rgb(0xA2, 0xA2, 0xAB),
-            text_muted: egui::Color32::from_rgb(0x6C, 0x6C, 0x75),
-            accent: egui::Color32::from_rgb(0xFF, 0x9A, 0x1F),
-            accent_cyan: egui::Color32::from_rgb(0x26, 0xC6, 0xF5),
-            success: egui::Color32::from_rgb(0x3C, 0xCF, 0x7E),
-            error: egui::Color32::from_rgb(0xF0, 0x52, 0x4D),
-            warning: egui::Color32::from_rgb(0xF2, 0xB2, 0x33),
-            active_bg: egui::Color32::from_rgb(0xFF, 0x9A, 0x1F),
+            bg: egui::Color32::from_rgb(0x13, 0x14, 0x17),
+            panel: egui::Color32::from_rgb(0x1A, 0x1C, 0x20),
+            surface: egui::Color32::from_rgb(0x22, 0x25, 0x2A),
+            widget_bg: egui::Color32::from_rgb(0x2C, 0x30, 0x36),
+            border: egui::Color32::from_rgb(0x34, 0x39, 0x41),
+            border_active: egui::Color32::from_rgb(0x4A, 0x50, 0x5A),
+            border_hover: accent(),
+            text: egui::Color32::from_rgb(0xEE, 0xF0, 0xF3),
+            text_dim: egui::Color32::from_rgb(0xA6, 0xAC, 0xB7),
+            text_muted: egui::Color32::from_rgb(0x6B, 0x71, 0x7C),
+            accent: accent(),
+            accent_cyan: egui::Color32::from_rgb(0x48, 0xC8, 0xF0),
+            success: egui::Color32::from_rgb(0x34, 0xD6, 0x6E),
+            error: egui::Color32::from_rgb(0xFF, 0x48, 0x3E),
+            warning: egui::Color32::from_rgb(0xFF, 0xB8, 0x40),
+            active_bg: accent(),
             flash: egui::Color32::from_rgb(0xFF, 0xE0, 0x66),
         }
     }
@@ -67,12 +144,13 @@ pub fn apply_theme(ctx: &egui::Context) {
     visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, c.border_hover);
     visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, c.accent);
     visuals.selection.bg_fill = c.accent;
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, ink_on(c.accent));
     visuals.selection.stroke = egui::Stroke::new(1.0_f32, c.accent);
     visuals.override_text_color = Some(c.text);
     visuals.hyperlink_color = c.accent_cyan;
     visuals.code_bg_color = c.widget_bg;
-    visuals.window_corner_radius = egui::CornerRadius::same(6);
-    visuals.menu_corner_radius = egui::CornerRadius::same(4);
+    visuals.window_corner_radius = egui::CornerRadius::same(8);
+    visuals.menu_corner_radius = egui::CornerRadius::same(6);
     // Boutons plats et presque rectangulaires, comme le logiciel Maschine.
     for w in [
         &mut visuals.widgets.noninteractive,
@@ -81,7 +159,7 @@ pub fn apply_theme(ctx: &egui::Context) {
         &mut visuals.widgets.active,
         &mut visuals.widgets.open,
     ] {
-        w.corner_radius = egui::CornerRadius::same(4);
+        w.corner_radius = egui::CornerRadius::same(5);
         w.expansion = 0.0;
     }
     visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, c.border);
@@ -89,31 +167,29 @@ pub fn apply_theme(ctx: &egui::Context) {
     ctx.set_visuals(visuals);
 
     let mut style = (*ctx.style()).clone();
-    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    style.spacing.button_padding = egui::vec2(10.0, 6.0);
+    style.spacing.item_spacing = egui::vec2(8.0, 7.0);
+    style.spacing.button_padding = egui::vec2(11.0, 6.0);
+    style.spacing.interact_size.y = 26.0;
     style.spacing.menu_margin = egui::vec2(10.0, 10.0).into();
     style.text_styles = {
         use egui::TextStyle;
         [
-            (
-                TextStyle::Heading,
-                egui::FontId::new(17.0, egui::FontFamily::Proportional),
-            ),
+            (TextStyle::Heading, egui::FontId::new(21.0, bold_family())),
             (
                 TextStyle::Body,
-                egui::FontId::new(13.0, egui::FontFamily::Proportional),
+                egui::FontId::new(14.5, egui::FontFamily::Proportional),
             ),
             (
                 TextStyle::Small,
-                egui::FontId::new(11.0, egui::FontFamily::Proportional),
+                egui::FontId::new(12.0, egui::FontFamily::Proportional),
             ),
             (
                 TextStyle::Monospace,
-                egui::FontId::new(12.0, egui::FontFamily::Monospace),
+                egui::FontId::new(13.0, egui::FontFamily::Monospace),
             ),
             (
                 TextStyle::Button,
-                egui::FontId::new(13.0, egui::FontFamily::Proportional),
+                egui::FontId::new(14.5, egui::FontFamily::Proportional),
             ),
         ]
         .into_iter()
@@ -185,7 +261,10 @@ pub fn view_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(4.0, 20.0), egui::Sense::hover());
         ui.painter()
             .rect_filled(rect, egui::CornerRadius::same(2), c.accent);
-        ui.colored_label(c.text, egui::RichText::new(title).strong().size(15.0));
+        ui.colored_label(
+            c.text,
+            egui::RichText::new(title).family(bold_family()).size(19.0),
+        );
         if !subtitle.is_empty() {
             // L'aide ne passe jamais sous les commandes alignées à droite :
             // tronquée à la moitié de la place restante, entière au survol.
@@ -205,7 +284,10 @@ pub fn view_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
 /// Dessin d'une section avec en-tête coloré.
 pub fn section(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
     let c = MachColors::dark();
-    ui.colored_label(c.accent_cyan, egui::RichText::new(title).strong().small());
+    ui.colored_label(
+        c.text_dim,
+        egui::RichText::new(title).family(bold_family()).size(13.0),
+    );
     ui.add_space(4.0);
     ui.separator();
     ui.add_space(6.0);

@@ -14,7 +14,7 @@ Maschine Linux is an independent project. It does not include Native
 Instruments code or proprietary assets; it reproduces the documented workflow
 and hardware behavior through a clean-room implementation.
 
-## Current state (0.12.0)
+## Current state (0.13.0)
 
 Cargo workspace with six crates:
 
@@ -22,7 +22,7 @@ Cargo workspace with six crates:
 |---|---|
 | `maschine-proto` | Pure codec (no I/O): HID IN `0x01` (buttons, 4D encoder) / `0x02` (pads), HID OUT `0x80`/`0x81`, raw RGB565 Bulk Display with aligned partial windows, color palette |
 | `maschine-hardware` | USB discovery (`hidraw` first, `nusb`/`rusb` fallback), real-time threads, complete hardware mapper, Pad/Step/Keyboard/Chords modes, latched navigation |
-| `maschine-engine` | Domain: Project/Group/Sound/Pattern/Scene/Section, transport, multi-bar sequencer, 808 Drum Synth (16 instruments), Acid TB-303 synthesizer, 480×272 dual-LCD rendering |
+| `maschine-engine` | Domain: Project/Group/Sound/Pattern/Scene/Section, transport, multi-bar sequencer, 808 Drum Synth (16 instruments), Acid TB-303, Kick Synth and Nexus wavetable synthesizers, insert effects on Sounds / Groups / Master, master limiter, 480×272 dual-LCD rendering (anti-aliased text and shapes) |
 | `maschine-app` | `maschine-linux` binary: native `egui` GUI, headless daemon, low-latency PipeWire audio, guitar amp monitoring on the MK3 input, updater |
 | `maschine-dsp` | Real-time guitar DSP: 4x-oversampled multi-model tube preamp (Vox AC30, Fender Blackface/Tweed, High Gain), correct click-free biquad tone stacks, cabinet simulation, gate, delay, tuner (YIN), FFT spectrum, lock-free atomic parameters |
 | `maschine-guitar-standalone` | Optional standalone guitar FX rack (JACK/CPAL audio, `egui` GUI); built by the workspace but independent from the Maschine workflow |
@@ -31,10 +31,38 @@ Real-time design: the engine snapshot is shared through `Arc` (copy-on-write,
 O(1) reads), a revision counter only repaints changed state, VU meters are
 computed in the audio callback, and the HID thread wakes the GUI immediately.
 Audio uses a 256-frame buffer (64-frame period, about 1.3 ms) at 48 kHz, a
-**soft master limiter** (no hard clipping), **sample-accurate note placement**
+**transparent master limiter** (-1 dBFS ceiling, 1 ms look-ahead, untouched below), **sample-accurate note placement**
 inside each block, and a drum kit regenerated at the device sample rate.
 Instrumentation: `--debug-latency` (HID→Engine, real buffer size, misses,
 errors) and `--stress` (deliberate engine-lock contention).
+
+### PLUG-IN chain, effects and redesign in 0.13.0
+
+- **Every plugin parameter on the MK3**: Sampler, TB-303, Kick Synth and Nexus
+  pages on both screens, eight knobs per page with name and value above each
+  knob, pages switched with `Page ◄ ►` (lit when a page exists) and a short
+  transition banner.
+- **Plugin chain like the official software**: the 4D encoder walks through
+  the instrument, then the insert effects of the Sound, its Group and the
+  Master; a free `+ effet` slot inserts **Filter, Distortion, Compressor,
+  Delay or Reverb**; `< TYPE`, `TYPE >`, `BYPASS` and `SUPPR` on the buttons,
+  knob 1 always MIX. Effects really process the audio, each slot with its own
+  state.
+- **Cleaner sound everywhere**: transparent master limiter instead of a
+  saturating waveshaper, rewritten effects (TPT filter, anti-aliased
+  distortion, soft-knee compressor, smoothed delay, Freeverb reverb), Hermite
+  interpolation in the sampler, PolyBLEP oscillators in Nexus, and a guitar amp
+  whose oversampler read one input in four (-12 dB, aliasing) — fixed, with
+  level-compensated gain and a 24 dB/oct cabinet.
+- **Redesign of the screens and the GUI** around one design system
+  ([docs/design.md](docs/design.md)): Barlow Semi Condensed on both, accent =
+  colour of the focused group, anti-aliased curves (tiny-skia); the GUI gets a
+  single header, a colour-coded group rail and an MK3 deck at the bottom with
+  both screens side by side, knobs and pads. Nothing is clipped at any window
+  size.
+- **Held notes and LEDs**: a pad held firmly keeps its note, releasing one pad
+  no longer cuts a synth note held on another, pads light in their Sound colour.
+- **Standby screen** on quit and on crash: almost black, a dim word mark.
 
 ### Guitar amp on the MK3 input
 
@@ -199,6 +227,10 @@ See [the workflow and current scope](docs/workflow.md),
 
 GPL-3.0-or-later. Forks must publish their source code (AGPL is intentionally
 not used).
+
+The interface and MK3 screens use **Barlow Semi Condensed** by Jeremy Tribby,
+distributed under the SIL Open Font License 1.1
+(`crates/maschine-engine/assets/fonts/OFL.txt`).
 
 ## Roadmap
 

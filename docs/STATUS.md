@@ -4,7 +4,7 @@ Living document: what works, what is partial, what is missing, and what to
 check on real hardware. Update it with every release (see the release steps in
 `AGENTS.md`). Behaviour details live in `workflow.md`; this file is the map.
 
-## Current version: 0.18.1
+## Current version: 0.19.0
 
 ### Done (with tests)
 
@@ -91,6 +91,8 @@ check on real hardware. Update it with every release (see the release steps in
 
 ## History (recent)
 
+- **0.19.0** — slides enregistrés pendant REC (glissando du TB-303 entre
+  notes tenues), notes enregistrées pendant REC annulées par Shift+Undo.
 - **0.18.0** — notes enregistrées pendant REC gardent la longueur de la note
   tenue (pads et clavier), automations de knobs enregistrées dans le Pattern
   pendant REC.

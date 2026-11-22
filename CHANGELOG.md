@@ -2,6 +2,17 @@
 
 All notable changes.
 
+## [0.19.0] - 2026-11-22
+
+### Added
+- **Slides enregistrés pendant REC** — appuyer sur un pad (TB-303, synthés) pendant qu'un autre est tenu : l'événement enregistré précédent est étendu jusqu'au nouvel événement — le portamento n'est plus coupé directement.
+
+### Fixed
+- **Shift + Undo pendant REC** : les notes enregistrées pendant l'enregistrement poussent l'historique du projet (écriture du pattern en dehors du thread audio), donc Shift + Pad 1 annule les notes venant d'être enregistrées.
+
+### Validation
+- 286 tests, `clippy -D warnings`, vérification sans sampler au vert. Nouveaux tests : `rec_pad_slides_are_recorded`, `rec_notes_are_pushed_to_the_undo_history`.
+
 ## [0.18.1] - 2026-11-22
 
 ### Fixes

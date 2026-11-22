@@ -2547,7 +2547,14 @@ impl Engine {
                     .get_or_insert_with(|| RackSlot::new(crate::acid_synth::AcidSynth::new(sr)));
                 slot.synth.params = p;
                 slot.idle_blocks = 0;
-                slot.synth.note_on(note, velocity);
+                if live_monitor {
+                    // Monitoring live : coupe nette de la note précédente,
+                    // nouvelle note immédiate (pas de portamento).
+                    slot.synth.cut_gate();
+                    slot.synth.note_on_instant(note, velocity);
+                } else {
+                    slot.synth.note_on(note, velocity);
+                }
             }
         } else if is_wavetable_sound {
             self.wavetable_sound_target = Some((self.group_focus, pad));
@@ -2559,6 +2566,9 @@ impl Engine {
                 });
                 slot.synth.params = p;
                 slot.idle_blocks = 0;
+                if live_monitor {
+                    slot.synth.all_notes_off();
+                }
                 slot.synth.note_on(note, velocity);
             }
         } else if let Some(idx) = self.sampler.note_on(sound, note, velocity, note) {
@@ -5593,7 +5603,11 @@ impl Engine {
         if self.transport.state != TransportState::Recording {
             return;
         }
-        let len = (release_tick.saturating_sub(u64::from(q_tick)) as u32).clamp(30, 3840 * 8);
+        // Longueur quantisée à la grille (comme le départ de la note) pour
+        // que la queue entendue et la queue enregistrée tombent juste.
+        let step = self.sequencer.grid.ticks().max(1) as u64;
+        let raw = release_tick.saturating_sub(u64::from(q_tick));
+        let len = (((raw + step / 2) / step * step).max(step).min(3840 * 8)) as u32;
         let focus = group as usize;
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
@@ -5632,7 +5646,9 @@ impl Engine {
                 .rev()
                 .find(|e| e.pad == pad && e.tick == q_prev)
             {
-                e.length_ticks = (q_new - q_prev).min(3840 * 8);
+                let step = self.sequencer.grid.ticks().max(1);
+                let raw = q_new - q_prev;
+                e.length_ticks = ((raw + step / 2) / step * step).max(step).min(3840 * 8);
             }
         }
     }

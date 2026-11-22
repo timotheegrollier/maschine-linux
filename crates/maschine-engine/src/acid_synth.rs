@@ -304,6 +304,13 @@ impl AcidSynth {
         self.note_on_at(note, velocity, 0);
     }
 
+    /// Note monitoring live pendant REC : changement de hauteur immédiat,
+    /// sans glissando ni délai — ce qu'on joue est entendu instantanément.
+    pub fn note_on_instant(&mut self, note: u8, velocity: u8) {
+        self.note_on(note, velocity);
+        self.current_freq = self.target_freq;
+    }
+
     /// Déclenchement d'une note avec placement sample-accurate dans le bloc audio courant.
     pub fn note_on_at(&mut self, note: u8, velocity: u8, start_frame: usize) {
         self.sample_offset = start_frame;
@@ -332,6 +339,12 @@ impl AcidSynth {
         } else {
             0.0
         };
+    }
+
+    /// Coupe la note courante sans test de hauteur (monitoring live REC).
+    pub fn cut_gate(&mut self) {
+        self.gate_open = false;
+        self.active_note = None;
     }
 
     /// Relâchement d'une note (Note Off).
@@ -513,6 +526,23 @@ impl AcidSynth {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_monitor_note_changes_instantly_without_portamento() {
+        let mut synth = AcidSynth::new(48000);
+        synth.params.slide_time_ms = 200.0;
+        synth.note_on(48, 100);
+        let first = synth.current_freq;
+        // Une seconde note legato glisserait normalement sur 200 ms.
+        synth.note_on_instant(60, 100);
+        assert!(
+            (synth.current_freq - synth.midi_to_freq(60)).abs() < 0.01,
+            "le monitoring live doit changer de hauteur immédiatement"
+        );
+        assert!(synth.current_freq > first);
+        synth.cut_gate();
+        assert!(!synth.gate_open, "la note précédente est coupée nette");
+    }
 
     #[test]
     fn test_acid_synth_creation_and_render() {

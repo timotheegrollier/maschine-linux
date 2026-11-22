@@ -203,11 +203,12 @@ Since 0.14.0 both modes follow that reference; see the two sections below. Not i
   `RESTART` (`SHIFT`: loop), `TAP` (`SHIFT`: metronome).
 - **Recording monitoring (Maschine flow)**: while `REC` runs, the pattern keeps
   playing normally — you hear your recorded loop immediately, without waiting
-  to disarm REC. The Sound played live gets its **own monitoring voice**: the
-  pattern and the live note use separate monophonic synth instances, so they
-  are both audible and never cut each other (TB-303, Kick, Wavetable). All pad
-  LEDs and screens keep mirroring the sequencer. Notes played during REC keep
-  their held length, slides and knob automation are recorded.
+  to disarm REC. The Sound played live gets its **own monitoring voice**: when
+  you change note, the previous note is cut cleanly and the new one sounds
+  instantly (no portamento in the live monitor), while the pattern keeps its
+  recorded slides. Both monophonic synth instances are audible through the same
+  gain, pan and FX path. Recorded note **lengths are quantized to the grid**
+  (start quantize unchanged), so what you hear and what is written match.
 - **16 Velocities**: `SHIFT + FIXED VEL` — the 16 pads play the selected Sound
   from velocity 7 (pad 1) to 127 (pad 16) without changing the selection; pads
   shaded in its colour, `FIXED VEL` half lit, GUI pads labelled `VEL n`.

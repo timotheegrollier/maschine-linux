@@ -2610,6 +2610,33 @@ impl Engine {
         result
     }
 
+    /// Ré-appui sur le pad du pattern actif : on le coupe instantanément
+    /// (désassigné de la scène), comme sur la Maschine MK3.
+    fn cut_active_pattern(&mut self, group_idx: usize, pattern: usize) -> bool {
+        if group_idx >= 8 {
+            return false;
+        }
+        {
+            let guard = self.project.read();
+            let proj: &crate::project::Project = &guard;
+            if proj.active_pattern_index(group_idx, self.active_scene) != Some(pattern) {
+                return false;
+            }
+        }
+        self.pending_patterns[group_idx] = None;
+        self.pattern_chains[group_idx] = None;
+        let mut guard = self.project.write();
+        let proj = project_mut(&mut guard);
+        if let Some(scene_idx) = self.active_scene {
+            if let Some(scene) = proj.scenes.get_mut(scene_idx) {
+                if let Some(slot) = scene.patterns.get_mut(group_idx) {
+                    *slot = None;
+                }
+            }
+        }
+        true
+    }
+
     fn apply_event(&mut self, ev: EngineEvent) -> crate::Result<()> {
         let records_history = matches!(
             &ev,
@@ -2903,6 +2930,11 @@ impl Engine {
             EngineEvent::PatternSelect { group, pattern } => {
                 let group_idx = group as usize;
                 self.pattern_chains[group_idx] = None;
+                // Ré-appui sur le pad actif : coupe instantanée (MK3).
+                if self.cut_active_pattern(group_idx, pattern) {
+                    self.show_status(format!("Pattern {} coupé", pattern + 1));
+                    return Ok(());
+                }
                 let mut guard = self.project.write();
                 let proj = project_mut(&mut guard);
                 let valid = proj
@@ -2936,6 +2968,11 @@ impl Engine {
             }
             EngineEvent::PatternSelectInstant { group, pattern } => {
                 let group_idx = group as usize;
+                // Ré-appui sur le pad actif : coupe instantanée (MK3).
+                if self.cut_active_pattern(group_idx, pattern) {
+                    self.show_status(format!("Pattern {} coupé", pattern + 1));
+                    return Ok(());
+                }
                 let mut guard = self.project.write();
                 let proj = project_mut(&mut guard);
                 let valid = proj
@@ -11268,12 +11305,12 @@ mod tests {
     }
 
     #[test]
-    fn test_pattern_selection_stays_and_chaining() {
+    fn test_pattern_press_cuts_active_and_chaining() {
         let mut eng = Engine::new_demo(48000);
         let group = eng.group_focus;
 
-        // 1. Sélection d'un pattern : comme sur Maschine, ré-appuyer sur le pad
-        //    du pattern courant ne le désélectionne pas.
+        // 1. Ré-appuyer sur le pad du pattern courant le coupe instantanément
+        //    (workflow officiel Maschine MK3).
         let init_pat = eng
             .project
             .read()
@@ -11287,10 +11324,16 @@ mod tests {
             .read()
             .active_pattern_index(group as usize, eng.active_scene);
         assert_eq!(
-            still_pat,
-            Some(0),
-            "Le pattern sélectionné doit rester sélectionné"
+            still_pat, None,
+            "Le pattern actif doit être coupé par un ré-appui sur son pad"
         );
+        // Le pattern reste dans le groupe (on ne supprime pas le slot).
+        assert!(!eng.project.read().groups[group as usize]
+            .patterns
+            .is_empty());
+        // On réassigne le pattern pour la suite du test.
+        eng.handle_event(EngineEvent::PatternSelect { group, pattern: 0 })
+            .unwrap();
 
         // 2. Chaque Groupe possède son propre pattern dans la scène : créer un
         //    pattern dans un autre Groupe ne change pas celui du Groupe focus.

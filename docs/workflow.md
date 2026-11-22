@@ -116,8 +116,10 @@ Both screens are rendered by the same function (`display_render::render_screens`
 - **Latched workflow menus**: PATTERN, STEP, KEYBOARD, SCENE, EVENTS, MACRO, SETTINGS and PLUGIN latch on the first press. A second press on the same button returns to the default Pad workflow and the Sequencer view. Only one workflow menu is active at a time.
 - **PATTERN mode**: the left screen lists the 16 pattern slots of the focus Group with length and event count; the right screen shows the selected pattern grid. Patterns belong to their Group: each Group keeps its own pattern bank and its own selection in the current Scene, so working on one Group never changes another Group's pattern. Empty pads create a new empty pattern in that slot and select it; selecting a pattern only replaces that Group's reference in the current Scene, and pressing the selected pattern again keeps it selected. Pressing two pads simultaneously chains the patterns into a sequential loop;
 the chain covers the whole interval between the two pads (pads 1 and 4 chain
-patterns 1–4, pads 1 and 16 chain patterns 1–16). Pressing a single pad selects
-it for the next bar while playing. **SHIFT + a pattern pad switches immediately**
+patterns 1–4, pads 1 and 16 chain patterns 1–16). **Pressing the pad of the
+currently active pattern cuts it instantly** (the pattern is unassigned from
+the scene, the group falls silent); the pattern itself stays in the group's
+bank. Pressing a different pad selects it for the next bar while playing. **SHIFT + a pattern pad switches immediately**
 (the pending launch and current chain are cancelled) — the equivalent of the
 MK3 shortcut for auditioning a pattern without waiting for the bar line. The
 generic SHIFT-pad layer (UNDO/REDO/…) stays active outside PATTERN mode.

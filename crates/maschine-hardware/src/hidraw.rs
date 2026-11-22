@@ -46,9 +46,9 @@ impl HidrawHandle {
     /// Arrête le thread.
     pub fn stop(mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(j) = self.join.take() {
-            let _ = j.join();
-        }
+        // Ne pas bloquer la boucle HID : le read hidraw se débloque normalement
+        // à la déconnexion, mais on évite un gel si le device est en erreur.
+        self.join.take();
     }
 }
 

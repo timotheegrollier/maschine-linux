@@ -84,25 +84,20 @@ impl DisplayThreadHandle {
         self.stop.store(true, Ordering::Relaxed);
     }
 
-    /// Attend la fin du thread (envoie d'abord le splash puis libère IF5)
+    /// Attend la fin du thread (envoie d'abord le splash puis libère IF5).
+    /// Ne bloque pas indéfiniment : un bulk USB bloqué ne doit pas geler l'app.
     #[allow(dead_code)]
     pub fn join(mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(j) = self.join.take() {
-            let _ = j.join();
-        }
+        self.join.take();
     }
 }
 
 #[cfg(feature = "usb")]
 impl Drop for DisplayThreadHandle {
     fn drop(&mut self) {
-        // Filet de sécurité : si le handle est oublié sur un chemin d'erreur,
-        // on demande l'arrêt et on attend la libération propre de l'interface.
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(j) = self.join.take() {
-            let _ = j.join();
-        }
+        self.join.take();
     }
 }
 

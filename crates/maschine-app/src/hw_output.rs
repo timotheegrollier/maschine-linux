@@ -22,20 +22,19 @@ impl LedWriterHandle {
     #[allow(dead_code)]
     pub fn stop(mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(j) = self.join.take() {
-            let _ = j.join();
-        }
+        // Ne jamais bloquer l'appelant (boucle HID, shutdown) : un write USB
+        // bloqué ne doit pas geler l'application. Le thread sortira dès que
+        // le poll d'écriture expirera ou que le fd sera libéré.
+        self.join.take();
     }
 }
 
 impl Drop for LedWriterHandle {
     fn drop(&mut self) {
-        // Filet de sécurité : tout arrêt (même par drop) doit envoyer le
-        // rapport « tout éteint » et rendre la MK3 à son mode par défaut.
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(j) = self.join.take() {
-            let _ = j.join();
-        }
+        // Détacher plutôt que joindre : join() peut bloquer indéfiniment si
+        // l'hidraw est bloqué en écriture (déconnexion USB, device en erreur).
+        self.join.take();
     }
 }
 
@@ -92,16 +91,28 @@ fn led_loop(
             demo.set_pad(i, Color::from_index(col).unwrap_or(Color::OFF));
         }
         let _ = send_leds(fd, &demo);
-        std::thread::sleep(Duration::from_millis(400));
-        // Groups
-        for g in 0..8 {
-            demo.set_button_raw(
-                maschine_proto::hid_output::offsets::GROUP_A + g,
-                palette[g % palette.len()],
-            );
+        for _ in 0..20 {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
-        let _ = send_leds(fd, &demo);
-        std::thread::sleep(Duration::from_millis(400));
+        // Groups
+        if !stop.load(Ordering::Relaxed) {
+            for g in 0..8 {
+                demo.set_button_raw(
+                    maschine_proto::hid_output::offsets::GROUP_A + g,
+                    palette[g % palette.len()],
+                );
+            }
+            let _ = send_leds(fd, &demo);
+            for _ in 0..20 {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
     }
 
     let mut pending: Option<LedState> = None;
@@ -138,45 +149,58 @@ fn led_loop(
     Ok(())
 }
 
+fn write_with_timeout(
+    fd: std::os::fd::RawFd,
+    buf: &[u8],
+    timeout_ms: i32,
+) -> std::io::Result<usize> {
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    let rc = unsafe { libc::poll(&mut pfd as *mut libc::pollfd, 1, timeout_ms) };
+    if rc == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "write poll timeout",
+        ));
+    }
+    if rc < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if pfd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "hidraw poll error",
+        ));
+    }
+    let ret = unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
+    if ret < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(ret as usize)
+    }
+}
+
+fn write_report(fd: std::os::fd::RawFd, report: &[u8], name: &str) -> anyhow::Result<()> {
+    match write_with_timeout(fd, report, 50) {
+        Ok(_) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(libc::EINVAL) && report.len() > 1 => {
+            write_with_timeout(fd, &report[1..], 50)
+                .map(|_| ())
+                .map_err(|e2| anyhow::anyhow!("write {name} sans ID: {e2}"))
+        }
+        Err(e) => Err(anyhow::anyhow!("write {name}: {e}")),
+    }
+}
+
 pub fn send_leds(fd: std::os::fd::RawFd, state: &LedState) -> anyhow::Result<()> {
     use maschine_proto::hid_output::{encode_report_80, encode_report_81_mapped};
     let r80 = encode_report_80(state)?;
     let r81 = encode_report_81_mapped(state, maschine_hardware::pad_output_hw_order())?;
-    // hidraw write : inclut report ID
-    // On tente avec ID, si EINVAL on retry sans ID
-    unsafe {
-        let ret80 = libc::write(fd, r80.as_ptr() as *const libc::c_void, r80.len());
-        if ret80 < 0 {
-            let e = std::io::Error::last_os_error();
-            if e.raw_os_error() == Some(libc::EINVAL) {
-                // retry sans ID
-                let ret = libc::write(fd, r80[1..].as_ptr() as *const libc::c_void, r80.len() - 1);
-                if ret < 0 {
-                    return Err(anyhow::anyhow!(
-                        "write 0x80 sans ID: {}",
-                        std::io::Error::last_os_error()
-                    ));
-                }
-            } else {
-                return Err(anyhow::anyhow!("write 0x80: {e}"));
-            }
-        }
-        let ret81 = libc::write(fd, r81.as_ptr() as *const libc::c_void, r81.len());
-        if ret81 < 0 {
-            let e = std::io::Error::last_os_error();
-            if e.raw_os_error() == Some(libc::EINVAL) {
-                let ret = libc::write(fd, r81[1..].as_ptr() as *const libc::c_void, r81.len() - 1);
-                if ret < 0 {
-                    return Err(anyhow::anyhow!(
-                        "write 0x81 sans ID: {}",
-                        std::io::Error::last_os_error()
-                    ));
-                }
-            } else {
-                return Err(anyhow::anyhow!("write 0x81: {e}"));
-            }
-        }
-    }
+    write_report(fd, &r80, "0x80")?;
+    write_report(fd, &r81, "0x81")?;
     Ok(())
 }
 
@@ -260,5 +284,38 @@ pub mod display {
     #[allow(dead_code)]
     pub fn show_text(_left_text: &str, _right_text: &str) -> anyhow::Result<()> {
         anyhow::bail!("feature `usb` non activée")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::fd::RawFd;
+
+    #[test]
+    fn write_with_timeout_times_out_on_full_pipe() {
+        let mut fds = [0 as RawFd; 2];
+        let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(rc, 0, "pipe");
+        let _r = fds[0];
+        let w = fds[1];
+        unsafe {
+            let flags = libc::fcntl(w, libc::F_GETFL);
+            libc::fcntl(w, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+        // Remplir le pipe pour forcer EAGAIN.
+        let buf = [0u8; 4096];
+        loop {
+            let n = unsafe { libc::write(w, buf.as_ptr() as *const _, buf.len()) };
+            if n < 0 {
+                break;
+            }
+        }
+        let err = write_with_timeout(w, &[1u8; 64], 50).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
     }
 }

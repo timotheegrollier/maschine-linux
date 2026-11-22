@@ -5661,7 +5661,11 @@ impl Engine {
     fn schedule_note_off(&mut self, pad: u8, note: u8, from_tick: u32, release_tick: u64) {
         let len = self.quantize_note_len(from_tick, release_tick);
         let end = u64::from(from_tick).saturating_add(len as u64);
-        if let Some(slot) = self.pending_note_offs.iter_mut().find(|s| s.is_none()) {
+        if let Some(slot) = self
+            .pending_note_offs
+            .iter_mut()
+            .find(|s| s.is_none_or(|(p, _, _)| p == pad))
+        {
             *slot = Some((pad, note, end));
         }
     }
@@ -5721,7 +5725,15 @@ impl Engine {
         self.rec_pad_press = [None; 16];
         self.rec_key_press = [None; 128];
         self.rec_sounding = [None; 16];
-        self.pending_note_offs = [None; 16];
+        let mut due = [None; 16];
+        for (i, slot) in self.pending_note_offs.iter_mut().enumerate() {
+            if let Some((pad, note, _)) = slot.take() {
+                due[i] = Some((pad, note));
+            }
+        }
+        for (pad, note) in due.into_iter().flatten() {
+            self.release_sound_voice(pad, note);
+        }
     }
 
     /// Enregistre un point d'automation pendant REC (knob du Sound actif) dans
@@ -10056,6 +10068,28 @@ mod tests {
             eng.pending_note_offs.iter().all(Option::is_none),
             "la note live est coupée à la fin quantifiée"
         );
+    }
+
+    #[test]
+    fn pending_note_off_replaces_same_pad() {
+        let mut eng = Engine::new_demo(48000);
+        eng.schedule_note_off(3, 60, 0, 240);
+        eng.schedule_note_off(3, 60, 0, 480);
+        let count = eng
+            .pending_note_offs
+            .iter()
+            .flatten()
+            .filter(|(p, _, _)| *p == 3)
+            .count();
+        assert_eq!(count, 1, "un seul note-off programmé par pad");
+    }
+
+    #[test]
+    fn clear_rec_marks_releases_pending_note_offs() {
+        let mut eng = Engine::new_demo(48000);
+        eng.schedule_note_off(1, 37, 0, 240);
+        eng.clear_rec_press_marks();
+        assert!(eng.pending_note_offs.iter().all(Option::is_none));
     }
 
     #[test]

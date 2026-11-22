@@ -95,9 +95,6 @@ impl AudioOutput {
     ) -> anyhow::Result<Self> {
         auto_configure_djm_routing();
         let mk3_present = mk3_audio_present();
-        if mk3_present {
-            auto_configure_mk3_input();
-        }
         let host = cpal::default_host();
         log::info!("cpal host: {:?}", host.id());
 
@@ -1091,47 +1088,45 @@ pub fn auto_configure_djm_routing() {
     }
 }
 
-/// Détecte et configure automatiquement la source d'entrée audio de la Maschine MK3 sous PipeWire.
-/// Si PipeWire est actif et que la MK3 est connectée en mode pro-audio, s'assure que
-/// la source d'entrée de la MK3 (prises Line In 1/2 TRS) est configurée comme source par défaut
-/// ou prête à être capturée par le flux guitare.
-pub fn auto_configure_mk3_input() {
-    let Ok(output) = std::process::Command::new("wpctl").arg("status").output() else {
-        return;
-    };
-    if !output.status.success() {
-        return;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut in_sources = false;
-    for line in text.lines() {
-        if line.contains("Sources:") {
-            in_sources = true;
-            continue;
-        }
-        if in_sources
-            && (line.contains("Filters:")
-                || line.contains("Streams:")
-                || line.contains("Devices:")
-                || line.contains("Sinks:"))
-        {
-            in_sources = false;
-        }
-        if in_sources && line.to_lowercase().contains("maschine") {
-            let clean = line.replace(['│', '*'], "");
-            let trimmed = clean.trim();
-            if let Some(node_str) = trimmed.split('.').next() {
-                let node_id = node_str.trim();
-                if node_id.chars().all(|c| c.is_ascii_digit()) && !node_id.is_empty() {
-                    log::info!(
-                        "Maschine MK3 source audio détectée (node {node_id}) — définition comme source par défaut wpctl"
-                    );
-                    let _ = std::process::Command::new("wpctl")
-                        .args(["set-default", node_id])
-                        .output();
-                    break;
+// La source par défaut PipeWire n'est plus modifiée automatiquement :
+// c'était invasif (le PC basculait sur la MK3). Le routeur relie
+// explicitement les ports Line In quand l'ampli guitare est actif.
+
+fn command_output_timeout(
+    mut cmd: std::process::Command,
+    timeout: Duration,
+) -> std::io::Result<std::process::Output> {
+    use std::io::Read;
+    use std::process::Stdio;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let start = Instant::now();
+    loop {
+        match child.try_wait()? {
+            Some(status) => {
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                if let Some(mut s) = child.stdout.take() {
+                    let _ = s.read_to_end(&mut stdout);
                 }
+                if let Some(mut s) = child.stderr.take() {
+                    let _ = s.read_to_end(&mut stderr);
+                }
+                return Ok(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
             }
+            None if start.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "subprocess timeout",
+                ));
+            }
+            None => std::thread::sleep(Duration::from_millis(10)),
         }
     }
 }
@@ -1144,17 +1139,39 @@ pub fn sync_pipewire_mk3_links(app_bin_name: &str) -> bool {
     if !mk3_audio_present() {
         return false;
     }
-    let Ok(outputs_out) = std::process::Command::new("pw-link").arg("-o").output() else {
+    let pw_timeout = Duration::from_secs(2);
+    let Ok(outputs_out) = command_output_timeout(
+        {
+            let mut c = std::process::Command::new("pw-link");
+            c.arg("-o");
+            c
+        },
+        pw_timeout,
+    ) else {
         return false;
     };
     let outputs_text = String::from_utf8_lossy(&outputs_out.stdout);
 
-    let Ok(inputs_out) = std::process::Command::new("pw-link").arg("-i").output() else {
+    let Ok(inputs_out) = command_output_timeout(
+        {
+            let mut c = std::process::Command::new("pw-link");
+            c.arg("-i");
+            c
+        },
+        pw_timeout,
+    ) else {
         return false;
     };
     let inputs_text = String::from_utf8_lossy(&inputs_out.stdout);
 
-    let Ok(links_out) = std::process::Command::new("pw-link").arg("-l").output() else {
+    let Ok(links_out) = command_output_timeout(
+        {
+            let mut c = std::process::Command::new("pw-link");
+            c.arg("-l");
+            c
+        },
+        pw_timeout,
+    ) else {
         return false;
     };
     let links_text = String::from_utf8_lossy(&links_out.stdout);
@@ -1221,15 +1238,15 @@ pub fn sync_pipewire_mk3_links(app_bin_name: &str) -> bool {
     } else {
         for src in &current_sources_fl {
             if src != &source_line1 {
-                let _ = std::process::Command::new("pw-link")
-                    .args(["-d", src, &target_fl])
-                    .output();
+                let mut c = std::process::Command::new("pw-link");
+                c.args(["-d", src, &target_fl]);
+                let _ = command_output_timeout(c, pw_timeout);
             }
         }
         if !current_sources_fl.contains(&source_line1) {
-            let res = std::process::Command::new("pw-link")
-                .args([&source_line1, &target_fl])
-                .output();
+            let mut c = std::process::Command::new("pw-link");
+            c.args([&source_line1, &target_fl]);
+            let res = command_output_timeout(c, pw_timeout);
             if let Ok(out) = res {
                 if out.status.success() {
                     log::info!("✓ PipeWire : Line In 1 ({source_line1}) relié à {target_fl}");
@@ -1257,17 +1274,40 @@ pub fn sync_pipewire_mk3_links(app_bin_name: &str) -> bool {
         }
         for src in &current_sources_fr {
             if src != &source_line2 {
-                let _ = std::process::Command::new("pw-link")
-                    .args(["-d", src, &target_fr])
-                    .output();
+                let mut c = std::process::Command::new("pw-link");
+                c.args(["-d", src, &target_fr]);
+                let _ = command_output_timeout(c, pw_timeout);
             }
         }
         if !current_sources_fr.contains(&source_line2) {
-            let _ = std::process::Command::new("pw-link")
-                .args([&source_line2, &target_fr])
-                .output();
+            let mut c = std::process::Command::new("pw-link");
+            c.args([&source_line2, &target_fr]);
+            let _ = command_output_timeout(c, pw_timeout);
         }
     }
 
     linked_left
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn command_output_timeout_returns_output() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "printf ok"]);
+        let out = command_output_timeout(cmd, Duration::from_secs(2)).unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout, b"ok");
+    }
+
+    #[test]
+    fn command_output_timeout_kills_slow_process() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "sleep 5"]);
+        let err = command_output_timeout(cmd, Duration::from_millis(100)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+    }
 }

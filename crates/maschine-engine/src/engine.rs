@@ -807,6 +807,8 @@ pub struct HardwareSnapshot {
     pub num_scenes: usize,
     pub group_num_patterns: usize,
     pub scene_pattern: Option<usize>,
+    /// Masque des pads appartenant à la chaîne de patterns du groupe focus.
+    pub pattern_chain_mask: u16,
     pub loop_enabled: bool,
     pub metronome: bool,
     pub selected_bar: usize,
@@ -2124,6 +2126,22 @@ impl Engine {
                 .flatten()
         });
 
+        let pattern_chain_mask = self.pattern_chains[self.group_focus as usize % 8]
+            .as_ref()
+            .map(|chain| {
+                chain.iter().fold(
+                    0u16,
+                    |mask, &i| {
+                        if i < 16 {
+                            mask | (1u16 << i)
+                        } else {
+                            mask
+                        }
+                    },
+                )
+            })
+            .unwrap_or(0);
+
         HardwareSnapshot {
             group_focus: self.group_focus,
             active_sound: self.active_sound,
@@ -2158,6 +2176,7 @@ impl Engine {
             num_scenes: project.scenes.len().min(16),
             group_num_patterns,
             scene_pattern,
+            pattern_chain_mask,
             loop_enabled: self.transport.loop_enabled,
             metronome: self.transport.metronome,
             selected_bar,
@@ -11452,6 +11471,12 @@ mod tests {
         })
         .unwrap();
         assert_eq!(eng.pattern_chains[group as usize], Some(vec![0, 1]));
+        let mask = eng.hardware_snapshot().pattern_chain_mask;
+        assert_eq!(
+            mask & 0b11,
+            0b11,
+            "les pads 0 et 1 de la chaîne sont allumés"
+        );
 
         // L'avance du transport tourne sans panic avec la chaîne
         eng.transport.state = crate::transport::TransportState::Playing;

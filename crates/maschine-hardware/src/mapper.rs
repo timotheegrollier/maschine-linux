@@ -525,6 +525,8 @@ pub struct SequencerLedInfo {
     pub group_num_patterns: usize,
     /// Pattern assigné au groupe focus dans la scène active
     pub scene_pattern: Option<usize>,
+    /// Pads de la chaîne de patterns (LED plus intense).
+    pub pattern_chain_mask: u16,
     /// Boucle transport active (LED RESTART)
     pub loop_enabled: bool,
     /// Métronome actif (LED TAP quand stoppé)
@@ -2588,6 +2590,9 @@ impl HardwareMapper {
                         dim_pad_color(group)
                     };
                     self.led_state.set_pad(i, c);
+                } else if info.pattern_chain_mask & (1u16 << i) != 0 {
+                    // Pads de la boucle chaînée : plus intenses pour voir le chainage.
+                    self.led_state.set_pad(i, bright_pad_color(group));
                 } else if Some(i) == info.scene_pattern {
                     self.led_state.set_pad(i, bright_pad_color(group));
                 } else if i < info.group_num_patterns {
@@ -4263,6 +4268,33 @@ mod tests {
             ts_ns: 1,
         });
         assert_eq!(actions, vec![MapperAction::ToggleAutomation]);
+    }
+
+    #[test]
+    fn chained_pattern_pads_are_brighter() {
+        use maschine_proto::hid_output::offsets;
+        let mut m = HardwareMapper::with_default();
+        let mut group_colors = [0u8; 8];
+        group_colors[0] = 22; // Jaune pour le groupe A
+        let info = SequencerLedInfo {
+            pattern_mode: true,
+            group_colors,
+            group_num_patterns: 16,
+            pattern_chain_mask: 0b0000_0000_0001_1100, // pads 2,3,4
+            ..SequencerLedInfo::default()
+        };
+        m.update_leds(&info);
+        let bright = bright_pad_color(Color::from_index(22).unwrap()).to_index();
+        let dim = dim_pad_color(Color::from_index(22).unwrap()).to_index();
+        for pad in [2usize, 3, 4] {
+            assert_eq!(
+                m.led_state().pad_leds[pad],
+                bright,
+                "pad {pad} de la chaîne doit être vif"
+            );
+        }
+        assert_eq!(m.led_state().pad_leds[0], dim, "pad hors chaîne atténué");
+        let _ = offsets::GROUP_A;
     }
 
     #[test]

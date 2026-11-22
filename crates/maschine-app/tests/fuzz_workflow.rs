@@ -275,6 +275,7 @@ fn fuzz_full_workflow_no_panic() {
             num_scenes: 4,
             group_num_patterns: 3,
             scene_pattern: Some(1),
+            pattern_chain_mask: 0,
             loop_enabled: true,
             metronome: true,
             selected_bar: 0,

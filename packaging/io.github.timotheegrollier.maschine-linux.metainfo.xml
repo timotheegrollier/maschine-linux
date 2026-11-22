@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.19.1" date="2026-11-22">
+      <description>
+        <p>Release 0.19.1 fixes the MK3 LEDs: the MUTE button lights only during mute mode (not while navigating in pad mode), the selected group LED is brighter than the others, and the selected pad is brighter than the others.</p>
+      </description>
+    </release>
     <release version="0.19.0" date="2026-11-22">
       <description>
         <p>Release 0.19.0 records slides during recording (TB-303 portamento between held notes) and makes Shift+Undo undo notes recorded during recording.</p>

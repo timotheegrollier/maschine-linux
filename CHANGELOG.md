@@ -2,6 +2,14 @@
 
 All notable changes.
 
+## [0.19.1] - 2026-11-22
+
+### Fixed
+- **LEDs MK3** : le bouton MUTE ne s'allume que pendant le mode MUTE (ou MUTE+groupe) — plus l'indicateur « groupe muet » quand on navigue en mode PAD ; le groupe sélectionné est plus illuminé que les autres ; le pad sélectionné est plus illuminé que les autres.
+
+### Validation
+- 291 tests, `clippy -D warnings`, vérification sans sampler au vert. Nouveaux tests : `mute_button_and_muted_pads_leds_in_mute_mode`, `group_navigation_leds`, `selected_pad_is_brighter_than_others`, `rec_pad_sounds_during_hold_like_without_rec`, `rec_slide_sounds_during_rec`.
+
 ## [0.19.0] - 2026-11-22
 
 ### Added

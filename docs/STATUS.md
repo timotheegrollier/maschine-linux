@@ -4,7 +4,7 @@ Living document: what works, what is partial, what is missing, and what to
 check on real hardware. Update it with every release (see the release steps in
 `AGENTS.md`). Behaviour details live in `workflow.md`; this file is the map.
 
-## Current version: 0.19.0
+## Current version: 0.19.1
 
 ### Done (with tests)
 
@@ -91,6 +91,9 @@ check on real hardware. Update it with every release (see the release steps in
 
 ## History (recent)
 
+- **0.19.1** — LEDs MK3 : bouton MUTE hors mode mute, groupe et pad
+  sélectionnés plus illuminés ; notes pendant REC — son pendant la tenue
+  (slide à l'écran).
 - **0.19.0** — slides enregistrés pendant REC (glissando du TB-303 entre
   notes tenues), notes enregistrées pendant REC annulées par Shift+Undo.
 - **0.18.0** — notes enregistrées pendant REC gardent la longueur de la note

@@ -1451,7 +1451,11 @@ fn cmd_daemon(
                 MapperAction::SceneStep(delta) => {
                     let _ = engine.lock().handle_event(EngineEvent::SceneStep(delta));
                 }
-                MapperAction::PatternTrigger { group, pattern } => {
+                MapperAction::PatternTrigger {
+                    group,
+                    pattern,
+                    immediate,
+                } => {
                     // Pad existant = sélection ; pad vide = création du slot
                     // (comme sur Maschine, les 16 pads représentent les slots).
                     let exists = engine
@@ -1462,10 +1466,13 @@ fn cmd_daemon(
                         .get(group as usize)
                         .map(|g| pattern < g.patterns.len())
                         .unwrap_or(false);
-                    let event = if exists {
-                        EngineEvent::PatternSelect { group, pattern }
-                    } else {
+                    let event = if !exists {
                         EngineEvent::CreatePatternAt { group, pattern }
+                    } else if immediate {
+                        // SHIFT + pad : bascule immédiate en lecture.
+                        EngineEvent::PatternSelectInstant { group, pattern }
+                    } else {
+                        EngineEvent::PatternSelect { group, pattern }
                     };
                     let _ = engine.lock().handle_event(event);
                 }

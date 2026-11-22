@@ -76,6 +76,14 @@ pub enum EngineEvent {
         /// Pattern idx
         pattern: usize,
     },
+    /// Sélection immédiate d'un pattern en lecture (SHIFT + pad MK3) :
+    /// pas d'attente de la prochaine mesure.
+    PatternSelectInstant {
+        /// Group idx
+        group: u8,
+        /// Pattern idx
+        pattern: usize,
+    },
     /// Crée un pattern vide à la suite du groupe et l'assigne à la scène active.
     AddPattern {
         /// Group idx
@@ -2907,6 +2915,31 @@ impl Engine {
                         group_idx,
                         pattern,
                     );
+                }
+            }
+            EngineEvent::PatternSelectInstant { group, pattern } => {
+                let group_idx = group as usize;
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
+                let valid = proj
+                    .groups
+                    .get(group_idx)
+                    .map(|g| pattern < g.patterns.len())
+                    .unwrap_or(false);
+                if valid {
+                    if group_idx < 8 {
+                        // Écrase tout lancement en attente : le changement est immédiat.
+                        self.pending_patterns[group_idx] = None;
+                        self.pattern_chains[group_idx] = None;
+                    }
+                    assign_pattern_to_active_scene(
+                        proj,
+                        &mut self.active_scene,
+                        group_idx,
+                        pattern,
+                    );
+                    drop(guard);
+                    self.show_status(format!("Pattern {} (immédiat)", pattern + 1));
                 }
             }
             EngineEvent::AddPattern { group } => {
@@ -11956,6 +11989,36 @@ mod tests {
             loud(&mut eng);
         }
         assert!(loud(&mut eng) < 1e-3, "les deux groupes muets");
+    }
+
+    #[test]
+    fn shift_pattern_switch_is_immediate_while_playing() {
+        let mut eng = Engine::new_demo(48000);
+        eng.handle_event(EngineEvent::GroupFocus(0)).unwrap();
+        eng.handle_event(EngineEvent::AddPattern { group: 0 })
+            .unwrap();
+        eng.handle_event(EngineEvent::PatternSelect {
+            group: 0,
+            pattern: 0,
+        })
+        .unwrap();
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: false,
+            stop: false,
+        })
+        .unwrap();
+        eng.advance(1024);
+        // SHIFT + pad : bascule immédiate, pas d'attente de la mesure suivante.
+        eng.handle_event(EngineEvent::PatternSelectInstant {
+            group: 0,
+            pattern: 1,
+        })
+        .unwrap();
+        assert_eq!(eng.active_pattern_for_focus(), Some(1));
+        assert_eq!(eng.snapshot().pending_patterns[0], None);
+        let guard = eng.project.read();
+        assert_eq!(guard.active_pattern_index(0, eng.active_scene), Some(1));
     }
 
     #[test]

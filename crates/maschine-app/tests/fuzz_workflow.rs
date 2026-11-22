@@ -107,7 +107,11 @@ fn fuzz_full_workflow_no_panic() {
                 MapperAction::SceneTrigger(i) => {
                     let _ = eng.handle_event(EngineEvent::Scene(i));
                 }
-                MapperAction::PatternTrigger { group, pattern } => {
+                MapperAction::PatternTrigger {
+                    group,
+                    pattern,
+                    immediate: _,
+                } => {
                     let _ = eng.handle_event(EngineEvent::PatternSelect { group, pattern });
                 }
                 MapperAction::EraseSound { group, sound } => {

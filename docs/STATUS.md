@@ -60,7 +60,12 @@ check on real hardware. Update it with every release (see the release steps in
 - **Standby before any launch** needs the packages (or `standby --install`) and
   a logged-in systemd user session; a `SIGKILL` leaves the last frame.
 - **Automation** (`CLEAR AUTO`) and touch-sensitive knob behaviour are not
-  implemented.
+  implemented. Automation points are recorded into the Pattern but not yet
+  replayed during playback.
+- **Pattern workflow**: two pads pressed together chain the whole interval
+  (1→16 possible); SHIFT + a pattern pad now switches immediately while the
+  transport runs (pending launch and chain cancelled). The generic SHIFT-pad
+  layer (UNDO/REDO/…) remains active outside PATTERN mode.
 
 ### Check on real hardware (not covered by CI)
 

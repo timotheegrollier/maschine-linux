@@ -259,7 +259,12 @@ pub enum MapperAction {
     /// Scène précédente/suivante (4D ou flèches en mode SCENE)
     SceneStep(i32),
     /// Sélectionne un pattern du groupe focus pour la scène active (mode PATTERN)
-    PatternTrigger { group: u8, pattern: usize },
+    PatternTrigger {
+        group: u8,
+        pattern: usize,
+        /// SHIFT + pad : bascule immédiate (sans attendre la mesure).
+        immediate: bool,
+    },
     /// Duplique le pattern actif du groupe focus (bouton DUPLICATE en mode PATTERN)
     DuplicatePattern { group: u8 },
     /// Efface les notes du pattern actif (SHIFT + ERASE en mode PATTERN)
@@ -1987,6 +1992,16 @@ impl HardwareMapper {
                 });
                 return actions;
             }
+            // En mode PATTERN, SHIFT + pad = bascule immédiate (sans attendre
+            // la mesure) — la couche Shift générique reste active ailleurs.
+            if self.shift_held && self.pattern_select_mode {
+                actions.push(MapperAction::PatternTrigger {
+                    group: self.group_focus,
+                    pattern: p.pad as usize,
+                    immediate: true,
+                });
+                return actions;
+            }
             if self.shift_held {
                 actions.push(MapperAction::ShiftPadAction(p.pad));
                 return actions;
@@ -2048,6 +2063,7 @@ impl HardwareMapper {
                     actions.push(MapperAction::PatternTrigger {
                         group: self.group_focus,
                         pattern: p.pad as usize,
+                        immediate: self.shift_held,
                     });
                 }
                 return actions;
@@ -2950,7 +2966,8 @@ mod tests {
         }));
         assert!(a.contains(&MapperAction::PatternTrigger {
             group: 0,
-            pattern: 2
+            pattern: 2,
+            immediate: false
         }));
 
         // ERASE : latch, pad -> EraseSound (pas de son joué)
@@ -4126,6 +4143,30 @@ mod tests {
     }
 
     #[test]
+    fn shift_pattern_pad_requests_immediate_switch() {
+        use crate::events::PadState;
+        let mut m = HardwareMapper::with_default();
+        let _ = press_button(&mut m, maschine_proto::ButtonId::Pattern);
+        assert!(m.pattern_select_mode);
+        let _ = press_button(&mut m, maschine_proto::ButtonId::Shift);
+        let actions = m.handle_hardware_event(HardwareEvent::Pad(PadState {
+            pad: 2,
+            pressed: true,
+            velocity: 100,
+            pressure: 0x4080,
+            ts_ns: 1,
+        }));
+        assert!(
+            actions.contains(&MapperAction::PatternTrigger {
+                group: 0,
+                pattern: 2,
+                immediate: true
+            }),
+            "SHIFT + pad doit demander un changement immédiat de pattern"
+        );
+    }
+
+    #[test]
     fn test_pattern_chaining_via_two_pads() {
         use crate::events::PadState;
         let mut m = HardwareMapper::with_default();
@@ -4144,7 +4185,8 @@ mod tests {
             a1,
             vec![MapperAction::PatternTrigger {
                 group: 0,
-                pattern: 1
+                pattern: 1,
+                immediate: false
             }]
         );
 
@@ -4162,6 +4204,32 @@ mod tests {
                 group: 0,
                 patterns: vec![1, 2, 3]
             }]
+        );
+    }
+
+    #[test]
+    fn pattern_chain_wide_interval() {
+        use crate::events::PadState;
+        let mut m = HardwareMapper::with_default();
+        let _ = press_button(&mut m, maschine_proto::ButtonId::Pattern);
+        let press = |m: &mut HardwareMapper, pad: u8| {
+            m.handle_hardware_event(HardwareEvent::Pad(PadState {
+                pad,
+                pressed: true,
+                velocity: 100,
+                pressure: 0x4000,
+                ts_ns: 1,
+            }))
+        };
+        let _ = press(&mut m, 0);
+        let actions = press(&mut m, 15);
+        assert_eq!(
+            actions,
+            vec![MapperAction::PatternChain {
+                group: 0,
+                patterns: (0..=15).collect()
+            }],
+            "deux pads éloignés chaînent tous les patterns de l'intervalle"
         );
     }
 

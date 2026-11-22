@@ -255,15 +255,23 @@ impl AudioOutput {
                 .name("mk3-pw-router".into())
                 .spawn(move || {
                     std::thread::sleep(Duration::from_millis(50));
-                    let mut was_linked = sync_pipewire_mk3_links(&bin_name);
-                    if was_linked {
-                        *guitar_rt.input_device_name.lock() =
-                            Some("Maschine MK3 (Line In 1)".to_string());
+                    let mut was_linked = false;
+                    if guitar_rt.control.enabled.load(Ordering::Relaxed) {
+                        was_linked = sync_pipewire_mk3_links(&bin_name);
+                        if was_linked {
+                            *guitar_rt.input_device_name.lock() =
+                                Some("Maschine MK3 (Line In 1)".to_string());
+                        }
                     }
                     while !stop_flag.load(Ordering::Relaxed) {
                         std::thread::sleep(Duration::from_millis(1000));
                         if stop_flag.load(Ordering::Relaxed) {
                             break;
+                        }
+                        // Sans ampli guitare actif, aucun pw-link : évite la
+                        // multiplication de sous-processus et les blocages.
+                        if !guitar_rt.control.enabled.load(Ordering::Relaxed) {
+                            continue;
                         }
                         let linked = sync_pipewire_mk3_links(&bin_name);
                         if linked != was_linked {

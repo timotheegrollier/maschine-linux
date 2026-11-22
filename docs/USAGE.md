@@ -96,8 +96,8 @@ with `try_lock`.
   - **PAD mode**: full-dynamics triggering (velocity + pressure) of the active sound or full kit. Melodic instruments (Wavetable/Nexus Synth, TB-303) sustain notes for the duration of the pad hold with clean NoteOff release; drum sampler pads trigger authentic one-shots. White hit flash then the color assigned to the sound.
   - **PATTERN mode**: select an existing pattern of the focus Group, or create the corresponding slot when the pad is empty. Pressing the currently active pattern toggles it off (silencing the group), allowing all patterns across any group to be deactivated. Holding two pads simultaneously chains those patterns to play sequentially in a continuous loop.
   - **STEP mode**: silent step sequencer (no stray playback when placing/removing steps), active step LEDs + live white playhead cursor.
-  - **KEYBOARD mode**: melodic playing in a minor scale C3..D5 with sustained notes.
-  - **CHORDS mode**: enriched diatonic chords with sustained notes.
+  - **KEYBOARD mode**: melodic playing from C3 (chromatic by default; `OCT` / `SEMI` buttons 5–8, scale on buttons 1–4 and knob 2) with sustained notes; root pads are lit.
+  - **CHORDS mode**: one chord per pad, climbing like the keyboard; in a scale the chords stay in key (`1-3-5`, `1-3-5-7`…), in Chromatic they use fixed types (Triad, Minor, Sus…).
 - **NOTE REPEAT & LOCK**:
   - Pressing `NOTE REPEAT` activates real-time note repetition.
   - Pressing `LOCK` latches Note Repeat mode on with illuminated physical LED feedback.

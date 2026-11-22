@@ -109,6 +109,13 @@ RUSTFLAGS="-D warnings" cargo check -p maschine-engine --no-default-features --l
   `wavetable_synth` are only the *editing* copies shown on the PLUG-IN pages;
   never render or trigger them.
 - `SoundId` packs the group in the high byte: decode with `>> 8` / `& 0xFF`.
+- KEYBOARD / CHORDS notes come only from `keyboard::KeyboardState`
+  (`pad_notes`, `is_root_pad`); the mapper receives them as `kbd_pad_notes` /
+  `kbd_root_pads` in `sync_mapper_context`. Note names use the Maschine
+  convention (`keyboard::note_name`, C3 = 60) everywhere.
+- Legacy `draw_text` paints a full 8×16 cell: draw row frames *after* the text
+  and keep list text inside the content area (it ends at y = 194 before the
+  knob band).
 - Scene / pattern changes during playback are queued (`pending_*`), applied on
   the next bar in `advance` and written to the project by `commit_launches`
   (never from the audio thread).

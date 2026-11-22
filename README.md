@@ -43,6 +43,8 @@ errors) and `--stress` (deliberate engine-lock contention).
 - Scenes and patterns chosen during playback start on the next bar.
 - Pads and group buttons light like on the MK3 (dim, normal, bright, blinking
   when queued); the MK3 shows startup progress.
+- Keyboard and Chords modes follow the MK3: C3 chromatic by default, OCT / SEMI
+  buttons, root pads lit, chords that stay in the chosen scale.
 
 ### Sample editor and EVENTS in 0.14.0
 

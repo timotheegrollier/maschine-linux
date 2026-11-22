@@ -8,18 +8,24 @@ All notable changes.
 - **Tous les groupes jouent ensemble, synthés compris** : le TB-303, le Kick Synth et le Nexus n'existaient qu'en un exemplaire partagé par tout le projet — deux groupes avec un synthé se coupaient, prenaient les réglages l'un de l'autre et sortaient sur un seul groupe. Chaque Sound a désormais sa propre instance (rendu suspendu quand elle se tait), mixée avec le volume, le pan, les mutes et les effets de son groupe.
 - **VU-mètres des groupes B à H** : seuls ceux du groupe A bougeaient (identifiant de Sound mal décodé) ; tous les groupes et tous les pads ont maintenant leurs niveaux, dans la GUI comme sur les écrans.
 - **Notes perdues à l'enregistrement** : jouer en REC (ou poser des pas, éditer des notes) sur un groupe qui n'a pas de pattern dans la scène ne faisait rien ; un pattern est créé et placé dans la scène, comme sur le logiciel officiel.
-- **SOLO** ne coupait rien à la lecture : il s'applique maintenant aux patterns, au jeu en direct et aux synthés, comme MUTE.
+- **SOLO** ne coupait rien à la lecture : il s'applique maintenant aux patterns, au jeu en direct (pads, KEYBOARD, CHORDS) et aux synthés, comme MUTE.
+- **KEYBOARD / CHORDS** : les knobs réglaient le tempo et le swing au lieu de la fondamentale, de la gamme, de l'octave et de l'accord affichés au-dessus d'eux ; les pads jouaient deux octaves trop bas (un sample sonnait deux octaves sous sa hauteur) ; les LEDs suivaient un motif fixe sans rapport avec la gamme ; la GUI affichait des notes figées ; en CHORDS, les pads 8 à 14 rejouaient les mêmes accords. La MK3 et la GUI lisent maintenant les mêmes notes, calculées par le moteur.
+- **SCENE** : les knobs font ce que l'écran affiche (TEMPO, SWING, VOL GRP, PAN GRP, PATTERN, LONGUEUR, VOL SND, MASTER).
+- **Écrans PATTERN, SCENE et matrice** : le texte coupait le cadre des lignes et l'aide du bas passait sous les knobs.
+- **Pads des Sounds vides** : ils gardaient une couleur par défaut (sur la MK3 comme dans la GUI) ; ils sont éteints, et blancs quand on les frappe ou les sélectionne.
 
 ### Added
 - **Lancement quantifié** : en lecture, choisir une scène ou un pattern le fait démarrer au début de la mesure suivante (pad clignotant en attente, message à l'écran) ; à l'arrêt, le changement est immédiat.
 - **LEDs des pads comme sur la MK3** : pad vide éteint, Sound présent atténué, Sound sélectionné normal, frappe ou note du séquenceur vive (selon la vélocité), Sound muet éteint (atténué en mode MUTE) ; patterns dans la couleur du groupe, scène active vive, éléments en attente clignotants ; boutons de groupe dans leur couleur (focalisé vif, muet éteint).
 - **GUI** : boutons **M** (mute) et **S** (solo) sur chaque groupe du rail.
 - **Démarrage** : la MK3 affiche l'étape de chargement avec une barre de progression dès le lancement ; la fenêtre apparaît en fondu.
-- **Transport** : `STOP` à l'arrêt revient au début ; `SHIFT + REC` active le pré-compte d'une mesure.
+- **Transport** : `STOP` à l'arrêt revient au début ; `SHIFT + REC` lance une mesure de pré-compte (un clic par temps, même métronome coupé) puis l'enregistrement — REC clignote pendant le pré-compte, `STOP` ou un nouveau `SHIFT + REC` l'annule ; le bouton d'écran `COUNT-IN` fait faire de même à `REC`. (Le réglage de pré-compte existait mais rien ne le lisait.)
+- **KEYBOARD / CHORDS comme sur la MK3** : C3 en chromatique par défaut sur le pad 1, boutons 5–8 = `OCT -`, `OCT +`, `SEMI -`, `SEMI +` (la fondamentale passe de B3 à C4), fondamentale et octaves allumées et encadrées à l'écran, autres pads atténués dans la couleur du Sound. En gamme (majeure, mineure…), les accords restent dans la gamme (`1-3-5`, `1-3-5-7`, `1-3`, `1-5`, `1-4-5`, `1-4-7`) comme l'Harmonizer ; en chromatique, accords fixes (Triad, Minor, Sus2…). Noms de notes partout en convention Maschine (C3 = 60).
+- **Lancements visibles** : le pattern ou la scène en attente est encadré et marqué `SUIVANT` sur les écrans MK3, et encadré dans la vue Ideas de la GUI.
 
 ### Validation
-- `cargo fmt`, `cargo clippy -D warnings`, `cargo test --workspace` (262 tests) et `RUSTFLAGS=-D warnings cargo check -p maschine-engine --no-default-features` au vert.
-- Nouveaux tests : groupes simultanés avec leurs synthés et leurs VU (`every_group_plays_at_once_with_its_own_synths_and_meters`), lancement à la mesure suivante, SOLO / MUTE, enregistrement sur un groupe sans pattern (`launches_wait_for_the_next_bar_and_solo_mute_and_record_work_per_group`), intensités des LEDs des pads.
+- `cargo fmt`, `cargo clippy -D warnings`, `cargo test --workspace` (268 tests) et `RUSTFLAGS=-D warnings cargo check -p maschine-engine --no-default-features` au vert ; écrans KEYBOARD, CHORDS, lancements en attente et démarrage ajoutés à `dump_screens`.
+- Nouveaux tests : groupes simultanés avec leurs synthés et leurs VU (`every_group_plays_at_once_with_its_own_synths_and_meters`), lancement à la mesure suivante, SOLO / MUTE, enregistrement sur un groupe sans pattern (`launches_wait_for_the_next_bar_and_solo_mute_and_record_work_per_group`), intensités des LEDs des pads, notes et accords des pads (`pads_start_on_c3_and_light_the_roots_like_the_mk3`, `chords_climb_with_the_pads_and_stay_in_the_scale`), knobs et boutons de KEYBOARD / CHORDS et de SCENE.
 
 ## [0.14.0] - 2026-11-22
 

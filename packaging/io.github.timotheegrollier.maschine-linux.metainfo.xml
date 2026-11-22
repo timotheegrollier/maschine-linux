@@ -38,7 +38,7 @@
   <releases>
     <release version="0.15.0" date="2026-11-22">
       <description>
-        <p>Release 0.15.0 lets every group play at once with its own synthesizer instances, fixes the meters of groups B to H, recording into groups without a pattern and SOLO, launches scenes and patterns on the next bar, lights pads and group buttons with the MK3 intensities, adds mute and solo buttons to the GUI group list, and shows startup progress on the MK3.</p>
+        <p>Release 0.15.0 lets every group play at once with its own synthesizer instances, fixes the meters of groups B to H, recording into groups without a pattern and SOLO, launches scenes and patterns on the next bar (marked on the screens), lights pads and group buttons with the MK3 intensities, reworks Keyboard and Chords modes like the MK3 (C3 chromatic default, octave and semitone buttons, root pads lit, in-scale chords), adds mute and solo buttons to the GUI group list, and shows startup progress on the MK3.</p>
       </description>
     </release>
     <release version="0.14.0" date="2026-11-22">

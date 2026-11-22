@@ -55,7 +55,7 @@ The GUI follows Maschine's workflow separation: a common transport bar, groups a
 - **Ideas**: horizontal scenes and a Group × Pattern matrix with 8–16 slots per Group. Clicking an existing pattern assigns it to the scene and focuses its group; clicking an empty slot creates that pattern and assigns it. The scene can be duplicated/deleted (with automatic re-indexing of Song sections). A scene can be added from this view.
 - **Song**: horizontal timeline of sections, direct selection, previous/next navigation, duplication, deletion and section length (1/2/4/8 bars).
 - **Sequencer**: 16 × 16 steps, navigation and pattern length from 1/2/4/8 bars, preview pads and groove actions. The pattern manager above the grid creates, selects, duplicates, clears, deletes, renames, and resizes patterns. Cells are prepared in a single pass over events to keep editing smooth.
-- **Keyboard / Performance**: Maschine-like Keyboard/Chords for the active Sound, with root, scale, base octave, chord type, and inversion controls from MK3 top buttons/soft keys and the GUI. Hardware KEYBOARD and CHORDS modes open this view and show dedicated screens.
+- **Keyboard / Performance**: Maschine-like Keyboard/Chords for the active Sound. Pad 1 plays the root note (C3 = MIDI 60, chromatic by default); buttons 5–8 are `OCT -`, `OCT +`, `SEMI -`, `SEMI +` (SEMI carries into the octave: B3 → C4); buttons 1–4 pick the scale (`CHROMA`, `MINOR`, `SCALE-`, `SCALE+`) or, in CHORDS, scale and chord. Knobs: KEYBOARD `1:ROOT 2:SCALE 3:OCT 4:SND`, `6:GRP 8:MASTER`; CHORDS `1:ROOT 2:SCALE 3:CHORD 4:INV`, `5:OCT 8:MASTER`. Pads light in the Sound colour: root note and its octaves lit, other pads dim, hit bright. In a scale, chords stack scale degrees from the pad's note (`1-3-5`, `1-3-5-7`, `1-3`, `1-5`, `1-4-5`, `1-4-7`, like the Harmonizer); in Chromatic they use fixed intervals (Triad, Minor, Sus2, Sus4, 7th, Min7, Maj7, Oct). Hardware KEYBOARD and CHORDS modes open this view and show dedicated screens.
 - **Mixer**: volume, pan, mute and solo for groups A–H, plus the master.
 - **Sampler / Sound**: selection of the 16 Sounds, asynchronous WAV import, waveform, audition, volume, pan, filter, ADSR envelope, per-Sound polyphony and choke group. WAV paths are saved in the project zones and reloaded on open.
 - **PLUGIN**: unified Sound editor. The SOUND page exposes the sampler-style controls; the TB-303 page provides simplified macros (cutoff, resonance, envelope modulation, decay, accent, drive, delay time, delay mix) with advanced oscillator, filter, distortion, and delay controls collapsed by default.
@@ -184,9 +184,12 @@ Since 0.14.0 both modes follow that reference; see the two sections below. Not i
   only the soloed groups audible, for patterns, live playing and synths.
 - **Launching**: while the transport runs, a scene (`SCENE` + pad) or a pattern
   (`PATTERN` + pad, GUI Ideas grid) starts at the beginning of the next bar;
-  its pad blinks until then. Stopped, changes are immediate.
+  its pad blinks and its row on the PATTERN / SCENE screen is framed and marked
+  `SUIVANT` until then. Stopped, changes are immediate.
 - **Transport**: `PLAY` toggles playback, `STOP` stops (again: back to the
-  start), `REC` toggles recording (`SHIFT + REC`: one-bar count-in),
+  start), `REC` toggles recording (`SHIFT + REC` from stop: one bar of clicks,
+  then recording starts; `REC` blinks meanwhile, `STOP` cancels; with the
+  `COUNT-IN` display button on, plain `REC` counts in too),
   `RESTART` (`SHIFT`: loop), `TAP` (`SHIFT`: metronome).
 - **Pad LEDs**: empty pad off, Sound present dim, selected Sound normal, hit or
   sequencer note bright (velocity ≥ 64 = brightest), muted Sound off (dim while

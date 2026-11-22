@@ -87,8 +87,15 @@ jack guitare → MK3 input (CPAL capture) → SPSC ring → gate
   soft keys switch to the simplified TB-303 page, where advanced parameters
   are collapsed by default.
 - **Responsive, hideable GUI**: the navigation rail (`F1`), centre workspace
-  (`F3`), and MK3 mirror (`F2`) can be hidden independently; the `TOUT` button
-  toggles all three panels at once for a compact performance layout.
+  (`F3`), and MK3 mirror (`F2`) keep their share of the window when it is
+  resized and can be hidden independently; `TOUT` toggles all three panels.
+  The mirror follows the controller (display buttons, screens, knobs, groups,
+  pads): its knobs use the hardware mapping and its pads the hardware LED
+  colours. With the centre hidden, the MK3 fills the window.
+- **MK3 screen layout**: as on the official controller, each display button's
+  label sits along the top edge of the screens (under the button) and each
+  knob's name and value along the bottom edge (above the knob); lit labels and
+  button LEDs follow the same state.
 - **Graceful MK3 shutdown**: closing the app joins the HID/display/LED threads,
   sends a shutdown splash, releases the display interface without resetting the
   device, and turns the pad LEDs off so the MK3 returns to its default logo and

@@ -157,12 +157,15 @@ pub fn render(
             ui.add_space(8.0);
 
             // ── Grille ────────────────────────────────────────────────
-            crate::gui::theme::card_frame().show(ui, |ui| {
+            crate::gui::theme::card(ui, |ui| {
+                // La grille remplit la largeur de la vue : 16 cases + leurs
+                // espacements, sans jamais déborder sous le panneau voisin.
+                let gap = 3.0;
+                ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
                 let full_w = ui.available_width();
-                let row_label_w = (full_w * 0.24).clamp(112.0, 172.0);
-                let avail = (full_w - row_label_w - 8.0).max(16.0 * 14.0);
-                let cell_w = (avail / 16.0).clamp(14.0, 42.0);
-                let cell_h = if full_w < 560.0 { 19.0 } else { 21.0 };
+                let row_label_w = (full_w * 0.2).clamp(112.0, 172.0);
+                let cell_w = ((full_w - row_label_w - 16.0 * gap) / 16.0).clamp(12.0, 64.0);
+                let cell_h = (cell_w * 0.6).clamp(18.0, 28.0);
 
                 // Numéros de pas + repères de temps.
                 ui.horizontal(|ui| {
@@ -279,7 +282,7 @@ pub fn render(
                 let current = events
                     .iter()
                     .find(|e| e.pad == active && e.tick >= tick && e.tick < tick + 240);
-                crate::gui::theme::card_frame().show(ui, |ui| {
+                crate::gui::theme::card(ui, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
                             egui::RichText::new(format!(
@@ -467,7 +470,7 @@ fn render_pattern_manager(
         app.pattern_name_buf = current_name.clone();
     }
 
-    crate::gui::theme::card_frame().show(ui, |ui| {
+    crate::gui::theme::card(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.colored_label(
                 c.accent,

@@ -7,13 +7,15 @@
 
 use crate::gui::app::GuiApp;
 use crate::gui::theme::{caption, value_label, MachColors};
-use crate::gui::widgets::{chip, mach_button};
+use crate::gui::widgets::{chip, icon_button, mach_button};
 use eframe::egui;
 
 use maschine_engine::transport::TransportState;
 use maschine_engine::EngineEvent;
 
-/// Dessine la barre de transport en haut de l'application.
+/// Dessine la barre de transport en haut de l'application : une seule ligne
+/// compacte (comme l'en-tête du logiciel Maschine) ; les infos secondaires
+/// s'effacent quand la fenêtre est étroite.
 pub fn render_transport(
     ui: &mut egui::Ui,
     app: &mut GuiApp,
@@ -27,195 +29,143 @@ pub fn render_transport(
     let is_rec = matches!(snap.transport.state, TransportState::Recording);
     let loop_on = snap.transport.loop_enabled;
     let metro_on = snap.transport.metronome;
+    let wide = ui.available_width() >= 1400.0;
 
-    egui::Frame::NONE
-        .fill(c.panel)
-        .inner_margin(egui::Margin::same(10))
-        .stroke(egui::Stroke::new(1.0_f32, c.border))
-        .corner_radius(egui::CornerRadius::same(10))
-        .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                // ── Transport ────────────────────────────────────────────
-                ui.vertical(|ui| {
-                    let play_btn = egui::Button::new(
-                        egui::RichText::new(if is_playing { "■" } else { "▶" })
-                            .size(26.0)
-                            .strong(),
-                    )
-                    .min_size(egui::vec2(52.0, 42.0))
-                    .fill(if is_playing { c.error } else { c.success })
-                    .stroke(egui::Stroke::new(1.0_f32, c.border));
-                    if ui
-                        .add(play_btn)
-                        .on_hover_text("Lecture / Arrêt (Espace)")
-                        .clicked()
-                    {
-                        let _ = app.engine.lock().handle_event(EngineEvent::Transport {
-                            play: !is_playing,
-                            rec: false,
-                            stop: is_playing,
-                        });
-                    }
-                    ui.add_space(2.0);
-                    if mach_button(ui, "⏮", false).clicked {
-                        let _ = app.engine.lock().handle_event(EngineEvent::Restart);
-                    }
-                });
-
-                ui.add_space(4.0);
-
-                ui.vertical(|ui| {
-                    let rec_btn =
-                        egui::Button::new(egui::RichText::new("● REC").size(13.0).strong().color(
-                            if is_rec {
-                                egui::Color32::WHITE
-                            } else {
-                                c.error
-                            },
-                        ))
-                        .min_size(egui::vec2(74.0, 42.0))
-                        .fill(if is_rec { c.error } else { c.widget_bg })
-                        .stroke(egui::Stroke::new(
-                            1.0_f32,
-                            if is_rec { c.error } else { c.border },
-                        ));
-                    if ui.add(rec_btn).on_hover_text("Enregistrement").clicked() {
-                        // REC pendant lecture → Recording ; re-clic → retour en Play.
-                        let _ = app.engine.lock().handle_event(EngineEvent::Transport {
-                            play: is_rec,
-                            rec: !is_rec,
-                            stop: false,
-                        });
-                    }
-                    ui.add_space(2.0);
-                    caption(
-                        ui,
-                        if is_rec {
-                            "STOP REC: re-clic"
-                        } else {
-                            "Rec au prochain cycle"
-                        },
-                    );
-                });
-
-                ui.add_space(14.0);
-
-                // ── Position ─────────────────────────────────────────────
-                ui.vertical(|ui| {
-                    value_label(ui, format!("{}", snap.bbt), c.text);
-                    let bar_in_pat = snap.selected_bar + 1;
-                    caption(
-                        ui,
-                        format!(
-                            "Bar {}/{} • pattern {} mes.",
-                            bar_in_pat,
-                            snap.pattern_bars.max(1),
-                            snap.pattern_bars
-                        ),
-                    );
-                });
-
-                ui.add_space(14.0);
-
-                // ── Tempo ────────────────────────────────────────────────
-                ui.vertical(|ui| {
-                    let mut bpm = snap.transport.bpm;
-                    let resp = ui.add(
-                        egui::DragValue::new(&mut bpm)
-                            .speed(0.5)
-                            .range(20.0..=300.0)
-                            .custom_formatter(|v, _| format!("{v:.1} BPM")),
-                    );
-                    if resp.changed() {
-                        let _ = app.engine.lock().handle_event(EngineEvent::Bpm(bpm));
-                    }
-                    let mut swing = snap.transport.swing;
-                    if ui
-                        .add(
-                            egui::Slider::new(&mut swing, 0.0..=1.0)
-                                .show_value(false)
-                                .text("Swing"),
-                        )
-                        .changed()
-                    {
-                        app.engine.lock().set_swing(swing);
-                    }
-                });
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(6.0);
-
-                // ── Boucle / métronome / song ───────────────────────────
-                ui.vertical(|ui| {
-                    if chip(ui, "LOOP", loop_on, c.success) {
-                        let _ = app.engine.lock().handle_event(EngineEvent::ToggleLoop);
-                    }
-                    if chip(ui, "MÉTRO", metro_on, c.accent_cyan) {
-                        let _ = app.engine.lock().handle_event(EngineEvent::ToggleMetronome);
-                    }
-                    if chip(ui, "SONG", snap.song_mode, c.accent) {
-                        let _ = app.engine.lock().handle_event(EngineEvent::ToggleSongMode);
-                    }
-                });
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(6.0);
-
-                // ── Voix / niveaux ──────────────────────────────────────
-                ui.vertical(|ui| {
-                    value_label(ui, format!("Voices {:2}", snap.num_voices), c.text_dim);
-                    let cpu = app.audio_stats_text();
-                    value_label(ui, cpu, c.text_muted);
-                });
-
-                // ── Droite : master + réglages ──────────────────────────
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Bouton Mises à jour in-app
-                    let update_ready = app.updater_state.lock().update_available.is_some();
-                    let (up_txt, up_act) = if update_ready {
-                        ("MàJ DISPO", true)
-                    } else if app.show_updater {
-                        ("Fermer", true)
-                    } else {
-                        ("MàJ", false)
-                    };
-                    if mach_button(ui, up_txt, up_act).clicked {
-                        app.show_updater = !app.show_updater;
-                    }
-                    ui.add_space(4.0);
-
-                    #[cfg(feature = "audio")]
-                    {
-                        let (txt, _col) = if app.show_settings {
-                            ("Fermer", c.warning)
-                        } else {
-                            ("Audio", c.text)
-                        };
-                        if mach_button(ui, txt, app.show_settings).clicked {
-                            app.show_settings = !app.show_settings;
-                            if app.show_settings {
-                                app.refresh_devices();
-                            }
-                        }
-                        ui.add_space(8.0);
-                    }
-
-                    let mut master = snap.master_volume;
-                    let resp = ui.add(
-                        egui::Slider::new(&mut master, 0.0..=1.0)
-                            .show_value(false)
-                            .text("Master"),
-                    );
-                    if resp.changed() {
-                        let _ = app
-                            .engine
-                            .lock()
-                            .handle_event(EngineEvent::MasterVolume(master));
-                    }
-                    value_label(ui, format!("{:>3.0}%", snap.master_volume * 100.0), c.text);
-                });
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        // ── Transport ────────────────────────────────────────────────
+        let play_btn = egui::Button::new(
+            egui::RichText::new(if is_playing { "■" } else { "▶" })
+                .size(18.0)
+                .strong()
+                .color(egui::Color32::WHITE),
+        )
+        .min_size(egui::vec2(46.0, 32.0))
+        .fill(if is_playing { c.error } else { c.success });
+        if ui
+            .add(play_btn)
+            .on_hover_text("Lecture / Arrêt (Espace)")
+            .clicked()
+        {
+            let _ = app.engine.lock().handle_event(EngineEvent::Transport {
+                play: !is_playing,
+                rec: false,
+                stop: is_playing,
             });
+        }
+        let rec_btn = egui::Button::new(egui::RichText::new("● REC").size(12.0).strong().color(
+            if is_rec {
+                egui::Color32::WHITE
+            } else {
+                c.error
+            },
+        ))
+        .min_size(egui::vec2(62.0, 32.0))
+        .fill(if is_rec { c.error } else { c.widget_bg });
+        let rec_tip = if is_rec {
+            "Enregistrement : re-clic pour revenir en lecture"
+        } else {
+            "Enregistrement au prochain cycle"
+        };
+        if ui.add(rec_btn).on_hover_text(rec_tip).clicked() {
+            // REC pendant lecture → Recording ; re-clic → retour en Play.
+            let _ = app.engine.lock().handle_event(EngineEvent::Transport {
+                play: is_rec,
+                rec: !is_rec,
+                stop: false,
+            });
+        }
+        if icon_button(ui, "⏮", false, Some("Retour au début")).clicked {
+            let _ = app.engine.lock().handle_event(EngineEvent::Restart);
+        }
+        ui.separator();
+
+        // ── Position ─────────────────────────────────────────────────
+        value_label(ui, format!("{}", snap.bbt), c.text);
+        if wide {
+            caption(
+                ui,
+                format!(
+                    "mesure {}/{}",
+                    snap.selected_bar + 1,
+                    snap.pattern_bars.max(1)
+                ),
+            );
+        }
+        ui.separator();
+
+        // ── Tempo / swing ────────────────────────────────────────────
+        let mut bpm = snap.transport.bpm;
+        let resp = ui.add(
+            egui::DragValue::new(&mut bpm)
+                .speed(0.5)
+                .range(20.0..=300.0)
+                .custom_formatter(|v, _| format!("{v:.1} BPM")),
+        );
+        if resp
+            .on_hover_text("Tempo : glisser ou double-clic")
+            .changed()
+        {
+            let _ = app.engine.lock().handle_event(EngineEvent::Bpm(bpm));
+        }
+        let mut swing = snap.transport.swing;
+        ui.spacing_mut().slider_width = if wide { 110.0 } else { 70.0 };
+        if ui
+            .add(
+                egui::Slider::new(&mut swing, 0.0..=1.0)
+                    .show_value(false)
+                    .text("Swing"),
+            )
+            .changed()
+        {
+            app.engine.lock().set_swing(swing);
+        }
+        ui.separator();
+
+        // ── Boucle / métronome / song ────────────────────────────────
+        if chip(ui, "LOOP", loop_on, c.success) {
+            let _ = app.engine.lock().handle_event(EngineEvent::ToggleLoop);
+        }
+        if chip(ui, "MÉTRO", metro_on, c.accent_cyan) {
+            let _ = app.engine.lock().handle_event(EngineEvent::ToggleMetronome);
+        }
+        if chip(ui, "SONG", snap.song_mode, c.accent) {
+            let _ = app.engine.lock().handle_event(EngineEvent::ToggleSongMode);
+        }
+        if wide {
+            ui.separator();
+            value_label(ui, format!("{} voix", snap.num_voices), c.text_dim);
+            caption(ui, app.audio_stats_text());
+        }
+
+        // ── Droite : master + réglages ───────────────────────────────
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let update_ready = app.updater_state.lock().update_available.is_some();
+            let up_txt = if update_ready { "MàJ DISPO" } else { "MàJ" };
+            if mach_button(ui, up_txt, update_ready || app.show_updater).clicked {
+                app.show_updater = !app.show_updater;
+            }
+            #[cfg(feature = "audio")]
+            if mach_button(ui, "Audio", app.show_settings).clicked {
+                app.show_settings = !app.show_settings;
+                if app.show_settings {
+                    app.refresh_devices();
+                }
+            }
+            value_label(ui, format!("{:>3.0}%", snap.master_volume * 100.0), c.text);
+            let mut master = snap.master_volume;
+            ui.spacing_mut().slider_width = if wide { 120.0 } else { 80.0 };
+            let resp = ui.add(
+                egui::Slider::new(&mut master, 0.0..=1.0)
+                    .show_value(false)
+                    .text("Master"),
+            );
+            if resp.changed() {
+                let _ = app
+                    .engine
+                    .lock()
+                    .handle_event(EngineEvent::MasterVolume(master));
+            }
         });
+    });
 }

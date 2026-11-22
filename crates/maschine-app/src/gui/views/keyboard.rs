@@ -5,7 +5,7 @@
 //! les contrôles de gamme/accords (équivalents aux boutons haut MK3).
 
 use crate::gui::app::GuiApp;
-use crate::gui::theme::{card_frame, MachColors};
+use crate::gui::theme::{card, MachColors};
 use crate::gui::widgets::chip;
 use eframe::egui;
 
@@ -60,7 +60,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
 
             ui.add_space(8.0);
 
-            card_frame().show(ui, |ui| {
+            card(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
                         egui::RichText::new(format!(
@@ -145,7 +145,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
 
             ui.add_space(8.0);
 
-            card_frame().show(ui, |ui| {
+            card(ui, |ui| {
                 let title = if snap.controller_mode == 2 { "PADS — ACCORDS" } else { "PADS — GAMME / CLAVIER" };
                 ui.label(egui::RichText::new(title).strong().small().color(c.accent_cyan));
                 ui.add_space(6.0);

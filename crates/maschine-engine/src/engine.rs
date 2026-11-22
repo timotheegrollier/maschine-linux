@@ -627,8 +627,10 @@ pub struct EngineSnapshot {
     pub master_level: f32,
     /// Peak hold master
     pub master_peak: f32,
-    /// Labels des 8 soft keys (boutons sous les écrans — contexte courant).
+    /// Labels des 8 boutons d'écran (au-dessus des écrans — contexte courant).
     pub soft_labels: [&'static str; 8],
+    /// Boutons d'écran allumés (voir `Engine::soft_key_active`).
+    pub soft_active: [bool; 8],
     /// Enveloppe (min,max) du sample du Sound actif — waveform des écrans.
     pub waveform: Option<Arc<[(f32, f32)]>>,
     /// Durée du sample du Sound actif (secondes).
@@ -737,6 +739,10 @@ pub struct HardwareSnapshot {
     pub shift_held: bool,
     /// Verrou LOCK actif ?
     pub lock_active: bool,
+    /// Boutons d'écran ayant un libellé (LED en demi-teinte).
+    pub soft_present: [bool; 8],
+    /// Boutons d'écran allumés (LED pleine), comme sur les écrans.
+    pub soft_active: [bool; 8],
 }
 
 /// Convertit un gain en décibels en multiplicateur linéaire.
@@ -1442,6 +1448,7 @@ impl Engine {
             master_level: self.master_meter,
             master_peak: self.master_peak_hold,
             soft_labels: self.soft_key_labels(),
+            soft_active: self.soft_key_active(),
             waveform: self
                 .sampler
                 .waveform_envelope(sampler_sound_id(self.group_focus, self.active_sound), 512),
@@ -1474,6 +1481,9 @@ impl Engine {
 
     /// Instantané compact pour synchroniser les LED sans cloner le projet.
     pub fn hardware_snapshot(&self) -> HardwareSnapshot {
+        // Avant de verrouiller le projet : ces calculs le relisent eux-mêmes.
+        let soft_present = self.soft_key_labels().map(|label| !label.is_empty());
+        let soft_active = self.soft_key_active();
         let project = self.project.read();
         let playing = self.transport.is_playing();
         let recording = self.transport.state == TransportState::Recording;
@@ -1574,6 +1584,8 @@ impl Engine {
             note_repeat_enabled: self.note_repeat_enabled,
             shift_held: self.shift_held,
             lock_active: self.lock_active,
+            soft_present,
+            soft_active,
         }
     }
 
@@ -4977,6 +4989,81 @@ impl Engine {
         }
     }
 
+    /// Boutons d'écran allumés : un bouton s'allume quand l'état qu'il
+    /// sélectionne est l'état courant (mesure, longueur, groupe, filtre…).
+    /// Déduit du libellé affiché, il reste juste sur toutes les pages
+    /// (couche Shift comprise), sur les écrans, la GUI et les LEDs.
+    #[must_use]
+    pub fn soft_key_active(&self) -> [bool; 8] {
+        use crate::kick_synth::KickFilterMode as K;
+        use crate::project::FilterKind as F;
+        let proj = Arc::clone(&*self.project.read());
+        let sound = proj
+            .groups
+            .get(self.group_focus as usize)
+            .and_then(|g| g.sounds.get(self.active_sound as usize))
+            .and_then(|s| s.as_ref());
+        // Slot vide : aucun mode de filtre n'est « courant ».
+        let filter = sound.map(|s| match s.kick_synth.as_ref().map(|k| k.filter_mode) {
+            Some(K::Off) => F::Off,
+            Some(K::LowPass) => F::LowPass,
+            Some(K::HighPass) => F::HighPass,
+            Some(K::BandPass) => F::BandPass,
+            Some(K::Notch) => F::Notch,
+            Some(K::Peak) => F::Peak,
+            None => s.filter.kind,
+        });
+        let bars = self.active_pattern_bars();
+        let bar = self.selected_bar.min(bars.saturating_sub(1)) + 1;
+        let mixer = self.left_tab == 1;
+        let pad_muted = self.muted_sounds[self.group_focus as usize % 8]
+            & (1u16 << (self.active_sound % 16))
+            != 0;
+        let group_soloed = self.soloed_groups & (1u8 << (self.group_focus % 8)) != 0;
+        // Même ordre que `NOTE_REPEAT_TICKS` et les libellés NOTE REPEAT.
+        const RATES: [&str; 7] = ["1/32", "1/16", "1/8", "1/4", "1/2", "1/16T", "1/8T"];
+        self.soft_key_labels().map(|label| {
+            if self.note_repeat_enabled {
+                return RATES.get(self.note_repeat_rate as usize) == Some(&label)
+                    || (label == "LOCK" && self.lock_active);
+            }
+            let number = |s: Option<&str>| s.and_then(|n| n.parse::<usize>().ok());
+            if let Some(n) = number(label.strip_prefix("BAR ")) {
+                return n == bar;
+            }
+            if let Some(n) = number(label.strip_suffix(" MES")) {
+                return n == bars;
+            }
+            if let Some(g) = label.strip_prefix("GRP ") {
+                return g.bytes().next() == Some(b'A' + self.group_focus);
+            }
+            match label {
+                "PAD 1-8" => mixer && self.mixer_mode == 0,
+                "PAD 9-16" => mixer && self.mixer_mode == 1,
+                "GROUPES" => mixer && self.mixer_mode == 2,
+                "MASTER" => mixer && self.mixer_mode == 3,
+                "MUTE" => mixer && pad_muted,
+                "SOLO" => mixer && group_soloed,
+                "LP/HP/BP" => matches!(filter, Some(F::LowPass | F::HighPass | F::BandPass)),
+                "LP" => filter == Some(F::LowPass),
+                "HP" => filter == Some(F::HighPass),
+                "BP" => filter == Some(F::BandPass),
+                "NOTCH" => filter == Some(F::Notch),
+                "PEAK" => filter == Some(F::Peak),
+                "NTCH/PK" => matches!(filter, Some(F::Notch | F::Peak)),
+                "OFF" => filter == Some(F::Off),
+                "SONG" => self.song_mode,
+                "METRO" => self.transport.metronome,
+                "COUNT-IN" => self.transport.count_in_bars > 0,
+                "PAGE 1/2" => self.synth_param_page == 1,
+                "SLIDE" => self.acid_synth.params.slide_time_ms > 1.0,
+                "CHROMA" => self.keyboard.scale == 0,
+                "MINOR" => self.keyboard.scale == 2,
+                _ => false,
+            }
+        })
+    }
+
     /// Index du pattern actif pour le groupe focus dans la scène active.
     pub fn active_pattern_for_focus(&self) -> Option<usize> {
         self.project
@@ -6888,6 +6975,44 @@ mod tests {
         assert_eq!(eng.selected_bar, 1);
         eng.handle_event(EngineEvent::SoftKey(7)).unwrap(); // 4 MES
         assert_eq!(eng.hardware_snapshot().pattern_bars, 4);
+    }
+
+    /// Un bouton d'écran s'allume quand l'état qu'il sélectionne est courant,
+    /// jamais parce que son index coïncide avec un autre état.
+    #[test]
+    fn lit_soft_keys_follow_their_labels() {
+        let lit = |eng: &Engine| -> Vec<&'static str> {
+            let labels = eng.soft_key_labels();
+            let active = eng.soft_key_active();
+            (0..8).filter(|&i| active[i]).map(|i| labels[i]).collect()
+        };
+        let mut eng = Engine::new_demo(48000);
+        let bars = eng.active_pattern_bars();
+        assert_eq!(
+            lit(&eng),
+            vec!["BAR 1", if bars == 2 { "2 MES" } else { "1 MES" }]
+        );
+
+        eng.handle_event(EngineEvent::SetLeftTab(1)).unwrap();
+        eng.handle_event(EngineEvent::SetMixerMode(0)).unwrap();
+        eng.handle_event(EngineEvent::SelectSound(3)).unwrap();
+        assert_eq!(
+            lit(&eng),
+            vec!["PAD 1-8"],
+            "pas MASTER parce que le pad 4 est actif"
+        );
+
+        eng.handle_event(EngineEvent::SetMixerMode(2)).unwrap();
+        eng.handle_event(EngineEvent::GroupFocus(2)).unwrap();
+        assert_eq!(lit(&eng), vec!["GRP C"]);
+
+        // SAMPLER : seul le mode de filtre courant, jamais SND </ECOUTE/CYC FLT.
+        eng.handle_event(EngineEvent::SetLeftTab(2)).unwrap();
+        let sampler = lit(&eng);
+        assert!(sampler.len() <= 1, "{sampler:?}");
+        assert!(sampler
+            .iter()
+            .all(|l| ["LP/HP/BP", "NOTCH", "PEAK", "OFF"].contains(l)));
     }
 
     #[test]

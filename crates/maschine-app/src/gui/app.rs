@@ -9,7 +9,7 @@
 
 use crate::gui::theme::MachColors;
 use crate::gui::views::StudioView;
-use crate::gui::widgets::{knob, mach_button, pad_button, KnobSpec, PadState};
+use crate::gui::widgets::{mach_button, pad_button, PadState};
 use eframe::egui;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -17,117 +17,8 @@ use std::time::{Duration, Instant};
 
 use maschine_engine::{Engine, EngineEvent};
 
-/// Paramètre pilotable par les 8 knobs contextuels (comme le hardware).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum KParam {
-    Tempo,
-    Swing,
-    Master,
-    Headphone,
-    GrpVol,
-    GrpPan,
-    SndVol,
-    SndPan,
-    Cutoff,
-    Reso,
-    Attack,
-    Decay,
-    Sustain,
-    Release,
-    // Paramètres Acid Synth
-    AcidCutoff,
-    AcidReso,
-    AcidEnvMod,
-    AcidDecay,
-    AcidAccent,
-    AcidDrive,
-    AcidDelayTime,
-    AcidDelayMix,
-    // Paramètres ampli guitare
-    GuitarGain,
-    GuitarBass,
-    GuitarMid,
-    GuitarTreble,
-    GuitarPresence,
-    GuitarSag,
-    GuitarMaster,
-    GuitarMonitor,
-}
-
-fn knob_params(view: StudioView, plugin_page: u8) -> &'static [KParam] {
-    match view {
-        StudioView::Sequencer | StudioView::Keyboard => &[
-            KParam::Tempo,
-            KParam::Swing,
-            KParam::Master,
-            KParam::Headphone,
-            KParam::SndVol,
-            KParam::SndPan,
-            KParam::Cutoff,
-            KParam::Reso,
-        ],
-        StudioView::Mixer => &[
-            KParam::GrpVol,
-            KParam::GrpPan,
-            KParam::Master,
-            KParam::Headphone,
-            KParam::SndVol,
-            KParam::SndPan,
-            KParam::Cutoff,
-            KParam::Reso,
-        ],
-        StudioView::Sampler | StudioView::Browser => &[
-            KParam::SndVol,
-            KParam::SndPan,
-            KParam::Cutoff,
-            KParam::Reso,
-            KParam::Attack,
-            KParam::Decay,
-            KParam::Sustain,
-            KParam::Release,
-        ],
-        StudioView::Plugin if plugin_page == 0 => &[
-            KParam::SndVol,
-            KParam::SndPan,
-            KParam::Cutoff,
-            KParam::Reso,
-            KParam::Attack,
-            KParam::Decay,
-            KParam::Sustain,
-            KParam::Release,
-        ],
-        StudioView::Plugin => &[
-            KParam::AcidCutoff,
-            KParam::AcidReso,
-            KParam::AcidEnvMod,
-            KParam::AcidDecay,
-            KParam::AcidAccent,
-            KParam::AcidDrive,
-            KParam::AcidDelayTime,
-            KParam::AcidDelayMix,
-        ],
-        StudioView::Ideas => &[
-            KParam::Tempo,
-            KParam::Swing,
-            KParam::Master,
-            KParam::Headphone,
-            KParam::GrpVol,
-            KParam::GrpPan,
-            KParam::SndVol,
-            KParam::SndPan,
-        ],
-        StudioView::Guitar => &[
-            KParam::GuitarGain,
-            KParam::GuitarBass,
-            KParam::GuitarMid,
-            KParam::GuitarTreble,
-            KParam::GuitarPresence,
-            KParam::GuitarSag,
-            KParam::GuitarMaster,
-            KParam::GuitarMonitor,
-        ],
-    }
-}
+/// Taille minimale d'un pad du miroir MK3 avant de faire défiler le panneau.
+const PAD_MIN: f32 = 48.0;
 
 /// État de l'application GUI.
 pub struct GuiApp {
@@ -140,6 +31,8 @@ pub struct GuiApp {
     pub repaint: crate::gui::RepaintSignal,
     /// État partagé de l'ampli guitare (contrôles + telemetry).
     pub guitar: Arc<crate::guitar::GuitarRuntime>,
+    /// Knobs et LEDs partagés avec la boucle matérielle.
+    mirror: crate::gui::HardwareMirror,
     /// Fenêtre réglages audio ouverte.
     pub show_settings: bool,
     /// Fenêtre de mise à jour ouverte.
@@ -168,8 +61,13 @@ pub struct GuiApp {
     pub show_workspace: bool,
     /// Panneau MK3 visible.
     pub show_mk3: bool,
-    /// Disposition initiale adaptée à la taille de la fenêtre.
-    layout_initialized: bool,
+    /// Largeur de fenêtre au frame précédent (redimensionnement détecté).
+    last_window_w: f32,
+    /// Rail masqué automatiquement par une fenêtre étroite (réaffiché en grandissant).
+    nav_auto_hidden: bool,
+    /// Largeurs du rail et du panneau MK3 en proportion de la fenêtre.
+    nav_frac: f32,
+    mk3_frac: f32,
     /// Buffer de renommage du pattern actif.
     pub pattern_name_buf: String,
     /// Cible du buffer de renommage (groupe, pattern).
@@ -194,6 +92,11 @@ pub struct GuiApp {
     /// Textures des écrans MK3.
     left_tex: Option<egui::TextureHandle>,
     right_tex: Option<egui::TextureHandle>,
+    /// Angle affiché de chaque knob sans fin (repère visuel uniquement).
+    knob_turns: [f32; 8],
+    /// Sections visibles du panneau MK3.
+    mk3_screens: bool,
+    mk3_pads: bool,
 }
 
 impl GuiApp {
@@ -204,6 +107,7 @@ impl GuiApp {
         audio: Option<Arc<Mutex<Option<crate::audio::AudioOutput>>>>,
         repaint: crate::gui::RepaintSignal,
         guitar: Arc<crate::guitar::GuitarRuntime>,
+        mirror: crate::gui::HardwareMirror,
     ) -> Self {
         let devices = crate::audio::list_output_devices();
         let current_dev = audio.as_ref().and_then(|a| {
@@ -234,6 +138,7 @@ impl GuiApp {
             audio,
             repaint,
             guitar,
+            mirror,
             show_settings: false,
             show_updater: false,
             updater_state,
@@ -247,7 +152,10 @@ impl GuiApp {
             show_nav: true,
             show_workspace: true,
             show_mk3: true,
-            layout_initialized: false,
+            last_window_w: 0.0,
+            nav_auto_hidden: false,
+            nav_frac: 0.12,
+            mk3_frac: 0.36,
             pattern_name_buf: String::new(),
             pattern_name_target: None,
             confirm_clear_sound: None,
@@ -261,6 +169,9 @@ impl GuiApp {
             mirror_last: Instant::now() - Duration::from_secs(10),
             left_tex: None,
             right_tex: None,
+            knob_turns: [0.0; 8],
+            mk3_screens: true,
+            mk3_pads: true,
         }
     }
 
@@ -270,6 +181,7 @@ impl GuiApp {
         engine: Arc<Mutex<Engine>>,
         repaint: crate::gui::RepaintSignal,
         guitar: Arc<crate::guitar::GuitarRuntime>,
+        mirror: crate::gui::HardwareMirror,
     ) -> Self {
         let (sample_load_tx, sample_load_rx) = crossbeam_channel::unbounded();
         let updater_state = Arc::new(Mutex::new(crate::updater::UpdateState::default()));
@@ -290,6 +202,7 @@ impl GuiApp {
             engine,
             repaint,
             guitar,
+            mirror,
             show_settings: false,
             show_updater: false,
             updater_state,
@@ -301,7 +214,10 @@ impl GuiApp {
             show_nav: true,
             show_workspace: true,
             show_mk3: true,
-            layout_initialized: false,
+            last_window_w: 0.0,
+            nav_auto_hidden: false,
+            nav_frac: 0.12,
+            mk3_frac: 0.36,
             pattern_name_buf: String::new(),
             pattern_name_target: None,
             confirm_clear_sound: None,
@@ -315,6 +231,9 @@ impl GuiApp {
             mirror_last: Instant::now() - Duration::from_secs(10),
             left_tex: None,
             right_tex: None,
+            knob_turns: [0.0; 8],
+            mk3_screens: true,
+            mk3_pads: true,
         }
     }
 
@@ -528,6 +447,7 @@ impl GuiApp {
 
         if toggle_nav {
             self.show_nav = !self.show_nav;
+            self.nav_auto_hidden = false;
         }
         if toggle_workspace {
             self.show_workspace = !self.show_workspace;
@@ -638,611 +558,210 @@ impl GuiApp {
         }
     }
 
-    // ── Panneau MK3 ─────────────────────────────────────────────────
+    // ── Panneau MK3 : miroir du contrôleur ─────────────────────────────
 
-    fn apply_knob(&self, param: KParam, v: f32, snap: &maschine_engine::EngineSnapshot) {
-        let gf = snap.group_focus;
-        let snd = snap.active_sound;
-        match param {
-            KParam::Tempo => self.send(EngineEvent::Bpm(v)),
-            KParam::Swing => self.engine.lock().set_swing(v),
-            KParam::Master => self.send(EngineEvent::MasterVolume(v)),
-            KParam::Headphone => self.send(EngineEvent::HeadphoneVolume(v)),
-            KParam::GrpVol => self.send(EngineEvent::GroupVolume {
-                group: gf,
-                volume_db: v,
-            }),
-            KParam::GrpPan => self.send(EngineEvent::GroupPan { group: gf, pan: v }),
-            KParam::SndVol => self.send(EngineEvent::SoundVolume {
-                group: gf,
-                sound: snd,
-                volume_db: v,
-            }),
-            KParam::SndPan => self.send(EngineEvent::SoundPan {
-                group: gf,
-                sound: snd,
-                pan: v,
-            }),
-            KParam::Cutoff => {
-                // Route vers le filtre du synthétiseur actif (kick / wavetable / acid),
-                // sinon vers le filtre sampler multimode.
-                if let Some(kp) = snap.focus_sound_kick.as_ref() {
-                    let mut p = kp.clone();
-                    p.filter_cutoff_hz = v;
-                    self.send(EngineEvent::KickSetParams(p));
-                } else if let Some(wp) = snap.focus_sound_wavetable.as_ref() {
-                    let mut p = wp.clone();
-                    p.filter_cutoff = v;
-                    self.send(EngineEvent::WavetableSetParams(p));
-                } else if snap.focus_sound_acid.is_some() {
-                    let mut p = snap.acid_params.clone();
-                    p.cutoff_hz = v;
-                    self.send(EngineEvent::AcidSetParams(p));
-                } else {
-                    self.send(EngineEvent::SoundFilterCutoff {
-                        group: gf,
-                        sound: snd,
-                        cutoff_hz: v,
-                    });
-                }
-            }
-            KParam::Reso => {
-                // Route vers le filtre du synthétiseur actif (kick / wavetable / acid),
-                // sinon vers le filtre sampler multimode.
-                if let Some(kp) = snap.focus_sound_kick.as_ref() {
-                    let mut p = kp.clone();
-                    p.filter_reso = v;
-                    self.send(EngineEvent::KickSetParams(p));
-                } else if let Some(wp) = snap.focus_sound_wavetable.as_ref() {
-                    let mut p = wp.clone();
-                    p.filter_reso = v;
-                    self.send(EngineEvent::WavetableSetParams(p));
-                } else if snap.focus_sound_acid.is_some() {
-                    let mut p = snap.acid_params.clone();
-                    p.resonance = v;
-                    self.send(EngineEvent::AcidSetParams(p));
-                } else {
-                    self.send(EngineEvent::SoundFilterReso {
-                        group: gf,
-                        sound: snd,
-                        resonance: v,
-                    });
-                }
-            }
-            KParam::Attack | KParam::Decay | KParam::Sustain | KParam::Release => {
-                let (mut a, mut d, mut s, mut r) = (2.0f32, 100.0f32, 0.8f32, 150.0f32);
-                if let Some(sound) = snap
-                    .project
-                    .groups
-                    .get(gf as usize)
-                    .and_then(|g| g.sounds.get(snd as usize))
-                    .and_then(|s| s.as_ref())
-                {
-                    a = sound.adsr.attack_ms;
-                    d = sound.adsr.decay_ms;
-                    s = sound.adsr.sustain;
-                    r = sound.adsr.release_ms;
-                }
-                match param {
-                    KParam::Attack => a = v,
-                    KParam::Decay => d = v,
-                    KParam::Sustain => s = v,
-                    _ => r = v,
-                }
-                self.send(EngineEvent::SoundAdsr {
-                    group: gf,
-                    sound: snd,
-                    attack_ms: a,
-                    decay_ms: d,
-                    sustain: s,
-                    release_ms: r,
-                });
-            }
-            KParam::AcidCutoff => {
-                let mut p = snap.acid_params.clone();
-                p.cutoff_hz = v;
-                self.send(EngineEvent::AcidSetParams(p));
-            }
-            KParam::AcidReso => {
-                let mut p = snap.acid_params.clone();
-                p.resonance = v;
-                self.send(EngineEvent::AcidSetParams(p));
-            }
-            KParam::AcidEnvMod => {
-                let mut p = snap.acid_params.clone();
-                p.env_mod = v;
-                self.send(EngineEvent::AcidSetParams(p));
-            }
-            KParam::AcidDecay => {
-                let mut p = snap.acid_params.clone();
-                p.decay_ms = v;
-                self.send(EngineEvent::AcidSetParams(p));
-            }
-            KParam::AcidAccent => {
-                let mut p = snap.acid_params.clone();
-                p.accent = v;
-                self.send(EngineEvent::AcidSetParams(p));
-            }
-            KParam::AcidDrive => {
-                let mut p = snap.acid_params.clone();
-                p.drive = v;
-                self.send(EngineEvent::AcidSetParams(p));
-            }
-            KParam::AcidDelayTime => {
-                let mut p = snap.acid_params.clone();
-                p.delay_time_ms = v;
-                self.send(EngineEvent::AcidSetParams(p));
-            }
-            KParam::AcidDelayMix => {
-                let mut p = snap.acid_params.clone();
-                p.delay_mix = v;
-                self.send(EngineEvent::AcidSetParams(p));
-            }
-            KParam::GuitarGain => self
-                .guitar
-                .control
-                .set_norm(crate::guitar::GuitarParam::Gain, v),
-            KParam::GuitarBass => self
-                .guitar
-                .control
-                .set_norm(crate::guitar::GuitarParam::Bass, v),
-            KParam::GuitarMid => self
-                .guitar
-                .control
-                .set_norm(crate::guitar::GuitarParam::Mid, v),
-            KParam::GuitarTreble => self
-                .guitar
-                .control
-                .set_norm(crate::guitar::GuitarParam::Treble, v),
-            KParam::GuitarPresence => self
-                .guitar
-                .control
-                .set_norm(crate::guitar::GuitarParam::Presence, v),
-            KParam::GuitarSag => self
-                .guitar
-                .control
-                .set_norm(crate::guitar::GuitarParam::Sag, v),
-            KParam::GuitarMaster => self
-                .guitar
-                .control
-                .set_norm(crate::guitar::GuitarParam::Master, v),
-            KParam::GuitarMonitor => self
-                .guitar
-                .control
-                .set_norm(crate::guitar::GuitarParam::MonitorGain, v),
-        }
-    }
-
-    fn render_mk3_knobs(&mut self, ui: &mut egui::Ui, snap: &maschine_engine::EngineSnapshot) {
-        let gf = snap.group_focus as usize;
-        let snd = snap.active_sound as usize;
-        let group = snap.project.groups.get(gf);
-        let sound = group
-            .and_then(|g| g.sounds.get(snd))
-            .and_then(|s| s.as_ref());
-        let (vol_db, pan, cutoff, reso, adsr) = sound
-            .map(|s| {
-                (
-                    s.volume_db,
-                    s.pan,
-                    s.filter.cutoff_hz,
-                    s.filter.resonance,
-                    (
-                        s.adsr.attack_ms,
-                        s.adsr.decay_ms,
-                        s.adsr.sustain,
-                        s.adsr.release_ms,
-                    ),
-                )
-            })
-            .unwrap_or((0.0, 0.0, 20000.0, 0.0, (2.0, 100.0, 0.8, 150.0)));
-        let grp_vol = group.map(|g| g.volume_db).unwrap_or(0.0);
-        let grp_pan = group.map(|g| g.pan).unwrap_or(0.0);
-
-        let width = ui.available_width();
-        let knob_size = if width < 380.0 {
-            34.0
-        } else if width < 470.0 {
-            38.0
+    /// Bouton d'écran `n` (1–8) : même action que le bouton physique.
+    fn press_display_button(&mut self, n: u8) {
+        if self.view == StudioView::Guitar {
+            self.guitar_soft_key(n);
         } else {
-            42.0
-        };
-
-        // ── Kick Synth : knobs contextuels par page ──────────────────────
-        if self.view == StudioView::Plugin && snap.focus_sound_kick.is_some() {
-            let kp = snap.focus_sound_kick.clone().unwrap_or_default();
-            let is_page2 = snap.synth_param_page == 1;
-            ui.horizontal_wrapped(|ui| {
-                if !is_page2 {
-                    // Page 1 : paramètres principaux
-                    let specs: &[(&str, &str, f32, f32, f32, f32)] = &[
-                        ("TUNE", " Hz", 20.0, 200.0, 60.0, kp.tune_hz),
-                        ("DECAY", " ms", 20.0, 2000.0, 400.0, kp.decay_ms),
-                        ("SNAP", "", 0.0, 1.0, 0.3, kp.snap),
-                        ("SWEEP", " ms", 5.0, 120.0, 30.0, kp.sweep_time_ms),
-                        ("CLICK", "", 0.0, 1.0, 0.2, kp.click),
-                        ("DRIVE", "", 0.0, 1.0, 0.0, kp.drive),
-                        ("SUB", "", 0.0, 1.0, 0.6, kp.sub),
-                        ("OUTPUT", " dB", -24.0, 6.0, 0.0, kp.volume_db),
-                    ];
-                    for (j, (label, unit, min, max, def, val)) in specs.iter().enumerate() {
-                        let mut spec = KnobSpec::linear(label, unit, *min, *max, *def);
-                        spec.size = knob_size;
-                        if let Some(v) = knob(ui, ("kick_p1", j), *val, &spec) {
-                            let mut p = kp.clone();
-                            match j {
-                                0 => p.tune_hz = v,
-                                1 => p.decay_ms = v,
-                                2 => p.snap = v,
-                                3 => p.sweep_time_ms = v,
-                                4 => p.click = v,
-                                5 => p.drive = v,
-                                6 => p.sub = v,
-                                _ => p.volume_db = v,
-                            }
-                            self.send(EngineEvent::KickSetParams(p));
-                        }
-                    }
-                } else {
-                    // Page 2 : waveform FM + distorsion + filtre
-                    let specs: &[(&str, &str, f32, f32, f32, f32)] = &[
-                        ("FM AMT", "", 0.0, 1.0, 0.0, kp.fm_amount),
-                        ("FM RATIO", "x", 0.25, 8.0, 1.0, kp.fm_ratio),
-                        ("TONE", "", 0.0, 1.0, 0.65, kp.drive_tone),
-                        ("NOISE", "", 0.0, 1.0, 0.15, kp.noise_mix),
-                        ("DRV AMT", "", 0.0, 1.0, 0.0, kp.drive),
-                        ("CUTOFF", " Hz", 20.0, 18000.0, 12000.0, kp.filter_cutoff_hz),
-                        ("RESO", "", 0.0, 1.0, 0.0, kp.filter_reso),
-                        ("OUTPUT", " dB", -24.0, 6.0, 0.0, kp.volume_db),
-                    ];
-                    for (j, (label, unit, min, max, def, val)) in specs.iter().enumerate() {
-                        let mut spec = KnobSpec::linear(label, unit, *min, *max, *def);
-                        spec.size = knob_size;
-                        if let Some(v) = knob(ui, ("kick_p2", j), *val, &spec) {
-                            let mut p = kp.clone();
-                            match j {
-                                0 => p.fm_amount = v,
-                                1 => p.fm_ratio = v,
-                                2 => p.drive_tone = v,
-                                3 => p.noise_mix = v,
-                                4 => p.drive = v,
-                                5 => p.filter_cutoff_hz = v,
-                                6 => p.filter_reso = v,
-                                _ => p.volume_db = v,
-                            }
-                            self.send(EngineEvent::KickSetParams(p));
-                        }
-                    }
-                }
-            });
-            return;
+            self.send(EngineEvent::SoftKey(n));
         }
-
-        // ── Wavetable Synth : knobs contextuels par page ─────────────────
-        if self.view == StudioView::Plugin && snap.focus_sound_wavetable.is_some() {
-            let wp = snap.focus_sound_wavetable.clone().unwrap_or_default();
-            let is_page2 = snap.synth_param_page == 1;
-            ui.horizontal_wrapped(|ui| {
-                if !is_page2 {
-                    // Page 1 : filtre + ADSR
-                    let specs_lin: &[(&str, &str, f32, f32, f32, f32)] = &[
-                        ("RESO", "", 0.0, 0.95, 0.2, wp.filter_reso),
-                        ("ENV AMT", "", -1.0, 1.0, 0.3, wp.filter_env_amt),
-                        ("DRIVE", "", 0.0, 1.0, 0.0, wp.filter_drive),
-                        ("ATTACK", " ms", 1.0, 1000.0, 12.0, wp.amp_attack_ms),
-                        ("DECAY", " ms", 10.0, 3000.0, 450.0, wp.amp_decay_ms),
-                        ("SUSTAIN", "", 0.0, 1.0, 0.7, wp.amp_sustain),
-                        ("RELEASE", " ms", 10.0, 3000.0, 350.0, wp.amp_release_ms),
-                    ];
-                    // knob 0 : cutoff (log)
-                    {
-                        let mut spec = KnobSpec::log("CUTOFF", " Hz", 20.0, 20000.0, 4500.0);
-                        spec.size = knob_size;
-                        if let Some(v) = knob(ui, ("wt_p1", 0usize), wp.filter_cutoff, &spec) {
-                            let mut p = wp.clone();
-                            p.filter_cutoff = v;
-                            self.send(EngineEvent::WavetableSetParams(p));
-                        }
-                    }
-                    for (j, (label, unit, min, max, def, val)) in specs_lin.iter().enumerate() {
-                        let mut spec = KnobSpec::linear(label, unit, *min, *max, *def);
-                        spec.size = knob_size;
-                        if let Some(v) = knob(ui, ("wt_p1", j + 1), *val, &spec) {
-                            let mut p = wp.clone();
-                            match j {
-                                0 => p.filter_reso = v,
-                                1 => p.filter_env_amt = v,
-                                2 => p.filter_drive = v,
-                                3 => p.amp_attack_ms = v,
-                                4 => p.amp_decay_ms = v,
-                                5 => p.amp_sustain = v,
-                                _ => p.amp_release_ms = v,
-                            }
-                            self.send(EngineEvent::WavetableSetParams(p));
-                        }
-                    }
-                } else {
-                    // Page 2 : FX + volume
-                    let specs: &[(&str, &str, f32, f32, f32, f32)] = &[
-                        ("CHORUS", "", 0.0, 1.0, 0.25, wp.fx_chorus_mix),
-                        ("DLY TIME", " ms", 50.0, 800.0, 350.0, wp.fx_delay_time_ms),
-                        ("DLY MIX", "", 0.0, 1.0, 0.2, wp.fx_delay_mix),
-                        ("REVERB", "", 0.0, 1.0, 0.3, wp.fx_reverb_mix),
-                        ("DISTO", "", 0.0, 1.0, 0.0, wp.fx_distortion),
-                        ("OSC1 LVL", "", 0.0, 1.0, 0.8, wp.osc1_level),
-                        ("OSC2 LVL", "", 0.0, 1.0, 0.6, wp.osc2_level),
-                        ("VOL OUT", " dB", -24.0, 6.0, 0.0, wp.master_volume_db),
-                    ];
-                    for (j, (label, unit, min, max, def, val)) in specs.iter().enumerate() {
-                        let mut spec = KnobSpec::linear(label, unit, *min, *max, *def);
-                        spec.size = knob_size;
-                        if let Some(v) = knob(ui, ("wt_p2", j), *val, &spec) {
-                            let mut p = wp.clone();
-                            match j {
-                                0 => p.fx_chorus_mix = v,
-                                1 => p.fx_delay_time_ms = v,
-                                2 => p.fx_delay_mix = v,
-                                3 => p.fx_reverb_mix = v,
-                                4 => p.fx_distortion = v,
-                                5 => p.osc1_level = v,
-                                6 => p.osc2_level = v,
-                                _ => p.master_volume_db = v,
-                            }
-                            self.send(EngineEvent::WavetableSetParams(p));
-                        }
-                    }
-                }
-            });
-            return;
-        }
-
-        // ── Knobs génériques (tous les autres contextes) ──────────────────
-        let params = knob_params(self.view, snap.plugin_page);
-        ui.horizontal_wrapped(|ui| {
-            for (i, param) in params.iter().enumerate() {
-                let (mut spec, value) = match param {
-                    KParam::Tempo => (
-                        KnobSpec::linear("TEMPO", " BPM", 20.0, 300.0, 120.0),
-                        snap.transport.bpm,
-                    ),
-                    KParam::Swing => (
-                        KnobSpec::linear("SWING", " %", 0.0, 1.0, 0.0),
-                        snap.transport.swing,
-                    ),
-                    KParam::Master => (
-                        KnobSpec::linear("MASTER", " %", 0.0, 1.0, 1.0),
-                        snap.master_volume,
-                    ),
-                    KParam::Headphone => (
-                        KnobSpec::linear("CASQUE", " %", 0.0, 1.0, 0.7),
-                        snap.headphone_volume,
-                    ),
-                    KParam::GrpVol => (KnobSpec::linear("VOL ", " dB", -60.0, 12.0, 0.0), grp_vol),
-                    KParam::GrpPan => (KnobSpec::linear("PAN ", "", -1.0, 1.0, 0.0), grp_pan),
-                    KParam::SndVol => {
-                        (KnobSpec::linear("VOL SND", " dB", -60.0, 12.0, 0.0), vol_db)
-                    }
-                    KParam::SndPan => (KnobSpec::linear("PAN SND", "", -1.0, 1.0, 0.0), pan),
-                    KParam::Cutoff => (
-                        KnobSpec::log("CUTOFF", " Hz", 20.0, 20000.0, 20000.0),
-                        cutoff,
-                    ),
-                    KParam::Reso => (KnobSpec::linear("RESO", " %", 0.0, 1.0, 0.0), reso),
-                    KParam::Attack => (KnobSpec::linear("ATTACK", " ms", 0.0, 2000.0, 2.0), adsr.0),
-                    KParam::Decay => (KnobSpec::linear("DECAY", " ms", 5.0, 2000.0, 100.0), adsr.1),
-                    KParam::Sustain => (KnobSpec::linear("SUSTAIN", " %", 0.0, 1.0, 0.8), adsr.2),
-                    KParam::Release => (
-                        KnobSpec::linear("RELEASE", " ms", 5.0, 3000.0, 150.0),
-                        adsr.3,
-                    ),
-                    KParam::AcidCutoff => (
-                        KnobSpec::log("CUTOFF", " Hz", 20.0, 10000.0, 500.0),
-                        snap.acid_params.cutoff_hz,
-                    ),
-                    KParam::AcidReso => (
-                        KnobSpec::linear("RESO", " %", 0.0, 1.0, 0.5),
-                        snap.acid_params.resonance,
-                    ),
-                    KParam::AcidEnvMod => (
-                        KnobSpec::linear("ENV MOD", " %", 0.0, 1.0, 0.7),
-                        snap.acid_params.env_mod,
-                    ),
-                    KParam::AcidDecay => (
-                        KnobSpec::linear("DECAY", " ms", 20.0, 2000.0, 300.0),
-                        snap.acid_params.decay_ms,
-                    ),
-                    KParam::AcidAccent => (
-                        KnobSpec::linear("ACCENT", " %", 0.0, 1.0, 0.5),
-                        snap.acid_params.accent,
-                    ),
-                    KParam::AcidDrive => (
-                        KnobSpec::linear("DRIVE", " %", 0.0, 1.0, 0.0),
-                        snap.acid_params.drive,
-                    ),
-                    KParam::AcidDelayTime => (
-                        KnobSpec::linear("TIME", " ms", 10.0, 1000.0, 250.0),
-                        snap.acid_params.delay_time_ms,
-                    ),
-                    KParam::AcidDelayMix => (
-                        KnobSpec::linear("MIX", " %", 0.0, 1.0, 0.25),
-                        snap.acid_params.delay_mix,
-                    ),
-                    KParam::GuitarGain => (
-                        KnobSpec::linear("GAIN", " %", 0.0, 1.0, 0.30),
-                        self.guitar
-                            .control
-                            .get_norm(crate::guitar::GuitarParam::Gain),
-                    ),
-                    KParam::GuitarBass => (
-                        KnobSpec::linear("BASS", " %", 0.0, 1.0, 0.5),
-                        self.guitar
-                            .control
-                            .get_norm(crate::guitar::GuitarParam::Bass),
-                    ),
-                    KParam::GuitarMid => (
-                        KnobSpec::linear("MID", " %", 0.0, 1.0, 0.5),
-                        self.guitar
-                            .control
-                            .get_norm(crate::guitar::GuitarParam::Mid),
-                    ),
-                    KParam::GuitarTreble => (
-                        KnobSpec::linear("TREBLE", " %", 0.0, 1.0, 0.5),
-                        self.guitar
-                            .control
-                            .get_norm(crate::guitar::GuitarParam::Treble),
-                    ),
-                    KParam::GuitarPresence => (
-                        KnobSpec::linear("PRES", " %", 0.0, 1.0, 0.5),
-                        self.guitar
-                            .control
-                            .get_norm(crate::guitar::GuitarParam::Presence),
-                    ),
-                    KParam::GuitarSag => (
-                        KnobSpec::linear("SAG", " %", 0.0, 1.0, 0.5),
-                        self.guitar
-                            .control
-                            .get_norm(crate::guitar::GuitarParam::Sag),
-                    ),
-                    KParam::GuitarMaster => (
-                        KnobSpec::linear("MASTER", " %", 0.0, 1.0, 0.9),
-                        self.guitar
-                            .control
-                            .get_norm(crate::guitar::GuitarParam::Master),
-                    ),
-                    KParam::GuitarMonitor => (
-                        KnobSpec::linear("MONITOR", " %", 0.0, 1.0, 1.0),
-                        self.guitar
-                            .control
-                            .get_norm(crate::guitar::GuitarParam::MonitorGain),
-                    ),
-                };
-                spec.size = knob_size;
-                if let Some(v) = knob(ui, ("mk3_knob", i), value, &spec) {
-                    self.apply_knob(*param, v, snap);
-                }
-            }
-        });
     }
 
-    fn render_displays(&mut self, ui: &mut egui::Ui, snap: &maschine_engine::EngineSnapshot) {
+    /// Met à jour les textures des 2 écrans (mêmes pixels que la MK3).
+    fn refresh_screens(&mut self, ctx: &egui::Context, snap: &maschine_engine::EngineSnapshot) {
         let now = Instant::now();
-        // Les paramètres ampli vivent dans des atomiques : le miroir doit se
-        // rafraîchir même quand la `revision` du moteur ne bouge pas.
-        let guitar_due = self.view == StudioView::Guitar
-            && now.duration_since(self.mirror_last) >= Duration::from_millis(28);
-        let due = (snap.revision != self.mirror_revision || guitar_due)
-            && now.duration_since(self.mirror_last) >= Duration::from_millis(28);
-        if due || self.left_tex.is_none() {
-            let data = self.guitar.screen_data();
-            let (left, right) =
-                maschine_engine::display_render::render_screens_with_guitar(snap, Some(&data));
-            let left_img = crate::gui::widgets::display_pixels_to_image(
-                left.w as usize,
-                left.h as usize,
-                &left.pixels,
+        // L'ampli vit dans des atomiques : son écran bouge sans `revision`.
+        let changed = snap.revision != self.mirror_revision || self.view == StudioView::Guitar;
+        let due = changed && now.duration_since(self.mirror_last) >= Duration::from_millis(28);
+        if self.left_tex.is_some() && !due {
+            return;
+        }
+        let data = self.guitar.screen_data();
+        let (left, right) =
+            maschine_engine::display_render::render_screens_with_guitar(snap, Some(&data));
+        let opts = egui::TextureOptions::LINEAR;
+        for (frame, tex, name) in [
+            (&left, &mut self.left_tex, "mk3_left"),
+            (&right, &mut self.right_tex, "mk3_right"),
+        ] {
+            let img = crate::gui::widgets::display_pixels_to_image(
+                frame.w as usize,
+                frame.h as usize,
+                &frame.pixels,
             );
-            let right_img = crate::gui::widgets::display_pixels_to_image(
-                right.w as usize,
-                right.h as usize,
-                &right.pixels,
-            );
-            let opts = egui::TextureOptions::LINEAR;
-            if let Some(t) = &mut self.left_tex {
-                t.set(left_img, opts);
-            } else {
-                self.left_tex = Some(ui.ctx().load_texture("mk3_left", left_img, opts));
+            match tex {
+                Some(t) => t.set(img, opts),
+                None => *tex = Some(ctx.load_texture(name, img, opts)),
             }
-            if let Some(t) = &mut self.right_tex {
-                t.set(right_img, opts);
-            } else {
-                self.right_tex = Some(ui.ctx().load_texture("mk3_right", right_img, opts));
-            }
-            self.mirror_revision = snap.revision;
-            self.mirror_last = now;
         }
-
-        let avail = ui.available_width();
-        let scale = (avail / 480.0).min(1.0);
-        let size = egui::vec2(480.0 * scale, 272.0 * scale);
-
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("ÉCRAN GAUCHE — MK3")
-                    .small()
-                    .color(MachColors::dark().text_muted),
-            );
-        });
-        if let Some(tex) = self.left_tex.clone() {
-            ui.add(egui::Image::new(egui::load::SizedTexture::new(
-                tex.id(),
-                size,
-            )));
-        }
-
-        // 4 soft keys sous l'écran gauche (1..4), comme le hardware.
-        self.render_soft_row(ui, snap, 0, size.x);
-
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("ÉCRAN DROIT — MK3")
-                    .small()
-                    .color(MachColors::dark().text_muted),
-            );
-        });
-        if let Some(tex) = self.right_tex.clone() {
-            ui.add(egui::Image::new(egui::load::SizedTexture::new(
-                tex.id(),
-                size,
-            )));
-        }
-
-        // 4 soft keys sous l'écran droit (5..8).
-        self.render_soft_row(ui, snap, 4, size.x);
+        self.mirror_revision = snap.revision;
+        self.mirror_last = now;
     }
 
-    /// Rangée de 4 soft keys sous un écran (actions contextuelles de l'Engine).
-    fn render_soft_row(
+    /// Un écran et ses 4 boutons : la bande des libellés, en haut de l'image,
+    /// est cliquable comme les boutons physiques posés juste au-dessus.
+    fn screen_with_buttons(
         &mut self,
         ui: &mut egui::Ui,
         snap: &maschine_engine::EngineSnapshot,
-        start: usize,
+        right: bool,
         width: f32,
     ) {
-        let c = MachColors::dark();
-        ui.horizontal(|ui| {
-            for i in start..(start + 4).min(snap.soft_labels.len()) {
-                let label = snap.soft_labels[i];
-                let active = match self.view {
-                    StudioView::Sequencer => {
-                        (i < 4 && i == snap.selected_bar)
-                            || (i >= 4
-                                && [1usize, 2, 4, 8].get(i - 4).copied().unwrap_or(0)
-                                    == snap.pattern_bars)
-                    }
-                    StudioView::Mixer => i == snap.group_focus as usize,
-                    StudioView::Sampler => i == snap.active_sound as usize,
-                    _ => false,
-                };
-                let btn = egui::Button::new(egui::RichText::new(label).size(10.0).strong())
-                    .min_size(egui::vec2((width - 6.0) / 4.0, 24.0))
-                    .fill(if active { c.accent } else { c.widget_bg })
-                    .stroke(egui::Stroke::new(1.0_f32, c.border));
-                if ui.add(btn).clicked() {
-                    if self.view == StudioView::Guitar {
-                        self.guitar_soft_key(i as u8 + 1);
-                    } else {
-                        self.send(EngineEvent::SoftKey(i as u8 + 1));
-                    }
-                }
+        let s = width / 480.0;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 272.0 * s), egui::Sense::hover());
+        let tex = if right {
+            &self.right_tex
+        } else {
+            &self.left_tex
+        };
+        if let Some(tex) = tex {
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            ui.painter().image(tex.id(), rect, uv, egui::Color32::WHITE);
+        }
+        let first = if right { 4u8 } else { 0 };
+        let strip = maschine_engine::display_render::SOFT_KEYS_H as f32 * s;
+        for i in 0..4u8 {
+            let n = first + i;
+            let label = snap.soft_labels[n as usize];
+            let key = egui::Rect::from_min_size(
+                rect.min + egui::vec2(f32::from(i) * 120.0 * s, 0.0),
+                egui::vec2(120.0 * s, strip),
+            );
+            let resp = ui
+                .interact(key, ui.id().with(("mk3_button", n)), egui::Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(format!("Bouton {} : {label}", n + 1));
+            resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, !label.is_empty(), label)
+            });
+            if resp.hovered() || resp.has_focus() {
+                ui.painter().rect_stroke(
+                    key.shrink(1.0),
+                    egui::CornerRadius::same(3),
+                    egui::Stroke::new(1.5_f32, MachColors::dark().text),
+                    egui::StrokeKind::Inside,
+                );
             }
+            if resp.clicked() && !label.is_empty() {
+                self.press_display_button(n + 1);
+            }
+        }
+    }
+
+    /// 4 knobs sous un écran, chacun centré sous le slot qui affiche son nom
+    /// et sa valeur. Ils passent par le mapping des knobs physiques.
+    fn knob_row(&mut self, ui: &mut egui::Ui, right: bool, width: f32, size: f32) {
+        let s = width / 480.0;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, size + 8.0), egui::Sense::hover());
+        let first = if right { 4 } else { 0 };
+        for i in 0..4 {
+            let k = first + i;
+            let cx = rect.left() + maschine_engine::display_render::knob_slot_center(i) as f32 * s;
+            let dial = egui::Rect::from_center_size(
+                egui::pos2(cx, rect.center().y),
+                egui::vec2(size, size),
+            );
+            let id = ui.id().with(("mk3_knob", k));
+            if let Some(delta) =
+                crate::gui::widgets::encoder(ui, dial, id, &mut self.knob_turns[k], k as u8 + 1)
+            {
+                let _ =
+                    self.mirror
+                        .events
+                        .send(maschine_hardware::events::HardwareEvent::KnobDelta {
+                            knob: k as u8,
+                            delta,
+                        });
+            }
+        }
+    }
+
+    /// Miroir MK3 dans l'ordre du contrôleur : boutons d'écran (en haut des
+    /// écrans), 2 écrans, 8 knobs, puis groupes + pads. Tout s'ajuste à la
+    /// largeur ET à la hauteur disponibles ; défilement en dernier recours.
+    fn render_mk3(&mut self, ui: &mut egui::Ui, snap: &maschine_engine::EngineSnapshot) {
+        self.refresh_screens(ui.ctx(), snap);
+        let c = MachColors::dark();
+        // Sections masquables (petits écrans) : écrans + knobs, groupes + pads.
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("MASCHINE MK3")
+                    .strong()
+                    .size(12.0)
+                    .color(c.text_dim),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if crate::gui::widgets::chip(ui, "PADS", self.mk3_pads, c.accent) {
+                    self.mk3_pads = !self.mk3_pads;
+                }
+                if crate::gui::widgets::chip(ui, "ÉCRANS", self.mk3_screens, c.accent) {
+                    self.mk3_screens = !self.mk3_screens;
+                }
+            });
         });
+        let gap = 8.0;
+        let sp = ui.spacing().item_spacing.y;
+        let w = ui.available_width();
+        let h = ui.available_height();
+        // Côte à côte (comme le matériel) dès que chaque écran garde 75 %.
+        let side_by_side = w >= 960.0 * 0.75 + gap;
+        let knob = (w / if side_by_side { 8.0 } else { 4.0 } * 0.42).clamp(28.0, 52.0);
+        // Tout ce qui n'est pas écran : rangées de knobs, espacements, pads.
+        let rows = if side_by_side { 1.0 } else { 2.0 };
+        let pads = if self.mk3_pads {
+            gap + 4.0 * PAD_MIN + 3.0 * 6.0 + sp
+        } else {
+            0.0
+        };
+        let fixed = rows * (knob + 8.0 + 2.0 * sp) + pads;
+        let fit_w = if side_by_side {
+            (w - gap) / 960.0
+        } else {
+            w / 480.0
+        };
+        let fit_h = (h - fixed) / (272.0 * rows);
+        // Sous 75 % le texte 8×16 devient illisible : on défile plutôt.
+        let scale = fit_w.min(fit_h.max(0.75));
+        let screen_w = 480.0 * scale;
+        let block_w = if side_by_side {
+            2.0 * screen_w + gap
+        } else {
+            screen_w
+        };
+
+        if self.mk3_screens {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                // Écrans plus étroits que le panneau : centrés.
+                ui.add_space(((w - block_w) / 2.0).max(0.0));
+                let columns: &[&[bool]] = if side_by_side {
+                    &[&[false], &[true]]
+                } else {
+                    &[&[false, true]]
+                };
+                for column in columns {
+                    ui.vertical(|ui| {
+                        for &right in *column {
+                            self.screen_with_buttons(ui, snap, right, screen_w);
+                            self.knob_row(ui, right, screen_w, knob);
+                        }
+                    });
+                }
+            });
+        }
+        if self.mk3_pads {
+            ui.add_space(gap);
+            self.render_pads(ui, snap);
+        }
     }
 
     fn draw_pad_grid(
         &self,
         ui: &mut egui::Ui,
         snap: &maschine_engine::EngineSnapshot,
+        leds: &maschine_proto::hid_output::LedState,
         pad_size: f32,
         press: &mut Option<(u8, u8, bool)>,
         release: &mut Option<u8>,
@@ -1269,7 +788,6 @@ impl GuiApp {
             "− OCT",
             "+ OCT",
         ];
-        let c = MachColors::dark();
         let gf = snap.group_focus as usize;
         let shift_layer = snap.shift_held || ui.input(|input| input.modifiers.shift);
         let assigned_pattern = snap
@@ -1278,6 +796,7 @@ impl GuiApp {
             .and_then(|scene| scene.patterns.get(gf))
             .copied()
             .flatten();
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
         for row in 0..4usize {
             ui.horizontal(|ui| {
                 for col in 0..4usize {
@@ -1290,46 +809,36 @@ impl GuiApp {
                         .and_then(|g| g.sounds.get(index as usize))
                         .and_then(|s| s.as_ref())
                         .map(|s| s.name.clone())
-                        .unwrap_or_else(|| "—".to_string());
-                    let (label, selected, color) = if snap.scene_mode {
-                        (format!("SCN {:02}", index + 1), false, c.success)
+                        .unwrap_or_default();
+                    let (label, selected) = if snap.scene_mode {
+                        (format!("SCN {:02}", index + 1), false)
                     } else if snap.pattern_mode {
                         (
                             format!("PAT {:02}", index + 1),
                             assigned_pattern == Some(index as usize),
-                            c.accent,
                         )
                     } else if snap.controller_mode == 3 {
                         (
                             format!("PAS {:02}", index + 1),
                             index as usize == snap.step_cursor % 16,
-                            c.warning,
                         )
                     } else if snap.controller_mode == 1 {
-                        (
-                            KEYBOARD_LABELS[index as usize].to_string(),
-                            false,
-                            c.accent_cyan,
-                        )
+                        (KEYBOARD_LABELS[index as usize].to_string(), false)
                     } else if snap.controller_mode == 2 {
-                        (format!("ACC {}", (index % 7) + 1), false, c.accent_cyan)
+                        (format!("ACC {}", (index % 7) + 1), false)
                     } else {
-                        (
-                            name,
-                            index == snap.active_sound,
-                            crate::gui::views::pad_color(index as usize),
-                        )
+                        (name, index == snap.active_sound)
                     };
                     let label = if shift_layer {
                         SHIFT_PAD_LABELS[index as usize].to_string()
                     } else {
                         label
                     };
+                    // Couleur = LED du pad physique (même calcul que la MK3).
                     let st = PadState {
                         index,
-                        color,
+                        color: crate::gui::widgets::led_color(leds.pad_leds[index as usize]),
                         label: &label,
-                        flash: snap.triggered_pads[index as usize],
                         selected,
                         was_down: self.pad_down == Some(index),
                     };
@@ -1356,81 +865,99 @@ impl GuiApp {
         }
     }
 
-    fn draw_group_controls(
+    /// Boutons de groupe A–H (2 × 4 comme sur la MK3), couleurs des LEDs.
+    fn draw_group_buttons(
         &mut self,
         ui: &mut egui::Ui,
         snap: &maschine_engine::EngineSnapshot,
-        button_w: f32,
+        leds: &maschine_proto::hid_output::LedState,
+        size: egui::Vec2,
+        columns: usize,
     ) {
         let c = MachColors::dark();
-        ui.label(egui::RichText::new("GROUPES").small().color(c.text_dim));
-        ui.horizontal_wrapped(|ui| {
-            for g in 0..8usize {
-                let active = g == snap.group_focus as usize;
-                let muted = (snap.muted_groups & (1 << g)) != 0;
-                let soloed = (snap.soloed_groups & (1 << g)) != 0;
-                let mut btn = egui::Button::new(
-                    egui::RichText::new(format!("{}", crate::gui::views::group_char(g)))
-                        .strong()
-                        .color(if active {
-                            egui::Color32::BLACK
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+        for row in 0..8usize.div_ceil(columns) {
+            ui.horizontal(|ui| {
+                for g in (row * columns)..((row + 1) * columns).min(8) {
+                    let muted = snap.muted_groups & (1 << g) != 0;
+                    let soloed = snap.soloed_groups & (1 << g) != 0;
+                    let led =
+                        leds.button_leds[maschine_proto::hid_output::offsets::GROUP_A - 1 + g];
+                    let fill = crate::gui::widgets::led_color(led);
+                    let text = egui::RichText::new(format!(
+                        "{}{}",
+                        crate::gui::views::group_char(g),
+                        if soloed {
+                            " S"
                         } else if muted {
-                            c.warning
+                            " M"
                         } else {
-                            c.text
-                        }),
-                )
-                .min_size(egui::vec2(button_w, 24.0))
-                .fill(if active {
-                    c.accent
-                } else if soloed {
-                    c.accent_cyan
-                } else {
-                    c.widget_bg
-                })
-                .stroke(egui::Stroke::new(1.0_f32, c.border));
-                if muted {
-                    btn = btn.stroke(egui::Stroke::new(1.5_f32, c.warning));
+                            ""
+                        }
+                    ))
+                    .strong()
+                    .color(crate::gui::widgets::ink_on(fill));
+                    let stroke = if muted {
+                        egui::Stroke::new(1.5_f32, c.warning)
+                    } else if soloed {
+                        egui::Stroke::new(1.5_f32, c.accent_cyan)
+                    } else {
+                        egui::Stroke::new(1.0_f32, c.border)
+                    };
+                    let btn = egui::Button::new(text)
+                        .min_size(size)
+                        .fill(fill)
+                        .stroke(stroke)
+                        .corner_radius(egui::CornerRadius::same(4));
+                    if ui
+                        .add(btn)
+                        .on_hover_text(format!("Groupe {}", crate::gui::views::group_char(g)))
+                        .clicked()
+                    {
+                        self.send(EngineEvent::GroupFocus(g as u8));
+                    }
                 }
-                if ui.add(btn).clicked() {
-                    self.send(EngineEvent::GroupFocus(g as u8));
-                }
-            }
-        });
-        ui.add_space(6.0);
-        let scene_txt = match snap.active_scene {
-            Some(s) => format!("Scène {} active", s + 1),
-            None => "Scène —".to_string(),
-        };
-        ui.label(egui::RichText::new(scene_txt).small().color(c.text_dim));
-        ui.label(
-            egui::RichText::new(format!("Sound actif : {:02}", snap.active_sound + 1))
-                .small()
-                .color(c.text_dim),
-        );
+            });
+        }
     }
 
+    /// Groupes A–H et pads 4 × 4, disposés comme la moitié basse de la MK3
+    /// (groupes à gauche) quand la largeur le permet, sinon empilés.
     fn render_pads(&mut self, ui: &mut egui::Ui, snap: &maschine_engine::EngineSnapshot) {
+        let leds = self.mirror.leds.lock().clone();
         let width = ui.available_width();
-        let pad_size = ((width - 22.0) / 4.0).clamp(36.0, 60.0);
-        let side_by_side = width >= pad_size * 4.0 + 190.0;
+        let height = ui.available_height().max(4.0 * PAD_MIN + 18.0);
+        let groups_beside = width >= 4.0 * 64.0 + 18.0 + 2.0 * 56.0 + 16.0;
+        let pads_w = if groups_beside { width * 0.64 } else { width };
+        // 8 px de marge : le bas du panneau défilant ne coupe pas la rangée 1.
+        let pad_size = ((pads_w - 18.0) / 4.0)
+            .min((height - 26.0 - if groups_beside { 0.0 } else { 48.0 }) / 4.0)
+            .clamp(40.0, 104.0);
         let mut press: Option<(u8, u8, bool)> = None;
         let mut release: Option<u8> = None;
 
-        if side_by_side {
+        if groups_beside {
             ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
+                let group = egui::vec2(
+                    ((width - pad_size * 4.0 - 18.0 - 12.0 - 6.0) / 2.0).clamp(40.0, 84.0),
+                    (pad_size * 0.6).max(30.0),
+                );
+                // Bloc groupes + pads centré, comme la moitié basse de la MK3.
+                let block = 2.0 * group.x + 6.0 + 12.0 + 4.0 * pad_size + 18.0;
+                ui.add_space(((width - block) / 2.0).max(0.0));
                 ui.vertical(|ui| {
-                    self.draw_pad_grid(ui, snap, pad_size, &mut press, &mut release);
+                    self.draw_group_buttons(ui, snap, &leds, group, 2);
                 });
-                ui.add_space(6.0);
                 ui.vertical(|ui| {
-                    self.draw_group_controls(ui, snap, (pad_size / 1.6).max(28.0));
+                    self.draw_pad_grid(ui, snap, &leds, pad_size, &mut press, &mut release);
                 });
             });
         } else {
-            self.draw_pad_grid(ui, snap, pad_size, &mut press, &mut release);
+            let group = egui::vec2(((width - 7.0 * 6.0) / 8.0).max(28.0), 30.0);
+            self.draw_group_buttons(ui, snap, &leds, group, 8);
             ui.add_space(6.0);
-            self.draw_group_controls(ui, snap, 34.0);
+            self.draw_pad_grid(ui, snap, &leds, pad_size, &mut press, &mut release);
         }
 
         if let Some((pad, velocity, shift_layer)) = press {
@@ -1511,12 +1038,19 @@ impl eframe::App for GuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.repaint.attach(ctx);
 
-        // Première frame : adapte les panneaux à la résolution disponible.
-        if !self.layout_initialized {
-            let width = ctx.screen_rect().width();
-            self.show_nav = width >= 980.0;
-            self.show_mk3 = width >= 1280.0;
-            self.layout_initialized = true;
+        // La disposition suit la fenêtre à chaque redimensionnement : sous
+        // 1400 px le rail des vues s'efface (et revient en grandissant).
+        let window_w = ctx.screen_rect().width();
+        let window_changed = (window_w - self.last_window_w).abs() > 0.5;
+        if window_changed {
+            if window_w < 1400.0 && self.show_nav {
+                self.show_nav = false;
+                self.nav_auto_hidden = true;
+            } else if window_w >= 1400.0 && self.nav_auto_hidden {
+                self.show_nav = true;
+                self.nav_auto_hidden = false;
+            }
+            self.last_window_w = window_w;
         }
 
         self.handle_keyboard(ctx);
@@ -1568,13 +1102,17 @@ impl eframe::App for GuiApp {
             .show(ctx, |ui| {
                 let c = MachColors::dark();
                 ui.horizontal_centered(|ui| {
-                    let nav_label = if self.show_nav {
-                        "◀ VUES"
-                    } else {
-                        "▶ VUES"
-                    };
-                    if crate::gui::widgets::chip(ui, nav_label, self.show_nav, c.accent_cyan) {
+                    // Bascules de panneaux allumées en blanc, comme les boutons MK3.
+                    let lit = c.text_dim;
+                    if crate::gui::widgets::chip_tooltip(
+                        ui,
+                        "VUES",
+                        self.show_nav,
+                        lit,
+                        "Rail des vues (F1)",
+                    ) {
                         self.show_nav = !self.show_nav;
+                        self.nav_auto_hidden = false;
                     }
                     ui.separator();
                     ui.colored_label(c.accent, egui::RichText::new("MASCHINE").strong());
@@ -1616,36 +1154,38 @@ impl eframe::App for GuiApp {
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let mk3_label = if self.show_mk3 { "MK3 ON" } else { "MK3 OFF" };
-                        if crate::gui::widgets::chip(ui, mk3_label, self.show_mk3, c.accent) {
+                        if crate::gui::widgets::chip_tooltip(
+                            ui,
+                            "MK3",
+                            self.show_mk3,
+                            lit,
+                            "Miroir MK3 : écrans, knobs, pads (F2)",
+                        ) {
                             self.show_mk3 = !self.show_mk3;
                         }
-                        let center_label = if self.show_workspace {
-                            "CENTRE ON"
-                        } else {
-                            "CENTRE OFF"
-                        };
-                        if crate::gui::widgets::chip(
+                        if crate::gui::widgets::chip_tooltip(
                             ui,
-                            center_label,
+                            "CENTRE",
                             self.show_workspace,
-                            c.accent_cyan,
+                            lit,
+                            "Vue de travail (F3) — masquée, la MK3 prend toute la fenêtre",
                         ) {
                             self.show_workspace = !self.show_workspace;
                         }
                         let all_visible = self.show_nav && self.show_workspace && self.show_mk3;
-                        let all_label = if all_visible { "TOUT ON" } else { "TOUT OFF" };
-                        if crate::gui::widgets::chip(ui, all_label, all_visible, c.success) {
+                        if crate::gui::widgets::chip_tooltip(
+                            ui,
+                            "TOUT",
+                            all_visible,
+                            lit,
+                            "Afficher ou masquer les trois panneaux",
+                        ) {
                             let show = !all_visible;
                             self.show_nav = show;
+                            self.nav_auto_hidden = false;
                             self.show_workspace = show;
                             self.show_mk3 = show;
                         }
-                        ui.label(
-                            egui::RichText::new("F1 vues • F2 MK3 • F3 centre")
-                                .small()
-                                .color(c.text_muted),
-                        );
                     });
                 });
             });
@@ -1654,18 +1194,36 @@ impl eframe::App for GuiApp {
             crate::gui::transport::render_transport(ui, self, &snap);
         });
 
-        // Rail gauche : vues + groupes. Repliable et redimensionnable.
+        // Rail gauche : vues + groupes. Repliable ; largeur proportionnelle.
+        let nav_w = fit_side_panel(
+            ctx,
+            "nav",
+            &mut self.nav_frac,
+            window_changed,
+            150.0..=280.0,
+        );
         egui::SidePanel::left("nav")
             .resizable(true)
-            .default_width(204.0)
-            .width_range(164.0..=300.0)
+            .default_width(nav_w)
+            .width_range(150.0..=280.0)
             .show_animated(ctx, self.show_nav, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.add_space(4.0);
+                        let c = MachColors::dark();
                         for v in StudioView::ALL {
-                            if mach_button(ui, v.label(), self.view == v).clicked {
+                            let on = self.view == v;
+                            let btn = egui::Button::new(
+                                egui::RichText::new(v.label()).strong().color(if on {
+                                    egui::Color32::BLACK
+                                } else {
+                                    c.text
+                                }),
+                            )
+                            .fill(if on { c.accent } else { c.widget_bg })
+                            .min_size(egui::vec2(ui.available_width(), 30.0));
+                            if ui.add(btn).clicked() {
                                 self.switch_view(v);
                             }
                         }
@@ -1734,63 +1292,34 @@ impl eframe::App for GuiApp {
                     });
             });
 
-        // Rail droit : panneau MK3 (sections repliables, largeur adaptative).
-        let mk3_width = if ctx.screen_rect().width() >= 1680.0 {
-            520.0
-        } else {
-            440.0
-        };
-        egui::SidePanel::right("mk3_panel")
-            .resizable(true)
-            .default_width(mk3_width)
-            .width_range(360.0..=680.0)
-            .show_animated(ctx, self.show_mk3, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.colored_label(
-                                MachColors::dark().accent,
-                                egui::RichText::new("MASCHINE MK3").strong().size(13.5),
-                            );
-                            ui.label(
-                                egui::RichText::new("miroir temps réel")
-                                    .small()
-                                    .color(MachColors::dark().text_muted),
-                            );
-                        });
-
-                        egui::CollapsingHeader::new(
-                            egui::RichText::new("KNOBS CONTEXTUELS").strong().size(11.5),
-                        )
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            self.render_mk3_knobs(ui, &snap);
-                        });
-
-                        egui::CollapsingHeader::new(
-                            egui::RichText::new("ÉCRANS MK3").strong().size(11.5),
-                        )
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            self.render_displays(ui, &snap);
-                        });
-
-                        egui::CollapsingHeader::new(
-                            egui::RichText::new("PADS & GROUPES").strong().size(11.5),
-                        )
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            self.render_pads(ui, &snap);
-                        });
-                    });
-            });
-
-        // Espace de travail central (masquable pour un mode scène compact).
+        // Rail droit : miroir MK3, largeur proportionnelle à la fenêtre. Centre
+        // masqué (F3) : la MK3 prend toute la place, écrans côte à côte.
         if self.show_workspace {
+            let mk3_max = (window_w * 0.62).max(380.0);
+            let mk3_w = fit_side_panel(
+                ctx,
+                "mk3_panel",
+                &mut self.mk3_frac,
+                window_changed,
+                380.0..=mk3_max,
+            );
+            egui::SidePanel::right("mk3_panel")
+                .resizable(true)
+                .default_width(mk3_w)
+                .width_range(380.0..=mk3_max)
+                .show_animated(ctx, self.show_mk3, |ui| {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| self.render_mk3(ui, &snap));
+                });
             egui::CentralPanel::default().show(ctx, |ui| {
                 crate::gui::views::render_view(ui, self, &snap, is_playing);
+            });
+        } else if self.show_mk3 {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.render_mk3(ui, &snap));
             });
         }
 
@@ -2026,6 +1555,34 @@ impl eframe::App for GuiApp {
     }
 }
 
+/// Largeur d'un panneau latéral en proportion de la fenêtre : elle suit
+/// chaque redimensionnement de la fenêtre et retient la proportion choisie
+/// quand l'utilisateur tire la poignée du panneau.
+fn fit_side_panel(
+    ctx: &egui::Context,
+    id: &str,
+    frac: &mut f32,
+    window_changed: bool,
+    range: std::ops::RangeInclusive<f32>,
+) -> f32 {
+    let window_w = ctx.screen_rect().width().max(1.0);
+    let id = egui::Id::new(id);
+    let state = egui::containers::panel::PanelState::load(ctx, id);
+    // Poignée en cours de glissement (id interne d'egui 0.32 : `<panneau>.__resize`).
+    let dragging = ctx
+        .read_response(id.with("__resize"))
+        .is_some_and(|r| r.dragged());
+    if let (true, Some(state)) = (dragging, state) {
+        *frac = state.rect.width() / window_w;
+    }
+    let width = (*frac * window_w).clamp(*range.start(), *range.end());
+    if let (true, Some(mut state)) = (window_changed && !dragging, state) {
+        state.rect.set_width(width);
+        ctx.data_mut(|d| d.insert_persisted(id, state));
+    }
+    width
+}
+
 /// Lance la GUI native (main thread, requise par egui/winit).
 #[cfg(feature = "audio")]
 pub fn run_native_gui(
@@ -2033,6 +1590,7 @@ pub fn run_native_gui(
     audio: Arc<Mutex<Option<crate::audio::AudioOutput>>>,
     repaint: crate::gui::RepaintSignal,
     guitar: Arc<crate::guitar::GuitarRuntime>,
+    mirror: crate::gui::HardwareMirror,
 ) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -2045,7 +1603,10 @@ pub fn run_native_gui(
         options,
         Box::new(move |cc| {
             crate::gui::theme::apply_theme(&cc.egui_ctx);
-            Ok(Box::new(GuiApp::new(engine, Some(audio), repaint, guitar)) as Box<dyn eframe::App>)
+            Ok(
+                Box::new(GuiApp::new(engine, Some(audio), repaint, guitar, mirror))
+                    as Box<dyn eframe::App>,
+            )
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe: {e}"))
@@ -2057,6 +1618,7 @@ pub fn run_native_gui(
     engine: Arc<Mutex<maschine_engine::Engine>>,
     repaint: crate::gui::RepaintSignal,
     guitar: Arc<crate::guitar::GuitarRuntime>,
+    mirror: crate::gui::HardwareMirror,
 ) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -2069,7 +1631,7 @@ pub fn run_native_gui(
         options,
         Box::new(move |cc| {
             crate::gui::theme::apply_theme(&cc.egui_ctx);
-            Ok(Box::new(GuiApp::new(engine, repaint, guitar)) as Box<dyn eframe::App>)
+            Ok(Box::new(GuiApp::new(engine, repaint, guitar, mirror)) as Box<dyn eframe::App>)
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe: {e}"))

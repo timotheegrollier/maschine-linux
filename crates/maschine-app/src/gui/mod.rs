@@ -45,6 +45,17 @@ impl RepaintSignal {
     }
 }
 
+/// Lien avec la boucle matérielle : les knobs de la GUI passent par le même
+/// mapping que les knobs MK3, et les pads/groupes affichent l'état LED que
+/// ce mapping calcule pour le contrôleur (avec ou sans MK3 branchée).
+#[derive(Clone)]
+pub struct HardwareMirror {
+    /// Entrée de la boucle HID (mêmes événements que le contrôleur).
+    pub events: crossbeam_channel::Sender<maschine_hardware::events::HardwareEvent>,
+    /// Dernier état LED calculé pour la MK3.
+    pub leds: Arc<Mutex<maschine_proto::hid_output::LedState>>,
+}
+
 /// Lance le GUI avec un engine, une sortie audio partagée et un signal de repaint.
 #[cfg(feature = "audio")]
 pub fn run_with_engine(
@@ -52,8 +63,9 @@ pub fn run_with_engine(
     audio: Arc<Mutex<Option<crate::audio::AudioOutput>>>,
     repaint: RepaintSignal,
     guitar: Arc<crate::guitar::GuitarRuntime>,
+    mirror: HardwareMirror,
 ) -> anyhow::Result<()> {
-    app::run_native_gui(engine, audio, repaint, guitar)
+    app::run_native_gui(engine, audio, repaint, guitar, mirror)
 }
 
 /// Lance le GUI avec un engine seul (pas d'audio).
@@ -62,6 +74,7 @@ pub fn run_with_engine(
     engine: Arc<Mutex<maschine_engine::Engine>>,
     repaint: RepaintSignal,
     guitar: Arc<crate::guitar::GuitarRuntime>,
+    mirror: HardwareMirror,
 ) -> anyhow::Result<()> {
-    app::run_native_gui(engine, repaint, guitar)
+    app::run_native_gui(engine, repaint, guitar, mirror)
 }

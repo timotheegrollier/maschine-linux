@@ -96,7 +96,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
             });
             ui.add_space(6.0);
 
-            crate::gui::theme::card_frame().show(ui, |ui| {
+            crate::gui::theme::card(ui, |ui| {
                 egui::ScrollArea::horizontal().id_salt("mixer_sounds").show(ui, |ui| {
                     ui.horizontal(|ui| {
                         for s in 0..16usize {
@@ -107,7 +107,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
             });
 
             ui.add_space(10.0);
-            crate::gui::theme::card_frame().show(ui, |ui| {
+            crate::gui::theme::card(ui, |ui| {
                 ui.horizontal(|ui| {
                     vu_meter(
                         ui,

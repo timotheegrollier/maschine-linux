@@ -1866,6 +1866,12 @@ fn cmd_daemon(
         mapper: &mut HardwareMapper,
         led_tx: &crossbeam_channel::Sender<maschine_proto::hid_output::LedState>,
     ) {
+        refresh_leds(engine, mapper);
+        let _ = led_tx.send(mapper.led_state().clone());
+    }
+
+    // Helper : calcule l'état de toutes les LEDs dans le mapper, sans l'envoyer.
+    fn refresh_leds(engine: &Arc<Mutex<Engine>>, mapper: &mut HardwareMapper) {
         let snap = engine.lock().hardware_snapshot();
         // Le mapper suit l'engine (la GUI peut aussi changer groupe/son/onglets).
         sync_mapper_context(mapper, &snap);
@@ -1913,9 +1919,10 @@ fn cmd_daemon(
             note_repeat_enabled: snap.note_repeat_enabled,
             lock_active: snap.lock_active,
             shift_held: snap.shift_held,
+            soft_present: snap.soft_present,
+            soft_active: snap.soft_active,
         };
         mapper.update_leds(&led_info);
-        let _ = led_tx.send(mapper.led_state().clone());
     }
 
     // Latence (--debug-latency) + repaint temps réel (GUI).
@@ -1947,6 +1954,8 @@ fn cmd_daemon(
         let guitar_for_hw = guitar_runtime.clone();
         let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let shutdown_bg = shutdown.clone();
+        let led_mirror = Arc::new(Mutex::new(maschine_proto::hid_output::LedState::new()));
+        let led_mirror_bg = led_mirror.clone();
 
         let hid_thread = std::thread::Builder::new()
             .name("maschine-hid-loop".to_string())
@@ -2016,10 +2025,15 @@ fn cmd_daemon(
                         }
                     }
 
-                    // Rafraîchissement régulier des LEDs physiques (30 FPS)
-                    if is_connected && !no_led && last_led_sync.elapsed() >= Duration::from_millis(16)
-                    {
-                        sync_hardware_leds(&engine_bg, &mut mapper, &led_tx_bg);
+                    // LEDs (~60 Hz) : calculées même sans MK3 pour que les pads de
+                    // la GUI soient ceux du matériel, envoyées seulement si branchée.
+                    if last_led_sync.elapsed() >= Duration::from_millis(16) {
+                        if is_connected && !no_led {
+                            sync_hardware_leds(&engine_bg, &mut mapper, &led_tx_bg);
+                        } else {
+                            refresh_leds(&engine_bg, &mut mapper);
+                        }
+                        *led_mirror_bg.lock() = mapper.led_state().clone();
                         last_led_sync = std::time::Instant::now();
                     }
 
@@ -2064,6 +2078,7 @@ fn cmd_daemon(
 
                             if is_connected && !no_led {
                                 sync_hardware_leds(&engine_bg, &mut mapper, &led_tx_bg);
+                                *led_mirror_bg.lock() = mapper.led_state().clone();
                                 last_led_sync = std::time::Instant::now();
                             }
 
@@ -2094,10 +2109,14 @@ fn cmd_daemon(
         } else {
             info!("Lancement GUI egui autonome…");
         }
+        let mirror = gui::HardwareMirror {
+            events: hardware_tx.clone(),
+            leds: led_mirror,
+        };
         #[cfg(feature = "audio")]
-        let gui_res = gui::run_with_engine(engine, audio_shared, repaint, guitar_runtime);
+        let gui_res = gui::run_with_engine(engine, audio_shared, repaint, guitar_runtime, mirror);
         #[cfg(not(feature = "audio"))]
-        let gui_res = gui::run_with_engine(engine, repaint, guitar_runtime);
+        let gui_res = gui::run_with_engine(engine, repaint, guitar_runtime, mirror);
 
         // 1) Stoppe la boucle HID (et sa session Plug & Play éventuelle).
         shutdown.store(true, Ordering::Relaxed);
@@ -2830,6 +2849,7 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             master_level: 0.0,
             master_peak: 0.0,
             soft_labels: ["1", "2", "3", "4", "5", "6", "7", "8"],
+            soft_active: [false; 8],
             waveform: None,
             sample_duration: 0.0,
             revision: 0,

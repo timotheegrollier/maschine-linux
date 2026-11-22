@@ -542,6 +542,10 @@ pub struct SequencerLedInfo {
     pub selected_bar: usize,
     /// Nombre de mesures du pattern actif (1, 2, 4, 8)
     pub pattern_bars: usize,
+    /// Boutons d'écran 1–8 ayant un libellé (une fonction) dans la vue courante.
+    pub soft_present: [bool; 8],
+    /// Boutons d'écran allumés sur l'écran (même calcul que les écrans MK3).
+    pub soft_active: [bool; 8],
 }
 
 /// Mapper — convertit `HardwareEvent` → `MidiEvent` + `LedState` + actions Engine.
@@ -927,6 +931,9 @@ impl HardwareMapper {
             }
             HardwareEvent::Encoder(enc) => {
                 actions.extend(self.handle_encoder_event(enc));
+            }
+            HardwareEvent::KnobDelta { knob, delta } if knob < 8 && delta != 0 => {
+                actions.extend(self.handle_display_knob(knob as usize, delta.clamp(-128, 128)));
             }
             HardwareEvent::TouchStrip(ts) => {
                 actions.extend(self.handle_touch_strip_event(ts));
@@ -2531,64 +2538,20 @@ impl HardwareMapper {
             }
             self.led_state
                 .set_button_raw(offsets::DISPLAY_BTN_8, if self.note_repeat { 7 } else { 3 });
-        } else if is_file_active {
-            self.led_state.set_button_raw(offsets::DISPLAY_BTN_1, 3);
-            self.led_state.set_button_raw(offsets::DISPLAY_BTN_2, 3);
-            self.led_state.set_button_raw(offsets::DISPLAY_BTN_3, 6);
-            self.led_state.set_button_raw(offsets::DISPLAY_BTN_4, 6);
-            self.led_state.set_button_raw(offsets::DISPLAY_BTN_5, 5);
-            self.led_state.set_button_raw(offsets::DISPLAY_BTN_6, 4);
-            self.led_state.set_button_raw(offsets::DISPLAY_BTN_7, 3);
-            self.led_state.set_button_raw(offsets::DISPLAY_BTN_8, 4);
         } else {
-            self.led_state.set_button_raw(
-                offsets::DISPLAY_BTN_1,
-                if self.left_tab == 0 { 7 } else { 2 },
-            );
-            self.led_state.set_button_raw(
-                offsets::DISPLAY_BTN_2,
-                if self.left_tab == 1 { 7 } else { 2 },
-            );
-            self.led_state.set_button_raw(
-                offsets::DISPLAY_BTN_3,
-                if self.left_tab == 2 { 7 } else { 2 },
-            );
-            self.led_state.set_button_raw(
-                offsets::DISPLAY_BTN_4,
-                if self.left_tab == 3 { 7 } else { 2 },
-            );
-            self.led_state.set_button_raw(
-                offsets::DISPLAY_BTN_5,
-                if self.right_tab == 0 && self.selected_bar == 0 {
+            // Comme le libellé juste en dessous, sur l'écran : éteint sans
+            // fonction, demi-teinte si disponible, plein si son état est courant.
+            for i in 0..8 {
+                let level = if !info.soft_present[i] {
+                    0
+                } else if info.soft_active[i] {
                     7
                 } else {
                     2
-                },
-            );
-            self.led_state.set_button_raw(
-                offsets::DISPLAY_BTN_6,
-                if self.right_tab == 0 && self.selected_bar == 1 {
-                    7
-                } else {
-                    2
-                },
-            );
-            self.led_state.set_button_raw(
-                offsets::DISPLAY_BTN_7,
-                if self.right_tab == 0 && self.selected_bar == 2 {
-                    7
-                } else {
-                    2
-                },
-            );
-            self.led_state.set_button_raw(
-                offsets::DISPLAY_BTN_8,
-                if self.right_tab == 0 && self.selected_bar == 3 {
-                    7
-                } else {
-                    2
-                },
-            );
+                };
+                self.led_state
+                    .set_button_raw(offsets::DISPLAY_BTN_1 + i, level);
+            }
         }
 
         // 9. Groupes A..H — focus en blanc, les autres en demi-teinte.
@@ -3398,6 +3361,26 @@ mod tests {
         }
     }
 
+    /// Un knob de la GUI fait exactement ce que fait le knob physique.
+    #[test]
+    fn gui_knob_delta_routes_like_the_physical_knob() {
+        let mut m = HardwareMapper::with_default();
+        m.left_tab = 0;
+        let _ = m.handle_hardware_event(knob_ev(1, 0, 0));
+        let physical = m.handle_hardware_event(knob_ev(1, 40, 1));
+        let gui = m.handle_hardware_event(HardwareEvent::KnobDelta { knob: 0, delta: 40 });
+        assert_eq!(physical, gui);
+        // Même plafond qu'un tour rapide physique, et rien hors des 8 knobs.
+        let fast = m.handle_hardware_event(HardwareEvent::KnobDelta {
+            knob: 0,
+            delta: 900,
+        });
+        assert_eq!(fast, vec![MapperAction::BpmDelta(128.0)]);
+        assert!(m
+            .handle_hardware_event(HardwareEvent::KnobDelta { knob: 8, delta: 5 })
+            .is_empty());
+    }
+
     #[test]
     fn mixer_knobs_edit_selected_sound_and_shift_edits_groups() {
         let mut m = HardwareMapper::with_default();
@@ -3632,20 +3615,25 @@ mod tests {
         assert_eq!(m.browser_kind, 1);
         assert!(act_file.contains(&MapperAction::OpenFileBrowser));
 
-        let info_file = SequencerLedInfo {
+        let mut info_file = SequencerLedInfo {
             left_tab: 3,
             browser_kind: 1,
             ..Default::default()
         };
+        // FILE : boutons 1–6 et 8 libellés, aucun état « courant ».
+        info_file.soft_present = [true, true, true, true, true, true, false, true];
         m.update_leds(&info_file);
 
         // La LED FILE_SAVE DOIT être allumée (7), et BROWSER DOIT être éteinte/dim (1)
         assert_eq!(m.led_state().button_leds[offsets::FILE_SAVE - 1], 7);
         assert_eq!(m.led_state().button_leds[offsets::BROWSER - 1], 1);
 
-        // Bouton 3 (NOUVEAU) et 4 (CHARGER) mis en valeur
-        assert_eq!(m.led_state().button_leds[offsets::DISPLAY_BTN_3 - 1], 6);
-        assert_eq!(m.led_state().button_leds[offsets::DISPLAY_BTN_4 - 1], 6);
+        // Boutons d'écran : demi-teinte s'ils ont une fonction, éteints sinon.
+        assert_eq!(m.led_state().button_leds[offsets::DISPLAY_BTN_4 - 1], 2);
+        assert_eq!(m.led_state().button_leds[offsets::DISPLAY_BTN_7 - 1], 0);
+        info_file.soft_active[3] = true;
+        m.update_leds(&info_file);
+        assert_eq!(m.led_state().button_leds[offsets::DISPLAY_BTN_4 - 1], 7);
 
         // 2. Second appui FILE_SAVE -> toggle vers tab 0 (referme le menu)
         let act_close = press_button(&mut m, maschine_proto::ButtonId::FileSave);

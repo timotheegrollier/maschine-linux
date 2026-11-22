@@ -35,6 +35,14 @@ pub enum HardwareEvent {
     Pad(PadState),
     /// Encodeur / knob absolute
     Encoder(EncoderEvent),
+    /// Rotation relative d'un knob d'écran — knobs de la GUI, routés par le
+    /// même mapping (et les mêmes vitesses) que les knobs physiques.
+    KnobDelta {
+        /// Knob 0..7 (1–8 sur la MK3)
+        knob: u8,
+        /// Ticks bruts (1024 = un tour de knob)
+        delta: i32,
+    },
     /// Touchstrip
     TouchStrip(TouchStripEvent),
     /// Pot absolu (Mic/HP/Master)

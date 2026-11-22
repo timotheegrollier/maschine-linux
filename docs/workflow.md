@@ -61,12 +61,28 @@ The GUI follows Maschine's workflow separation: a common transport bar, groups a
 - **PLUGIN**: unified Sound editor. The SOUND page exposes the sampler-style controls; the TB-303 page provides simplified macros (cutoff, resonance, envelope modulation, decay, accent, drive, delay time, delay mix) with advanced oscillator, filter, distortion, and delay controls collapsed by default.
 - **Browser**: built-in 808 drum synth presets, loaded onto the selected Sound. The Browser does not yet browse the NI library or the filesystem.
 
-The GUI uses a collapsible, resizable navigation rail, centre workspace, and
-MK3 mirror. `F1` toggles the rail, `F2` toggles the mirror, `F3` toggles the
-centre workspace, and the `TOUT` button shows or hides all three panels at
-once. The application bar shows the active latched workflow. The transport
-offers Play/Stop, Record, loop, tempo and BBT position. GUI pads send note
-release; 808 presets are cached when the kit loads.
+The GUI has a navigation rail, a centre workspace and an MK3 mirror. Each side
+panel keeps a share of the window width: resizing the window resizes the
+panels, and dragging a panel edge changes that share. Below 1400 px the rail
+hides itself and comes back when the window grows again. `F1` toggles the
+rail, `F2` the mirror, `F3` the centre workspace (the mirror then fills the
+window with both screens side by side), and `TOUT` shows or hides all three.
+The application bar shows the active latched workflow; the transport is a
+single compact row (Play/Stop, Record, Restart, position, tempo, swing, loop,
+metronome, song, master). Cards in every view lay their content out top-down
+and wrap to the next row instead of overflowing under the mirror.
+
+The MK3 mirror follows the controller from top to bottom: the 8 display
+buttons (the label strip along the top of each screen image is clickable), the
+two screens (side by side when the panel is wide enough, stacked otherwise,
+never below 75 % so the 8×16 text stays readable), the 8 knobs, each centred
+under the slot that shows its name and value, then groups A–H and the 4×4
+pads. GUI knobs are endless encoders: a drag is sent to the HID loop as
+`HardwareEvent::KnobDelta` and goes through the same mapping and speeds as
+the physical knob. Pads and group buttons are painted from the LED state the
+mapper computes for the MK3 (with or without a controller), so they show the
+same colours as the hardware in every mode. GUI pads send note release; 808
+presets are cached when the kit loads.
 
 `maschine-linux gui --no-hardware` forces standalone mode: the GUI, engine,
 virtual MIDI, and audio remain available, while any connected MK3 and its
@@ -79,7 +95,7 @@ Both screens are rendered by the same function (`display_render::render_screens`
 
 - **Left screen**: ARRANGE (8 groups, scene pattern, real VU), SCENES/IDEAS (SCENE mode), PATTERN slots (PATTERN mode: 16 slots with name, length, event count, active/assigned markers), SONG (sections), MIXER A–D, SAMPLER (waveform + ADSR + info), BROWSER (808 presets), STEP (full pattern grid + selected step parameters), and PLUGIN (SOUND page or TB-303 page).
 - **Right screen**: PATTERN (16 sounds × 16 steps grid + playhead), STEP (active Sound velocities + edit cursor), SONG TIMELINE, MIXER master + group/sound focus, SAMPLER full-screen envelope, BROWSER loading, EVENTS, MACRO, SETTINGS, PLUGIN SOUND envelope.
-- **Soft keys (8 buttons under the screens)**: *contextual* action decided by the engine (`EngineEvent::SoftKey`) and displayed at the bottom of the screens. The button always does what the label announces, identically on hardware and in the GUI.
+- **Display buttons 1–8 (above the screens)**: *contextual* action decided by the engine (`EngineEvent::SoftKey`). As on the official MK3, each label sits along the **top** edge of its screen, right under its physical button, and each knob's name and value sit along the **bottom** edge, right above its knob. A label is lit when the state it selects is the current one (`Engine::soft_key_active`: bar, pattern length, group, mixer bank, filter mode, metronome, song mode, note-repeat rate…), never because its index matches another state. The same lit state drives the screens, the GUI mirror and the button LEDs (dim when the button has a function, bright when lit, off without a label). The button always does what the label announces, identically on hardware and in the GUI.
   - **Dynamic Shift layer**: holding `SHIFT` immediately repaints all 8 soft key labels with contextual shift commands: `DOUBLE` (doubles pattern length), `HALF` (halves pattern length), `QUANT` (50% grid quantize), `HUMAN` (humanize timing), `SAV PROJ` (quick save), `COUNT-IN` (toggle count-in).
   - ARRANGE: `BAR 1..4` + pattern length `1/2/4/8 BARS`.
   - PATTERN: `PAT <`, `PAT >`, `+ PAT`, `DUPL`, `VIDER`, `SUPPR`, `1 MES`, `2 MES`.
@@ -98,7 +114,7 @@ Both screens are rendered by the same function (`display_render::render_screens`
     - Écran gauche : courbe de saturation du préampli, tone stack 3 bandes, état ACTIF / MON / BYPASS (ACTIF et MON sont **éteints au démarrage** ; l'utilisateur les active explicitement). Knobs **1:GAIN, 2:BASS, 3:MID, 4:TREBLE**.
     - Écran droit : VU entrée/sortie, accordeur (note + cents + Hz), spectre 48 bandes, CPU / Xruns / latence. Knobs **5:PRESENCE, 6:SAG, 7:MASTER, 8:MONITOR**.
   - SCENE: `SCN 1..8`. SONG: `SEC <</>>`, `+SEC`, `IDEAS`, scenes and `+SCN`.
-- **Encoders**: each screen displays the 4 parameters actually controlled by its knobs (1–4 on the left, 5–8 on the right) with live values. PLUGIN routes knobs by page: SOUND uses Vol/Pan/Cutoff/Reso + ADSR, TB-303 uses Cutoff/Reso/EnvMod/Decay + Accent/Drive/Time/Mix, GUITAR AMP uses Gain/Bass/Mid/Treble + Presence/Sag/Master/Monitor.
+- **Encoders**: each screen displays, along its bottom edge, the 4 parameters actually controlled by its knobs (1–4 on the left, 5–8 on the right) with live values. The GUI knobs send the same relative turns through the hardware mapper, so they always control exactly what the screen shows. PLUGIN routes knobs by page: SOUND uses Vol/Pan/Cutoff/Reso + ADSR, TB-303 uses Cutoff/Reso/EnvMod/Decay + Accent/Drive/Time/Mix, GUITAR AMP uses Gain/Bass/Mid/Treble + Presence/Sag/Master/Monitor.
 - **Navigation between views**: choosing ARRANGE, MIXER, SAMPLER, BROWSER or PLUGIN returns the right screen to the page linked to that view. EVENTS, MACRO and SETTINGS are right-hand views that can then be explicitly selected. Clicking the active main view again in the GUI returns to its contextual right page.
 - **Latched workflow menus**: PATTERN, STEP, KEYBOARD, SCENE, EVENTS, MACRO, SETTINGS and PLUGIN latch on the first press. A second press on the same button returns to the default Pad workflow and the Sequencer view. Only one workflow menu is active at a time.
 - **PATTERN mode**: the left screen lists the 16 pattern slots of the focus Group with length and event count; the right screen shows the selected pattern grid. Patterns belong to their Group: each Group keeps its own pattern bank and its own selection in the current Scene, so working on one Group never changes another Group's pattern. Empty pads create a new empty pattern in that slot and select it; selecting a pattern only replaces that Group's reference in the current Scene, and pressing the selected pattern again keeps it selected. Pressing two pads simultaneously chains the patterns into a sequential loop; `DUPLICATE` copies the active pattern, `SHIFT + ERASE` clears its events, and the 4D encoder moves to the previous/next pattern. The last pattern of a Group cannot be deleted.
@@ -193,7 +209,7 @@ Output chain (in order): voices → groups (gains/pans/filters) → **master sof
   - *Instant Filter Mode Selection*: in SAMPLER view, Soft Buttons 5..8 allow direct 1-touch switching between `LP`, `HP`, `BP`, and `OFF`, while Soft Button 4 triggers `CYC FLT`. Additionally, rotating Knob 3 (Filter Cutoff) while holding `Shift`, or pressing `Shift + EncoderPush`, instantly cycles filter types without menu diving.
   - *Techno Kick Synth Modeler*: dedicated sound design engine featuring 7 body waveforms (`Sine`, `Triangle`, `SatSine`, `SquareSub`, `NoiseTransient`, `Parabolic`, `Ramp`), 7 drive/distortion models (`AnalogTanh`, `HardClip`, `Wavefolder`, `TubeDrive`, `Bitcrush`, `Fuzz`, `Rectifier`), 6 multimode filter modes (`Off`, `LowPass`, `HighPass`, `BandPass`, `Notch`, `Peak`), linear FM modulation, hold stage, and 13 presets. On the hardware, `Shift + Knob 5` cycles drive type, `Shift + Knob 6` tunes cutoff, and `Shift + Knob 7` cycles filter mode.
   - *Nexus / Serum Polyphonic Wavetable Synth*: dual-oscillator ROMpler/wavetable synthesizer with 7-voice unison supersaw, acoustic and electronic tables, resonant multimode SVF filter, dual ADSRs, LFO, and a 4-effect stereo rack with 28 production-ready factory presets covering pianos, basses, leads, pads, plucks, organs, and strings.
-  - *Contextual soft keys*: the 8 buttons under the screens execute the action displayed at the bottom of the screen (see "MK3 screens & soft keys"). Same action engine on the hardware and GUI sides.
+  - *Contextual display buttons*: the 8 buttons above the screens execute the action labelled right under them, along the top edge of the screen (see "MK3 screens & soft keys"). Same action engine on the hardware and GUI sides.
   - *8 rotary potentiometers*: contextual editing of sound or mixer parameters; the screen encoder slots display these same parameters with their live values.
 - **Knob speed** (scaled *only once* in `main.rs`, not per raw tick or per detent ≈ 32 ticks):
   - ARRANGE: TEMPO 0.05 BPM (≈1.5 BPM/detent, Shift ÷10), SWING 0.001, VOL GRP/SND 0.03 dB, PAN 0.001, MASTER 0.001.

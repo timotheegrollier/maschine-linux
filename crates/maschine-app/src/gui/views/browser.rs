@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::gui::app::GuiApp;
-use crate::gui::theme::{card_frame, MachColors};
+use crate::gui::theme::{card, MachColors};
 use crate::gui::widgets::chip;
 use eframe::egui;
 
@@ -117,7 +117,7 @@ fn render_projects(
     );
     ui.add_space(8.0);
 
-    card_frame().show(ui, |ui| {
+    card(ui, |ui| {
         ui.label(egui::RichText::new("PROJETS").strong().color(c.accent_cyan));
         ui.add_space(4.0);
         if snap.project_entries.is_empty() {
@@ -141,10 +141,11 @@ fn render_projects(
                         ui.horizontal(|ui| {
                             let label = format!("{}  ·  {}", entry.name, entry.meta);
                             let resp = ui.add(
-                                egui::Button::new(
-                                    egui::RichText::new(label)
-                                        .color(if selected { c.accent } else { c.text }),
-                                )
+                                egui::Button::new(egui::RichText::new(label).color(if selected {
+                                    c.accent
+                                } else {
+                                    c.text
+                                }))
                                 .fill(fill)
                                 .min_size(egui::vec2(ui.available_width() - 170.0, 28.0)),
                             );
@@ -249,7 +250,7 @@ fn render_presets(
 
     ui.horizontal_top(|ui| {
         let list_w = (ui.available_width() * 0.5).max(220.0);
-        card_frame().show(ui, |ui| {
+        card(ui, |ui| {
             ui.set_width(list_w);
             ui.label(
                 egui::RichText::new("RÉSULTATS")
@@ -292,7 +293,7 @@ fn render_presets(
         });
 
         ui.add_space(8.0);
-        card_frame().show(ui, |ui| {
+        card(ui, |ui| {
             let name = maschine_engine::engine::DRUM_PRESET_NAMES[selected.min(15)];
             ui.label(
                 egui::RichText::new(name)
@@ -463,7 +464,7 @@ fn render_plugins(
     ];
 
     for (idx, title, subtitle, desc, tag, tag_color) in plugins {
-        card_frame().show(ui, |ui| {
+        card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
@@ -544,7 +545,7 @@ fn render_effects(
     ui.add_space(8.0);
 
     // Liste des effets déjà actifs sur le pad et le groupe
-    card_frame().show(ui, |ui| {
+    card(ui, |ui| {
         ui.label(
             egui::RichText::new("CHAÎNE D'EFFETS ACTUELLE")
                 .strong()
@@ -668,7 +669,7 @@ fn render_effects(
     ];
 
     for (fx_type, title, subtitle, desc, tag, tag_color) in fx_library {
-        card_frame().show(ui, |ui| {
+        card(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {

@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::gui::app::GuiApp;
-use crate::gui::theme::{card_frame, section, MachColors};
+use crate::gui::theme::{card, card_row, section, MachColors};
 use crate::gui::widgets::chip;
 use eframe::egui;
 
@@ -43,9 +43,9 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
 
             ui.add_space(8.0);
 
-            ui.horizontal_wrapped(|ui| {
+            ui.with_layout(card_row(), |ui| {
                 // ── Liste des scènes ─────────────────────────────────────────
-                card_frame().show(ui, |ui| {
+                card(ui, |ui| {
                     ui.set_width(210.0);
                     ui.label(
                         egui::RichText::new("SCÈNES")
@@ -127,7 +127,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                 ui.add_space(8.0);
 
                 // ── Matrice Groupes × Patterns ───────────────────────────────
-                card_frame().show(ui, |ui| {
+                card(ui, |ui| {
                     ui.label(
                         egui::RichText::new(
                             "MATRICE — cliquer pour assigner le pattern à la scène active",

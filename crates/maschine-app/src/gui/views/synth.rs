@@ -6,7 +6,7 @@
 //! propose un mode SIMPLE (macros + presets) et un mode AVANCÉ repliable.
 
 use crate::gui::app::GuiApp;
-use crate::gui::theme::{card_frame, MachColors};
+use crate::gui::theme::{card, card_row, card_sized, card_width, MachColors};
 use crate::gui::widgets::{chip, knob, KnobSpec};
 use eframe::egui;
 
@@ -152,7 +152,7 @@ fn render_sound_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine
     let adsr = sound.map(|s| s.adsr.clone()).unwrap_or_default();
 
     // Sélecteur des 16 Sons.
-    card_frame().show(ui, |ui| {
+    card(ui, |ui| {
         ui.label(
             egui::RichText::new("SONS DU GROUPE — clique pour éditer")
                 .strong()
@@ -203,11 +203,10 @@ fn render_sound_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine
 
     ui.add_space(8.0);
 
-    let card_w = (ui.available_width() - 16.0).clamp(180.0, 440.0);
-    ui.horizontal_wrapped(|ui| {
+    let card_w = card_width(ui.available_width(), 380.0);
+    ui.with_layout(card_row(), |ui| {
         // Niveau, pan, voix.
-        card_frame().show(ui, |ui| {
-            ui.set_width(card_w - 18.0);
+        card_sized(ui, card_w, |ui| {
             section_title(ui, "NIVEAU & VOIX", c.accent);
             ui.horizontal_wrapped(|ui| {
                 if let Some(v) = knob(
@@ -284,11 +283,8 @@ fn render_sound_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine
             );
         });
 
-        ui.add_space(8.0);
-
         // Filtre.
-        card_frame().show(ui, |ui| {
-            ui.set_width(card_w - 18.0);
+        card_sized(ui, card_w, |ui| {
             section_title(ui, "FILTRE", c.accent_cyan);
             let mut kind = filter_kind;
             ui.horizontal(|ui| {
@@ -387,11 +383,8 @@ fn render_sound_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine
             });
         });
 
-        ui.add_space(8.0);
-
         // ADSR.
-        card_frame().show(ui, |ui| {
-            ui.set_width(card_w - 18.0);
+        card_sized(ui, card_w, |ui| {
             section_title(ui, "ENVELOPPE ADSR", c.success);
             draw_adsr(ui, (card_w - 26.0).max(160.0), 80.0, &adsr, c.success);
             ui.add_space(2.0);
@@ -419,11 +412,8 @@ fn render_sound_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine
             });
         });
 
-        ui.add_space(8.0);
-
         // Actions.
-        card_frame().show(ui, |ui| {
-            ui.set_width(card_w - 18.0);
+        card_sized(ui, card_w, |ui| {
             section_title(ui, "ACTIONS RAPIDES", c.warning);
             ui.horizontal_wrapped(|ui| {
                 if chip(ui, "▶ AUDITIONNER", false, c.success) {
@@ -780,11 +770,10 @@ fn render_acid_advanced(
 ) {
     let c = MachColors::dark();
     let p = &snap.acid_params;
-    let card_w = (ui.available_width() - 16.0).clamp(180.0, 440.0);
+    let card_w = card_width(ui.available_width(), 380.0);
 
-    ui.horizontal_wrapped(|ui| {
-        card_frame().show(ui, |ui| {
-            ui.set_width(card_w - 18.0);
+    ui.with_layout(card_row(), |ui| {
+        card_sized(ui, card_w, |ui| {
             section_title(ui, "OSCILLATEUR", c.accent);
             draw_wave(ui, (card_w - 26.0).max(160.0), 70.0, p.waveform);
             ui.add_space(2.0);
@@ -846,10 +835,7 @@ fn render_acid_advanced(
             });
         });
 
-        ui.add_space(8.0);
-
-        card_frame().show(ui, |ui| {
-            ui.set_width(card_w - 18.0);
+        card_sized(ui, card_w, |ui| {
             section_title(ui, "FILTRE 303", c.accent_cyan);
             draw_filter_curve(
                 ui,
@@ -889,10 +875,7 @@ fn render_acid_advanced(
             });
         });
 
-        ui.add_space(8.0);
-
-        card_frame().show(ui, |ui| {
-            ui.set_width(card_w - 18.0);
+        card_sized(ui, card_w, |ui| {
             section_title(ui, "DISTORSION", c.warning);
             draw_shaper(ui, (card_w - 26.0).max(160.0), 64.0, p.drive);
             ui.add_space(2.0);
@@ -915,10 +898,7 @@ fn render_acid_advanced(
             });
         });
 
-        ui.add_space(8.0);
-
-        card_frame().show(ui, |ui| {
-            ui.set_width(card_w - 18.0);
+        card_sized(ui, card_w, |ui| {
             section_title(ui, "DELAY STÉRÉO", c.success);
             draw_echo(
                 ui,
@@ -989,7 +969,7 @@ fn full_card(
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
     let width = (ui.available_width() - 18.0).max(160.0);
-    card_frame().show(ui, |ui| {
+    card(ui, |ui| {
         ui.set_width(width);
         section_title(ui, title, color);
         add_contents(ui);
@@ -1276,7 +1256,7 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
     let mut changed = false;
 
     // 1. Presets rapides
-    card_frame().show(ui, |ui| {
+    card(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(
                 egui::RichText::new("PRESETS KICK TECHNO PRO")
@@ -1322,7 +1302,7 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
     ui.add_space(8.0);
 
     // 2. Modélisation : Oscillateur, Sweep & Enveloppe
-    card_frame().show(ui, |ui| {
+    card(ui, |ui| {
         ui.label(
             egui::RichText::new("CORPS & PUNCH DU KICK")
                 .strong()
@@ -1473,7 +1453,7 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
     ui.add_space(8.0);
 
     // 3. Distorsion multi-types & Filtre résonant
-    card_frame().show(ui, |ui| {
+    card(ui, |ui| {
         ui.label(
             egui::RichText::new("DISTORSION MULTI-TYPES & FILTRE RÉSONANT")
                 .strong()
@@ -1819,7 +1799,7 @@ fn render_kick_page(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine:
     ui.add_space(8.0);
 
     // 4. Infrabasse & Transitoire de bruit
-    card_frame().show(ui, |ui| {
+    card(ui, |ui| {
         ui.label(
             egui::RichText::new("INFRABASSE & COUCHE DE BRUIT")
                 .strong()
@@ -1897,7 +1877,7 @@ fn render_wavetable_page(
     let mut changed = false;
 
     // 1. Presets du Wavetable Synth
-    card_frame().show(ui, |ui| {
+    card(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(
                 egui::RichText::new("PRESETS NEXUS / SERUM")
@@ -1946,7 +1926,7 @@ fn render_wavetable_page(
     ui.add_space(8.0);
 
     // 2. Oscillateurs & Unison
-    card_frame().show(ui, |ui| {
+    card(ui, |ui| {
         ui.label(
             egui::RichText::new("OSCILLATEURS & TABLES D'ONDES")
                 .strong()
@@ -2084,7 +2064,7 @@ fn render_wavetable_page(
     ui.add_space(8.0);
 
     // 3. Filtre Multimode & ADSR Enveloppe
-    card_frame().show(ui, |ui| {
+    card(ui, |ui| {
         ui.label(
             egui::RichText::new("FILTRE MULTIMODE & ENVELOPPE D'AMPLITUDE")
                 .strong()
@@ -2259,7 +2239,7 @@ fn render_wavetable_page(
     ui.add_space(8.0);
 
     // 4. Rack d'effets (Chorus, Ping-Pong Delay, Reverb Spatiale)
-    card_frame().show(ui, |ui| {
+    card(ui, |ui| {
         ui.label(
             egui::RichText::new("RACK D'EFFETS INTÉGRÉ")
                 .strong()

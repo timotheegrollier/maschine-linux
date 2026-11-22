@@ -72,7 +72,7 @@ pub fn chip(ui: &mut egui::Ui, text: &str, on: bool, color: egui::Color32) -> bo
         1.0_f32,
         if on { color } else { c.border },
     ));
-    btn = btn.corner_radius(egui::CornerRadius::same(12));
+    btn = btn.corner_radius(egui::CornerRadius::same(4));
     ui.add(btn).clicked()
 }
 
@@ -96,7 +96,7 @@ pub fn chip_tooltip(
         1.0_f32,
         if on { color } else { c.border },
     ));
-    btn = btn.corner_radius(egui::CornerRadius::same(12));
+    btn = btn.corner_radius(egui::CornerRadius::same(4));
     ui.add(btn).on_hover_text(tooltip).clicked()
 }
 
@@ -460,11 +460,10 @@ pub fn vu_meter(ui: &mut egui::Ui, levels: [f32; 2], peaks: [f32; 2], width: f32
 /// État d'un pad pour l'affichage.
 pub struct PadState<'a> {
     pub index: u8,
+    /// Couleur affichée : celle de la LED du pad physique.
     pub color: egui::Color32,
     pub label: &'a str,
-    /// Flash temps-réel (pattern en lecture).
-    pub flash: bool,
-    /// Sélectionné (Sound actif).
+    /// Sélectionné (Sound actif, pattern assigné, pas édité…).
     pub selected: bool,
     /// L'utilisateur pressait ce pad au frame précédent (pour détecter le release).
     pub was_down: bool,
@@ -479,12 +478,46 @@ pub struct PadInteraction {
     pub velocity: u8,
 }
 
-/// Pad de la grille 4×4 : couleur du Sound, flash temps-réel, vélocité
+/// Couleur écran d'une LED MK3 (index palette NI). Une LED « atténuée »
+/// reste bien colorée à l'œil : on relève les tons sombres pour que le
+/// miroir ressemble au pad réel plutôt qu'à un pad noir.
+#[must_use]
+pub fn led_color(index: u8) -> egui::Color32 {
+    let (r, g, b) = maschine_proto::color::PaletteIndex::from_u8(index)
+        .map_or((0, 0, 0), maschine_proto::color::PaletteIndex::to_rgb);
+    let lift = |v: u8| (255.0 * (f32::from(v) / 255.0).powf(0.6)) as u8;
+    let off = egui::Color32::from_rgb(0x26, 0x28, 0x2C);
+    if (r, g, b) == (0, 0, 0) {
+        off
+    } else {
+        egui::Color32::from_rgb(lift(r), lift(g), lift(b))
+    }
+}
+
+/// Texte lisible sur un fond donné (noir sur clair, blanc sur sombre).
+#[must_use]
+pub fn ink_on(fill: egui::Color32) -> egui::Color32 {
+    let l = 0.299 * f32::from(fill.r()) + 0.587 * f32::from(fill.g()) + 0.114 * f32::from(fill.b());
+    if l > 150.0 {
+        egui::Color32::from_rgb(0x11, 0x12, 0x14)
+    } else {
+        egui::Color32::WHITE
+    }
+}
+
+/// Pad de la grille 4×4 : couleur de la LED physique, vélocité
 /// proportionnelle à la position verticale du clic (comme le hardware).
 pub fn pad_button(ui: &mut egui::Ui, st: &PadState<'_>, size: f32) -> PadInteraction {
     let c = MachColors::dark();
     let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click_and_drag());
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            format!("Pad {} {}", st.index + 1, st.label),
+        )
+    });
 
     let is_down = resp.is_pointer_button_down_on();
     let pressed = is_down && !st.was_down;
@@ -498,69 +531,48 @@ pub fn pad_button(ui: &mut egui::Ui, st: &PadState<'_>, size: f32) -> PadInterac
         }
     }
 
-    // Rendu : couleur du pad, éclairci si flash/held, bordure de sélection.
-    let base = st.color;
-    let mut fill = base.gamma_multiply(if is_down { 1.0 } else { 0.72 });
-    if st.flash {
-        fill = c.flash;
-    }
-    ui.painter()
-        .rect_filled(rect, egui::CornerRadius::same(6), fill);
-    let border_col = if st.selected {
-        c.text
-    } else if st.flash {
-        c.flash
-    } else if resp.hovered() {
-        c.border_hover
+    // Pression souris : le pad s'éclaire comme sous le doigt.
+    let fill = if is_down {
+        st.color.lerp_to_gamma(egui::Color32::WHITE, 0.35)
     } else {
-        c.border
+        st.color
     };
-    let border_w = if st.selected || st.flash {
-        2.0_f32
+    let radius = egui::CornerRadius::same((size * 0.08).clamp(4.0, 8.0) as u8);
+    ui.painter().rect_filled(rect, radius, fill);
+    let (border_w, border_col) = if st.selected {
+        (2.0_f32, c.text)
+    } else if resp.hovered() || resp.has_focus() {
+        (1.5, c.border_hover)
     } else {
-        1.0_f32
+        (1.0, fill.gamma_multiply(0.55))
     };
     ui.painter().rect_stroke(
         rect,
-        egui::CornerRadius::same(6),
+        radius,
         egui::Stroke::new(border_w, border_col),
         egui::StrokeKind::Inside,
     );
 
-    if st.flash || is_down {
-        ui.painter().rect_stroke(
-            rect.shrink(2.0),
-            egui::CornerRadius::same(4),
-            egui::Stroke::new(1.0_f32, c.text.gamma_multiply(0.7)),
-            egui::StrokeKind::Inside,
-        );
-    }
-
-    // Texte : numéro + nom du Sound (sur fond sombre pour rester lisible).
-    let text_col = if st.flash {
-        egui::Color32::BLACK
-    } else {
-        c.text
-    };
+    let ink = ink_on(fill);
+    let pad = (size * 0.08).clamp(4.0, 8.0);
     ui.painter().text(
-        egui::pos2(rect.left() + 5.0, rect.top() + 4.0),
+        egui::pos2(rect.left() + pad, rect.top() + pad * 0.7),
         egui::Align2::LEFT_TOP,
-        format!("{:02}", st.index + 1),
-        egui::FontId::monospace(10.0),
-        text_col.gamma_multiply(0.85),
+        format!("{}", st.index + 1),
+        egui::FontId::proportional((size * 0.16).clamp(9.0, 13.0)),
+        ink.gamma_multiply(0.7),
     );
     if size >= 36.0 && !st.label.is_empty() {
-        let font_size = if st.label.chars().count() > 7 {
-            7.0
-        } else {
-            8.5
-        };
+        let font = (size * 0.15).clamp(8.0, 12.5);
+        // Libellé tronqué à la largeur du pad (pas de débordement sur le voisin).
+        let max_chars = ((size - 2.0 * pad) / (font * 0.55)).max(3.0) as usize;
+        let label: String = st.label.chars().take(max_chars).collect();
         ui.painter().text(
-            egui::pos2(rect.left() + 5.0, rect.bottom() - 4.0),
+            egui::pos2(rect.left() + pad, rect.bottom() - pad * 0.7),
             egui::Align2::LEFT_BOTTOM,
-            st.label,
-            egui::FontId::proportional(font_size),
-            text_col.gamma_multiply(0.95),
+            label,
+            egui::FontId::proportional(font),
+            ink,
         );
     }
 
@@ -570,6 +582,53 @@ pub fn pad_button(ui: &mut egui::Ui, st: &PadState<'_>, size: f32) -> PadInterac
         secondary_clicked: resp.secondary_clicked(),
         velocity,
     }
+}
+
+/// Encodeur sans fin façon MK3 : glisser verticalement tourne. Comme sur le
+/// contrôleur, son nom et sa valeur s'affichent sur l'écran juste au-dessus.
+/// `turn` garde l'angle du repère ; retourne des ticks bruts (1024 = 1 tour).
+pub fn encoder(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    id: egui::Id,
+    turn: &mut f32,
+    number: u8,
+) -> Option<i32> {
+    let c = MachColors::dark();
+    let resp = ui
+        .interact(rect, id, egui::Sense::drag())
+        .on_hover_cursor(egui::CursorIcon::ResizeVertical)
+        .on_hover_text(format!("Knob {number} : glisser haut/bas"));
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::DragValue, true, format!("Knob {number}"))
+    });
+    // ~4 ticks par point : un glisser de 256 px = un tour de knob physique.
+    let ticks = if resp.dragged() {
+        (-resp.drag_delta().y * 4.0).round() as i32
+    } else {
+        0
+    };
+    *turn += ticks as f32 / 1024.0 * std::f32::consts::TAU;
+
+    let center = rect.center();
+    let r = rect.width() / 2.0;
+    let live = resp.dragged() || resp.hovered();
+    ui.painter().circle_filled(center, r, c.widget_bg);
+    ui.painter().circle_stroke(
+        center,
+        r,
+        egui::Stroke::new(1.5_f32, if live { c.accent } else { c.border_active }),
+    );
+    ui.painter().circle_filled(center, r * 0.72, c.surface);
+    let dir = egui::vec2(
+        (*turn - std::f32::consts::FRAC_PI_2).cos(),
+        (*turn - std::f32::consts::FRAC_PI_2).sin(),
+    );
+    ui.painter().line_segment(
+        [center + dir * r * 0.30, center + dir * r * 0.68],
+        egui::Stroke::new(2.5_f32, if live { c.accent } else { c.text }),
+    );
+    (ticks != 0).then_some(ticks)
 }
 
 /// Cellule de pas du séquenceur. Retourne cliqué / clic droit (effacer).

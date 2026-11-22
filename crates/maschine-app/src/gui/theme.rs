@@ -1,8 +1,7 @@
-//! Thème visuel "Maschine MK3 Studio" — inspiré des meilleurs DAW Linux
-//! (Ableton Live, Bitwig, Renoise) et du hardware officiel Maschine MK3.
-//!
-//! Palette : fond charbon profond, surfaces légèrement relevées, bordures
-//! discrètes, accent orange Maschine (#FF8C28) + cyan pour les sélections.
+//! Thème visuel "Maschine MK3 Studio" — proche du logiciel Maschine et des
+//! écrans MK3 : gris graphite neutres et plats, la couleur vient des groupes
+//! et des sons ; un seul orange d'accent, partagé avec les écrans du
+//! contrôleur (`display_render::Pal`), et un cyan pour les infos.
 
 use eframe::egui;
 
@@ -30,23 +29,23 @@ pub struct MachColors {
 impl MachColors {
     pub fn dark() -> Self {
         Self {
-            bg: egui::Color32::from_rgb(0x0B, 0x0D, 0x14),
-            panel: egui::Color32::from_rgb(0x13, 0x16, 0x20),
-            surface: egui::Color32::from_rgb(0x1A, 0x1E, 0x2A),
-            widget_bg: egui::Color32::from_rgb(0x21, 0x25, 0x32),
-            border: egui::Color32::from_rgb(0x27, 0x2C, 0x3A),
-            border_active: egui::Color32::from_rgb(0x3C, 0x42, 0x52),
-            border_hover: egui::Color32::from_rgb(0xFF, 0x8C, 0x28),
-            text: egui::Color32::from_rgb(0xE8, 0xEA, 0xEE),
-            text_dim: egui::Color32::from_rgb(0x8B, 0x91, 0xA0),
-            text_muted: egui::Color32::from_rgb(0x5A, 0x60, 0x70),
-            accent: egui::Color32::from_rgb(0xFF, 0x8C, 0x28),
-            accent_cyan: egui::Color32::from_rgb(0x00, 0xD4, 0xFF),
-            success: egui::Color32::from_rgb(0x22, 0xC5, 0x5E),
-            error: egui::Color32::from_rgb(0xEF, 0x44, 0x44),
-            warning: egui::Color32::from_rgb(0xF5, 0x9E, 0x0B),
-            active_bg: egui::Color32::from_rgb(0xFF, 0x8C, 0x28),
-            flash: egui::Color32::from_rgb(0xFF, 0xD5, 0x4F),
+            bg: egui::Color32::from_rgb(0x17, 0x17, 0x19),
+            panel: egui::Color32::from_rgb(0x1E, 0x1E, 0x21),
+            surface: egui::Color32::from_rgb(0x26, 0x26, 0x2A),
+            widget_bg: egui::Color32::from_rgb(0x30, 0x30, 0x35),
+            border: egui::Color32::from_rgb(0x38, 0x38, 0x3E),
+            border_active: egui::Color32::from_rgb(0x4C, 0x4C, 0x54),
+            border_hover: egui::Color32::from_rgb(0xFF, 0x9A, 0x1F),
+            text: egui::Color32::from_rgb(0xE9, 0xE9, 0xEC),
+            text_dim: egui::Color32::from_rgb(0xA2, 0xA2, 0xAB),
+            text_muted: egui::Color32::from_rgb(0x6C, 0x6C, 0x75),
+            accent: egui::Color32::from_rgb(0xFF, 0x9A, 0x1F),
+            accent_cyan: egui::Color32::from_rgb(0x26, 0xC6, 0xF5),
+            success: egui::Color32::from_rgb(0x3C, 0xCF, 0x7E),
+            error: egui::Color32::from_rgb(0xF0, 0x52, 0x4D),
+            warning: egui::Color32::from_rgb(0xF2, 0xB2, 0x33),
+            active_bg: egui::Color32::from_rgb(0xFF, 0x9A, 0x1F),
+            flash: egui::Color32::from_rgb(0xFF, 0xE0, 0x66),
         }
     }
 }
@@ -73,7 +72,20 @@ pub fn apply_theme(ctx: &egui::Context) {
     visuals.hyperlink_color = c.accent_cyan;
     visuals.code_bg_color = c.widget_bg;
     visuals.window_corner_radius = egui::CornerRadius::same(6);
-    visuals.menu_corner_radius = egui::CornerRadius::same(6);
+    visuals.menu_corner_radius = egui::CornerRadius::same(4);
+    // Boutons plats et presque rectangulaires, comme le logiciel Maschine.
+    for w in [
+        &mut visuals.widgets.noninteractive,
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+        &mut visuals.widgets.open,
+    ] {
+        w.corner_radius = egui::CornerRadius::same(4);
+        w.expansion = 0.0;
+    }
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, c.border);
+    visuals.widgets.open.bg_fill = c.border_active;
     ctx.set_visuals(visuals);
 
     let mut style = (*ctx.style()).clone();
@@ -116,8 +128,54 @@ pub fn card_frame() -> egui::Frame {
     egui::Frame::NONE
         .fill(c.surface)
         .stroke(egui::Stroke::new(1.0_f32, c.border))
-        .corner_radius(egui::CornerRadius::same(8))
-        .inner_margin(egui::Margin::same(8))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::same(10))
+}
+
+/// Carte standard au contenu empilé verticalement, même posée dans une
+/// rangée (`horizontal_wrapped`) : sinon ses widgets héritent du flux
+/// horizontal et les libellés se replient lettre par lettre.
+pub fn card<R>(
+    ui: &mut egui::Ui,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
+    card_frame().show(ui, |ui| ui.vertical(add_contents).inner)
+}
+
+/// Rangée de cartes qui passe à la ligne, cartes alignées par le haut
+/// (`horizontal_wrapped` les centre verticalement : décalages en escalier).
+#[must_use]
+pub fn card_row() -> egui::Layout {
+    egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true)
+}
+
+/// Marges et bordure d'une carte : largeur intérieure = extérieure − ceci.
+pub const CARD_CHROME: f32 = 22.0;
+
+/// Largeur extérieure de cartes alignées qui remplissent `avail` : autant de
+/// colonnes d'au moins `min_w` que possible (une au minimum).
+#[must_use]
+pub fn card_width(avail: f32, min_w: f32) -> f32 {
+    let gap = 8.0;
+    let cols = ((avail + gap) / (min_w + gap)).floor().max(1.0);
+    ((avail - (cols - 1.0) * gap) / cols).floor()
+}
+
+/// Carte de largeur fixe (extérieure) qui passe à la ligne dans une rangée
+/// `horizontal_wrapped` au lieu de déborder sous le panneau voisin.
+pub fn card_sized<R>(
+    ui: &mut egui::Ui,
+    width: f32,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.allocate_ui(egui::vec2(width, 0.0), |ui| {
+        card(ui, |ui| {
+            ui.set_width(width - CARD_CHROME);
+            add_contents(ui)
+        })
+        .inner
+    })
+    .inner
 }
 
 /// En-tête de vue : accent orange + titre.
@@ -129,7 +187,17 @@ pub fn view_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
             .rect_filled(rect, egui::CornerRadius::same(2), c.accent);
         ui.colored_label(c.text, egui::RichText::new(title).strong().size(15.0));
         if !subtitle.is_empty() {
-            ui.colored_label(c.text_dim, egui::RichText::new(subtitle).size(11.5));
+            // L'aide ne passe jamais sous les commandes alignées à droite :
+            // tronquée à la moitié de la place restante, entière au survol.
+            let max = ui.available_width() * 0.5;
+            ui.scope(|ui| {
+                ui.set_max_width(max);
+                ui.add(
+                    egui::Label::new(egui::RichText::new(subtitle).size(11.5).color(c.text_dim))
+                        .truncate(),
+                )
+                .on_hover_text(subtitle);
+            });
         }
     });
 }

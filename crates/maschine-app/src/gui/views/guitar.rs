@@ -4,7 +4,7 @@
 use eframe::egui;
 use maschine_dsp::{AmpModel, CabModel};
 
-use crate::gui::theme::{card_frame, view_header, MachColors};
+use crate::gui::theme::{card, card_row, view_header, MachColors};
 use crate::gui::widgets::{chip, knob, pill_select, vu_meter, KnobSpec};
 use crate::guitar::GuitarParam;
 
@@ -34,7 +34,7 @@ pub fn render(
 }
 
 fn render_controls(ui: &mut egui::Ui, app: &mut crate::gui::app::GuiApp, c: &MachColors) {
-    card_frame().show(ui, |ui| {
+    card(ui, |ui| {
         // État du monitoring.
         ui.horizontal_wrapped(|ui| {
             let enabled = app
@@ -134,8 +134,8 @@ fn render_controls(ui: &mut egui::Ui, app: &mut crate::gui::app::GuiApp, c: &Mac
 
 fn render_analysis(ui: &mut egui::Ui, app: &mut crate::gui::app::GuiApp, c: &MachColors) {
     let t = app.guitar.telemetry.lock().clone();
-    ui.horizontal_wrapped(|ui| {
-        card_frame().show(ui, |ui| {
+    ui.with_layout(card_row(), |ui| {
+        card(ui, |ui| {
             ui.set_min_width(220.0);
             ui.label(egui::RichText::new("NIVEAUX").small().color(c.text_dim));
             let in_lin = db_to_linear(t.input_db);
@@ -158,7 +158,7 @@ fn render_analysis(ui: &mut egui::Ui, app: &mut crate::gui::app::GuiApp, c: &Mac
         });
 
         // Accordeur.
-        card_frame().show(ui, |ui| {
+        card(ui, |ui| {
             ui.set_min_width(230.0);
             ui.label(egui::RichText::new("ACCORDEUR").small().color(c.text_dim));
             draw_tuner(ui, &t, c);
@@ -167,7 +167,7 @@ fn render_analysis(ui: &mut egui::Ui, app: &mut crate::gui::app::GuiApp, c: &Mac
     ui.add_space(8.0);
 
     // Analyseur de spectre.
-    card_frame().show(ui, |ui| {
+    card(ui, |ui| {
         ui.label(
             egui::RichText::new("SPECTRE (entrée guitare)")
                 .small()
@@ -296,7 +296,7 @@ fn draw_spectrum(ui: &mut egui::Ui, bins: &[f32], c: &MachColors) {
 
 fn render_diagnostics(ui: &mut egui::Ui, app: &mut crate::gui::app::GuiApp, c: &MachColors) {
     let t = app.guitar.telemetry.lock().clone();
-    card_frame().show(ui, |ui| {
+    card(ui, |ui| {
         ui.label(
             egui::RichText::new("DIAGNOSTICS TEMPS RÉEL")
                 .small()

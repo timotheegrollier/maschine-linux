@@ -535,52 +535,6 @@ pub fn draw_text(
     }
 }
 
-/// Dessine du texte avec une fenêtre verticale du glyphe (trackers denses).
-///
-/// `row_from`/`row_to` sélectionnent les rangées du glyphe 8×16 à dessiner
-/// (0..16). Permet de faire tenir une ligne de texte dans 9 px de haut.
-#[allow(clippy::too_many_arguments)]
-fn draw_text_clipped(
-    frame: &mut DisplayFrame,
-    x: usize,
-    y: usize,
-    text: &str,
-    fg: DisplayPixel,
-    bg: DisplayPixel,
-    row_from: usize,
-    row_to: usize,
-) {
-    let fw = frame.w as usize;
-    let fh = frame.h as usize;
-    let mut cx = x;
-    for c in text.chars() {
-        let ascii = c as usize;
-        let glyph = if (32..=126).contains(&ascii) {
-            &FONT_8X16_BASIC[ascii - 32]
-        } else {
-            &FONT_8X16_BASIC[0]
-        };
-        for (row, bits) in glyph.iter().enumerate().take(row_to.min(16)).skip(row_from) {
-            let py = y + row;
-            if py >= fh {
-                continue;
-            }
-            let bits = *bits;
-            for col in 0..8 {
-                let px = cx + col;
-                if px >= fw {
-                    continue;
-                }
-                let idx = py * fw + px;
-                if idx < frame.pixels.len() {
-                    frame.pixels[idx] = if (bits & (0x80 >> col)) != 0 { fg } else { bg };
-                }
-            }
-        }
-        cx += 8;
-    }
-}
-
 /// Remplis un rectangle
 pub fn fill_rect(
     frame: &mut DisplayFrame,
@@ -669,21 +623,23 @@ struct Pal {
 }
 
 impl Pal {
+    // Mêmes teintes que le thème de la GUI (`gui::theme::MachColors`) :
+    // graphite neutre, un orange d'accent, cyan pour les infos.
     fn new() -> Self {
         Self {
-            bg: DisplayPixel::from_rgb(12, 13, 17),
-            panel: DisplayPixel::from_rgb(24, 26, 33),
-            panel2: DisplayPixel::from_rgb(34, 37, 47),
-            border: DisplayPixel::from_rgb(48, 52, 64),
-            dim: DisplayPixel::from_rgb(158, 166, 180),
-            muted: DisplayPixel::from_rgb(96, 103, 118),
+            bg: DisplayPixel::from_rgb(14, 14, 16),
+            panel: DisplayPixel::from_rgb(30, 30, 33),
+            panel2: DisplayPixel::from_rgb(42, 42, 47),
+            border: DisplayPixel::from_rgb(56, 56, 62),
+            dim: DisplayPixel::from_rgb(162, 162, 171),
+            muted: DisplayPixel::from_rgb(108, 108, 117),
             white: DisplayPixel::WHITE,
-            accent: DisplayPixel::from_rgb(255, 178, 0),
-            cyan: DisplayPixel::from_rgb(0, 196, 255),
-            green: DisplayPixel::from_rgb(94, 222, 128),
-            red: DisplayPixel::from_rgb(255, 86, 86),
-            yellow: DisplayPixel::from_rgb(235, 205, 60),
-            track: DisplayPixel::from_rgb(38, 41, 52),
+            accent: DisplayPixel::from_rgb(255, 154, 31),
+            cyan: DisplayPixel::from_rgb(38, 198, 245),
+            green: DisplayPixel::from_rgb(60, 207, 126),
+            red: DisplayPixel::from_rgb(240, 82, 77),
+            yellow: DisplayPixel::from_rgb(242, 178, 51),
+            track: DisplayPixel::from_rgb(40, 40, 45),
         }
     }
 
@@ -904,13 +860,14 @@ fn header(frame: &mut DisplayFrame, p: &Pal, snap: &EngineSnapshot, title: &str,
     fill_rect(frame, 0, 0, SCR_W, H, p.panel);
     fill_rect(frame, 0, 0, 4, H, p.accent);
     draw_text(frame, 10, 5, title, p.white, p.panel);
+    let mut left_end = 10 + title.chars().count() * 8;
 
     // Vélocité fixe : niveau visible en permanence quand FIXED VEL est actif
     // (réglable au 4D sur la MK3).
     if snap.fixed_velocity {
         let label = format!("VEL {} FIXE", snap.fixed_velocity_level);
-        let x = 10 + title.chars().count() * 8 + 8;
-        draw_text(frame, x, 5, &label, p.accent, p.panel);
+        draw_text(frame, left_end + 8, 5, &label, p.accent, p.panel);
+        left_end += 8 + label.len() * 8;
     }
 
     // Feedback temporaire (sauvegarde/chargement) — prioritaire et visible.
@@ -961,7 +918,8 @@ fn header(frame: &mut DisplayFrame, p: &Pal, snap: &EngineSnapshot, title: &str,
         snap.master_peak,
     );
 
-    let avail = (vu_x.saturating_sub(6 + 10)) / 8;
+    // Le contexte cède la place au titre : jamais de chevauchement.
+    let avail = vu_x.saturating_sub(left_end + 10 + 12) / 8;
     let txt = trunc(right, avail);
     let l = txt.chars().count() * 8;
     draw_text(frame, vu_x - 10 - l, 5, &txt, p.dim, p.panel);
@@ -987,8 +945,14 @@ fn panel(frame: &mut DisplayFrame, p: &Pal, x: usize, y: usize, w: usize, h: usi
     draw_rect_outline(frame, x, y, w, h, p.border);
 }
 
-/// Rangée de 4 soft keys (celles de ce côté de l'écran) : labels = actions.
-fn footer_softkeys(
+/// Hauteur de la bande des libellés de boutons, en haut de chaque écran.
+pub const SOFT_KEYS_H: usize = FOOTER_H + 2;
+
+/// Libellés des 4 boutons d'écran de ce côté — **dernier dessin** de chaque
+/// écran. Sur la MK3 les boutons 1–8 sont au-dessus des écrans et les knobs
+/// en dessous : la bande, tracée en bas, remonte tout en haut sous les
+/// boutons et le reste descend d'autant (encodeurs juste au-dessus des knobs).
+fn finish_soft_keys(
     frame: &mut DisplayFrame,
     p: &Pal,
     labels: &[&'static str; 8],
@@ -996,7 +960,7 @@ fn footer_softkeys(
     active: &[bool; 8],
 ) {
     let y = SCR_H - FOOTER_H;
-    fill_rect(frame, 0, y - 2, SCR_W, FOOTER_H + 2, p.bg);
+    fill_rect(frame, 0, y - 2, SCR_W, SOFT_KEYS_H, p.bg);
     for i in 0..4 {
         let idx = start + i;
         let x = i * 120 + 3;
@@ -1011,6 +975,7 @@ fn footer_softkeys(
         let tx = x + (w.saturating_sub(label.len() * 8)) / 2;
         draw_text(frame, tx, y + 2, label, fg, bg);
     }
+    frame.pixels.rotate_right(SOFT_KEYS_H * SCR_W);
 }
 
 /// Barre horizontale de valeur avec graduations (25/50/75 %).
@@ -1134,11 +1099,18 @@ fn center_text(frame: &mut DisplayFrame, y: usize, text: &str, fg: DisplayPixel,
 /// Slot d'encodeur : (label, valeur, normalisation 0..1, couleur).
 type EncSlot<'a> = Option<(&'a str, String, f32, DisplayPixel)>;
 
-/// Rangée de 4 encodeurs (bas de chaque écran, au-dessus des soft keys).
+/// Centre horizontal (px) du slot d'encodeur `i` (0..4) d'un écran : le knob
+/// physique est juste dessous, la GUI y aligne les siens.
+#[must_use]
+pub fn knob_slot_center(i: usize) -> usize {
+    8 + i * 116 + 55
+}
+
+/// Rangée de 4 encodeurs (bas de chaque écran, au-dessus des knobs).
 fn encoder_row(frame: &mut DisplayFrame, p: &Pal, slots: &[EncSlot<'_>; 4]) {
     let y = SCR_H - FOOTER_H - ENC_H - 6;
     for (i, slot) in slots.iter().enumerate() {
-        let x = 8 + i * 116;
+        let x = knob_slot_center(i) - 55;
         let (label, value, norm, color) = match slot {
             Some((l, v, n, c)) => (*l, v.as_str(), *n, *c),
             None => ("--", "", 0.0, p.border),
@@ -1550,14 +1522,7 @@ pub fn render_daw_left(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let mut active = [false; 8];
-    for (i, a) in active.iter_mut().take(4).enumerate() {
-        *a = i == snap.selected_bar.min(3);
-    }
-    for (i, v) in [1usize, 2, 4, 8].iter().enumerate() {
-        active[4 + i] = *v == snap.pattern_bars;
-    }
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
     frame
 }
 
@@ -1696,12 +1661,7 @@ pub fn render_pattern_left(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let mut footer_active = [false; 8];
-    if let Some(pat) = group.and_then(|g| active.and_then(|i| g.patterns.get(i))) {
-        footer_active[6] = pat.length.bars == 1;
-        footer_active[7] = pat.length.bars == 2;
-    }
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &footer_active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
     frame
 }
 
@@ -1784,18 +1744,12 @@ pub fn render_daw_right(snap: &EngineSnapshot) -> DisplayFrame {
         if is_active {
             fill_rect(&mut frame, 0, y - 2, SCR_W, 9, row_bg);
         }
-        // Label « tracker » : glyphe rogné (9 px de haut = pitch des lignes).
-        let label = format!("{:02} {}", snd + 1, trunc(&sound_name(snap, snd), 8));
-        draw_text_clipped(
-            &mut frame,
-            4,
-            y - 6,
-            &label,
-            if is_active { p.white } else { p.muted },
-            row_bg,
-            4,
-            13,
-        );
+        // Puce couleur du Sound (slot vide = piste) : 9 px de pas ne laissent
+        // pas lire une police 8×16 ; le nom du Sound actif suit la boucle.
+        let used =
+            focus_group(snap).is_some_and(|g| g.sounds.get(snd).is_some_and(Option::is_some));
+        let chip = if used { hue_color(snd) } else { p.track };
+        fill_rect(&mut frame, 6, y - 1, 12, 5, chip);
         // LED d'activité du Sound (jeu + séquenceur).
         let act = snap.pad_activity[snd].clamp(0.0, 1.0);
         if act > 0.02 {
@@ -1832,6 +1786,14 @@ pub fn render_daw_right(snap: &EngineSnapshot) -> DisplayFrame {
         fill_rect(&mut frame, x + cw - 1, 48, 1, 144, p.accent);
     }
 
+    // Nom du Sound actif, lisible, posé sur sa ligne.
+    let active = (snap.active_sound as usize).min(15);
+    let ly = (50 + active * 9).saturating_sub(7).min(190 - 16);
+    fill_rect(&mut frame, 0, ly, 74, 16, p.panel2);
+    fill_rect(&mut frame, 0, ly, 2, 16, hue_color(active));
+    let name = format!("{:02} {}", active + 1, trunc(&sound_name(snap, active), 5));
+    draw_text(&mut frame, 4, ly, &name, p.white, p.panel2);
+
     // Encodeurs réels 5..8 : VOL SND, CUTOFF, RESO, MASTER.
     let cut = focus_sound(snap)
         .map(|s| s.filter.cutoff_hz)
@@ -1856,22 +1818,7 @@ pub fn render_daw_right(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let mut active = [false; 8];
-    if snap.pattern_mode {
-        // En mode PATTERN, les soft keys 7/8 règlent la longueur à 1/2 mesures.
-        if let Some(pat) = pat {
-            active[6] = pat.length.bars == 1;
-            active[7] = pat.length.bars == 2;
-        }
-    } else {
-        for (i, a) in active.iter_mut().take(4).enumerate() {
-            *a = i == snap.selected_bar.min(3);
-        }
-        for (i, v) in [1usize, 2, 4, 8].iter().enumerate() {
-            active[4 + i] = *v == snap.pattern_bars;
-        }
-    }
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
     frame
 }
 
@@ -2050,14 +1997,7 @@ pub fn render_step_right(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let mut active = [false; 8];
-    for (i, a) in active.iter_mut().take(4).enumerate() {
-        *a = i == snap.selected_bar.min(3);
-    }
-    for (i, v) in [1usize, 2, 4, 8].iter().enumerate() {
-        active[4 + i] = *v == snap.pattern_bars;
-    }
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
     frame
 }
 
@@ -2286,11 +2226,7 @@ pub fn render_step_left(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let mut active = [false; 8];
-    for (i, v) in [1usize, 2, 4, 8].iter().enumerate() {
-        active[4 + i] = *v == snap.pattern_bars;
-    }
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
     frame
 }
 
@@ -2384,8 +2320,7 @@ pub fn render_arranger_left(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let active = [false; 8];
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
     frame
 }
 
@@ -2535,9 +2470,7 @@ pub fn render_arranger_right(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let mut active = [false; 8];
-    active[7] = snap.active_scene == Some(0);
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
     frame
 }
 
@@ -2629,11 +2562,7 @@ pub fn render_scenes_left(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let mut active = [false; 8];
-    for (i, a) in active.iter_mut().enumerate() {
-        *a = snap.active_scene == Some(i);
-    }
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
     frame
 }
 
@@ -2803,9 +2732,7 @@ pub fn render_scenes_right(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let mut active = [false; 8];
-    active[7] = snap.song_mode;
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
     frame
 }
 
@@ -2922,12 +2849,7 @@ pub fn render_mixer_left(snap: &EngineSnapshot) -> DisplayFrame {
             ),
         );
         render_pad_mixer_strips(&mut frame, &p, snap, bank_pad);
-        let mut active = [false; 8];
-        let snd = snap.active_sound as usize;
-        if snd >= bank_pad && snd < bank_pad + 4 {
-            active[snd - bank_pad] = true;
-        }
-        footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+        finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
         return frame;
     }
 
@@ -3056,11 +2978,7 @@ pub fn render_mixer_left(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let mut active = [false; 8];
-    for (i, a) in active.iter_mut().enumerate() {
-        *a = i == snap.group_focus as usize;
-    }
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
     frame
 }
 
@@ -3086,12 +3004,7 @@ pub fn render_mixer_right(snap: &EngineSnapshot) -> DisplayFrame {
             ),
         );
         render_pad_mixer_strips(&mut frame, &p, snap, bank_pad);
-        let mut active = [false; 8];
-        let snd = snap.active_sound as usize;
-        if snd >= bank_pad && snd < bank_pad + 4 {
-            active[4 + (snd - bank_pad)] = true;
-        }
-        footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+        finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
         return frame;
     }
 
@@ -3324,11 +3237,7 @@ pub fn render_mixer_right(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let mut active = [false; 8];
-    for (i, a) in active.iter_mut().enumerate() {
-        *a = i == snap.group_focus as usize;
-    }
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
     frame
 }
 
@@ -3468,11 +3377,7 @@ pub fn render_sampler_left(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let mut active = [false; 8];
-    for (i, a) in active.iter_mut().enumerate() {
-        *a = i == snap.active_sound as usize;
-    }
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
     frame
 }
 
@@ -3583,18 +3488,7 @@ pub fn render_sampler_right(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let mut active = [false; 8];
-    match f_kind {
-        // LP, HP, BP partagent la touche 4 «LP/HP/BP» (cycle)
-        crate::project::FilterKind::LowPass => active[4] = true,
-        crate::project::FilterKind::HighPass => active[4] = true,
-        crate::project::FilterKind::BandPass => active[4] = true,
-        // Notch → touche 5, Peak → touche 6, Off → touche 7
-        crate::project::FilterKind::Notch => active[5] = true,
-        crate::project::FilterKind::Peak => active[6] = true,
-        crate::project::FilterKind::Off => active[7] = true,
-    }
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
     frame
 }
 
@@ -3743,9 +3637,7 @@ pub fn render_kick_synth_left(snap: &EngineSnapshot) -> DisplayFrame {
         ];
         encoder_row(&mut frame, &p, &slots);
 
-        let mut active = [false; 8];
-        active[0] = true;
-        footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+        finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
         return frame;
     }
 
@@ -3842,11 +3734,7 @@ pub fn render_kick_synth_left(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let mut active = [false; 8];
-    for (i, a) in active.iter_mut().enumerate() {
-        *a = i == snap.active_sound as usize;
-    }
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
     frame
 }
 
@@ -4052,17 +3940,7 @@ pub fn render_kick_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
         ];
         encoder_row(&mut frame, &p, &slots);
 
-        let mut active = [false; 8];
-        match kp.filter_mode {
-            crate::kick_synth::KickFilterMode::LowPass => active[4] = true,
-            crate::kick_synth::KickFilterMode::HighPass => active[5] = true,
-            crate::kick_synth::KickFilterMode::BandPass => active[6] = true,
-            crate::kick_synth::KickFilterMode::Notch | crate::kick_synth::KickFilterMode::Peak => {
-                active[7] = true
-            }
-            _ => active[3] = true,
-        }
-        footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+        finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
         return frame;
     }
 
@@ -4183,11 +4061,7 @@ pub fn render_kick_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let mut active = [false; 8];
-    for (i, a) in active.iter_mut().enumerate() {
-        *a = i == snap.active_sound as usize;
-    }
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
     frame
 }
 
@@ -4351,8 +4225,7 @@ pub fn render_wavetable_synth_left(snap: &EngineSnapshot) -> DisplayFrame {
     };
     encoder_row(&mut frame, &p, &slots);
 
-    let active = [false; 8];
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
     frame
 }
 
@@ -4524,8 +4397,7 @@ pub fn render_wavetable_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
     };
     encoder_row(&mut frame, &p, &slots);
 
-    let active = [false; 8];
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
     frame
 }
 
@@ -4726,17 +4598,7 @@ pub fn render_synth_left(snap: &EngineSnapshot) -> DisplayFrame {
     encoder_row(&mut frame, &p, &slots);
 
     // 5. Soft keys 1..4 sous écran gauche
-    let active = [
-        true,
-        false,
-        false,
-        snap.acid_params.slide_time_ms > 1.0,
-        false,
-        false,
-        false,
-        false,
-    ];
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
 
     frame
 }
@@ -4897,8 +4759,7 @@ pub fn render_synth_right(snap: &EngineSnapshot) -> DisplayFrame {
     encoder_row(&mut frame, &p, &slots);
 
     // 5. Soft keys 5..8 sous écran droit
-    let active = [false, false, false, false, true, false, false, false];
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 1, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
 
     frame
 }
@@ -4975,9 +4836,7 @@ pub fn render_browser_left(snap: &EngineSnapshot) -> DisplayFrame {
                 selected,
             );
         }
-        let mut active = [false; 8];
-        active[3] = true;
-        footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+        finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
         return frame;
     }
 
@@ -5045,9 +4904,7 @@ pub fn render_browser_left(snap: &EngineSnapshot) -> DisplayFrame {
                 selected,
             );
         }
-        let mut active = [false; 8];
-        active[3] = true;
-        footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+        finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
         return frame;
     }
 
@@ -5064,7 +4921,7 @@ pub fn render_browser_left(snap: &EngineSnapshot) -> DisplayFrame {
         ),
     );
 
-    let mut y = 28usize;
+    let y = 28usize;
     for (i, name) in DRUM_PRESET_NAMES.iter().enumerate().take(16) {
         let col = i / 8;
         let row = i % 8;
@@ -5090,24 +4947,9 @@ pub fn render_browser_left(snap: &EngineSnapshot) -> DisplayFrame {
             bg,
         );
     }
-    y += 8 * 20;
+    // Preset courant : surligné dans la liste et sur le knob 2 (la ligne
+    // d'aide débordait sur les encodeurs ; les boutons sont libellés en haut).
     let cur = DRUM_PRESET_NAMES[idx];
-    draw_text(
-        &mut frame,
-        8,
-        y + 4,
-        &format!("> {}", trunc(cur, 20)),
-        p.white,
-        p.bg,
-    );
-    draw_text(
-        &mut frame,
-        200,
-        y + 4,
-        "5 ECOUTE | 6 CHARGER",
-        p.muted,
-        p.bg,
-    );
 
     let cible = sound_name(snap, snap.active_sound as usize);
     let slots = [
@@ -5123,8 +4965,7 @@ pub fn render_browser_left(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let active = [false; 8];
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
     frame
 }
 
@@ -5224,10 +5065,7 @@ pub fn render_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
         ];
         encoder_row(&mut frame, &p, &slots);
 
-        let mut active = [false; 8];
-        active[4] = true;
-        active[5] = true;
-        footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+        finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
         return frame;
     }
 
@@ -5323,10 +5161,7 @@ pub fn render_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
         ];
         encoder_row(&mut frame, &p, &slots);
 
-        let mut active = [false; 8];
-        active[4] = true;
-        active[5] = true;
-        footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+        finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
         return frame;
     }
 
@@ -5387,8 +5222,7 @@ pub fn render_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let active = [false; 8];
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
     frame
 }
 
@@ -5518,8 +5352,7 @@ pub fn render_project_browser_left(snap: &EngineSnapshot) -> DisplayFrame {
         )),
     ];
     encoder_row(&mut frame, &p, &slots);
-    let active = [false; 8];
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
     frame
 }
 
@@ -5572,7 +5405,7 @@ pub fn render_project_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
             p.panel,
         );
         draw_text(&mut frame, 24, 158, "BTN 1 : ANNULER", p.cyan, p.panel);
-        footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &[false; 8]);
+        finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
         return frame;
     }
 
@@ -5679,8 +5512,7 @@ pub fn render_project_browser_right(snap: &EngineSnapshot) -> DisplayFrame {
         )),
     ];
     encoder_row(&mut frame, &p, &slots);
-    let active = [false; 8];
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
     frame
 }
 
@@ -5856,8 +5688,7 @@ pub fn render_events_right(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let active = [false; 8];
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
     frame
 }
 
@@ -5924,8 +5755,7 @@ pub fn render_macro_right(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let active = [false; 8];
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
     frame
 }
 
@@ -6153,8 +5983,7 @@ pub fn render_settings_right(snap: &EngineSnapshot) -> DisplayFrame {
     ];
     encoder_row(&mut frame, &p, &slots);
 
-    let active = [false; 8];
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
     frame
 }
 
@@ -6268,8 +6097,7 @@ pub fn render_keyboard_left(snap: &EngineSnapshot) -> DisplayFrame {
         )),
     ];
     encoder_row(&mut frame, &p, &slots);
-    let active = [false; 8];
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
     frame
 }
 
@@ -6372,8 +6200,7 @@ pub fn render_keyboard_right(snap: &EngineSnapshot) -> DisplayFrame {
         )),
     ];
     encoder_row(&mut frame, &p, &slots);
-    let active = [false; 8];
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
     frame
 }
 
@@ -6475,8 +6302,7 @@ pub fn render_chords_left(snap: &EngineSnapshot) -> DisplayFrame {
         )),
     ];
     encoder_row(&mut frame, &p, &slots);
-    let active = [false; 8];
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 0, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
     frame
 }
 
@@ -6550,8 +6376,7 @@ pub fn render_chords_right(snap: &EngineSnapshot) -> DisplayFrame {
         )),
     ];
     encoder_row(&mut frame, &p, &slots);
-    let active = [false; 8];
-    footer_softkeys(&mut frame, &p, &snap.soft_labels, 4, &active);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
     frame
 }
 
@@ -6704,7 +6529,8 @@ pub fn render_guitar_amp_left(snap: &EngineSnapshot, g: &GuitarScreenData) -> Di
     panel(&mut frame, &p, 246, 28, 226, 150);
     draw_text(&mut frame, 252, 32, "AMPLI & BAFFLE", p.dim, p.panel);
     fill_rect(&mut frame, 252, 46, 214, 30, p.panel2);
-    center_text(&mut frame, 53, model, p.accent, p.panel2);
+    let mx = 252 + 214usize.saturating_sub(model.len() * 8) / 2;
+    draw_text(&mut frame, mx, 53, model, p.accent, p.panel2);
     let cab = GUITAR_CAB_NAMES[(g.cab as usize) % GUITAR_CAB_NAMES.len()];
     draw_text(
         &mut frame,
@@ -6723,15 +6549,8 @@ pub fn render_guitar_amp_left(snap: &EngineSnapshot, g: &GuitarScreenData) -> Di
         1 => "IN: LINE 2",
         _ => "IN: STEREO",
     };
-    draw_text(&mut frame, 432, 107, input_label, p.accent, p.panel);
-    draw_text(
-        &mut frame,
-        252,
-        136,
-        "5:ACTIF 6:MON 7:BYP 8:IN+",
-        p.muted,
-        p.panel,
-    );
+    // Les boutons 5–8 sont libellés en haut de l'écran : ici, l'entrée seule.
+    draw_text(&mut frame, 252, 136, input_label, p.accent, p.panel);
 
     let slots = [
         Some((
@@ -6760,7 +6579,7 @@ pub fn render_guitar_amp_left(snap: &EngineSnapshot, g: &GuitarScreenData) -> Di
         )),
     ];
     encoder_row(&mut frame, &p, &slots);
-    footer_softkeys(
+    finish_soft_keys(
         &mut frame,
         &p,
         &GUITAR_SOFT_LABELS,
@@ -6946,7 +6765,7 @@ pub fn render_guitar_amp_right(snap: &EngineSnapshot, g: &GuitarScreenData) -> D
         )),
     ];
     encoder_row(&mut frame, &p, &slots);
-    footer_softkeys(
+    finish_soft_keys(
         &mut frame,
         &p,
         &GUITAR_SOFT_LABELS,
@@ -7081,10 +6900,7 @@ mod tests {
         assert_eq!(frame.h as usize, SCR_H);
         assert_eq!(frame.pixels.len(), SCR_W * SCR_H);
         // Au moins le bandeau doit avoir été dessiné (pas un écran vide).
-        assert!(frame
-            .pixels
-            .iter()
-            .any(|px| *px != DisplayPixel::from_rgb(12, 13, 17)));
+        assert!(frame.pixels.iter().any(|px| *px != Pal::new().bg));
     }
 
     fn guitar_snapshot() -> EngineSnapshot {
@@ -7269,6 +7085,22 @@ mod tests {
         let snap = eng.snapshot();
         let (_, right) = render_screens(&snap);
         assert_eq!(right.pixels, render_sampler_right(&snap).pixels);
+    }
+
+    /// Boutons 1–8 au-dessus des écrans, knobs en dessous (comme la MK3) :
+    /// libellés de boutons en haut, slots d'encodeurs en bas.
+    #[test]
+    fn button_labels_on_top_and_knob_slots_at_bottom() {
+        let p = Pal::new();
+        let snap = Engine::new_demo(48000).snapshot();
+        let (left, _) = render_screens(&snap);
+        assert_eq!(snap.selected_bar, 0, "BAR 1 actif sur le bouton 1");
+        // Fond du bouton 1 actif, juste sous le bouton physique.
+        assert_eq!(left.pixels[10 * SCR_W + 8], p.accent);
+        // Encoche du knob 1 (TEMPO), juste au-dessus du knob physique.
+        assert_eq!(left.pixels[(SCR_H - ENC_H - 4) * SCR_W + 9], p.accent);
+        // L'ancien emplacement du bouton 1, en bas, n'est plus une soft key.
+        assert_ne!(left.pixels[(SCR_H - 12) * SCR_W + 8], p.accent);
     }
 
     /// Rendu déterministe : un même snapshot donne des pixels identiques.

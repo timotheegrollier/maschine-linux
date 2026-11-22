@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::gui::app::GuiApp;
-use crate::gui::theme::{card_frame, MachColors};
+use crate::gui::theme::{card, card_row, MachColors};
 use crate::gui::widgets::{chip, knob, KnobSpec};
 use eframe::egui;
 
@@ -110,9 +110,9 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
             ui.add_space(8.0);
 
             let wave_w = (ui.available_width() - 24.0).clamp(260.0, 430.0);
-            ui.horizontal_wrapped(|ui| {
+            ui.with_layout(card_row(), |ui| {
                 // ── WAVEFORM ──────────────────────────────────────────
-                card_frame().show(ui, |ui| {
+                card(ui, |ui| {
                     ui.label(
                         egui::RichText::new("WAVEFORM")
                             .strong()
@@ -177,7 +177,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
                 ui.add_space(8.0);
 
                 // ── ADSR ─────────────────────────────────────────────
-                card_frame().show(ui, |ui| {
+                card(ui, |ui| {
                     ui.label(
                         egui::RichText::new("ENVELOPPE ADSR")
                             .strong()
@@ -262,7 +262,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
 
             ui.add_space(8.0);
 
-            card_frame().show(ui, |ui| {
+            card(ui, |ui| {
                 ui.label(
                     egui::RichText::new("SOURCE DU SAMPLE")
                         .strong()
@@ -292,7 +292,7 @@ pub fn render(ui: &mut egui::Ui, app: &mut GuiApp, snap: &maschine_engine::Engin
             ui.add_space(8.0);
 
             // ── Paramètres principaux ────────────────────────────────
-            card_frame().show(ui, |ui| {
+            card(ui, |ui| {
                 ui.label(
                     egui::RichText::new("PARAMÈTRES DU SOUND")
                         .strong()

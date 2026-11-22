@@ -9452,6 +9452,26 @@ mod tests {
     }
 
     #[test]
+    fn pattern_playback_lights_pads_via_activity() {
+        let mut eng = Engine::new_demo(48000);
+        // Lecture du pattern : les pads des notes jouées doivent s'illuminer
+        // via l'activité (utilisée par le mapper pour les LEDs).
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: false,
+            stop: false,
+        })
+        .unwrap();
+        for _ in 0..10 {
+            eng.advance(480);
+        }
+        let act = eng.pad_activity.to_vec();
+        println!("pad_activity = {act:?}");
+        let any_sound = act.iter().any(|&v| v > 0.02);
+        assert!(any_sound, "aucun pad allumé pendant la lecture du pattern");
+    }
+
+    #[test]
     fn rec_notes_are_pushed_to_the_undo_history() {
         let mut eng = Engine::new_demo(48000);
         eng.clear_bar(0);

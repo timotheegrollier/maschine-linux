@@ -2,6 +2,14 @@
 
 All notable changes.
 
+## [0.19.4] - 2026-11-22
+
+### Fixed
+- **Pré-écoute en temps réel pendant REC en KEYBOARD / synthés** : la lecture du pattern ne vole plus la voix du Sound joué en direct — les notes tenues restent audibles (le TB-303 et les synthés monophoniques ne sont plus coupés par les notes du pattern), le glissando et les effets de note restent audibles pendant l'enregistrement.
+
+### Validation
+- 294 tests, `clippy -D warnings`, vérification sans sampler au vert. Nouveaux tests : `keyboard_rec_preview_notes_audible`, `keyboard_rec_long_note_is_not_cut_by_pattern_playback`.
+
 ## [0.19.3] - 2026-11-22
 
 ### Fixed

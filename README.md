@@ -14,7 +14,7 @@ Maschine Linux is an independent project. It does not include Native
 Instruments code or proprietary assets; it reproduces the documented workflow
 and hardware behavior through a clean-room implementation.
 
-## Current state (0.19.3)
+## Current state (0.19.4)
 
 Cargo workspace with six crates:
 
@@ -42,6 +42,12 @@ errors) and `--stress` (deliberate engine-lock contention).
   pads, like the MK3.
 - Arpeggiator modes on knob 7 (up, down, up-down, one or two octaves).
 - Events mode edits every note of the Sound at once (knob 6).
+
+### Real-time preview during REC in keyboard mode in 0.19.4
+
+- Pattern playback no longer steals the voice of the Sound played live
+  during recording — held notes, slides and note effects stay audible on
+  the TB-303 and other synths.
 
 ### Selected group LED more lit in 0.19.3
 

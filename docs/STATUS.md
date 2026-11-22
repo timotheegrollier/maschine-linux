@@ -4,7 +4,7 @@ Living document: what works, what is partial, what is missing, and what to
 check on real hardware. Update it with every release (see the release steps in
 `AGENTS.md`). Behaviour details live in `workflow.md`; this file is the map.
 
-## Current version: 0.19.3
+## Current version: 0.19.4
 
 ### Done (with tests)
 
@@ -91,6 +91,9 @@ check on real hardware. Update it with every release (see the release steps in
 
 ## History (recent)
 
+- **0.19.4** — pré-écoute temps réel pendant REC en mode KEYBOARD : la lecture
+  du pattern ne vole plus la voix du Sound joué en direct (notes tenues,
+  slides et effets audibles sur TB-303 / synthés).
 - **0.19.3** — LED du groupe sélectionné : plus illuminé que les autres
   (atténués même en lecture).
 - **0.19.2** — illumination des pads pendant la lecture du pattern (notes

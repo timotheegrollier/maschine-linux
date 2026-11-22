@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.19.4" date="2026-11-22">
+      <description>
+        <p>Release 0.19.4: during recording in keyboard mode, pattern playback no longer steals the voice of the Sound being played live, so held notes, slides and note effects stay audible in the real-time preview.</p>
+      </description>
+    </release>
     <release version="0.19.3" date="2026-11-22">
       <description>
         <p>Release 0.19.3: the selected group's LED is the most lit; the other groups are dimmed even when playing, so the selection is clearly visible in pad mode.</p>

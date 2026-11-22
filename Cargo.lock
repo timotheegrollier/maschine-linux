@@ -2354,7 +2354,7 @@ dependencies = [
 
 [[package]]
 name = "maschine-app"
-version = "0.19.3"
+version = "0.19.4"
 dependencies = [
  "anyhow",
  "atomic_float",
@@ -2382,7 +2382,7 @@ dependencies = [
 
 [[package]]
 name = "maschine-dsp"
-version = "0.19.3"
+version = "0.19.4"
 dependencies = [
  "atomic_float",
  "criterion",
@@ -2393,7 +2393,7 @@ dependencies = [
 
 [[package]]
 name = "maschine-engine"
-version = "0.19.3"
+version = "0.19.4"
 dependencies = [
  "ab_glyph",
  "cpal",
@@ -2411,7 +2411,7 @@ dependencies = [
 
 [[package]]
 name = "maschine-guitar-standalone"
-version = "0.19.3"
+version = "0.19.4"
 dependencies = [
  "anyhow",
  "atomic_float",
@@ -2433,7 +2433,7 @@ dependencies = [
 
 [[package]]
 name = "maschine-hardware"
-version = "0.19.3"
+version = "0.19.4"
 dependencies = [
  "alsa",
  "crossbeam-channel",
@@ -2450,7 +2450,7 @@ dependencies = [
 
 [[package]]
 name = "maschine-proto"
-version = "0.19.3"
+version = "0.19.4"
 dependencies = [
  "serde",
  "serde_json",

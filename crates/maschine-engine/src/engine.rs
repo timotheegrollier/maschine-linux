@@ -5087,6 +5087,17 @@ impl Engine {
                                     is_wavetable[s] = snd.wavetable_synth.is_some();
                                 }
                             }
+                            // Pendant REC, la lecture du pattern ne doit pas
+                            // voler la voix du Sound joué en direct (synthés
+                            // monophoniques) : sinon la pré-écoute est coupée.
+                            let live_hold = self.transport.state == TransportState::Recording
+                                && (self.arp_held.iter().any(|&v| v > 0)
+                                    || self.rec_sounding.iter().any(|v| v.is_some()));
+                            let skip_sound = if live_hold && gi as u8 == self.group_focus {
+                                Some(self.active_sound)
+                            } else {
+                                None
+                            };
                             Self::trigger_pattern_events(
                                 pat,
                                 eff_prev,
@@ -5108,6 +5119,7 @@ impl Engine {
                                 &ctx,
                                 &mut self.pad_activity,
                                 self.muted_sounds[gi],
+                                skip_sound,
                             );
                         }
                     }
@@ -5293,6 +5305,7 @@ impl Engine {
         ctx: &BlockCtx,
         activity: &mut [f32; 16],
         muted_sound_mask: u16,
+        skip_sound: Option<u8>,
     ) {
         let pat_len = pat.length.to_ticks() as u64;
         if pat_len == 0 || prev_tick == new_tick {
@@ -5305,6 +5318,9 @@ impl Engine {
         let new_in_pat = new_tick % pat_len;
         let wrapped = new_in_pat < prev_in_pat;
         for ev in &pat.events {
+            // Pendant REC, le Sound joué en direct garde sa voix : le pattern
+            // ne le rejoue pas (sinon note_off / glissando coupent la tenue).
+            let skip_audio = skip_sound == Some(ev.pad);
             let tick = ev.tick as u64;
             // Tick effectif avec swing (16e impaire = retardée)
             let eff = if swing_ticks > 0 && (tick / 240) % 2 == 1 {
@@ -5344,34 +5360,36 @@ impl Engine {
                     let is_k = is_kick.get(sound as usize).copied().unwrap_or(false);
                     let is_wt = is_wavetable.get(sound as usize).copied().unwrap_or(false);
                     let ri = rack_index(group, sound);
-                    if is_k {
-                        if let Some(slot) = rack.kick[ri].as_mut() {
-                            slot.idle_blocks = 0;
-                            slot.synth.trigger(note, ev.velocity);
-                        }
-                    } else if is_acid {
-                        if let Some(slot) = rack.acid[ri].as_mut() {
-                            slot.idle_blocks = 0;
-                            slot.synth.note_on_at(note, ev.velocity, start_frame);
-                        }
-                    } else if is_wt {
-                        if let Some(slot) = rack.wavetable[ri].as_mut() {
-                            slot.idle_blocks = 0;
-                            slot.synth.note_on(note, ev.velocity);
-                        }
-                    } else if let Some(idx) = sampler.note_on_at(
-                        sampler_sound_id(group, sound),
-                        note,
-                        ev.velocity,
-                        note,
-                        start_frame,
-                    ) {
-                        sampler.set_voice_gain(idx, group_gain * sg);
-                        sampler.set_voice_pan(idx, sp);
-                        sampler.set_voice_group(idx, group);
-                        sampler.set_voice_group_pan(idx, group_pan);
-                        if let Some(vp) = voice_params.get(sound as usize) {
-                            sampler.set_voice_params(idx, vp);
+                    if !skip_audio {
+                        if is_k {
+                            if let Some(slot) = rack.kick[ri].as_mut() {
+                                slot.idle_blocks = 0;
+                                slot.synth.trigger(note, ev.velocity);
+                            }
+                        } else if is_acid {
+                            if let Some(slot) = rack.acid[ri].as_mut() {
+                                slot.idle_blocks = 0;
+                                slot.synth.note_on_at(note, ev.velocity, start_frame);
+                            }
+                        } else if is_wt {
+                            if let Some(slot) = rack.wavetable[ri].as_mut() {
+                                slot.idle_blocks = 0;
+                                slot.synth.note_on(note, ev.velocity);
+                            }
+                        } else if let Some(idx) = sampler.note_on_at(
+                            sampler_sound_id(group, sound),
+                            note,
+                            ev.velocity,
+                            note,
+                            start_frame,
+                        ) {
+                            sampler.set_voice_gain(idx, group_gain * sg);
+                            sampler.set_voice_pan(idx, sp);
+                            sampler.set_voice_group(idx, group);
+                            sampler.set_voice_group_pan(idx, group_pan);
+                            if let Some(vp) = voice_params.get(sound as usize) {
+                                sampler.set_voice_params(idx, vp);
+                            }
                         }
                     }
                     // Flash LED du pad (fenêtre d'une triple-croche : bref et net).
@@ -5393,7 +5411,7 @@ impl Engine {
                 end_in_pat > prev_in_pat || end_in_pat <= new_in_pat
             };
             // évite de couper la note à t=0 et seulement si la note a déjà sonné
-            if off_triggered && end_tick > tick && tick <= new_tick {
+            if off_triggered && end_tick > tick && tick <= new_tick && !skip_audio {
                 let ri = rack_index(group, ev.pad);
                 if is_synth.get(ev.pad as usize).copied().unwrap_or(false) {
                     if let Some(slot) = rack.acid[ri].as_mut() {
@@ -9469,6 +9487,93 @@ mod tests {
         println!("pad_activity = {act:?}");
         let any_sound = act.iter().any(|&v| v > 0.02);
         assert!(any_sound, "aucun pad allumé pendant la lecture du pattern");
+    }
+
+    #[test]
+    fn keyboard_rec_long_note_is_not_cut_by_pattern_playback() {
+        let mut eng = Engine::new_demo(48000);
+        eng.load_plugin_to_sound(0, 0, 1).unwrap(); // TB-303 sur le pad 0
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: true,
+            stop: false,
+        })
+        .unwrap();
+        // Une note tenue longtemps en KEYBOARD pendant REC.
+        eng.handle_event(EngineEvent::KeyboardTrigger {
+            note: 60,
+            velocity: 110,
+            pressed: true,
+        })
+        .unwrap();
+        eng.advance(48_000);
+        let mut block = vec![0.0f32; 2048];
+        let mut late_peak = 0.0f32;
+        for i in 0..50 {
+            block.fill(0.0);
+            eng.render_audio(&mut block);
+            if i >= 30 {
+                late_peak = late_peak.max(block.iter().map(|s| s.abs()).fold(0.0f32, f32::max));
+            }
+        }
+        println!("keyboard REC late peak = {late_peak}");
+        assert!(
+            late_peak > 0.02,
+            "la note tenue doit rester audible pendant REC (pic tardif = {late_peak})"
+        );
+    }
+
+    #[test]
+    fn keyboard_rec_preview_notes_audible() {
+        let mut eng = Engine::new_demo(48000);
+        eng.load_plugin_to_sound(0, 0, 1).unwrap(); // TB-303 sur le pad 0
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: true,
+            stop: false,
+        })
+        .unwrap();
+        let mut block = vec![0.0f32; 2048];
+        let mut capture = |eng: &mut Engine| -> f32 {
+            let mut peak = 0.0f32;
+            for _ in 0..50 {
+                block.fill(0.0);
+                eng.render_audio(&mut block);
+                peak = peak.max(block.iter().map(|s| s.abs()).fold(0.0f32, f32::max));
+            }
+            peak
+        };
+        // Première note : maintenue longtemps (pattern vide).
+        eng.handle_event(EngineEvent::KeyboardTrigger {
+            note: 60,
+            velocity: 110,
+            pressed: true,
+        })
+        .unwrap();
+        let peak1 = capture(&mut eng);
+        eng.handle_event(EngineEvent::KeyboardTrigger {
+            note: 60,
+            velocity: 0,
+            pressed: false,
+        })
+        .unwrap();
+        // Avancer jusqu'au bouclage du pattern : la note enregistrée (tick 0)
+        // rejoue pendant qu'on tient une nouvelle note en direct.
+        eng.advance(144_000);
+        eng.handle_event(EngineEvent::KeyboardTrigger {
+            note: 62,
+            velocity: 110,
+            pressed: true,
+        })
+        .unwrap();
+        let peak2 = capture(&mut eng);
+        eng.handle_event(EngineEvent::KeyboardTrigger {
+            note: 62,
+            velocity: 0,
+            pressed: false,
+        })
+        .unwrap();
+        println!("keyboard REC: peak1={peak1} peak2={peak2}");
     }
 
     #[test]

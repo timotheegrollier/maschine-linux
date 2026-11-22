@@ -2168,30 +2168,65 @@ impl Engine {
             }
             EngineEvent::AddPattern { group } => {
                 let group_idx = group as usize;
+                let active_snd = self.active_sound;
                 let mut guard = self.project.write();
                 let proj = project_mut(&mut guard);
                 let length = new_pattern_length(proj, group_idx, self.active_scene);
+                // Préserve les événements de tous les autres pads/membres du groupe
+                // et isole la piste du pad actif pour créer sa nouvelle variation.
+                let prev_events: Vec<PatternEvent> = proj
+                    .active_pattern_index(group_idx, self.active_scene)
+                    .and_then(|pi| proj.groups.get(group_idx).and_then(|g| g.patterns.get(pi)))
+                    .map(|p| {
+                        p.events
+                            .iter()
+                            .filter(|e| e.pad != active_snd)
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 if let Some(g) = proj.groups.get_mut(group_idx) {
                     let idx = g.patterns.len();
-                    g.patterns
-                        .push(Pattern::new(&format!("Pattern {}", idx + 1), length));
+                    let mut pat = Pattern::new(&format!("Pattern {}", idx + 1), length);
+                    pat.events = prev_events;
+                    g.patterns.push(pat);
                     assign_pattern_to_active_scene(proj, &mut self.active_scene, group_idx, idx);
                 }
+                self.selected_bar = 0;
+                self.step_cursor = 0;
             }
             EngineEvent::CreatePatternAt { group, pattern } => {
                 let group_idx = group as usize;
                 let target = pattern.min(63);
+                let active_snd = self.active_sound;
                 let mut guard = self.project.write();
                 let proj = project_mut(&mut guard);
                 let length = new_pattern_length(proj, group_idx, self.active_scene);
+                // Préserve les pistes des autres pads pour le slot cible
+                let prev_events: Vec<PatternEvent> = proj
+                    .active_pattern_index(group_idx, self.active_scene)
+                    .and_then(|pi| proj.groups.get(group_idx).and_then(|g| g.patterns.get(pi)))
+                    .map(|p| {
+                        p.events
+                            .iter()
+                            .filter(|e| e.pad != active_snd)
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 if let Some(g) = proj.groups.get_mut(group_idx) {
                     while g.patterns.len() <= target {
                         let idx = g.patterns.len();
-                        g.patterns
-                            .push(Pattern::new(&format!("Pattern {}", idx + 1), length));
+                        let mut pat = Pattern::new(&format!("Pattern {}", idx + 1), length);
+                        if idx == target {
+                            pat.events = prev_events.clone();
+                        }
+                        g.patterns.push(pat);
                     }
                     assign_pattern_to_active_scene(proj, &mut self.active_scene, group_idx, target);
                 }
+                self.selected_bar = 0;
+                self.step_cursor = 0;
             }
             EngineEvent::DuplicatePattern { group, pattern } => {
                 let group_idx = group as usize;
@@ -7216,6 +7251,79 @@ mod tests {
             snap.project.scenes[snap.active_scene.unwrap()].patterns[group],
             Some(4)
         );
+    }
+
+    #[test]
+    fn pattern_creation_isolates_active_pad_and_preserves_other_tracks() {
+        let mut eng = Engine::new_demo(48000);
+        let group = 0;
+        eng.handle_event(EngineEvent::GroupFocus(group)).unwrap();
+
+        // Ajout d'événements sur Pad 0 (Kick), Pad 1 (Snare) et Pad 2 (Hihat) dans Pattern 0
+        {
+            let mut guard = eng.project.write();
+            let proj = project_mut(&mut guard);
+            let pat = &mut proj.groups[group as usize].patterns[0];
+            pat.events.clear();
+            pat.events.push(PatternEvent {
+                pad: 0,
+                tick: 0,
+                velocity: 100,
+                length_ticks: 240,
+                pitch: 36,
+            });
+            pat.events.push(PatternEvent {
+                pad: 1,
+                tick: 960,
+                velocity: 110,
+                length_ticks: 240,
+                pitch: 38,
+            });
+            pat.events.push(PatternEvent {
+                pad: 2,
+                tick: 480,
+                velocity: 90,
+                length_ticks: 120,
+                pitch: 42,
+            });
+        }
+
+        // On sélectionne le Pad 0 (Kick)
+        eng.handle_event(EngineEvent::SelectSound(0)).unwrap();
+        assert_eq!(eng.active_sound, 0);
+
+        // Création d'un nouveau pattern via AddPattern
+        eng.handle_event(EngineEvent::AddPattern { group }).unwrap();
+
+        let snap = eng.snapshot();
+        let active_pat_idx = snap
+            .project
+            .active_pattern_index(group as usize, snap.active_scene)
+            .unwrap();
+        let pat1 = &snap.project.groups[group as usize].patterns[active_pat_idx];
+
+        // Vérification : le Pad 0 (Kick) a sa piste vide pour composer la variation
+        assert!(!pat1.events.iter().any(|e| e.pad == 0));
+        // Les pistes des autres membres du groupe (Snare pad 1, Hihat pad 2) sont préservées !
+        assert!(pat1.events.iter().any(|e| e.pad == 1 && e.tick == 960));
+        assert!(pat1.events.iter().any(|e| e.pad == 2 && e.tick == 480));
+
+        // Maintenant on sélectionne le Pad 1 (Snare) et on crée un pattern au slot 2 via CreatePatternAt
+        eng.handle_event(EngineEvent::SelectSound(1)).unwrap();
+        eng.handle_event(EngineEvent::CreatePatternAt { group, pattern: 2 })
+            .unwrap();
+
+        let snap2 = eng.snapshot();
+        let active_pat2_idx = snap2
+            .project
+            .active_pattern_index(group as usize, snap2.active_scene)
+            .unwrap();
+        let pat2 = &snap2.project.groups[group as usize].patterns[active_pat2_idx];
+
+        // Vérification : le Pad 1 (Snare) a sa piste vide
+        assert!(!pat2.events.iter().any(|e| e.pad == 1));
+        // Le Pad 2 (Hihat) est toujours présent
+        assert!(pat2.events.iter().any(|e| e.pad == 2 && e.tick == 480));
     }
 
     #[test]

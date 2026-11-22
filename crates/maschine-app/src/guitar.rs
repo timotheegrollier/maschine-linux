@@ -135,11 +135,11 @@ impl Default for GuitarControl {
     fn default() -> Self {
         let settings = AmpSettings::default();
         Self {
-            // L'ampli démarre actif et en écoute dès que l'entrée est disponible :
-            // le monitoring n'est audible que si enabled ET monitor sont vrais.
-            // L'utilisateur peut couper via ACTIF ou MONITOR depuis la vue guitare ou MK3.
-            enabled: AtomicBool::new(true),
-            monitor: AtomicBool::new(true),
+            // L'ampli démarre inactif et le monitoring coupé par défaut :
+            // évite d'activer le microphone ou de capturer du souffle au démarrage sans MK3.
+            // L'utilisateur active l'ampli et l'écoute à la demande (boutons ACTIF et MONITOR).
+            enabled: AtomicBool::new(false),
+            monitor: AtomicBool::new(false),
             bypass: AtomicBool::new(false),
             model: AtomicU32::new(0),
             cab_model: AtomicU32::new(0),
@@ -625,17 +625,17 @@ mod tests {
     }
 
     #[test]
-    fn amp_is_on_by_default() {
+    fn amp_is_off_by_default() {
         let runtime = GuitarRuntime::default();
-        assert!(runtime.control.enabled.load(Ordering::Relaxed));
-        assert!(runtime.control.monitor.load(Ordering::Relaxed));
+        assert!(!runtime.control.enabled.load(Ordering::Relaxed));
+        assert!(!runtime.control.monitor.load(Ordering::Relaxed));
         assert_eq!(
             runtime.control.input_channel.load(Ordering::Relaxed),
             INPUT_CHANNEL_LINE1
         );
         let data = runtime.screen_data();
-        assert!(data.enabled);
-        assert!(data.monitor);
+        assert!(!data.enabled);
+        assert!(!data.monitor);
         assert_eq!(data.input_channel, INPUT_CHANNEL_LINE1 as u8);
     }
 
@@ -670,18 +670,18 @@ mod tests {
         assert_eq!(runtime.control.model.load(Ordering::Relaxed), 0);
         runtime.soft_key(4);
         assert_eq!(runtime.control.cab_model.load(Ordering::Relaxed), 1);
-        // Touche 5 : ACTIF (démarre à true, passe à false puis true)
-        assert!(runtime.control.enabled.load(Ordering::Relaxed));
-        runtime.soft_key(5);
+        // Touche 5 : ACTIF (démarre à false, passe à true puis false)
         assert!(!runtime.control.enabled.load(Ordering::Relaxed));
         runtime.soft_key(5);
         assert!(runtime.control.enabled.load(Ordering::Relaxed));
-        // Touche 6 : MONITOR (démarre à true, passe à false puis true)
-        assert!(runtime.control.monitor.load(Ordering::Relaxed));
-        runtime.soft_key(6);
+        runtime.soft_key(5);
+        assert!(!runtime.control.enabled.load(Ordering::Relaxed));
+        // Touche 6 : MONITOR (démarre à false, passe à true puis false)
         assert!(!runtime.control.monitor.load(Ordering::Relaxed));
         runtime.soft_key(6);
         assert!(runtime.control.monitor.load(Ordering::Relaxed));
+        runtime.soft_key(6);
+        assert!(!runtime.control.monitor.load(Ordering::Relaxed));
         // Touche 7 : BYPASS (démarre à false, passe à true)
         assert!(!runtime.control.bypass.load(Ordering::Relaxed));
         runtime.soft_key(7);

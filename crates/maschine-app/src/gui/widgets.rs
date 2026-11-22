@@ -76,6 +76,30 @@ pub fn chip(ui: &mut egui::Ui, text: &str, on: bool, color: egui::Color32) -> bo
     ui.add(btn).clicked()
 }
 
+/// Bouton "chip" avec infobulle au survol.
+pub fn chip_tooltip(
+    ui: &mut egui::Ui,
+    text: &str,
+    on: bool,
+    color: egui::Color32,
+    tooltip: &str,
+) -> bool {
+    let c = MachColors::dark();
+    let mut btn = egui::Button::new(egui::RichText::new(text).strong().size(11.5).color(if on {
+        egui::Color32::BLACK
+    } else {
+        c.text_dim
+    }))
+    .min_size(egui::vec2(0.0, 24.0))
+    .fill(if on { color } else { c.widget_bg })
+    .stroke(egui::Stroke::new(
+        1.0_f32,
+        if on { color } else { c.border },
+    ));
+    btn = btn.corner_radius(egui::CornerRadius::same(12));
+    ui.add(btn).on_hover_text(tooltip).clicked()
+}
+
 /// Sélecteur de valeurs discrètes (pill buttons). Retourne l'index sélectionné si changé.
 pub fn pill_select(
     ui: &mut egui::Ui,

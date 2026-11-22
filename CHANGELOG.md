@@ -2,6 +2,21 @@
 
 All notable changes.
 
+## [0.11.6] - 2026-11-22
+
+### Fixed
+- **Démarrage sans MK3 & ampli guitare** : L'ampli guitare et le monitoring sont désormais inactifs par défaut au lancement (`enabled: false`, `monitor: false`). Cela empêche l'activation involontaire du microphone intégré de la machine ou de bruits parasites dans les enceintes lorsque le contrôleur Maschine MK3 n'est pas connecté. L'utilisateur peut activer l'ampli et l'écoute à la demande via les boutons `ACTIF` et `MONITOR` (ou Soft Keys 5 et 6).
+
+### Added / Improved
+- **Isolation de piste pad lors de la création de pattern (`AddPattern` / `CreatePatternAt`)** :
+  - Lors de la création d'un nouveau pattern (par exemple sur le Pad 1 Kick du Groupe A, via le bouton `+ NOUVEAU` ou un pad en mode PATTERN), seule la piste du pad sélectionné (`active_sound`) est initialisée vide pour composer une nouvelle variation.
+  - Toutes les autres pistes et événements des autres membres du groupe (Snare, Hi-hats, percussions, synthés...) sont automatiquement conservés depuis le pattern précédent actif.
+  - Infobulle explicative ajoutée sur le bouton `+ NOUVEAU` dans la vue Séquenceur.
+
+### Validation
+- Suite de tests unitaire complète avec test d'isolation de piste pad (`pattern_creation_isolates_active_pad_and_preserves_other_tracks`)
+- Validation `cargo fmt`, `cargo clippy -D warnings` et `cargo test --workspace` à 100%
+
 ## [0.11.5] - 2026-11-22
 
 ### Added

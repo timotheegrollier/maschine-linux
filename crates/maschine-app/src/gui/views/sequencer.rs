@@ -7,7 +7,7 @@
 use super::*;
 use crate::gui::app::GuiApp;
 use crate::gui::theme::{section, MachColors};
-use crate::gui::widgets::{chip, icon_button, mach_button, pill_select, step_cell};
+use crate::gui::widgets::{chip, chip_tooltip, icon_button, mach_button, pill_select, step_cell};
 use eframe::egui;
 
 use maschine_engine::EngineEvent;
@@ -496,7 +496,13 @@ fn render_pattern_manager(
                     delta: 1,
                 });
             }
-            if chip(ui, "+ NOUVEAU", false, c.success) {
+            if chip_tooltip(
+                ui,
+                "+ NOUVEAU",
+                false,
+                c.success,
+                "Crée un nouveau pattern pour la scène : conserve les pistes des autres pads et isole le pad sélectionné",
+            ) {
                 app.send(EngineEvent::AddPattern {
                     group: snap.group_focus,
                 });

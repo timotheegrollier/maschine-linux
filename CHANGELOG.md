@@ -2,6 +2,32 @@
 
 All notable changes.
 
+## [0.14.0] - 2026-11-22
+
+### Added
+- **Éditeur de sample (SAMPLING)** comme sur la MK3 : boutons 1–4 = **RECORD**, **EDIT**, **SLICE**, **ZONE**.
+  - RECORD : enregistre l'entrée audio de la MK3 sur le pad actif (`ENREG` / `STOP`, déclenchement au seuil `SEUIL`, durée max réglable) ; la prise est écrite en WAV dans `~/.local/share/maschine-linux/recordings/` et chargée comme un sample importé.
+  - EDIT : plage de lecture non destructive (START / END, enregistrée dans le projet et respectée par le sampler), accord en demi-tons, gain, enveloppe ; `REVERSE`, `LOOP`, `NORMLZ`, `PLAGE MAX`.
+  - SLICE : découpe en 4 / 8 / 16 tranches sur une grille ou aux coups détectés (sensibilité réglable), `APPLIQUER` répartit les tranches sur les pads.
+  - ZONE : note racine, tessiture, vélocités, accord fin, pan et gain de la zone, avec un clavier de 128 notes à l'écran.
+- **Mode EVENTS** : édition des notes du pattern une par une sur les deux écrans (rouleau de notes à gauche, liste à droite) — knobs POSITION, NOTE, VÉLOCITÉ, LONGUEUR, 4D pour passer d'une note à l'autre, `TOUS`, `SUPPR`, `DUPLIQ`, `QUANT`, `NUDGE < >`.
+- **GUI** : bouton `EVENTS` dans le pont MK3 ; bandeau « Éditeur de sample » en tête de la vue Sampler (les huit boutons et les valeurs des knobs).
+- `maschine-linux standby --install` : installe le service de veille pour l'AppImage ou le tarball et indique la règle udev à ajouter.
+- **Documentation pour reprendre le projet** : `AGENTS.md` (carte du dépôt, invariants, où modifier quoi, pièges, publication), `CLAUDE.md`, `docs/STATUS.md` (fait / partiel / manquant, vérifications matérielles, suites).
+
+### Changed
+- **Mixer des pads** : rangée de knobs au bas des écrans (volume, pan avec Shift) aux couleurs des pads ; en-têtes allégés.
+- **Browser** et **STEP** : carte de preset plus lisible, aides reformulées sans abréviations.
+- Les modes de filtre du sampler (LP/HP/BP, NOTCH, PEAK, OFF, CYC FLT) restent sur la page SON du PLUG-IN, les boutons SAMPLING étant pris par l'éditeur.
+
+### Fixed
+- **Bas de la fenêtre caché par la barre des tâches** (Fedora KDE, écrans à mise à l'échelle) : la fenêtre demandait 1560 × 960 points, plus haut que l'écran utile d'un portable 1080p à 125 %. Elle s'ouvre désormais maximisée dans la zone utile (taille de retour 1200 × 720).
+
+### Validation
+- `cargo fmt`, `cargo clippy -D warnings`, `cargo test --workspace` (260 tests) et `cargo check -p maschine-engine --no-default-features` au vert.
+- Nouveaux tests : éditeur de sample (pages, plage, racine, enregistrement → WAV → pad, découpe en 4 tranches contiguës), plage de lecture du sampler, détection des coups, mode EVENTS (moteur et routage du mapper).
+- Rendu de chaque page de l'éditeur et du mode EVENTS via `dump_screens`.
+
 ## [0.13.1] - 2026-11-22
 
 ### Added

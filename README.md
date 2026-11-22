@@ -14,7 +14,7 @@ Maschine Linux is an independent project. It does not include Native
 Instruments code or proprietary assets; it reproduces the documented workflow
 and hardware behavior through a clean-room implementation.
 
-## Current state (0.13.1)
+## Current state (0.14.0)
 
 Cargo workspace with six crates:
 
@@ -35,6 +35,17 @@ Audio uses a 256-frame buffer (64-frame period, about 1.3 ms) at 48 kHz, a
 inside each block, and a drum kit regenerated at the device sample rate.
 Instrumentation: `--debug-latency` (HID→Engine, real buffer size, misses,
 errors) and `--stress` (deliberate engine-lock contention).
+
+### Sample editor and EVENTS in 0.14.0
+
+- **SAMPLING** is the MK3 sample editor: RECORD from the MK3 input onto the
+  focused pad, EDIT the play range / tuning / gain / envelope, SLICE on a grid
+  or at detected hits and spread the slices over the pads, ZONE for root key,
+  key and velocity ranges.
+- **EVENTS** edits the notes of the pattern one by one (position, note,
+  velocity, length, delete, duplicate, quantize, nudge).
+- New contributors and coding agents: start with [AGENTS.md](AGENTS.md) and
+  [docs/STATUS.md](docs/STATUS.md).
 
 ### PLUG-IN chain, effects and redesign in 0.13.0
 

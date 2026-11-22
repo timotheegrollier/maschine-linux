@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.14.0" date="2026-11-22">
+      <description>
+        <p>Release 0.14.0 adds the MK3 sample editor (record from the MK3 input, play range, slicing to pads, zone mapping) and EVENTS note editing on both screens, adds volume knob slots to the pad mixer, and documents the repository for new contributors.</p>
+      </description>
+    </release>
     <release version="0.13.1" date="2026-11-22">
       <description>
         <p>Release 0.13.1 adds EQ, Chorus and Lo-Fi effects (eight effects in the plugin chain), shows the standby screen as soon as the MK3 is plugged in, adds a clickable effect chain to the GUI plugin view, and redraws the pattern grid of the MK3 screens.</p>

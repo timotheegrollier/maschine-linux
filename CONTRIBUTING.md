@@ -1,5 +1,9 @@
 # Contributing
 
+Start with [AGENTS.md](AGENTS.md) (repository map, invariants, where to change
+what, release steps) and [docs/STATUS.md](docs/STATUS.md) (what is done and
+what is next).
+
 ## Principles
 
 - Keep the code clean and comment in English (or French in legacy areas); `cargo fmt` and `cargo clippy -- -D warnings` must pass.

@@ -2,7 +2,7 @@
 
 All notable changes.
 
-## [Unreleased]
+## [0.18.1] - 2026-11-22
 
 ### Fixes
 

@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.18.1" date="2026-11-22">
+      <description>
+        <p>Release 0.18.1 aligns the MK3 pad and group LEDs with Maschine: a sound stays lit while it plays, groups show which one is sounding, and the bright palette mapping is fixed.</p>
+      </description>
+    </release>
     <release version="0.18.0" date="2026-11-22">
       <description>
         <p>Release 0.18.0 adds note lengths on held pads and keyboard notes during recording, and records knob automations in the active pattern while recording.</p>

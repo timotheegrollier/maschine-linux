@@ -2,6 +2,14 @@
 
 All notable changes.
 
+## [0.26.2] - 2026-11-22
+
+### Added
+- **Chaînage de patterns visible** : les pads appartenant à la boucle chaînée s'allument en couleur vive sur la MK3 (le masque de chaîne du groupe focus est transmis au mapper).
+
+### Validation
+- 304 tests, `clippy -D warnings`, vérification sans sampler au vert. Nouveaux tests : `chained_pattern_pads_are_brighter`, masque de chaîne dans `hardware_snapshot`.
+
 ## [0.26.1] - 2026-11-22
 
 ### Fixed

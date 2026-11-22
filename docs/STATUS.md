@@ -4,7 +4,7 @@ Living document: what works, what is partial, what is missing, and what to
 check on real hardware. Update it with every release (see the release steps in
 `AGENTS.md`). Behaviour details live in `workflow.md`; this file is the map.
 
-## Current version: 0.26.1
+## Current version: 0.26.2
 
 ### Done (with tests)
 
@@ -98,6 +98,7 @@ check on real hardware. Update it with every release (see the release steps in
 
 ## History (recent)
 
+- **0.26.2** — LEDs vives sur les pads de la chaîne de patterns (MK3).
 - **0.26.1** — GUI : aucun avertissement quand aucun pattern n'est actif,
   juste pas de couleur de sélection.
 - **0.26.0** — pré-écoute REC coupée à la fin quantifiée de la note ; chaînage

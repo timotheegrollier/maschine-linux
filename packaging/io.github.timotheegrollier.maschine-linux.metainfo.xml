@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.26.2" date="2026-11-22">
+      <description>
+        <p>Release 0.26.2: pads belonging to a chained pattern loop light up in bright colour on the MK3 so the chain is visible.</p>
+      </description>
+    </release>
     <release version="0.26.1" date="2026-11-22">
       <description>
         <p>Release 0.26.1: when no pattern is selected in the GUI, no warning is shown — simply no selection colour on the pattern.</p>

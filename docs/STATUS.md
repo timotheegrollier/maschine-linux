@@ -17,7 +17,7 @@ check on real hardware. Update it with every release (see the release steps in
 | SAMPLING | Sample editor: RECORD (MK3 input → WAV → pad), EDIT (play range, tune, gain, ADSR), SLICE (grid / transients → pads), ZONE (root, key and velocity ranges, fine tune, pan, gain) | `sample_editor_pages_edit_slice_zone_and_record`, `play_range_*`, `onsets_*` |
 | EVENTS | Note editing: position, note, velocity, length; select, delete, duplicate, quantize, nudge; one Sound or all | `events_mode_edits_the_selected_note_with_knobs_and_buttons` |
 | Groups together | One synth instance per Sound, meters for all groups, SOLO / MUTE in playback and live, queued scene / pattern launch on the next bar | `every_group_plays_at_once_*`, `launches_wait_for_the_next_bar_*` |
-| LEDs | Pads: off / dim / normal (selected) / bright (hit, sequencer); patterns in group colour; queued items blink; group buttons in group colours | `pad_hit_flashes_white_then_falls_back_to_dim` |
+| LEDs | Pads: off / dim / normal (selected) / bright (playing, hit, sequencer); group buttons: focused in assigned colour, playing bright, idle dim, muted/empty off; explicit bright palette mapping (white fallback) | `bright_pad_color_is_valid_and_never_dimmer`, `pad_stays_lit_while_its_sound_is_playing`, `group_button_lights_when_its_group_plays` |
 | Arpeggiator | NOTE REPEAT in KEYBOARD / CHORDS plays the held notes one at a time, upwards, at the repeat rate (`arp_held`, `arp_step`) | `note_repeat_in_keyboard_mode_arpeggiates_held_notes_upwards` |
 | Audio-thread recording | Notes repeated by the audio thread (Note Repeat, Arp) are queued (`pending_notes`) and written by `commit_launches` (handle_event + HID loop at 60 Hz) | `notes_repeated_by_the_audio_thread_are_written_outside_it` |
 | 16 Velocities | `SHIFT + FIXED VEL`: engine remaps pad → velocity of the selected Sound (MK3 and GUI); mapper keeps the selection, shades the pads | `sixteen_velocities_*` (engine and mapper) |
@@ -39,9 +39,11 @@ check on real hardware. Update it with every release (see the release steps in
   no velocity ramps, `DUPLIQ` copies one note.
 - **Zones**: ZONE edits all zones of the Sound together; no multi-zone editing
   from the controller.
-- **LED levels**: the MK3 palette is used as dim / normal / bright per hue
-  (index `4k+1..4k+3`); the exact official levels are not documented by NI and
-  remain to be checked on hardware.
+- **LED levels**: `bright_pad_color` now uses an explicit per-hue table and a
+  white fallback when the palette has no brighter variant; the previous
+  `4k+1..4k+3` rule produced invalid indices (and dimmed Spring). Exact factory
+  brightness remains user-adjustable in NI's Hardware preferences, so a visual
+  check on hardware is still worthwhile.
 - **Keyboard / Chords**: no scale banks (8 scales), no Chord Set / User Chords
   modes; the arpeggiator has up / down / up-down over one or two octaves, no
   gate, sequence or "order played"; display buttons 1–4 are our own (scale

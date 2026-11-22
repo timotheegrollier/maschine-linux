@@ -195,11 +195,15 @@ Since 0.14.0 both modes follow that reference; see the two sections below. Not i
   from velocity 7 (pad 1) to 127 (pad 16) without changing the selection; pads
   shaded in its colour, `FIXED VEL` half lit, GUI pads labelled `VEL n`.
   `FIXED VEL` turns it off (the two modes are exclusive).
-- **Pad LEDs**: empty pad off, Sound present dim, selected Sound normal, hit or
-  sequencer note bright (velocity ≥ 64 = brightest), muted Sound off (dim while
-  `MUTE` is held). PATTERN mode: patterns in the group colour, playing one
+- **Pad LEDs**: empty pad off, Sound present dim, selected Sound normal, Sound
+  currently sounding bright (audio level/activity, so it stays lit for the
+  whole note and not only during the 200 ms hit flash), hit or sequencer note
+  bright (velocity ≥ 64 = brightest), muted Sound off (dim while `MUTE` is
+  held). When the palette has no brighter variant of a hue, the flash uses
+  white, as on the MK3. PATTERN mode: patterns in the group colour, playing one
   bright, queued one blinking. SCENE mode: scenes yellow, active bright, queued
-  blinking. Group buttons: group colour, focused bright, muted off.
+  blinking. Group buttons: focused group in its assigned colour (full), other
+  groups bright while they play, dim at rest, muted/empty off.
 
 ## SAMPLING: sample editor (RECORD, EDIT, SLICE, ZONE)
 

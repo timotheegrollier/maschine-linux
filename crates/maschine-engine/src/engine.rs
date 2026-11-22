@@ -779,6 +779,12 @@ pub struct HardwareSnapshot {
     pub is_quarter_beat: bool,
     pub active_steps: [bool; 16],
     pub triggered_pads: [bool; 16],
+    /// Activité récente des pads (pour les LEDs MK3 haute fréquence).
+    pub pad_activity: [f32; 16],
+    /// Niveaux lissés des pads du groupe focalisé (pour les LEDs MK3).
+    pub pad_levels: [f32; 16],
+    /// Niveaux lissés des 8 groupes (pour les LEDs des boutons de groupe).
+    pub group_levels: [f32; 8],
     pub master_volume: f32,
     pub muted_groups: u8,
     pub muted_sounds: [u16; 8],
@@ -2105,6 +2111,9 @@ impl Engine {
             is_quarter_beat: (self.transport.tick % 960) < 240 && playing,
             active_steps,
             triggered_pads,
+            pad_activity: self.pad_activity,
+            pad_levels: self.pad_meter[self.group_focus as usize % 8],
+            group_levels: self.group_meter,
             master_volume: self.master_volume,
             muted_groups: self.muted_groups,
             muted_sounds: self.muted_sounds,

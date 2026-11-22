@@ -2,6 +2,28 @@
 
 All notable changes.
 
+## [Unreleased]
+
+### Fixes
+
+- **LEDs des pads et des groupes conformes à la MK3** : `bright_pad_color`
+  utilisait un calcul `4k+3` qui produisait des indices de palette invalides
+  pour la plupart des teintes (et assombrissait Spring). Une table explicite
+  est utilisée désormais, avec passage au blanc quand la palette n'a pas de
+  variante vive.
+- **On voit quel instrument joue en mode PAD** : l'activité et les niveaux
+  audio des pads sont transmis au mapper, donc un pad reste allumé en couleur
+  vive pendant toute la note (pas seulement pendant le flash de 200 ms).
+- **Boutons de groupe** : le groupe focalisé garde sa couleur assignée en
+  pleine intensité ; un groupe en lecture s'allume vivement même s'il n'est pas
+  focalisé ; les autres sont atténués, les groupes muets/vides éteints.
+
+### Validation
+
+- `cargo test --workspace --locked` (nouveaux tests de palette, de pad en jeu
+  et de LED de groupe)
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+
 ## [0.18.0] - 2026-11-22
 
 ### Added

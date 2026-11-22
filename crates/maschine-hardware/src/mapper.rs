@@ -11,8 +11,9 @@ use maschine_proto::ButtonId;
 
 use crate::events::{HardwareEvent, PadState};
 
-/// Durée du flash blanc de frappe sur un pad (feedback tactile garanti même
-/// pour un tap plus court qu'une frame LED 33ms), façon Maschine.
+/// Durée du flash de frappe sur un pad (feedback tactile garanti même pour un
+/// tap plus court qu'une frame LED 33 ms) : couleur vive, ou blanche pour les
+/// teintes sans variante « vive » dans la palette MK3.
 const PAD_FLASH_MS: u64 = 200;
 
 /// Destinations de navigation GUI émises par les menus matériels.
@@ -30,16 +31,38 @@ pub mod nav {
     pub const PLUGIN: u8 = 4;
 }
 
-/// Variante la plus lumineuse d'une couleur de la palette MK3 (chaque teinte
-/// a trois niveaux : atténué, normal, vif) — frappe, élément actif.
+/// Variante la plus lumineuse d'une couleur de la palette MK3 — frappe,
+/// élément actif, son en cours de jeu.
+///
+/// L'ancien calcul `idx / 4 * 4 + 3` produisait des indices invalides pour la
+/// plupart des teintes (Jaune 22 → 23, Bleu 42 → 43, …) et *assombrissait*
+/// même Spring (26 → DimTurquoise 27). On utilise donc une table explicite :
+/// quand la palette ne contient pas de variante « vive » de la même teinte,
+/// le flash passe au blanc, ce qui correspond au flash des pads sur la MK3.
 #[must_use]
 pub fn bright_pad_color(color: Color) -> Color {
-    let idx = color.to_index();
-    if (4..=71).contains(&idx) {
-        Color::from_index(idx / 4 * 4 + 3).unwrap_or(color)
-    } else {
-        color
-    }
+    use PaletteIndex::*;
+    let bright = match color.0 {
+        Off => Off,
+        DimRed | Red => Rose,
+        Rose => Rose,
+        DimOrange | Orange => Skin,
+        Skin => White,
+        DimAmber | Amber => Yellow,
+        DimYellow | Yellow => White,
+        DimSpring | Spring => Lime,
+        DimTurquoise | Turquoise => White,
+        DimGreen | Green => Turquoise,
+        DimLime | Lime => White,
+        DimSky | Sky => White,
+        DimBlue | Blue => Sky,
+        DimPurple | Purple => Magenta,
+        DimMagenta | Magenta => White,
+        DimPink | Pink => White,
+        DarkGrey => Grey,
+        Grey | White => White,
+    };
+    Color(bright)
 }
 
 /// Variante atténuée d'une couleur de pad pour l'état repos, façon Maschine :
@@ -452,6 +475,13 @@ pub struct SequencerLedInfo {
     /// Pas sélectionné (curseur d'édition step sequencer, 0..pattern_bars*16-1)
     pub step_cursor: usize,
     pub triggered_pads: [bool; 16],
+    /// Activité récente des pads (1.0 → 0.0), pour garder un pad allumé pendant
+    /// qu'il joue, au-delà du flash tactile de 200 ms.
+    pub pad_activity: [f32; 16],
+    /// Niveaux lissés des 16 pads du groupe focalisé (0..~1).
+    pub pad_levels: [f32; 16],
+    /// Niveaux lissés des 8 groupes (0..~1), pour les boutons de groupe.
+    pub group_levels: [f32; 8],
     pub master_vol: f32,
     pub muted_groups: u8,
     pub muted_sounds: [u16; 8],
@@ -2449,15 +2479,20 @@ impl HardwareMapper {
             }
         }
 
-        // 9. Groupes A..H — focus en blanc, les autres en demi-teinte.
+        // 9. Groupes A..H — comme sur la MK3 : le groupe focalisé est vif,
+        // les autres sont atténués, un groupe en lecture est allumé (même
+        // quand il n'est pas focalisé) et un groupe muet/vide est éteint.
         for g in 0usize..8 {
-            // Couleur du groupe : vive pour le groupe focalisé, atténuée pour
-            // les autres ; groupe muet éteint, groupe vide éteint.
             let base = Color::from_index(info.group_colors[g]).unwrap_or(Color::OFF);
             let muted = info.muted_groups & (1 << g) != 0;
+            let playing = info.group_levels.get(g).copied().unwrap_or(0.0) > 0.01;
             let col = if base == Color::OFF || muted {
                 Color::OFF
             } else if g == self.group_focus as usize {
+                // Groupe sélectionné : sa couleur assignée, pleine intensité.
+                base
+            } else if playing {
+                // Allumé mais pas focalisé : on voit quel groupe joue.
                 bright_pad_color(base)
             } else {
                 dim_pad_color(base)
@@ -2475,9 +2510,9 @@ impl HardwareMapper {
         self.led_state.set_button_raw(offsets::FOUR_WAY_RIGHT, 3);
 
         // 12. 16 Pads RGB physiques — les modes workflow priment sur le mode de jeu.
-        // Façon Maschine : repos en demi-teinte, frappe = flash blanc garanti
-        // 200ms (visible même pour un tap éclair), pas programmés en couleur
-        // pleine, curseur blanc, déclenchement séquenceur en couleur du son.
+        // Façon Maschine : repos en demi-teinte, frappe = flash vif garanti
+        // 200 ms (visible même pour un tap éclair), son en jeu vif, curseur
+        // blanc, déclenchement séquenceur en couleur vive du son.
         let now = Instant::now();
         let white = Color::from_index(78).unwrap_or(Color::OFF);
         // Flash et état actif produisent tous deux du blanc mais avec des priorités
@@ -2580,10 +2615,16 @@ impl HardwareMapper {
                     for i in 0..16 {
                         let is_muted = (muted_mask & (1u16 << i)) != 0;
                         // Intensités du jeu officiel : pad vide éteint, Sound
-                        // présent atténué, Sound sélectionné normal, frappe ou
-                        // note du séquenceur vive (forte vélocité = la plus vive).
+                        // présent atténué, Sound sélectionné normal, Sound en
+                        // train de jouer vif, frappe ou note du séquenceur vive.
+                        // L'activité audio garde le pad allumé tant que le son
+                        // résonne, au-delà du flash tactile de 200 ms : c'est
+                        // ce qui permet de voir quel instrument joue en PAD mode.
                         let color = self.pad_colors[i];
                         let hit = self.pad_flash(i, now);
+                        let activity = info.pad_activity.get(i).copied().unwrap_or(0.0);
+                        let level = info.pad_levels.get(i).copied().unwrap_or(0.0);
+                        let sounding = activity > 0.02 || level > 0.015;
                         let led = if is_muted {
                             // Muet : éteint ; en mode MUTE, atténué pour le voir.
                             if self.mute_pad_mode {
@@ -2599,6 +2640,8 @@ impl HardwareMapper {
                             } else {
                                 color
                             }
+                        } else if sounding {
+                            bright_pad_color(color)
                         } else if i as u8 == info.active_sound {
                             color
                         } else {
@@ -2970,7 +3013,118 @@ mod tests {
     }
 
     #[test]
-    fn pad_hit_flashes_white_then_falls_back_to_dim() {
+    fn bright_pad_color_is_valid_and_never_dimmer() {
+        use maschine_proto::color::PaletteIndex as PI;
+        let luma = |c: Color| {
+            let (r, g, b) = c.0.to_rgb();
+            r as u32 * 2126 + g as u32 * 7152 + b as u32 * 722
+        };
+        let hues = [
+            PI::DimRed,
+            PI::Red,
+            PI::Rose,
+            PI::DimOrange,
+            PI::Orange,
+            PI::Skin,
+            PI::DimAmber,
+            PI::Amber,
+            PI::DimYellow,
+            PI::Yellow,
+            PI::DimSpring,
+            PI::Spring,
+            PI::DimTurquoise,
+            PI::Turquoise,
+            PI::DimGreen,
+            PI::Green,
+            PI::DimLime,
+            PI::Lime,
+            PI::DimSky,
+            PI::Sky,
+            PI::DimBlue,
+            PI::Blue,
+            PI::DimPurple,
+            PI::Purple,
+            PI::DimMagenta,
+            PI::Magenta,
+            PI::DimPink,
+            PI::Pink,
+            PI::DarkGrey,
+            PI::Grey,
+            PI::White,
+        ];
+        for hue in hues {
+            let base = Color(hue);
+            let bright = bright_pad_color(base);
+            assert!(
+                Color::from_index(bright.to_index()).is_some(),
+                "invalid bright index for {hue:?}: {}",
+                bright.to_index()
+            );
+            assert!(
+                luma(bright) >= luma(base),
+                "bright variant of {hue:?} is dimmer ({} -> {})",
+                base.to_index(),
+                bright.to_index()
+            );
+        }
+        // Regression : l'ancien calcul 4k+3 donnait DimTurquoise pour Spring.
+        assert_eq!(bright_pad_color(Color(PI::Spring)).0, PI::Lime);
+        assert_eq!(bright_pad_color(Color(PI::Yellow)).0, PI::White);
+    }
+
+    #[test]
+    fn pad_stays_lit_while_its_sound_is_playing() {
+        let mut m = HardwareMapper::with_default();
+        let base_color = m.pad_colors[0];
+        let bright = bright_pad_color(base_color).to_index();
+        let mut pad_activity = [0.0; 16];
+        pad_activity[0] = 0.8;
+        let playing = SequencerLedInfo {
+            active_sound: 3,
+            pad_activity,
+            ..SequencerLedInfo::default()
+        };
+        m.update_leds(&playing);
+        assert_eq!(
+            m.led_state().pad_leds[0],
+            bright,
+            "un son en cours de jeu doit rester allumé"
+        );
+        let idle = SequencerLedInfo {
+            active_sound: 3,
+            ..SequencerLedInfo::default()
+        };
+        m.update_leds(&idle);
+        assert_ne!(
+            m.led_state().pad_leds[0],
+            bright,
+            "au repos le pad revient en demi-teinte"
+        );
+    }
+
+    #[test]
+    fn group_button_lights_when_its_group_plays() {
+        use maschine_proto::hid_output::offsets;
+        let mut m = HardwareMapper::with_default();
+        m.group_focus = 0;
+        let mut group_levels = [0.0; 8];
+        group_levels[1] = 0.4;
+        let info = SequencerLedInfo {
+            group_colors: [6, 22, 30, 42, 50, 58, 10, 14],
+            group_levels,
+            ..SequencerLedInfo::default()
+        };
+        m.update_leds(&info);
+        // Groupe focalisé : sa couleur assignée (Rouge = 6).
+        assert_eq!(m.led_state().button_leds[offsets::GROUP_A - 1], 6);
+        // Groupe B en lecture mais non focalisé : variante vive (Jaune -> Blanc).
+        assert_eq!(m.led_state().button_leds[offsets::GROUP_B - 1], 78);
+        // Groupe C au repos : Vert atténué (29).
+        assert_eq!(m.led_state().button_leds[offsets::GROUP_C - 1], 29);
+    }
+
+    #[test]
+    fn pad_hit_flashes_bright_then_falls_back_to_dim() {
         let mut m = HardwareMapper::with_default();
         assert_eq!(m.mode, ControllerMode::Pad);
         // Le Sound sélectionné est le pad 4 : le pad 1 est un Sound « présent ».

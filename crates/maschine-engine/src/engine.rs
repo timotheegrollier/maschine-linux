@@ -6390,8 +6390,8 @@ impl Engine {
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
         let count = proj.groups.len().min(demo_proj.groups.len());
-        for gi in 0..count {
-            let Some(demo_p) = demo_proj.groups[gi].patterns.first() else {
+        for (gi, demo_group) in demo_proj.groups.iter().enumerate().take(count) {
+            let Some(demo_p) = demo_group.patterns.first() else {
                 continue;
             };
             if let Some(g) = proj.groups.get_mut(gi) {

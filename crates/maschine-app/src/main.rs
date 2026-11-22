@@ -3065,6 +3065,43 @@ mod tests {
     }
 
     #[test]
+    fn mk3_keyboard_pads_play_the_notes_the_engine_computes() {
+        // Une seule source : le mapper joue les notes de `KeyboardState`
+        // (il recopiait ses propres gammes, la MK3 et la GUI divergeaient).
+        let mut engine = Engine::new_demo(48000);
+        engine
+            .handle_event(EngineEvent::SetControllerMode(1))
+            .unwrap();
+        engine
+            .handle_event(EngineEvent::KeyboardRootDelta(2))
+            .unwrap(); // D3
+        let mut mapper = HardwareMapper::with_default();
+        mapper.mode = maschine_hardware::mapper::ControllerMode::Keyboard;
+        sync_mapper_context(&mut mapper, &engine.hardware_snapshot());
+        let pad = |pressed| {
+            HardwareEvent::Pad(maschine_hardware::events::PadState {
+                pad: 0,
+                pressed,
+                velocity: 100,
+                pressure: 0,
+                ts_ns: 0,
+            })
+        };
+        let notes: Vec<u8> = mapper
+            .handle_hardware_event(pad(true))
+            .into_iter()
+            .filter_map(|a| match a {
+                MapperAction::KeyboardTrigger { note, .. } => Some(note),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes, vec![engine.snapshot().keyboard.keyboard_note(0)]);
+        assert_eq!(notes, vec![62]);
+        // Fondamentale (et octaves) allumées : pads 0 et 12 en chromatique.
+        assert_eq!(mapper.kbd_root_pads, 1 | 1 << 12);
+    }
+
+    #[test]
     fn gui_sampler_navigation_routes_next_hardware_knob_to_sound() {
         let mut engine = Engine::new_demo(48000);
         engine.handle_event(EngineEvent::SetRightTab(1)).unwrap();

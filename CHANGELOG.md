@@ -20,7 +20,7 @@ All notable changes.
 - Dépendances jamais utilisées retirées (tokio, rubato, anyhow, crossbeam-channel, parking_lot, thiserror selon les crates) : compilation plus légère.
 
 ### Validation
-- 272 tests, `clippy -D warnings`, vérification sans sampler au vert. Nouveaux tests : `note_repeat_in_keyboard_mode_arpeggiates_held_notes_upwards`, `notes_repeated_by_the_audio_thread_are_written_outside_it`, `sample_edits_survive_save_and_reload`, `boot_progress_bar_spans_both_screens` ; pré-compte annulé par PLAY.
+- 273 tests, `clippy -D warnings`, vérification sans sampler au vert. Nouveaux tests : `note_repeat_in_keyboard_mode_arpeggiates_held_notes_upwards`, `notes_repeated_by_the_audio_thread_are_written_outside_it`, `sample_edits_survive_save_and_reload`, `boot_progress_bar_spans_both_screens`, `mk3_keyboard_pads_play_the_notes_the_engine_computes` ; pré-compte annulé par PLAY.
 
 ## [0.15.0] - 2026-11-22
 

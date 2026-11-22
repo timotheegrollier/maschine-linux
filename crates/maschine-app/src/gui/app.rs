@@ -49,6 +49,8 @@ pub struct GuiApp {
     pub status_message: Option<(String, bool)>,
     /// Pad actuellement enfoncé (note off au relâchement).
     pub pad_down: Option<u8>,
+    /// Ancre du chaînage PATTERN : premier pad pressé, avec son horodatage.
+    pub pattern_chain_anchor: Option<(u8, std::time::Instant)>,
     /// Vue active.
     pub view: StudioView,
     /// Dernier onglet gauche vu (synchro hardware).
@@ -151,6 +153,7 @@ impl GuiApp {
             selected_device: selected,
             status_message: None,
             pad_down: None,
+            pattern_chain_anchor: None,
             view: StudioView::Sequencer,
             last_left_tab: 0,
             last_nav_serial: 0,
@@ -215,6 +218,7 @@ impl GuiApp {
             updater_state,
             status_message: None,
             pad_down: None,
+            pattern_chain_anchor: None,
             view: StudioView::Sequencer,
             last_left_tab: 0,
             last_nav_serial: 0,
@@ -1102,24 +1106,39 @@ impl GuiApp {
             } else if snap.scene_mode {
                 self.send(EngineEvent::Scene(pad as usize));
             } else if snap.pattern_mode {
-                // Mode PATTERN officiel : un pad existant sélectionne son
-                // pattern, un pad vide crée le pattern de ce slot.
-                let exists = snap
-                    .project
-                    .groups
-                    .get(snap.group_focus as usize)
-                    .map(|g| (pad as usize) < g.patterns.len())
-                    .unwrap_or(false);
-                if exists {
-                    self.send(EngineEvent::PatternSelect {
+                // Deux pads pressés à moins d'une seconde : chaînage de tout
+                // l'intervalle, comme les deux pads maintenus sur la MK3.
+                let chain = self.pattern_chain_anchor.take().filter(|(anchor, at)| {
+                    *anchor != pad && at.elapsed() < std::time::Duration::from_millis(900)
+                });
+                if let Some((anchor, _)) = chain {
+                    let min = anchor.min(pad) as usize;
+                    let max = anchor.max(pad) as usize;
+                    self.send(EngineEvent::PatternChain {
                         group: snap.group_focus,
-                        pattern: pad as usize,
+                        patterns: (min..=max).collect(),
                     });
                 } else {
-                    self.send(EngineEvent::CreatePatternAt {
-                        group: snap.group_focus,
-                        pattern: pad as usize,
-                    });
+                    self.pattern_chain_anchor = Some((pad, std::time::Instant::now()));
+                    // Mode PATTERN officiel : un pad existant sélectionne son
+                    // pattern, un pad vide crée le pattern de ce slot.
+                    let exists = snap
+                        .project
+                        .groups
+                        .get(snap.group_focus as usize)
+                        .map(|g| (pad as usize) < g.patterns.len())
+                        .unwrap_or(false);
+                    if exists {
+                        self.send(EngineEvent::PatternSelect {
+                            group: snap.group_focus,
+                            pattern: pad as usize,
+                        });
+                    } else {
+                        self.send(EngineEvent::CreatePatternAt {
+                            group: snap.group_focus,
+                            pattern: pad as usize,
+                        });
+                    }
                 }
             } else if snap.select_mode {
                 self.send(EngineEvent::SelectSound(pad));
@@ -1809,7 +1828,20 @@ impl eframe::App for GuiApp {
                 .min_width(450.0)
                 .resizable(true)
                 .collapsible(false)
+                .frame(egui::Frame {
+                    fill: c.panel,
+                    stroke: egui::Stroke::new(1.0_f32, c.border),
+                    ..Default::default()
+                })
                 .show(ctx, |ui| {
+                    ui.set_style({
+                        let mut style = (*ctx.style()).clone();
+                        style.visuals.widgets.noninteractive.fg_stroke.color = c.text;
+                        style.visuals.widgets.inactive.fg_stroke.color = c.text;
+                        style.visuals.widgets.hovered.fg_stroke.color = c.text;
+                        style.visuals.widgets.active.fg_stroke.color = c.text;
+                        style
+                    });
                     render_updater_window(ui, &self.updater_state, &c);
                 });
             self.show_updater = updater_open;
@@ -1934,10 +1966,10 @@ fn render_updater_window(
 
     ui.group(|ui| {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Version installée :").strong());
+            ui.colored_label(c.text, egui::RichText::new("Version installée :").strong());
             ui.colored_label(c.text, format!("v{}", crate::updater::CURRENT_VERSION));
             ui.separator();
-            ui.label(egui::RichText::new("Environnement :").strong());
+            ui.colored_label(c.text, egui::RichText::new("Environnement :").strong());
             ui.colored_label(c.accent_cyan, crate::updater::PackageKind::detect().label());
         });
     });
@@ -1947,7 +1979,7 @@ fn render_updater_window(
     if s.is_checking {
         ui.horizontal(|ui| {
             ui.spinner();
-            ui.label("Vérification des mises à jour sur GitHub...");
+            ui.colored_label(c.text, "Vérification des mises à jour sur GitHub...");
         });
     } else if let Some(check) = &s.update_available {
         ui.group(|ui| {
@@ -1970,11 +2002,14 @@ fn render_updater_window(
                 }
 
                 if let Some(ref asset) = check.matched_asset {
-                    ui.label(format!(
-                        "Paquet compatible : {} ({:.1} Mo)",
-                        asset.name,
-                        asset.size as f64 / (1024.0 * 1024.0)
-                    ));
+                    ui.colored_label(
+                        c.text,
+                        format!(
+                            "Paquet compatible : {} ({:.1} Mo)",
+                            asset.name,
+                            asset.size as f64 / (1024.0 * 1024.0)
+                        ),
+                    );
                 } else {
                     ui.colored_label(
                         c.warning,
@@ -1984,7 +2019,8 @@ fn render_updater_window(
 
                 if let Some(ref body) = check.release.body {
                     ui.add_space(6.0);
-                    ui.label(
+                    ui.colored_label(
+                        c.text,
                         egui::RichText::new("Notes de version :")
                             .strong()
                             .size(12.0),
@@ -2013,7 +2049,7 @@ fn render_updater_window(
                             tot as f64 / 1_048_576.0
                         ));
                     } else {
-                        ui.label("Téléchargement en cours...");
+                        ui.colored_label(c.text, "Téléchargement en cours...");
                     }
                 });
             });
@@ -2054,10 +2090,13 @@ fn render_updater_window(
     } else {
         ui.horizontal(|ui| {
             ui.colored_label(c.success, egui::RichText::new("OK").size(13.0));
-            ui.label(format!(
-                "Maschine Linux est à jour (v{}).",
-                crate::updater::CURRENT_VERSION
-            ));
+            ui.colored_label(
+                c.text,
+                format!(
+                    "Maschine Linux est à jour (v{}).",
+                    crate::updater::CURRENT_VERSION
+                ),
+            );
         });
     }
 

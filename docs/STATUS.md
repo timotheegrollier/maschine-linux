@@ -59,9 +59,11 @@ check on real hardware. Update it with every release (see the release steps in
   rounded shapes and knob slots, but keep their older layouts.
 - **Standby before any launch** needs the packages (or `standby --install`) and
   a logged-in systemd user session; a `SIGKILL` leaves the last frame.
-- **Automation** (`CLEAR AUTO`) and touch-sensitive knob behaviour are not
-  implemented. Automation points are recorded into the Pattern but not yet
-  replayed during playback.
+- **Automation** : le bouton `AUTO` de la MK3 (LED allumé) arme l'enregistrement
+  des points pendant `REC` et ouvre deux écrans dédiés (liste des automations
+  du pattern et courbe des points). Les points sont enregistrés dans le Pattern
+  mais ne sont pas encore rejoués pendant la lecture ; `CLEAR AUTO` et le
+  comportement des knobs tactiles restent à implémenter.
 - **Pattern workflow**: two pads pressed together chain the whole interval
   (1→16 possible); SHIFT + a pattern pad now switches immediately while the
   transport runs (pending launch and chain cancelled). The generic SHIFT-pad

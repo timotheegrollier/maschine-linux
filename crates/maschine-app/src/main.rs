@@ -313,6 +313,7 @@ fn sync_mapper_context(
     mapper.delete_project_confirm = snap.delete_project_confirm;
     mapper.sixteen_vel = snap.sixteen_velocities;
     mapper.fixed_velocity = snap.fixed_velocity;
+    mapper.automation_armed = snap.automation_armed;
     let (kb, chords) = (snap.keyboard, snap.controller_mode == 2);
     mapper.kbd_pad_notes = std::array::from_fn(|p| kb.pad_notes(chords, p as u8));
     mapper.kbd_root_pads = (0..16u8)
@@ -959,6 +960,9 @@ fn cmd_daemon(
                 }
                 MapperAction::StepScroll(delta) => {
                     let _ = engine.lock().handle_event(EngineEvent::StepScroll(delta));
+                }
+                MapperAction::ToggleAutomation => {
+                    let _ = engine.lock().handle_event(EngineEvent::ToggleAutomation);
                 }
                 MapperAction::PlayPauseToggle => {
                     let mut eng = engine.lock();
@@ -2803,6 +2807,8 @@ fn cmd_display_probe() -> anyhow::Result<()> {
 
         println!("\n2. AFFICHAGE DE L'INTERFACE DAW OFFICIELLE SUR LES 2 ÉCRANS...");
         let mut snap = maschine_engine::EngineSnapshot {
+            automation_armed: false,
+            automation_view: false,
             project: std::sync::Arc::new(maschine_engine::project::Project::new_demo()),
             transport: maschine_engine::transport::Transport::new(120.0, 48000),
             group_focus: 0,

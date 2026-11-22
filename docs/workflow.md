@@ -220,6 +220,15 @@ Since 0.14.0 both modes follow that reference; see the two sections below. Not i
   blinking. Group buttons: focused group bright in its assigned colour — the
   most lit of all; other groups dim even while they play; muted/empty off.
 
+- **Automation (AUTO button)**: pressing `AUTO` lights its LED, arms automation
+  recording and opens both automation screens — the left screen lists the
+  automations of the active pattern, the right screen draws the recorded
+  points of the focused Sound's knob. During `REC` with AUTO lit, turning a
+  knob writes a point into the pattern. The GUI follows the same state.
+- **Pattern chaining in the GUI**: pressing two pattern pads within 900 ms
+  chains the whole interval between them, like the two simultaneous pads on
+  the MK3.
+
 ## SAMPLING: sample editor (RECORD, EDIT, SLICE, ZONE)
 
 `SAMPLING` (left tab 2) edits the sample of the focused Sound. Display buttons

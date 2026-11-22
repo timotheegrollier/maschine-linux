@@ -594,6 +594,66 @@ impl KickParams {
         }
     }
 
+    /// Preset 14 : House Soft Sub — kick chaud et rond, attaque douce, queue propre.
+    #[must_use]
+    pub fn preset_house_soft_sub() -> Self {
+        Self {
+            enabled: true,
+            waveform: KickWaveform::Sine,
+            tune_hz: 50.0,
+            tuning_semitones: 0.0,
+            decay_ms: 420.0,
+            sweep_time_ms: 30.0,
+            snap: 0.48,
+            click: 0.18,
+            drive: 0.14,
+            drive_type: KickDriveType::TubeDrive,
+            drive_tone: 0.55,
+            sub: 0.72,
+            sub_ratio: 1.0,
+            noise_mix: 0.04,
+            noise_decay_ms: 10.0,
+            filter_mode: KickFilterMode::LowPass,
+            filter_cutoff_hz: 2400.0,
+            filter_reso: 0.08,
+            volume_db: 0.0,
+            preset_name: "House Soft Sub".to_string(),
+            fm_amount: 0.0,
+            fm_ratio: 1.0,
+            hold_ms: 0.0,
+        }
+    }
+
+    /// Preset 15 : Breakbeat Snap — attaque sèche et claquante, corps court, queue nette.
+    #[must_use]
+    pub fn preset_breakbeat_snap() -> Self {
+        Self {
+            enabled: true,
+            waveform: KickWaveform::Parabolic,
+            tune_hz: 58.0,
+            tuning_semitones: 0.0,
+            decay_ms: 180.0,
+            sweep_time_ms: 14.0,
+            snap: 0.70,
+            click: 0.82,
+            drive: 0.28,
+            drive_type: KickDriveType::AnalogTanh,
+            drive_tone: 0.78,
+            sub: 0.32,
+            sub_ratio: 1.0,
+            noise_mix: 0.22,
+            noise_decay_ms: 9.0,
+            filter_mode: KickFilterMode::LowPass,
+            filter_cutoff_hz: 6200.0,
+            filter_reso: 0.12,
+            volume_db: -0.5,
+            preset_name: "Breakbeat Snap".to_string(),
+            fm_amount: 0.0,
+            fm_ratio: 1.0,
+            hold_ms: 0.0,
+        }
+    }
+
     /// Retourne la liste complète des presets disponibles.
     #[must_use]
     pub fn all_presets() -> Vec<Self> {
@@ -611,6 +671,8 @@ impl KickParams {
             Self::preset_glitch_bitcrush(),
             Self::preset_909_parabolic_punch(),
             Self::preset_trap_808_long_boom(),
+            Self::preset_house_soft_sub(),
+            Self::preset_breakbeat_snap(),
         ]
     }
 }
@@ -816,19 +878,23 @@ impl KickSynth {
             // Somme brute
             let mixed = body * amp_env + click + noise_layer;
 
-            // Étage de saturation non-linéaire selon le type de distorsion
-            let saturated = if drive > 0.01 {
-                let gain = 1.0 + drive * 5.0;
+            // Étage de saturation non-linéaire selon le type de distorsion.
+            // La drive suit l'enveloppe d'amplitude : elle colore l'attaque et
+            // le corps, mais s'éteint sur la queue (sinon grésillement
+            // désagréable en fin de son sur les presets saturés).
+            let drive_now = drive * (-decay_t / (decay_tau * 0.55)).exp();
+            let saturated = if drive_now > 0.005 {
+                let gain = 1.0 + drive_now * 5.0;
                 let pushed = mixed * gain;
 
                 match p.drive_type {
                     KickDriveType::AnalogTanh => {
                         let shaped = (pushed + 0.12 * pushed * pushed).tanh();
-                        shaped * (1.0 / (1.0 + drive * 0.5))
+                        shaped * (1.0 / (1.0 + drive_now * 0.5))
                     }
                     KickDriveType::HardClip => {
                         let clipped = pushed.clamp(-1.0, 1.0);
-                        clipped * (1.0 / (1.0 + drive * 0.4))
+                        clipped * (1.0 / (1.0 + drive_now * 0.4))
                     }
                     KickDriveType::Wavefolder => {
                         // Wavefolding non-linéaire récursif style Buchla
@@ -848,22 +914,22 @@ impl KickSynth {
                         tube * 0.90
                     }
                     KickDriveType::Bitcrush => {
-                        let bits = (16.0 - drive * 12.0).clamp(2.0, 16.0);
+                        let bits = (16.0 - drive_now * 12.0).clamp(2.0, 16.0);
                         let steps = 2.0_f32.powf(bits);
-                        (pushed * steps).round() / steps * (1.0 / (1.0 + drive * 0.3))
+                        (pushed * steps).round() / steps * (1.0 / (1.0 + drive_now * 0.3))
                     }
                     KickDriveType::Fuzz => {
                         let sign = pushed.signum();
-                        let fuzzed = sign * (1.0 - (-pushed.abs() * (2.0 + drive * 4.0)).exp());
+                        let fuzzed = sign * (1.0 - (-pushed.abs() * (2.0 + drive_now * 4.0)).exp());
                         fuzzed * 0.85
                     }
                     KickDriveType::Rectifier => {
                         let rect = if pushed > 0.0 {
                             pushed
                         } else {
-                            -pushed * (1.0 - drive * 0.7)
+                            -pushed * (1.0 - drive_now * 0.7)
                         };
-                        (rect - 0.3 * drive).tanh() * 0.90
+                        (rect - 0.3 * drive_now).tanh() * 0.90
                     }
                 }
             } else {
@@ -872,7 +938,7 @@ impl KickSynth {
 
             // Filtre de brillance / tonalité post-saturation (one-pole)
             // Ne filtre que si de la distorsion est présente, évitant de couper les harmoniques du kick clair
-            let post_tone = if p.drive > 0.01 {
+            let post_tone = if drive_now > 0.005 {
                 let tone_coeff = (p.drive_tone * 0.85 + 0.1).clamp(0.05, 0.95);
                 self.tone_state += tone_coeff * (saturated - self.tone_state);
                 self.tone_state

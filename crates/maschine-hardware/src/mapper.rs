@@ -402,6 +402,8 @@ pub enum MapperAction {
     SetEraseMode(bool),
     /// Miroir écran : mode de jeu 0..3
     SetControllerMode(u8),
+    /// Bouton AUTO : armement des automations + vue dédiée.
+    ToggleAutomation,
     /// Bascule la boucle transport
     ToggleLoop,
     /// Bascule le métronome
@@ -577,6 +579,8 @@ pub struct HardwareMapper {
     pub touchstrip_mode: TouchStripMode,
     /// Vélocité fixe activée (niveau `fixed_velocity_level`)
     pub fixed_velocity: bool,
+    /// Bouton AUTO allumé : armement des automations.
+    pub automation_armed: bool,
     /// 16 vélocités (moteur) : les pads jouent le Sound sélectionné.
     pub sixteen_vel: bool,
     /// Niveau de la vélocité fixe (1..127), réglable au 4D quand actif
@@ -707,6 +711,7 @@ impl HardwareMapper {
             encoder_focus: EncoderFocus::Tempo,
             touchstrip_mode: TouchStripMode::Perform,
             fixed_velocity: false,
+            automation_armed: false,
             sixteen_vel: false,
             fixed_velocity_level: 100,
             follow_mode: true,
@@ -1175,7 +1180,8 @@ impl HardwareMapper {
                 true
             }
             ButtonId::Auto => {
-                actions.push(MapperAction::Quantize);
+                // Bouton AUTO : armement des automations (comme sur la MK3).
+                actions.push(MapperAction::ToggleAutomation);
                 true
             }
             ButtonId::FileSave => {
@@ -2459,6 +2465,8 @@ impl HardwareMapper {
             .set_button_raw(offsets::SETTINGS, if self.right_tab == 3 { 7 } else { 1 });
         self.led_state
             .set_button_raw(offsets::EVENTS, if self.right_tab == 1 { 7 } else { 1 });
+        self.led_state
+            .set_button_raw(offsets::AUTO, if self.automation_armed { 7 } else { 1 });
         self.led_state
             .set_button_raw(offsets::MACRO, if self.right_tab == 2 { 7 } else { 1 });
 
@@ -4231,6 +4239,17 @@ mod tests {
             }],
             "deux pads éloignés chaînent tous les patterns de l'intervalle"
         );
+    }
+
+    #[test]
+    fn auto_button_sends_toggle_action() {
+        let mut m = HardwareMapper::with_default();
+        let actions = m.handle_hardware_event(HardwareEvent::Button {
+            id: ButtonId::Auto,
+            pressed: true,
+            ts_ns: 1,
+        });
+        assert_eq!(actions, vec![MapperAction::ToggleAutomation]);
     }
 
     #[test]

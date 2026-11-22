@@ -4243,6 +4243,160 @@ pub fn render_events_left(snap: &EngineSnapshot) -> DisplayFrame {
     frame
 }
 
+/// Écran gauche — vue AUTOMATION : liste des automations du pattern actif.
+#[must_use]
+pub fn render_automation_left(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::of(snap);
+    let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
+    header(
+        &mut frame,
+        &p,
+        snap,
+        "AUTOMATION",
+        if snap.automation_armed {
+            "ARMEE"
+        } else {
+            "OFF"
+        },
+    );
+    let automations: Vec<_> = active_pattern(snap)
+        .map(|pat| pat.automations.iter().take(7).collect())
+        .unwrap_or_default();
+    if automations.is_empty() {
+        draw_text(&mut frame, 10, 60, "Aucune automation", p.dim, p.bg);
+        draw_text(
+            &mut frame,
+            10,
+            82,
+            "AUTO + REC + tourner un knob",
+            p.dim,
+            p.bg,
+        );
+    }
+    for (i, auto) in automations.iter().enumerate() {
+        let y = 36 + i * 22;
+        let last = auto.points.last().map_or(0.0, |pt| pt.1);
+        let label = format!(
+            "{:02} KNOB {:02} ({} pts)",
+            i + 1,
+            auto.knob + 1,
+            auto.points.len()
+        );
+        let color = if auto.sound == Some(snap.active_sound) {
+            p.accent
+        } else {
+            p.white
+        };
+        draw_text(&mut frame, 8, y, &label, color, p.bg);
+        bar_h(
+            &mut frame,
+            &p,
+            8,
+            y + 12,
+            300,
+            6,
+            last.clamp(0.0, 1.0),
+            p.cyan,
+        );
+    }
+    let slots: [EncSlot<'_>; 4] = [
+        Some((
+            "1:ARM",
+            if snap.automation_armed { "ON" } else { "OFF" }.to_string(),
+            f32::from(u8::from(snap.automation_armed)),
+            if snap.automation_armed { p.red } else { p.dim },
+        )),
+        Some((
+            "2:REC",
+            if snap.transport.state == crate::transport::TransportState::Recording {
+                "REC"
+            } else {
+                "--"
+            }
+            .to_string(),
+            f32::from(u8::from(
+                snap.transport.state == crate::transport::TransportState::Recording,
+            )),
+            p.red,
+        )),
+        None,
+        None,
+    ];
+    encoder_row(&mut frame, &p, &slots);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
+    frame
+}
+
+/// Écran droit — vue AUTOMATION : courbe des points du pattern actif.
+#[must_use]
+pub fn render_automation_right(snap: &EngineSnapshot) -> DisplayFrame {
+    let p = Pal::of(snap);
+    let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
+    header(&mut frame, &p, snap, "AUTOMATION", "COURBE / POINTS");
+    let auto = active_pattern(snap).and_then(|pat| {
+        pat.automations
+            .iter()
+            .find(|a| a.sound == Some(snap.active_sound))
+            .or_else(|| pat.automations.first())
+    });
+    let Some(auto) = auto else {
+        draw_text(&mut frame, 10, 60, "Aucun point", p.dim, p.bg);
+        draw_text(
+            &mut frame,
+            10,
+            82,
+            "AUTO + REC + tourner un knob",
+            p.dim,
+            p.bg,
+        );
+        let slots: [EncSlot<'_>; 4] = [None, None, None, None];
+        encoder_row(&mut frame, &p, &slots);
+        finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
+        return frame;
+    };
+    let max_tick = auto.points.last().map_or(1, |pt| pt.0.max(1));
+    let x0 = 12usize;
+    let w = SCR_W - 24;
+    let y0 = 48usize;
+    let h = 96usize;
+    for (i, pt) in auto.points.iter().take(64).enumerate() {
+        let x = x0 + (pt.0 as usize * w / max_tick as usize).min(w - 2);
+        let value = pt.1.clamp(0.0, 1.0);
+        let height = (value * h as f32).max(2.0) as usize;
+        fill_rect(
+            &mut frame,
+            x,
+            y0 + h - height,
+            2,
+            height,
+            if i % 2 == 0 { p.cyan } else { p.accent },
+        );
+    }
+    draw_text(
+        &mut frame,
+        12,
+        SCR_H - 110,
+        &format!("KNOB {} — {} points", auto.knob + 1, auto.points.len()),
+        p.white,
+        p.bg,
+    );
+    let last = auto.points.last().map_or(0.0, |pt| pt.1);
+    let slots: [EncSlot<'_>; 4] = [
+        Some(("5:KNOB", format!("{}", auto.knob + 1), 0.5, p.cyan)),
+        Some((
+            "6:VALEUR",
+            format!("{:.0}%", last * 100.0),
+            last.clamp(0.0, 1.0),
+            p.green,
+        )),
+        Some(("7:POINTS", format!("{}", auto.points.len()), 0.5, p.accent)),
+        None,
+    ];
+    encoder_row(&mut frame, &p, &slots);
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
+    frame
+}
+
 /// Écran droit — vue MACRO : macros master / groupe.
 #[must_use]
 pub fn render_macro_right(snap: &EngineSnapshot) -> DisplayFrame {
@@ -6388,7 +6542,9 @@ pub fn render_screens_with_guitar(
 ) -> (DisplayFrame, DisplayFrame) {
     let fallback = GuitarScreenData::default();
     let g = guitar.unwrap_or(&fallback);
-    let left = if snap.right_tab == 1 {
+    let left = if snap.automation_view {
+        render_automation_left(snap)
+    } else if snap.right_tab == 1 {
         render_events_left(snap)
     } else if snap.song_mode {
         render_arranger_left(snap)
@@ -6417,7 +6573,9 @@ pub fn render_screens_with_guitar(
             }
         }
     };
-    let right = if snap.right_tab == 1 {
+    let right = if snap.automation_view {
+        render_automation_right(snap)
+    } else if snap.right_tab == 1 {
         render_events_right(snap)
     } else if snap.song_mode {
         render_arranger_right(snap)

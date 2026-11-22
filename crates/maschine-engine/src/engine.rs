@@ -65,6 +65,8 @@ pub enum EngineEvent {
     HeadphoneVolume(f32),
     /// Toggle mute on group
     Mute(u8),
+    /// Bascule le bouton AUTO (armement des automations + vue dédiée).
+    ToggleAutomation,
     /// Bascule le mute d'un pad/son dans un groupe (mode MUTE Maschine).
     TogglePadMute { group: u8, pad: u8 },
     /// Toggle solo on group
@@ -742,6 +744,10 @@ pub struct EngineSnapshot {
     pub fixed_velocity_level: u8,
     /// 16 vélocités (SHIFT + FIXED VEL).
     pub sixteen_velocities: bool,
+    /// Bouton AUTO armé : les automations sont enregistrées pendant REC.
+    pub automation_armed: bool,
+    /// Vue AUTOMATION affichée sur les deux écrans.
+    pub automation_view: bool,
     /// Mode de l'arpégiateur (index dans `ARP_MODES`).
     pub arp_mode: u8,
     /// Compteur de révision : change dès qu'un état a bougé (repaint UI/écrans).
@@ -831,6 +837,8 @@ pub struct HardwareSnapshot {
     /// 16 vélocités : les pads ne changent pas le Sound sélectionné.
     pub sixteen_velocities: bool,
     pub fixed_velocity: bool,
+    /// Bouton AUTO allumé (armement des automations).
+    pub automation_armed: bool,
 }
 
 /// Convertit un gain en décibels en multiplicateur linéaire.
@@ -1250,6 +1258,10 @@ pub struct Engine {
     arp_falling: bool,
     /// 16 vélocités (SHIFT + FIXED VEL).
     sixteen_velocities: bool,
+    /// Bouton AUTO de la MK3 : enregistrement des automations armé.
+    automation_armed: bool,
+    /// Vue AUTOMATION ouverte sur les deux écrans.
+    automation_view: bool,
     /// Patterns lancés par le séquenceur, reportés dans la scène du projet
     /// hors du thread audio (`commit_launches`).
     launched_patterns: [Option<usize>; 8],
@@ -1606,6 +1618,8 @@ impl Engine {
             arp_mode: 0,
             arp_falling: false,
             sixteen_velocities: false,
+            automation_armed: false,
+            automation_view: false,
             pending_patterns: [None; 8],
             launched_patterns: [None; 8],
             master_limiter: crate::limiter::MasterLimiter::new(sample_rate),
@@ -2027,6 +2041,8 @@ impl Engine {
             fixed_velocity: self.fixed_velocity,
             fixed_velocity_level: self.fixed_velocity_level,
             sixteen_velocities: self.sixteen_velocities,
+            automation_armed: self.automation_armed,
+            automation_view: self.automation_view,
             arp_mode: self.arp_mode,
             shift_held: self.shift_held,
             lock_active: self.lock_active,
@@ -2164,6 +2180,7 @@ impl Engine {
             pending_pattern: self.pending_patterns[self.group_focus as usize % 8],
             count_in: self.count_in.is_some(),
             sixteen_velocities: self.sixteen_velocities,
+            automation_armed: self.automation_armed,
             fixed_velocity: self.fixed_velocity,
         }
     }
@@ -4555,6 +4572,23 @@ impl Engine {
                 self.fixed_velocity_level = level.clamp(1, 127);
                 self.revision = self.revision.wrapping_add(1);
             }
+            EngineEvent::ToggleAutomation => {
+                self.automation_armed = !self.automation_armed;
+                self.automation_view = self.automation_armed;
+                self.show_status(format!(
+                    "Automation {} — {}",
+                    if self.automation_armed {
+                        "ARMÉE"
+                    } else {
+                        "OFF"
+                    },
+                    if self.automation_armed {
+                        "tourne un knob en REC pour écrire des points"
+                    } else {
+                        "vue fermée"
+                    }
+                ));
+            }
             EngineEvent::SetShiftHeld(held) => {
                 self.shift_held = held;
                 self.revision = self.revision.wrapping_add(1);
@@ -5576,7 +5610,8 @@ impl Engine {
     /// Enregistre un point d'automation pendant REC (knob du Sound actif) dans
     /// le Pattern actif : crée ou complète l'automation du (Sound, knob).
     fn record_sound_automation(&mut self, group: u8, sound: u8, knob: u8, value: f32) {
-        if self.transport.state != TransportState::Recording {
+        // Le bouton AUTO doit être allumé (armé), comme sur la MK3.
+        if !self.automation_armed || self.transport.state != TransportState::Recording {
             return;
         }
         let focus = group as usize;
@@ -9848,6 +9883,7 @@ mod tests {
         let mut eng = Engine::new_demo(48000);
         eng.load_plugin_to_sound(0, 0, 1).unwrap(); // TB-303 sur le pad 0
         eng.handle_event(EngineEvent::SetLeftTab(4)).unwrap(); // Onglet PLUGIN
+        eng.handle_event(EngineEvent::ToggleAutomation).unwrap(); // Bouton AUTO
         eng.handle_event(EngineEvent::Transport {
             play: true,
             rec: true,
@@ -9865,6 +9901,40 @@ mod tests {
                 .iter()
                 .any(|a| a.sound == Some(0) && a.knob == 2),
             "l'automation du knob doit être enregistrée pendant REC"
+        );
+    }
+
+    #[test]
+    fn auto_button_arms_automation_recording() {
+        let mut eng = Engine::new_demo(48000);
+        eng.load_plugin_to_sound(0, 0, 1).unwrap();
+        eng.handle_event(EngineEvent::SetLeftTab(4)).unwrap();
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: true,
+            stop: false,
+        })
+        .unwrap();
+        // Sans AUTO, les knobs n'écrivent rien.
+        eng.handle_event(EngineEvent::PluginKnob { knob: 2, delta: 64 })
+            .unwrap();
+        assert!(
+            eng.project.read().groups[0].patterns[0]
+                .automations
+                .is_empty(),
+            "AUTO éteint : aucune automation enregistrée"
+        );
+        // AUTO allumé : LED/vue et enregistrement des points.
+        eng.handle_event(EngineEvent::ToggleAutomation).unwrap();
+        assert!(eng.snapshot().automation_armed);
+        assert!(eng.snapshot().automation_view);
+        eng.handle_event(EngineEvent::PluginKnob { knob: 2, delta: 64 })
+            .unwrap();
+        assert!(
+            !eng.project.read().groups[0].patterns[0]
+                .automations
+                .is_empty(),
+            "AUTO allumé : l'automation est enregistrée"
         );
     }
 

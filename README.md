@@ -50,6 +50,18 @@ errors) and `--stress` (deliberate engine-lock contention).
   them (up to 16 patterns).
 - PipeWire routing only runs when the guitar amp is active.
 
+### Automations, Kick Synth and updater
+
+- `AUTO` arms automation recording (LED lit) and opens the two dedicated MK3
+  screens: the left screen lists the automations of the active pattern, the
+  right screen draws the points of the selected knob. Turn a knob during REC
+  with AUTO lit to write points; the design follows the shared MK3/GUI tokens.
+- The Kick Synth drive follows the amplitude envelope, so the tail stays clean
+  instead of gritting; two new presets (House Soft Sub, Breakbeat Snap) join
+  the 13 existing ones.
+- The in-app updater window uses the dark design tokens with explicit bright
+  text and buttons (no more black-on-black labels).
+
 ### No audio-source changes without an MK3 in 0.21.1
 
 - On a machine without a connected controller, PipeWire routing, the default

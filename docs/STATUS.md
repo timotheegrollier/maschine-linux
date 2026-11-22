@@ -4,7 +4,7 @@ Living document: what works, what is partial, what is missing, and what to
 check on real hardware. Update it with every release (see the release steps in
 `AGENTS.md`). Behaviour details live in `workflow.md`; this file is the map.
 
-## Current version: 0.21.1
+## Current version: 0.22.0
 
 ### Done (with tests)
 
@@ -96,6 +96,9 @@ check on real hardware. Update it with every release (see the release steps in
 
 ## History (recent)
 
+- **0.22.0** — workflow PATTERN MK3 : SHIFT+pad = bascule immédiate en
+  lecture, deux pads = chaînage de tout l'intervalle (1er au 16e) ; routeur
+  PipeWire uniquement quand l'ampli guitare est actif.
 - **0.21.1** — sans MK3, l'app ne modifie plus les sources audio (wpctl,
   entrée guitare, routeur PipeWire désactivés sans contrôleur).
 - **0.21.0** — pendant REC, le pattern rejoue immédiatement (boucle audible)

@@ -14,7 +14,7 @@ Maschine Linux is an independent project. It does not include Native
 Instruments code or proprietary assets; it reproduces the documented workflow
 and hardware behavior through a clean-room implementation.
 
-## Current state (0.21.1)
+## Current state (0.22.0)
 
 Cargo workspace with six crates:
 
@@ -42,6 +42,13 @@ errors) and `--stress` (deliberate engine-lock contention).
   pads, like the MK3.
 - Arpeggiator modes on knob 7 (up, down, up-down, one or two octaves).
 - Events mode edits every note of the Sound at once (knob 6).
+
+### MK3 pattern workflow in 0.22.0
+
+- SHIFT + a pattern pad switches immediately while playing — no waiting for
+  the next bar. Two pads pressed together chain the whole interval between
+  them (up to 16 patterns).
+- PipeWire routing only runs when the guitar amp is active.
 
 ### No audio-source changes without an MK3 in 0.21.1
 

@@ -2,6 +2,15 @@
 
 All notable changes.
 
+## [0.22.0] - 2026-11-22
+
+### Added
+- **Workflow PATTERN MK3** : SHIFT + pad pattern bascule immédiatement pendant la lecture (plus d'attente de la fin de mesure ; le lancement en attente et la chaîne courante sont annulés). Deux pads pressés ensemble chaînent tout l'intervalle entre eux, du 1er au 16e pattern. La couche SHIFT générique (UNDO/REDO/…) reste active hors mode PATTERN.
+- **Audio** : le routeur PipeWire ne s'active que si l'ampli guitare est réellement utilisé, évitant les blocages après quelques minutes avec la MK3.
+
+### Validation
+- 298 tests, `clippy -D warnings`, vérification sans sampler au vert. Nouveaux tests : `shift_pattern_switch_is_immediate_while_playing`, `shift_pattern_pad_requests_immediate_switch`, `pattern_chain_wide_interval`.
+
 ## [0.21.1] - 2026-11-22
 
 ### Fixed

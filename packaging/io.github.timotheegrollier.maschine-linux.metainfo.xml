@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.22.0" date="2026-11-22">
+      <description>
+        <p>Release 0.22.0: MK3 pattern workflow — SHIFT + a pattern pad switches immediately during playback, and two pads pressed together chain the whole interval (up to 16 patterns). PipeWire routing only runs when the guitar amp is in use.</p>
+      </description>
+    </release>
     <release version="0.21.1" date="2026-11-22">
       <description>
         <p>Release 0.21.1: on machines without a Maschine MK3, the app no longer changes audio sources by itself — PipeWire routing, wpctl default source and the guitar input are only activated when the controller is actually present.</p>

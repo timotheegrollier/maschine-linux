@@ -9,7 +9,7 @@
 use crate::acid_synth::{AcidParams, AcidWaveform};
 use crate::fx::{FxSlot, FxType};
 use crate::kick_synth::{KickDriveType, KickFilterMode, KickParams, KickWaveform};
-use crate::project::{FilterKind, Sound};
+use crate::project::{AutoTarget, FilterKind, Project, Sound, SoundAutomation};
 use crate::wavetable_synth::{LfoTarget, WavetableFilterMode, WavetableParams, WavetableWaveform};
 
 /// Ticks bruts d'un cran de knob (1024 par tour).
@@ -315,6 +315,75 @@ pub fn value<P>(pages: &[Page<P>], page: usize, knob: usize, p: &P) -> Option<f3
         .get(knob)
         .and_then(Option::as_ref)?;
     Some((param.get)(p))
+}
+
+/// Règle le paramètre (page, knob) à une valeur brute, bornée à son échelle
+/// (relecture des automations : sans allocation, thread audio).
+pub fn set<P>(pages: &[Page<P>], page: usize, knob: usize, p: &mut P, v: f32) {
+    let param = pages
+        .get(page)
+        .and_then(|pg| pg.params.get(knob))
+        .and_then(Option::as_ref);
+    if let (Some(param), true) = (param, v.is_finite()) {
+        let (min, max) = param.scale.bounds();
+        (param.set)(p, v.clamp(min, max));
+    }
+}
+
+/// Instrument d'un Sound (même priorité que `instrument_for`).
+#[must_use]
+pub fn instrument_of(snd: &Sound) -> Instrument {
+    if snd.kick_synth.is_some() {
+        Instrument::Kick
+    } else if snd.wavetable_synth.is_some() {
+        Instrument::Wavetable
+    } else if snd.synth.is_some() {
+        Instrument::Acid
+    } else {
+        Instrument::Sampler
+    }
+}
+
+/// Nom et échelle du paramètre (page, knob) d'un instrument : affichage des
+/// automations.
+#[must_use]
+pub fn param_info(inst: Instrument, page: usize, knob: usize) -> Option<(&'static str, Scale)> {
+    fn at<P>(pages: &[Page<P>], page: usize, knob: usize) -> Option<(&'static str, Scale)> {
+        let param = pages.get(page)?.params.get(knob)?.as_ref()?;
+        Some((param.name, param.scale))
+    }
+    match inst {
+        Instrument::Sampler => at(&SAMPLER_PAGES, page, knob),
+        Instrument::Acid => at(&ACID_PAGES, page, knob),
+        Instrument::Kick => at(&KICK_PAGES, page, knob),
+        Instrument::Wavetable => at(&WAVETABLE_PAGES, page, knob),
+    }
+}
+
+/// Nom et échelle du paramètre piloté par une automation d'un pattern du
+/// groupe `group` (`None` : ancien format, ou la cible n'existe plus). Une
+/// seule table pour la relecture, l'édition et les écrans.
+#[must_use]
+pub fn lane_param(
+    proj: &Project,
+    group: usize,
+    auto: &SoundAutomation,
+) -> Option<(&'static str, Scale)> {
+    let g = proj.groups.get(group)?;
+    let knob = auto.knob as usize;
+    let sound = || g.sounds.get(auto.sound? as usize)?.as_ref();
+    let fx = |chain: &[FxSlot], i: u8| {
+        let page = fx_pages(chain.get(i as usize)?.fx_type).first()?;
+        let param = page.params.get(knob)?.as_ref()?;
+        Some((param.name, param.scale))
+    };
+    match auto.target {
+        AutoTarget::Instrument => param_info(instrument_of(sound()?), auto.page? as usize, knob),
+        AutoTarget::SoundFx(i) => fx(&sound()?.fx_chain, i),
+        AutoTarget::GroupFx(i) => fx(&g.fx_chain, i),
+        AutoTarget::MasterFx(i) => fx(&proj.master.fx_chain, i),
+        AutoTarget::Group => [("VOLUME", VOLUME), ("PAN", PAN)].get(knob).copied(),
+    }
 }
 
 /// Le knob `knob` de la page avance-t-il par crans ?

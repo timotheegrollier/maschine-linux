@@ -7,7 +7,8 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use crate::project::{
-    BarsBeatsTicks, Pattern, PatternEvent, Project, Scene, Section, SoundAutomation, Zone,
+    AutoTarget, BarsBeatsTicks, Pattern, PatternEvent, Project, Scene, Section, SoundAutomation,
+    Zone,
 };
 use crate::sampler::Sampler;
 use crate::sequencer::{Grid, Sequencer};
@@ -748,6 +749,9 @@ pub struct EngineSnapshot {
     pub automation_armed: bool,
     /// Vue AUTOMATION affichée sur les deux écrans.
     pub automation_view: bool,
+    /// Vue AUTOMATION : automation et point sélectionnés.
+    pub auto_lane: usize,
+    pub auto_point: usize,
     /// Mode de l'arpégiateur (index dans `ARP_MODES`).
     pub arp_mode: u8,
     /// Compteur de révision : change dès qu'un état a bougé (repaint UI/écrans).
@@ -1008,6 +1012,11 @@ fn write_wav_mono(path: &std::path::Path, samples: &[f32], sample_rate: u32) -> 
 }
 
 /// Boutons du mode EVENTS (écran gauche puis droit).
+/// Boutons d'écran de la vue AUTOMATION (bouton AUTO allumé).
+const AUTOMATION_LABELS: [&str; 8] = [
+    "LIGNE <", "LIGNE >", "PT <", "PT >", "VAL -", "VAL +", "SUPPR PT", "SUPPR",
+];
+
 const EVENT_LABELS: [&str; 8] = [
     "EVT <", "EVT >", "TOUS", "SUPPR", "DUPLIQ", "QUANT", "NUDGE <", "NUDGE >",
 ];
@@ -1234,6 +1243,19 @@ pub struct Engine {
     /// propres instances pour ne pas être coupé par la lecture du pattern
     /// (le pattern continue de sonner sur `rack` — flow Maschine).
     monitor_rack: SynthRack,
+    /// Copie de lecture des Sounds sampler automatisés (indice
+    /// `rack_index`) : le thread audio y applique les automations sans
+    /// toucher au projet. Recréée par `sync_synth_rack`.
+    auto_sounds: Vec<Option<crate::project::Sound>>,
+    /// Copies de lecture des chaînes d'effets (même ordre que `fx_buses`) et
+    /// de celle du Master : les automations les modifient, pas le projet.
+    fx_copies: Vec<Vec<crate::fx::FxSlot>>,
+    master_fx_copy: Vec<crate::fx::FxSlot>,
+    /// Volume (dB) et pan de groupe automatisés pour le bloc en cours.
+    auto_group_mix: [[Option<f32>; 2]; 8],
+    /// Vue AUTOMATION : automation et point sélectionnés (boutons d'écran).
+    auto_lane: usize,
+    auto_point: usize,
     /// Lancements en attente pendant la lecture : la scène ou le pattern
     /// choisi démarre au début de la mesure suivante, comme sur la MK3.
     pending_scene: Option<usize>,
@@ -1451,6 +1473,10 @@ fn assign_pattern_to_active_scene(
     }
 }
 
+/// En REC, un point d'automation efface les anciens points de la
+/// triple-croche qui le suit : tourner un knob réécrit la zone parcourue.
+const AUTOMATION_OVERWRITE_TICKS: u32 = 120;
+
 /// Position dans une chaîne de patterns : (pattern joué au tick donné, tick
 /// de son début dans la chaîne, longueur totale). `None` sans chaîne réelle.
 fn chain_slot(chain: &[usize], patterns: &[Pattern], tick: u64) -> Option<(usize, u64, u64)> {
@@ -1640,6 +1666,12 @@ impl Engine {
             master_fx: crate::fx::FxChainProcessor::new(sample_rate),
             rack: SynthRack::new(),
             monitor_rack: SynthRack::new(),
+            auto_sounds: vec![None; 8 * 16],
+            fx_copies: Vec::new(),
+            master_fx_copy: Vec::new(),
+            auto_group_mix: [[None; 2]; 8],
+            auto_lane: 0,
+            auto_point: 0,
             pending_scene: None,
             count_in: None,
             pending_notes: [None; 64],
@@ -1847,10 +1879,20 @@ impl Engine {
                 }
             }
             9 => {
-                self.status_message = Some(
-                    "Clear Auto indisponible : ce projet ne gère pas encore l’automation"
-                        .to_string(),
-                );
+                // CLEAR AUTO : les automations du Sound actif dans le pattern.
+                let sound = self.active_sound;
+                let mut guard = self.project.write();
+                let project = project_mut(&mut guard);
+                let index =
+                    project.active_pattern_index(self.group_focus as usize, self.active_scene);
+                if let Some(pattern) = project
+                    .groups
+                    .get_mut(self.group_focus as usize)
+                    .and_then(|group| index.and_then(|i| group.patterns.get_mut(i)))
+                {
+                    pattern.automations.retain(|a| a.sound != Some(sound));
+                }
+                self.status_message = Some(format!("Automations du Sound {} effacées", sound + 1));
                 self.status_expires_at =
                     std::time::Instant::now() + std::time::Duration::from_secs(2);
             }
@@ -2079,6 +2121,8 @@ impl Engine {
             sixteen_velocities: self.sixteen_velocities,
             automation_armed: self.automation_armed,
             automation_view: self.automation_view,
+            auto_lane: self.auto_lane,
+            auto_point: self.auto_point,
             arp_mode: self.arp_mode,
             shift_held: self.shift_held,
             lock_active: self.lock_active,
@@ -2734,7 +2778,7 @@ impl Engine {
                 | EngineEvent::StepLengthDelta(_)
                 | EngineEvent::StepPitchDelta(_)
                 | EngineEvent::SetPatternBars(_)
-                | EngineEvent::ShiftPadAction(4..=8 | 11..=15)
+                | EngineEvent::ShiftPadAction(4..=9 | 11..=15)
         );
         if records_history {
             self.push_project_history();
@@ -3565,6 +3609,8 @@ impl Engine {
                 drop(guard);
                 if let Some(ratio) = gain_ratio {
                     self.sampler.scale_group_gain(group, ratio);
+                    let v = volume_db.clamp(-60.0, 12.0);
+                    self.record_automation(group, None, AutoTarget::Group, 0, 0, v);
                 }
             }
             EngineEvent::GroupPan { group, pan } => {
@@ -3579,6 +3625,7 @@ impl Engine {
                 drop(guard);
                 if let Some(pan) = next_pan {
                     self.sampler.update_group_pan(group, pan);
+                    self.record_automation(group, None, AutoTarget::Group, 0, 1, pan);
                 }
             }
             EngineEvent::Variation => {
@@ -5399,7 +5446,15 @@ impl Engine {
                         };
 
                         if let Some(pat) = pat_to_play {
-                            let gain = db_to_linear(group.volume_db);
+                            // Automations : valeur au tick courant du pattern.
+                            let at = (eff_new % (pat.length.to_ticks() as u64).max(1)) as u32;
+                            self.auto_group_mix[gi % 8] = [None; 2];
+                            for auto in &pat.automations {
+                                self.apply_automation(&proj, gi as u8, auto, at);
+                            }
+                            let [auto_volume, auto_pan] = self.auto_group_mix[gi % 8];
+                            let group_pan = auto_pan.unwrap_or(group.pan);
+                            let gain = db_to_linear(auto_volume.unwrap_or(group.volume_db));
                             let mut vp = [crate::sampler::VoiceParams::default(); 16];
                             let mut sg = [1.0f32; 16];
                             let mut sp = [0.0f32; 16];
@@ -5408,6 +5463,9 @@ impl Engine {
                             let mut is_wavetable = [false; 16];
                             for s in 0..16 {
                                 if let Some(snd) = group.sounds[s].as_ref() {
+                                    let snd = self.auto_sounds[rack_index(gi as u8, s as u8)]
+                                        .as_ref()
+                                        .unwrap_or(snd);
                                     vp[s] = crate::sampler::VoiceParams {
                                         attack_ms: snd.adsr.attack_ms,
                                         decay_ms: snd.adsr.decay_ms,
@@ -5432,7 +5490,7 @@ impl Engine {
                                 &mut self.rack,
                                 gi as u8,
                                 gain,
-                                group.pan,
+                                group_pan,
                                 &sg,
                                 &sp,
                                 &vp,
@@ -5505,6 +5563,7 @@ impl Engine {
             return;
         }
         self.pending_notes = [None; 64];
+        let launched = self.launched_patterns.iter().any(Option::is_some);
         {
             let mut guard = self.project.write();
             let proj = project_mut(&mut guard);
@@ -5513,6 +5572,12 @@ impl Engine {
                     assign_pattern_to_active_scene(proj, &mut self.active_scene, g, p);
                 }
             }
+        }
+        if launched {
+            // Le nouveau pattern repart des valeurs du projet : les copies de
+            // lecture gardaient la dernière valeur automatisée de l'ancien.
+            self.sync_synth_rack();
+            self.sync_fx_buses();
         }
         for n in notes.into_iter().flatten() {
             let _ = self.record_note_at(n.group, n.pad, n.pitch, n.velocity, n.tick);
@@ -5961,18 +6026,104 @@ impl Engine {
         }
     }
 
-    /// Enregistre un point d'automation pendant REC (knob du Sound actif) dans
-    /// le Pattern actif : crée ou complète l'automation du (Sound, knob).
-    fn record_sound_automation(&mut self, group: u8, sound: u8, knob: u8, value: f32) {
+    /// Applique une automation aux copies de lecture (synthé du rack,
+    /// `auto_sounds`, `fx_copies`, `auto_group_mix`) — thread audio, sans
+    /// allocation ; le projet n'est jamais modifié.
+    fn apply_automation(&mut self, proj: &Project, g: u8, auto: &SoundAutomation, tick: u32) {
+        use crate::plugin_pages::{self as pp, Instrument};
+        let Some((_, scale)) = pp::lane_param(proj, g as usize, auto) else {
+            return;
+        };
+        let Some(v) = auto.value_at(tick, !scale.is_stepped()) else {
+            return;
+        };
+        let knob = auto.knob as usize;
+        let fx_set = |chain: Option<&mut Vec<crate::fx::FxSlot>>, i: u8| {
+            if let Some(slot) = chain.and_then(|c| c.get_mut(i as usize)) {
+                pp::set(pp::fx_pages(slot.fx_type), 0, knob, slot, v);
+            }
+        };
+        let sound = auto.sound.filter(|s| *s < 16);
+        match (auto.target, sound) {
+            (AutoTarget::Instrument, Some(s)) => {
+                let Some(snd) = proj.groups[g as usize].sounds[s as usize].as_ref() else {
+                    return;
+                };
+                let (i, page) = (rack_index(g, s), auto.page.unwrap_or(0) as usize);
+                match pp::instrument_of(snd) {
+                    Instrument::Kick => {
+                        if let Some(slot) = self.rack.kick[i].as_mut() {
+                            pp::set(&pp::KICK_PAGES, page, knob, &mut slot.synth.params, v);
+                        }
+                    }
+                    Instrument::Wavetable => {
+                        if let Some(slot) = self.rack.wavetable[i].as_mut() {
+                            pp::set(&pp::WAVETABLE_PAGES, page, knob, &mut slot.synth.params, v);
+                        }
+                    }
+                    Instrument::Acid => {
+                        if let Some(slot) = self.rack.acid[i].as_mut() {
+                            pp::set(&pp::ACID_PAGES, page, knob, &mut slot.synth.params, v);
+                        }
+                    }
+                    Instrument::Sampler => {
+                        if let Some(snd) = self.auto_sounds[i].as_mut() {
+                            pp::set(&pp::SAMPLER_PAGES, page, knob, snd, v);
+                        }
+                    }
+                }
+            }
+            (AutoTarget::SoundFx(i), Some(s)) => fx_set(self.fx_copy(FxOwner::Sound(g, s)), i),
+            (AutoTarget::GroupFx(i), _) => fx_set(self.fx_copy(FxOwner::Group(g)), i),
+            (AutoTarget::MasterFx(i), _) => fx_set(Some(&mut self.master_fx_copy), i),
+            (AutoTarget::Group, _) => {
+                let (min, max) = scale.bounds();
+                if let Some(slot) = self.auto_group_mix[g as usize % 8].get_mut(knob) {
+                    *slot = Some(v.clamp(min, max));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Copie de lecture de la chaîne d'effets d'un propriétaire.
+    fn fx_copy(&mut self, owner: FxOwner) -> Option<&mut Vec<crate::fx::FxSlot>> {
+        let i = self.fx_buses.iter().position(|(o, _)| *o == owner)?;
+        self.fx_copies.get_mut(i)
+    }
+
+    /// Automation d'un paramètre d'instrument du Sound (knob PLUG-IN).
+    fn record_sound_automation(&mut self, group: u8, sound: u8, page: u8, knob: u8, value: f32) {
+        self.record_automation(
+            group,
+            Some(sound),
+            AutoTarget::Instrument,
+            page,
+            knob,
+            value,
+        );
+    }
+
+    /// Enregistre un point d'automation pendant REC dans le Pattern en cours
+    /// du groupe : crée ou complète l'automation de la cible. Le geste
+    /// remplace les points écrits juste devant lui.
+    fn record_automation(
+        &mut self,
+        group: u8,
+        sound: Option<u8>,
+        target: AutoTarget,
+        page: u8,
+        knob: u8,
+        value: f32,
+    ) {
         // Le bouton AUTO doit être allumé (armé), comme sur la MK3.
         if !self.automation_armed || self.transport.state != TransportState::Recording {
             return;
         }
         let focus = group as usize;
-        let tick = self.transport.tick.min(u32::MAX as u64) as u32;
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
-        let Some(idx) = proj.active_pattern_index(focus, self.active_scene) else {
+        let Some((idx, local)) = self.rec_position(proj, focus, self.transport.tick) else {
             return;
         };
         let Some(pat) = proj
@@ -5982,24 +6133,98 @@ impl Engine {
         else {
             return;
         };
-        if let Some(auto) = pat
-            .automations
-            .iter_mut()
-            .find(|a| a.sound == Some(sound) && a.knob == knob)
-        {
-            if let Some(last) = auto.points.last_mut() {
-                if last.0 == tick {
-                    last.1 = value;
-                    return;
-                }
-            }
-            auto.points.push((tick, value));
-        } else {
+        let tick = (local % (pat.length.to_ticks() as u64).max(1)) as u32;
+        let lane = |a: &SoundAutomation| {
+            a.sound == sound && a.target == target && a.page == Some(page) && a.knob == knob
+        };
+        let i = pat.automations.iter().position(lane).unwrap_or_else(|| {
             pat.automations.push(SoundAutomation {
-                sound: Some(sound),
+                sound,
                 knob,
-                points: vec![(tick, value)],
+                page: Some(page),
+                target,
+                points: Vec::new(),
             });
+            pat.automations.len() - 1
+        });
+        let points = &mut pat.automations[i].points;
+        points.retain(|p| p.0 < tick || p.0 >= tick + AUTOMATION_OVERWRITE_TICKS);
+        let at = points.partition_point(|p| p.0 < tick);
+        points.insert(at, (tick, value));
+    }
+
+    /// Un effet retiré ou remplacé emporte ses automations (elles viseraient
+    /// un autre effet de la chaîne).
+    fn drop_fx_lanes(&mut self, owner: FxOwner) {
+        let mut guard = self.project.write();
+        for (g, group) in project_mut(&mut guard).groups.iter_mut().enumerate() {
+            for pat in &mut group.patterns {
+                pat.automations.retain(|a| !match (owner, a.target) {
+                    (FxOwner::Sound(og, os), AutoTarget::SoundFx(_)) => {
+                        og as usize == g && a.sound == Some(os)
+                    }
+                    (FxOwner::Group(og), AutoTarget::GroupFx(_)) => og as usize == g,
+                    (FxOwner::Master, AutoTarget::MasterFx(_)) => true,
+                    _ => false,
+                });
+            }
+        }
+    }
+
+    /// Boutons de la vue AUTOMATION : choix de l'automation et du point,
+    /// valeur du point (un cran de knob), suppression.
+    fn handle_automation_soft_key(&mut self, idx: usize) {
+        use crate::plugin_pages as pp;
+        let g = self.group_focus as usize;
+        let proj = Arc::clone(&*self.project.read());
+        let lanes = proj
+            .active_pattern_index(g, self.active_scene)
+            .and_then(|i| proj.groups.get(g)?.patterns.get(i))
+            .map_or(&[][..], |pat| pat.automations.as_slice());
+        let count = lanes.len();
+        if count == 0 {
+            return;
+        }
+        let lane = self.auto_lane.min(count - 1);
+        let last = lanes[lane].points.len().saturating_sub(1);
+        let point = self.auto_point.min(last);
+        (self.auto_lane, self.auto_point) = (lane, point);
+        match idx {
+            0 | 1 => {
+                self.auto_lane = (lane + if idx == 0 { count - 1 } else { 1 }) % count;
+                self.auto_point = 0;
+            }
+            2 => self.auto_point = point.saturating_sub(1),
+            3 => self.auto_point = (point + 1).min(last),
+            4 | 5 => {
+                let Some((_, scale)) = pp::lane_param(&proj, g, &lanes[lane]) else {
+                    return;
+                };
+                let dir = if idx == 4 { -1 } else { 1 };
+                self.push_project_history();
+                self.with_active_pattern(|pat| {
+                    let lane = pat.automations.get_mut(lane);
+                    if let Some(p) = lane.and_then(|a| a.points.get_mut(point)) {
+                        p.1 = if scale.is_stepped() {
+                            scale.step(p.1, dir)
+                        } else {
+                            scale.turn(p.1, dir * pp::DETENT_TICKS, false)
+                        };
+                    }
+                });
+            }
+            _ => {
+                // SUPPR PT : le point ; SUPPR (ou dernier point) : l'automation.
+                self.push_project_history();
+                self.with_active_pattern(|pat| {
+                    if idx == 6 && last > 0 {
+                        pat.automations[lane].points.remove(point);
+                    } else {
+                        pat.automations.remove(lane);
+                    }
+                });
+                self.auto_point = point.min(last.saturating_sub(1));
+            }
         }
     }
 
@@ -6037,10 +6262,11 @@ impl Engine {
             .and_then(|s| s.as_ref())
             .map(|s| db_to_linear(s.volume_db))
             .unwrap_or(1.0);
+        let [auto_volume, auto_pan] = self.auto_group_mix[group as usize % 8];
         let grp_gain = proj
             .groups
             .get(group as usize)
-            .map(|g| db_to_linear(g.volume_db))
+            .map(|g| db_to_linear(auto_volume.unwrap_or(g.volume_db)))
             .unwrap_or(1.0);
         let total_gain = snd_gain * grp_gain;
         let snd_pan = proj
@@ -6053,7 +6279,7 @@ impl Engine {
         let grp_pan = proj
             .groups
             .get(group as usize)
-            .map(|g| g.pan)
+            .map(|g| auto_pan.unwrap_or(g.pan))
             .unwrap_or(0.0);
         let total_pan = (snd_pan + grp_pan).clamp(-1.0, 1.0);
         let pan_l = (1.0 - total_pan).min(1.0) * total_gain;
@@ -6205,9 +6431,13 @@ impl Engine {
         if out_len <= FX_BUS_LEN {
             for i in 0..self.fx_buses.len() {
                 let owner = self.fx_buses[i].0;
+                let chain = self
+                    .fx_copies
+                    .get(i)
+                    .map_or(owner.chain(&proj), Vec::as_slice);
                 self.fx_buses[i]
                     .1
-                    .process(&mut self.fx_bus_bufs[i][..out_len], owner.chain(&proj));
+                    .process(&mut self.fx_bus_bufs[i][..out_len], chain);
                 let group_bus = match owner {
                     FxOwner::Sound(g, _) => self
                         .fx_buses
@@ -6227,7 +6457,7 @@ impl Engine {
                 }
             }
         }
-        self.master_fx.process(out, &proj.master.fx_chain);
+        self.master_fx.process(out, &self.master_fx_copy);
         drop(proj);
         // VU-mètres : crêtes par groupe du sampler, attaque immédiate / release
         // exponentiel par bloc (≈ -20 dB en 300 ms), peak hold plus lent (~1,7 s).
@@ -6323,6 +6553,10 @@ impl Engine {
     pub fn soft_key_labels(&self) -> [&'static str; 8] {
         if self.note_repeat_enabled {
             return ["1/32", "1/16", "1/8", "1/4", "1/2", "1/16T", "1/8T", "OFF"];
+        }
+        // Vue AUTOMATION (bouton AUTO allumé) : édition des points.
+        if self.automation_view {
+            return AUTOMATION_LABELS;
         }
         // Mode EVENTS : les deux écrans éditent les notes du pattern.
         if self.right_tab == 1 {
@@ -6496,6 +6730,9 @@ impl Engine {
         // Même ordre que `NOTE_REPEAT_TICKS` et les libellés NOTE REPEAT.
         const RATES: [&str; 7] = ["1/32", "1/16", "1/8", "1/4", "1/2", "1/16T", "1/8T"];
         let fx = self.selected_fx().map(|(_, _, fx)| fx);
+        if self.automation_view && !self.note_repeat_enabled {
+            return [false; 8];
+        }
         if self.right_tab == 1 && !self.note_repeat_enabled {
             return EVENT_LABELS.map(|label| label == "TOUS" && self.events_all);
         }
@@ -6740,6 +6977,7 @@ impl Engine {
             .map(|c| c.remove(index));
         drop(guard);
         if let Some(fx) = removed {
+            self.drop_fx_lanes(owner);
             self.show_status(format!("{} supprimé", fx.fx_type.label()));
         }
         self.revision = self.revision.wrapping_add(1);
@@ -6818,6 +7056,7 @@ impl Engine {
                         let cur = all.iter().position(|t| *t == fx.fx_type).unwrap_or(0) as i32;
                         let dir = if label == "< TYPE" { -1 } else { 1 };
                         let next = all[(cur + dir).rem_euclid(all.len() as i32) as usize];
+                        self.drop_fx_lanes(owner);
                         self.edit_fx(owner, i, |s| {
                             *s = FxSlot {
                                 enabled: s.enabled,
@@ -6905,6 +7144,14 @@ impl Engine {
                 }
             }
             if pp::turn(pages, 0, knob, &mut fx, delta, steps, self.shift_held) {
+                if let Some(v) = pp::value(pages, 0, knob, &fx) {
+                    let (group, sound, target) = match owner {
+                        FxOwner::Sound(g, s) => (g, Some(s), AutoTarget::SoundFx(i as u8)),
+                        FxOwner::Group(g) => (g, None, AutoTarget::GroupFx(i as u8)),
+                        FxOwner::Master => (self.group_focus, None, AutoTarget::MasterFx(i as u8)),
+                    };
+                    self.record_automation(group, sound, target, 0, knob as u8, v);
+                }
                 self.edit_fx(owner, i, |s| *s = fx);
             }
             return Ok(());
@@ -6934,6 +7181,7 @@ impl Engine {
                         self.record_sound_automation(
                             self.group_focus,
                             self.active_sound,
+                            page as u8,
                             knob as u8,
                             v,
                         );
@@ -6948,6 +7196,7 @@ impl Engine {
                         self.record_sound_automation(
                             self.group_focus,
                             self.active_sound,
+                            page as u8,
                             knob as u8,
                             v,
                         );
@@ -6962,6 +7211,7 @@ impl Engine {
                         self.record_sound_automation(
                             self.group_focus,
                             self.active_sound,
+                            page as u8,
                             knob as u8,
                             v,
                         );
@@ -6987,6 +7237,7 @@ impl Engine {
                         self.record_sound_automation(
                             self.group_focus,
                             self.active_sound,
+                            page as u8,
                             knob as u8,
                             v,
                         );
@@ -7982,6 +8233,7 @@ impl Engine {
     /// Appelé hors du thread audio (allocations ici seulement).
     fn sync_synth_rack(&mut self) {
         let proj = Arc::clone(&*self.project.read());
+        self.auto_group_mix = [[None; 2]; 8];
         let sr = self.transport.sample_rate;
         for g in 0..8u8 {
             for s in 0..16u8 {
@@ -7991,6 +8243,16 @@ impl Engine {
                     .get(g as usize)
                     .and_then(|grp| grp.sounds.get(s as usize))
                     .and_then(Option::as_ref);
+                self.auto_sounds[i] = snd
+                    .filter(|snd| {
+                        crate::plugin_pages::instrument_of(snd)
+                            == crate::plugin_pages::Instrument::Sampler
+                            && proj.groups[g as usize]
+                                .patterns
+                                .iter()
+                                .any(|pat| pat.automations.iter().any(|a| a.sound == Some(s)))
+                    })
+                    .cloned();
                 match snd.and_then(|snd| snd.synth.as_ref()) {
                     Some(p) => {
                         let slot = self.rack.acid[i].get_or_insert_with(|| {
@@ -8093,6 +8355,12 @@ impl Engine {
         if !self.master_fx.is_prepared_for(&proj.master.fx_chain) {
             self.master_fx.prepare(&proj.master.fx_chain);
         }
+        self.fx_copies = self
+            .fx_buses
+            .iter()
+            .map(|(owner, _)| owner.chain(&proj).to_vec())
+            .collect();
+        self.master_fx_copy = proj.master.fx_chain.clone();
     }
 
     /// Index du pattern actif pour le groupe focus dans la scène active.
@@ -8686,6 +8954,10 @@ impl Engine {
         let idx = (n.saturating_sub(1) as usize).min(7);
         if self.note_repeat_enabled {
             return self.handle_soft_key_note_repeat(idx);
+        }
+        if self.automation_view {
+            self.handle_automation_soft_key(idx);
+            return Ok(());
         }
         if self.right_tab == 1 {
             self.handle_event_soft_key(idx);
@@ -10380,6 +10652,222 @@ mod tests {
         assert_eq!(run(&mut eng), (false, true), "second pattern de la chaîne");
         assert_eq!(run(&mut eng), (true, false), "retour au premier");
         assert!(eng.transport.tick < 2 * len, "la boucle suit la chaîne");
+    }
+
+    /// Valeur du paramètre (page, knob 0) du TB-303 du pad 0 dans le rack.
+    fn rack_acid_value(eng: &Engine, page: usize) -> f32 {
+        let slot = eng.rack.acid[rack_index(eng.group_focus, 0)].as_ref();
+        let params = &slot.unwrap().synth.params;
+        crate::plugin_pages::value(&crate::plugin_pages::ACID_PAGES, page, 0, params).unwrap()
+    }
+
+    #[test]
+    fn automation_is_recorded_in_the_pattern_and_played_back() {
+        let mut eng = Engine::new_demo(48000);
+        eng.load_plugin_to_sound(0, 0, 1).unwrap(); // TB-303 sur le pad 0
+        eng.handle_event(EngineEvent::SelectSound(0)).unwrap();
+        eng.handle_event(EngineEvent::SetLeftTab(4)).unwrap();
+        eng.handle_event(EngineEvent::ToggleAutomation).unwrap();
+        transport(&mut eng, true);
+        let page = eng.plugin_page_index();
+        for _ in 0..2 {
+            eng.advance(480 * SPT);
+            eng.handle_event(EngineEvent::PluginKnob {
+                knob: 0,
+                delta: -64,
+            })
+            .unwrap();
+        }
+        let g = eng.group_focus as usize;
+        let lane = |eng: &Engine| {
+            let proj = eng.project.read();
+            let i = proj.active_pattern_index(g, eng.active_scene).unwrap();
+            proj.groups[g].patterns[i].automations.clone()
+        };
+        let lanes = lane(&eng);
+        assert_eq!(lanes.len(), 1);
+        assert_eq!((lanes[0].sound, lanes[0].page), (Some(0), Some(page as u8)));
+        let [(480, v1), (960, v2)] = lanes[0].points[..] else {
+            panic!("points au tick du pattern : {:?}", lanes[0].points);
+        };
+        assert!(v2 < v1);
+        // Hors REC, la valeur du projet est v2 : au tour suivant la lecture
+        // remet v1 entre les deux points, puis v2.
+        transport(&mut eng, false);
+        let cycle = eng.cycle_ticks().unwrap();
+        eng.advance((cycle - 960 + 500) * SPT);
+        // Paramètre continu : rampe de v1 vers v2 entre les deux points.
+        let ramp = rack_acid_value(&eng, page);
+        assert!(v2 < ramp && ramp < v1, "rampe entre les points : {ramp}");
+        eng.advance(480 * SPT);
+        assert_eq!(rack_acid_value(&eng, page), v2, "second point rejoué");
+
+        // Ancien format (page inconnue) : jamais rejoué.
+        {
+            let mut guard = eng.project.write();
+            let pats = &mut project_mut(&mut guard).groups[g].patterns;
+            pats[0].automations[0].page = None;
+        }
+        eng.handle_event(EngineEvent::SelectSound(0)).unwrap();
+        eng.advance((cycle - 480) * SPT);
+        assert_eq!(rack_acid_value(&eng, page), v2, "valeur du projet");
+
+        // SHIFT + pad 10 (CLEAR AUTO) : les automations du Sound actif.
+        eng.handle_event(EngineEvent::ShiftPadAction(9)).unwrap();
+        assert!(lane(&eng).is_empty());
+    }
+
+    #[test]
+    fn automation_plays_back_on_sampler_sounds_without_touching_the_project() {
+        use crate::plugin_pages as pp;
+        let mut eng = Engine::new_demo(48000);
+        eng.handle_event(EngineEvent::SelectSound(0)).unwrap();
+        eng.handle_event(EngineEvent::SetLeftTab(4)).unwrap();
+        eng.handle_event(EngineEvent::ToggleAutomation).unwrap();
+        transport(&mut eng, true);
+        eng.advance(480 * SPT);
+        // Knob 3 de la page SON : CUTOFF.
+        let turn = |eng: &mut Engine| {
+            eng.handle_event(EngineEvent::PluginKnob {
+                knob: 2,
+                delta: -64,
+            })
+            .unwrap();
+        };
+        turn(&mut eng);
+        let i = rack_index(eng.group_focus, 0);
+        let cutoff = |snd: &crate::project::Sound| snd.filter.cutoff_hz;
+        let recorded = cutoff(eng.auto_sounds[i].as_ref().expect("copie de lecture"));
+        // Hors REC, le knob change le projet ; la lecture garde le point.
+        transport(&mut eng, false);
+        turn(&mut eng);
+        let base = cutoff(eng.focus_sound().as_ref().unwrap());
+        assert!(base < recorded);
+        eng.advance(20 * SPT);
+        assert_eq!(cutoff(eng.auto_sounds[i].as_ref().unwrap()), recorded);
+        assert_eq!(cutoff(eng.focus_sound().as_ref().unwrap()), base);
+        assert_eq!(
+            pp::param_info(pp::Instrument::Sampler, 0, 2).map(|p| p.0),
+            Some("CUTOFF")
+        );
+    }
+
+    /// Automations du pattern actif du groupe focus.
+    fn lanes(eng: &Engine) -> Vec<SoundAutomation> {
+        let g = eng.group_focus as usize;
+        let proj = eng.project.read();
+        let i = proj.active_pattern_index(g, eng.active_scene).unwrap();
+        proj.groups[g].patterns[i].automations.clone()
+    }
+
+    #[test]
+    fn automation_drives_effects_and_group_mix_from_playback_copies() {
+        use crate::plugin_pages as pp;
+        let mut eng = Engine::new_demo(48000);
+        let g = eng.group_focus;
+        eng.insert_fx(FxOwner::Group(g), crate::fx::FxType::Filter);
+        eng.handle_event(EngineEvent::ToggleAutomation).unwrap();
+        transport(&mut eng, true);
+        eng.advance(480 * SPT);
+        // AUTO + REC : le volume de groupe s'enregistre (mixer).
+        let volume = |eng: &mut Engine, volume_db| {
+            eng.handle_event(EngineEvent::GroupVolume {
+                group: g,
+                volume_db,
+            })
+            .unwrap();
+        };
+        volume(&mut eng, -12.0);
+        assert_eq!(lanes(&eng)[0].target, AutoTarget::Group);
+        assert_eq!(lanes(&eng)[0].points, [(480, -12.0)]);
+        // Une rampe de cutoff sur le filtre du groupe.
+        eng.with_active_pattern(|pat| {
+            pat.automations.push(SoundAutomation {
+                sound: None,
+                knob: 1,
+                page: Some(0),
+                target: AutoTarget::GroupFx(0),
+                points: vec![(0, 500.0), (960, 2000.0)],
+            });
+        });
+        // Hors REC, le projet revient à 0 dB : la lecture garde -12 dB.
+        transport(&mut eng, false);
+        volume(&mut eng, 0.0);
+        eng.advance(20 * SPT);
+        assert_eq!(eng.auto_group_mix[g as usize][0], Some(-12.0));
+        let bus = eng
+            .fx_buses
+            .iter()
+            .position(|(o, _)| *o == FxOwner::Group(g));
+        let pages = pp::fx_pages(crate::fx::FxType::Filter);
+        let played = pp::value(pages, 0, 1, &eng.fx_copies[bus.unwrap()][0]).unwrap();
+        assert!(
+            played > 1200.0 && played < 1400.0,
+            "rampe à mi-course : {played}"
+        );
+        let stored = eng.project.read().groups[g as usize].fx_chain[0].clone();
+        assert_ne!(
+            pp::value(pages, 0, 1, &stored),
+            Some(played),
+            "projet intact"
+        );
+        // L'effet supprimé emporte son automation.
+        eng.remove_fx(FxOwner::Group(g), 0);
+        assert!(lanes(&eng).iter().all(|a| a.target == AutoTarget::Group));
+    }
+
+    #[test]
+    fn automation_view_buttons_select_and_edit_points() {
+        let mut eng = Engine::new_demo(48000);
+        let group = eng.group_focus;
+        eng.handle_event(EngineEvent::ToggleAutomation).unwrap();
+        assert_eq!(eng.soft_key_labels(), AUTOMATION_LABELS);
+        let key = |eng: &mut Engine, n| eng.handle_event(EngineEvent::SoftKey(n)).unwrap();
+        key(&mut eng, 1); // aucune automation : sans effet
+        transport(&mut eng, true);
+        for volume_db in [-6.0, -9.0] {
+            eng.advance(480 * SPT);
+            eng.handle_event(EngineEvent::GroupVolume { group, volume_db })
+                .unwrap();
+        }
+        eng.handle_event(EngineEvent::GroupPan { group, pan: 0.5 })
+            .unwrap();
+        assert_eq!(lanes(&eng).len(), 2, "volume puis pan");
+        key(&mut eng, 4); // PT >
+        key(&mut eng, 6); // VAL +
+        let points = lanes(&eng)[0].points.clone();
+        assert_eq!(points[0], (480, -6.0));
+        assert!(points[1].0 == 960 && points[1].1 > -9.0);
+        key(&mut eng, 7); // SUPPR PT
+        assert_eq!(lanes(&eng)[0].points, [(480, -6.0)]);
+        key(&mut eng, 2); // LIGNE >
+        assert_eq!(eng.snapshot().auto_lane, 1);
+        key(&mut eng, 8); // SUPPR
+        assert_eq!(lanes(&eng).len(), 1);
+        key(&mut eng, 7); // SUPPR PT sur le dernier point : l'automation part
+        assert!(lanes(&eng).is_empty());
+    }
+
+    #[test]
+    fn automation_value_holds_the_last_point_across_the_loop() {
+        let mut lane = SoundAutomation {
+            sound: Some(0),
+            knob: 0,
+            page: Some(0),
+            target: AutoTarget::Instrument,
+            points: vec![(100, 1.0), (200, 2.0)],
+        };
+        assert_eq!(lane.value_at(150, false), Some(1.0));
+        assert_eq!(
+            lane.value_at(150, true),
+            Some(1.5),
+            "rampe entre deux points"
+        );
+        assert_eq!(lane.value_at(200, true), Some(2.0));
+        assert_eq!(lane.value_at(50, true), Some(2.0), "avant le premier point");
+        assert_eq!(lane.value_at(300, true), Some(2.0), "après le dernier");
+        lane.points.clear();
+        assert_eq!(lane.value_at(50, true), None);
     }
 
     #[test]
@@ -12356,7 +12844,7 @@ mod tests {
             .snapshot()
             .status_message
             .as_deref()
-            .is_some_and(|message| message.contains("automation")));
+            .is_some_and(|message| message.contains("Automations")));
     }
 
     #[test]

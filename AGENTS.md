@@ -142,6 +142,18 @@ RUSTFLAGS="-D warnings" cargo check -p maschine-engine --no-default-features --l
 - The first of two "simultaneous" pads always arrives alone (one
   `PatternTrigger` / `SceneTrigger`, then the chain action): the engine's
   chain events must undo its effect (pending launch), not the mapper.
+- Automation: `Pattern::automations` lanes are keyed by (`target`, Sound,
+  page, knob); points are (pattern-local tick, raw value), sorted.
+  `plugin_pages::lane_param` is the single place that resolves a lane to its
+  parameter name and scale (playback, editing, screens). The audio thread
+  never writes the project: `Engine::apply_automation` sets *playback copies*
+  — rack synth params, `auto_sounds` (sampler Sounds), `fx_copies` /
+  `master_fx_copy` (insert chains, what the audio thread processes) and
+  `auto_group_mix`. `sync_synth_rack` / `sync_fx_buses` rebuild every copy
+  from the project after each event and after a committed launch. `page:
+  None` marks pre-0.28 lanes (unknown page, absolute ticks): shown, never
+  played. While `automation_view` is on, the display buttons are
+  `AUTOMATION_LABELS` (`handle_automation_soft_key`).
 - Sample editor tools (REVERSE, NORMLZ, LOOP) change the sampler and record a
   flag in `Sound::edits`; `restore_sound_edits` replays them (and the play
   range) after every project load. Source WAV files are never rewritten.

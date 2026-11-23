@@ -271,6 +271,37 @@ fn main() -> std::io::Result<()> {
     eng.handle_event(E::Scene(1)).unwrap();
     dump(&eng, "scenes_pending")?;
 
+    // AUTOMATION : TB-303 sur le pad 1, AUTO + REC, un knob tourné en lecture.
+    let mut eng = Engine::new_demo(48000);
+    eng.load_plugin_to_sound(0, 0, 1).unwrap();
+    eng.handle_event(E::SelectSound(0)).unwrap();
+    eng.handle_event(E::SetLeftTab(4)).unwrap();
+    dump(&eng, "automation_empty")?;
+    eng.handle_event(E::ToggleAutomation).unwrap();
+    eng.handle_event(E::Transport {
+        play: true,
+        rec: true,
+        stop: false,
+    })
+    .unwrap();
+    for step in 0..24 {
+        eng.advance(6000);
+        let delta = if step < 12 { -40 } else { 60 };
+        eng.handle_event(E::PluginKnob { knob: 0, delta }).unwrap();
+    }
+    // Une seconde automation (volume du groupe) et le 9e point sélectionné.
+    eng.handle_event(E::GroupVolume {
+        group: 0,
+        volume_db: -6.0,
+    })
+    .unwrap();
+    for _ in 0..8 {
+        eng.handle_event(E::SoftKey(4)).unwrap(); // PT >
+    }
+    let (left, right) = still(&eng);
+    write_ppm(&dir.join("automation_left.ppm"), &left)?;
+    write_ppm(&dir.join("automation_right.ppm"), &right)?;
+
     // Démarrage (étape et progression) et veille (fermeture / plantage).
     let (left, right) = display_render::render_boot_screens("Synthèse du kit 808", 0.35);
     write_ppm(&dir.join("boot_left.ppm"), &left)?;

@@ -4243,156 +4243,166 @@ pub fn render_events_left(snap: &EngineSnapshot) -> DisplayFrame {
     frame
 }
 
-/// Écran gauche — vue AUTOMATION : liste des automations du pattern actif.
+/// Nom et échelle du paramètre d'une automation du groupe focus (`None` :
+/// ancien format ou cible disparue).
+fn automation_param(
+    snap: &EngineSnapshot,
+    auto: &crate::project::SoundAutomation,
+) -> Option<(&'static str, pp::Scale)> {
+    pp::lane_param(&snap.project, snap.group_focus as usize, auto)
+}
+
+/// Ce que pilote une automation, en clair : « S03 », « S03 FX1 », « GRP ».
+fn automation_owner(auto: &crate::project::SoundAutomation) -> String {
+    use crate::project::AutoTarget as T;
+    let sound = auto.sound.map_or(0, |s| s + 1);
+    match auto.target {
+        T::Instrument => format!("S{sound:02}"),
+        T::SoundFx(i) => format!("S{sound:02} FX{}", i + 1),
+        T::GroupFx(i) => format!("GRP FX{}", i + 1),
+        T::MasterFx(i) => format!("MST FX{}", i + 1),
+        T::Group => "GRP".to_string(),
+    }
+}
+
+/// Tick de lecture dans le pattern actif.
+fn pattern_tick(snap: &EngineSnapshot, pat: &Pattern) -> u32 {
+    (current_tick(snap) % (pat.length.to_ticks() as u64).max(1)) as u32
+}
+
+/// Aide affichée quand il n'y a rien à montrer.
+fn automation_hint(frame: &mut DisplayFrame, p: &Pal, title: &str) {
+    draw_text(frame, 10, 60, title, p.dim, p.bg);
+    draw_text(
+        frame,
+        10,
+        82,
+        "AUTO + REC puis tourner un knob",
+        p.dim,
+        p.bg,
+    );
+    draw_text(
+        frame,
+        10,
+        100,
+        "PLUG-IN (son, effets) ou MIXER",
+        p.dim,
+        p.bg,
+    );
+    draw_text(
+        frame,
+        10,
+        126,
+        "SHIFT + PAD 10 : effacer le Sound",
+        p.dim,
+        p.bg,
+    );
+}
+
+/// Écran gauche — vue AUTOMATION : automations du pattern actif (cible,
+/// paramètre, valeur au point de lecture), la sélectionnée marquée. Les
+/// knobs restent ceux de la page PLUG-IN affichée dessous : ce sont eux
+/// qu'on enregistre.
 #[must_use]
 pub fn render_automation_left(snap: &EngineSnapshot) -> DisplayFrame {
     let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Left, p.bg);
+    let recording = snap.transport.state == crate::transport::TransportState::Recording;
     header(
         &mut frame,
         &p,
         snap,
         "AUTOMATION",
-        if snap.automation_armed {
-            "ARMEE"
-        } else {
-            "OFF"
+        match (snap.automation_armed, recording) {
+            (true, true) => "ENREGISTRE",
+            (true, false) => "ARMEE | REC POUR ECRIRE",
+            _ => "LECTURE",
         },
     );
-    let automations: Vec<_> = active_pattern(snap)
-        .map(|pat| pat.automations.iter().take(7).collect())
-        .unwrap_or_default();
-    if automations.is_empty() {
-        draw_text(&mut frame, 10, 60, "Aucune automation", p.dim, p.bg);
-        draw_text(
-            &mut frame,
-            10,
-            82,
-            "AUTO + REC + tourner un knob",
-            p.dim,
-            p.bg,
-        );
+    let pat = active_pattern(snap);
+    let lanes = pat.map_or(&[][..], |pat| pat.automations.as_slice());
+    if lanes.is_empty() {
+        automation_hint(&mut frame, &p, "Aucune automation");
     }
-    for (i, auto) in automations.iter().enumerate() {
-        let y = 36 + i * 22;
-        let last = auto.points.last().map_or(0.0, |pt| pt.1);
-        let label = format!(
-            "{:02} KNOB {:02} ({} pts)",
-            i + 1,
-            auto.knob + 1,
-            auto.points.len()
-        );
-        let color = if auto.sound == Some(snap.active_sound) {
-            p.accent
-        } else {
-            p.white
+    let selected = snap.auto_lane.min(lanes.len().saturating_sub(1));
+    // Sept lignes visibles : la liste suit la sélection.
+    let first = selected.saturating_sub(6);
+    for (row, (i, auto)) in lanes.iter().enumerate().skip(first).take(7).enumerate() {
+        let y = 36 + row * 22;
+        let owner = automation_owner(auto);
+        let color = if i == selected { p.accent } else { p.white };
+        if i == selected {
+            fill_rect(&mut frame, 2, y, 3, 19, p.accent);
+        }
+        let Some((name, scale)) = automation_param(snap, auto) else {
+            let label = format!("{owner} KNOB {} (ancien format)", auto.knob + 1);
+            draw_text(&mut frame, 8, y, &label, p.dim, p.bg);
+            continue;
         };
-        draw_text(&mut frame, 8, y, &label, color, p.bg);
-        bar_h(
-            &mut frame,
-            &p,
-            8,
-            y + 12,
-            300,
-            6,
-            last.clamp(0.0, 1.0),
-            p.cyan,
-        );
+        let value = pat
+            .and_then(|pat| auto.value_at(pattern_tick(snap, pat), !scale.is_stepped()))
+            .unwrap_or(0.0);
+        draw_text(&mut frame, 8, y, &format!("{owner} {name}"), color, p.bg);
+        draw_text(&mut frame, 200, y, &scale.format(value), p.white, p.bg);
+        bar_h(&mut frame, &p, 8, y + 14, 300, 5, scale.norm(value), p.cyan);
     }
-    let slots: [EncSlot<'_>; 4] = [
-        Some((
-            "1:ARM",
-            if snap.automation_armed { "ON" } else { "OFF" }.to_string(),
-            f32::from(u8::from(snap.automation_armed)),
-            if snap.automation_armed { p.red } else { p.dim },
-        )),
-        Some((
-            "2:REC",
-            if snap.transport.state == crate::transport::TransportState::Recording {
-                "REC"
-            } else {
-                "--"
-            }
-            .to_string(),
-            f32::from(u8::from(
-                snap.transport.state == crate::transport::TransportState::Recording,
-            )),
-            p.red,
-        )),
-        None,
-        None,
-    ];
-    encoder_row(&mut frame, &p, &slots);
-    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
+    let view = plugin_page_view(snap).and_then(|(_, _, view)| view);
+    encoder_row(&mut frame, &p, &page_slots(view.as_ref(), 0, p.accent));
+    finish_soft_keys(&mut frame, &p, &snap.soft_labels, 0, &snap.soft_active);
     frame
 }
 
-/// Écran droit — vue AUTOMATION : courbe des points du pattern actif.
+/// Écran droit — vue AUTOMATION : courbe de l'automation sélectionnée sur
+/// la longueur du pattern (rampes pour les paramètres continus, paliers
+/// sinon), point sélectionné et tête de lecture.
 #[must_use]
 pub fn render_automation_right(snap: &EngineSnapshot) -> DisplayFrame {
     let p = Pal::of(snap);
     let mut frame = DisplayFrame::solid(DisplayId::Right, p.bg);
-    header(&mut frame, &p, snap, "AUTOMATION", "COURBE / POINTS");
-    let auto = active_pattern(snap).and_then(|pat| {
-        pat.automations
-            .iter()
-            .find(|a| a.sound == Some(snap.active_sound))
-            .or_else(|| pat.automations.first())
+    let pat = active_pattern(snap);
+    let lane = pat.and_then(|pat| {
+        let auto = pat
+            .automations
+            .get(snap.auto_lane.min(pat.automations.len().saturating_sub(1)))?;
+        Some((pat, auto, automation_param(snap, auto)?))
     });
-    let Some(auto) = auto else {
-        draw_text(&mut frame, 10, 60, "Aucun point", p.dim, p.bg);
-        draw_text(
+    let view = plugin_page_view(snap).and_then(|(_, _, view)| view);
+    if let Some((pat, auto, (name, scale))) = lane {
+        let smooth = !scale.is_stepped();
+        let point = snap.auto_point.min(auto.points.len().saturating_sub(1));
+        let (at, value) = auto.points.get(point).copied().unwrap_or((0, 0.0));
+        header(
             &mut frame,
-            10,
-            82,
-            "AUTO + REC + tourner un knob",
-            p.dim,
-            p.bg,
+            &p,
+            snap,
+            &format!("{} | {name}", automation_owner(auto)),
+            &format!(
+                "PT {}/{} | {}",
+                point + 1,
+                auto.points.len(),
+                scale.format(value)
+            ),
         );
-        let slots: [EncSlot<'_>; 4] = [None, None, None, None];
-        encoder_row(&mut frame, &p, &slots);
-        finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
-        return frame;
-    };
-    let max_tick = auto.points.last().map_or(1, |pt| pt.0.max(1));
-    let x0 = 12usize;
-    let w = SCR_W - 24;
-    let y0 = 48usize;
-    let h = 96usize;
-    for (i, pt) in auto.points.iter().take(64).enumerate() {
-        let x = x0 + (pt.0 as usize * w / max_tick as usize).min(w - 2);
-        let value = pt.1.clamp(0.0, 1.0);
-        let height = (value * h as f32).max(2.0) as usize;
-        fill_rect(
-            &mut frame,
-            x,
-            y0 + h - height,
-            2,
-            height,
-            if i % 2 == 0 { p.cyan } else { p.accent },
-        );
+        let (x0, y0, w, h) = (12usize, 40usize, SCR_W - 24, 120usize);
+        let len = (pat.length.to_ticks() as usize).max(1);
+        let height = |v: f32| ((scale.norm(v) * h as f32) as usize).clamp(1, h);
+        for x in 0..w {
+            let v = auto.value_at((x * len / w) as u32, smooth).unwrap_or(0.0);
+            fill_rect(&mut frame, x0 + x, y0 + h - height(v), 1, height(v), p.cyan);
+        }
+        // Point sélectionné : repère sur toute la hauteur et pastille.
+        let px = x0 + (at as usize * w / len).min(w - 1);
+        fill_rect(&mut frame, px, y0, 1, h, p.accent);
+        let py = (y0 + h - height(value)).saturating_sub(3);
+        fill_rect(&mut frame, px.saturating_sub(3), py, 7, 7, p.accent);
+        let head = (pattern_tick(snap, pat) as usize * w / len).min(w - 1);
+        fill_rect(&mut frame, x0 + head, y0, 1, h, p.white);
+        draw_rect_outline(&mut frame, x0 - 1, y0 - 1, w + 2, h + 2, p.border);
+    } else {
+        header(&mut frame, &p, snap, "AUTOMATION", "COURBE");
+        automation_hint(&mut frame, &p, "Aucune automation");
     }
-    draw_text(
-        &mut frame,
-        12,
-        SCR_H - 110,
-        &format!("KNOB {} — {} points", auto.knob + 1, auto.points.len()),
-        p.white,
-        p.bg,
-    );
-    let last = auto.points.last().map_or(0.0, |pt| pt.1);
-    let slots: [EncSlot<'_>; 4] = [
-        Some(("5:KNOB", format!("{}", auto.knob + 1), 0.5, p.cyan)),
-        Some((
-            "6:VALEUR",
-            format!("{:.0}%", last * 100.0),
-            last.clamp(0.0, 1.0),
-            p.green,
-        )),
-        Some(("7:POINTS", format!("{}", auto.points.len()), 0.5, p.accent)),
-        None,
-    ];
-    encoder_row(&mut frame, &p, &slots);
+    encoder_row(&mut frame, &p, &page_slots(view.as_ref(), 4, p.accent));
     finish_soft_keys(&mut frame, &p, &snap.soft_labels, 4, &snap.soft_active);
     frame
 }

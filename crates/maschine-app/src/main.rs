@@ -2811,6 +2811,8 @@ fn cmd_display_probe() -> anyhow::Result<()> {
         let mut snap = maschine_engine::EngineSnapshot {
             automation_armed: false,
             automation_view: false,
+            auto_lane: 0,
+            auto_point: 0,
             project: std::sync::Arc::new(maschine_engine::project::Project::new_demo()),
             transport: maschine_engine::transport::Transport::new(120.0, 48000),
             group_focus: 0,

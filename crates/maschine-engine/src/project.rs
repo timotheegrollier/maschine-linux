@@ -1029,8 +1029,51 @@ pub struct SoundAutomation {
     pub sound: Option<u8>,
     /// Identifiant du paramètre : table `plugin_pages` du Sound (knob 0..7).
     pub knob: u8,
-    /// Points (tick, valeur brute du paramètre).
+    /// Page du paramètre dans cette table. `None` = automation d'avant
+    /// 0.28 (page inconnue, ticks absolus) : affichée, jamais rejouée.
+    #[serde(default)]
+    pub page: Option<u8>,
+    /// Ce que l'automation pilote (instrument par défaut).
+    #[serde(default)]
+    pub target: AutoTarget,
+    /// Points (tick dans le pattern, valeur brute du paramètre), triés.
     pub points: Vec<(u32, f32)>,
+}
+
+/// Cible d'une automation. Pour les effets, `knob` est le knob de la page
+/// de l'effet d'indice donné dans la chaîne ; pour `Group`, 0 = volume,
+/// 1 = pan du groupe du pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AutoTarget {
+    /// Paramètre de l'instrument du Sound (`sound`, `page`, `knob`).
+    #[default]
+    Instrument,
+    /// Effet d'insert du Sound `sound`.
+    SoundFx(u8),
+    /// Effet d'insert du groupe.
+    GroupFx(u8),
+    /// Effet d'insert du Master.
+    MasterFx(u8),
+    /// Volume / pan du groupe (mixer).
+    Group,
+}
+
+impl SoundAutomation {
+    /// Valeur au tick du pattern : le dernier point ≤ tick, sinon le dernier
+    /// point (le pattern boucle, la valeur de fin tient jusqu'au premier).
+    /// `smooth` : rampe linéaire jusqu'au point suivant (paramètres continus).
+    #[must_use]
+    pub fn value_at(&self, tick: u32, smooth: bool) -> Option<f32> {
+        let after = self.points.partition_point(|p| p.0 <= tick);
+        let i = after.checked_sub(1).or(self.points.len().checked_sub(1))?;
+        let (t0, v0) = self.points[i];
+        Some(match self.points.get(after) {
+            Some(&(t1, v1)) if smooth && after > 0 && t1 > t0 => {
+                v0 + (v1 - v0) * (tick - t0) as f32 / (t1 - t0) as f32
+            }
+            _ => v0,
+        })
+    }
 }
 
 /// Scene — un pattern par Group max.

@@ -125,7 +125,7 @@ MK3 shortcut for auditioning a pattern without waiting for the bar line. The
 generic SHIFT-pad layer (UNDO/REDO/…) stays active outside PATTERN mode.
 `DUPLICATE` copies the active pattern, `SHIFT + ERASE` clears its events, and
 the 4D encoder moves to the previous/next pattern. The last pattern of a Group cannot be deleted.
-- **Fonctions Shift + pads MK3** : le séquenceur desktop affiche les mêmes libellés sur sa grille de pads lorsque Shift est tenu. Pad 1–16 (Pad 1 en bas à gauche) : `UNDO`, `REDO`, `STEP UNDO`, `STEP REDO`, `QUANTIZE`, `QUANT 50%`, `NUDGE ←`, `NUDGE →`, `CLEAR`, `CLEAR AUTO`, `COPY`, `PASTE`, `− SEMI`, `+ SEMI`, `− OCT`, `+ OCT`. Les actions ciblent le pattern focalisé; le presse-papiers copie/colle sa liste d'événements. Le projet ne possède pas encore de piste d'automation, donc `CLEAR AUTO` affiche un message d'indisponibilité.
+- **Fonctions Shift + pads MK3** : le séquenceur desktop affiche les mêmes libellés sur sa grille de pads lorsque Shift est tenu. Pad 1–16 (Pad 1 en bas à gauche) : `UNDO`, `REDO`, `STEP UNDO`, `STEP REDO`, `QUANTIZE`, `QUANT 50%`, `NUDGE ←`, `NUDGE →`, `CLEAR`, `CLEAR AUTO`, `COPY`, `PASTE`, `− SEMI`, `+ SEMI`, `− OCT`, `+ OCT`. Les actions ciblent le pattern focalisé; le presse-papiers copie/colle sa liste d'événements. `CLEAR AUTO` efface les automations du Sound actif dans le pattern actif.
 - **Effacer les notes d'un Sound** : dans le séquenceur desktop, clic droit ou `Maj+clic` sur l'en-tête d'une ligne (clic droit sur un pad) retire les notes de ce Sound du pattern actif. Sur MK3, `ERASE + EVENTS + pad` fait la même chose; le Sound et ses réglages restent en place.
 - **Supprimer un Sound du slot** : `SHIFT + ERASE + pad` vide le slot et retire ses événements. Sur le desktop, utiliser le menu contextuel de la ligne permet de faire l'action équivalente; cette suppression est destructive pour les réglages du Sound.
 - **Clean shutdown and standby**: closing the GUI or stopping the daemon draws a sober standby screen (almost black, a dim `MASCHINE | MK3` word mark across both screens), releases the display interface without a USB reset, and sends an all-off LED report. A panic does the same before the process exits. With the RPM, DEB or Arch package, plugging the MK3 in also shows the standby screen — even if the application was never started — through the udev rule and the `maschine-linux-standby.service` user unit (`maschine-linux standby`, which does nothing when the application already owns the screens). A `SIGKILL` leaves the last frame on screen.
@@ -239,10 +239,42 @@ Since 0.14.0 both modes follow that reference; see the two sections below. Not i
   most lit of all; other groups dim even while they play; muted/empty off.
 
 - **Automation (AUTO button)**: pressing `AUTO` lights its LED, arms automation
-  recording and opens both automation screens — the left screen lists the
-  automations of the active pattern, the right screen draws the recorded
-  points of the focused Sound's knob. During `REC` with AUTO lit, turning a
-  knob writes a point into the pattern. The GUI follows the same state.
+  recording and opens the two automation screens. The GUI follows the same
+  state.
+  - **Screens**: the left screen lists the automations of the active pattern
+    (target, parameter name, value at the playhead; the selected one is
+    marked); the right screen draws the selected automation over the pattern
+    length, with the selected point (accent line and dot) and the playhead.
+    The knob slots stay those of the PLUG-IN page underneath: they are the
+    knobs being recorded.
+  - **What can be automated** (target shown on the left): instrument
+    parameters of a Sound (`S03`), insert effects of a Sound, of the Group and
+    of the Master (`S03 FX1`, `GRP FX1`, `MST FX1`) — all recorded by turning
+    their PLUG-IN knob — and the Group volume and pan (`GRP`, MIXER knobs or
+    GUI faders).
+  - **Record**: `AUTO` lit, `REC` running, turn the knob. Each turn writes a
+    point (pattern-local tick, raw parameter value) into the lane of that
+    target and erases the older points of the following 1/32 note, so a new
+    pass overwrites what it sweeps. In a pattern chain the points go to the
+    pattern that is playing.
+  - **Playback**: always on, AUTO lit or not. Continuous parameters ramp
+    linearly from one point to the next; choices and integers are stepped.
+    Before the first point the last point of the loop holds. Synth and effect
+    parameters and the group mix of synths follow live; sampler parameters
+    and the group mix of sampler voices apply to the notes triggered by the
+    pattern, not to pads played by hand. The project's own value is never
+    modified: without a lane, or when stopped, the knob value applies.
+  - **Edit** (display buttons while `AUTO` is lit): `LIGNE <` / `LIGNE >`
+    select the automation, `PT <` / `PT >` the point, `VAL -` / `VAL +` move
+    its value by one knob detent, `SUPPR PT` deletes the point (the last point
+    deletes the automation), `SUPPR` deletes the automation. All undoable
+    (`SHIFT + pad 1`). The instrument's own display buttons come back when
+    `AUTO` is switched off.
+  - **Clear**: `SHIFT + pad 10` (`CLEAR AUTO`) removes every automation of the
+    active Sound from the active pattern. Removing or changing the type of an
+    effect removes the automations of that effect chain.
+  - Lanes recorded before 0.28 have no page: they are listed as
+    `ancien format` and never played.
 - **Pattern chaining in the GUI**: pressing two pattern pads within 900 ms
   chains the whole interval between them, like the two simultaneous pads on
   the MK3.

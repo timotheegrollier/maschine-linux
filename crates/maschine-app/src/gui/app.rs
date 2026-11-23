@@ -49,6 +49,8 @@ pub struct GuiApp {
     pub status_message: Option<(String, bool)>,
     /// Pad actuellement enfoncé (note off au relâchement).
     pub pad_down: Option<u8>,
+    /// Position (0..1) du doigt posé sur la Smart Strip du pont MK3.
+    strip_down: Option<f32>,
     /// Ancre du chaînage PATTERN : premier pad pressé, avec son horodatage.
     pub pattern_chain_anchor: Option<(u8, std::time::Instant)>,
     /// Vue active.
@@ -153,6 +155,7 @@ impl GuiApp {
             selected_device: selected,
             status_message: None,
             pad_down: None,
+            strip_down: None,
             pattern_chain_anchor: None,
             view: StudioView::Sequencer,
             last_left_tab: 0,
@@ -218,6 +221,7 @@ impl GuiApp {
             updater_state,
             status_message: None,
             pad_down: None,
+            strip_down: None,
             pattern_chain_anchor: None,
             view: StudioView::Sequencer,
             last_left_tab: 0,
@@ -595,6 +599,102 @@ impl GuiApp {
                     ts_ns: 0,
                 });
         }
+    }
+
+    /// SHIFT + bouton du contrôleur (ex. SHIFT + PERFORM : effet suivant).
+    fn press_hardware_button_with_shift(&self, id: maschine_proto::ButtonId) {
+        use maschine_hardware::events::HardwareEvent::Button;
+        for (id, pressed) in [
+            (maschine_proto::ButtonId::Shift, true),
+            (id, true),
+            (id, false),
+            (maschine_proto::ButtonId::Shift, false),
+        ] {
+            let _ = self.mirror.events.send(Button {
+                id,
+                pressed,
+                ts_ns: 0,
+            });
+        }
+    }
+
+    /// Smart Strip sur une rangée, au-dessus des groupes comme sur la MK3 :
+    /// le mode (clic : PITCH → MOD → PERFORM → NOTES), l'effet de MOD /
+    /// PERFORM (clic : suivant, comme SHIFT + bouton) puis la bande ; glisser
+    /// sur la bande = y poser le doigt. Tout passe par le mapper.
+    fn draw_smart_strip(
+        &mut self,
+        ui: &mut egui::Ui,
+        snap: &maschine_engine::EngineSnapshot,
+        leds: &maschine_proto::hid_output::LedState,
+    ) {
+        use maschine_proto::ButtonId as B;
+        const MODES: [(&str, B); 4] = [
+            ("PITCH", B::Pitch),
+            ("MOD", B::Mod),
+            ("PERFORM", B::Perform),
+            ("NOTES", B::Notes),
+        ];
+        let c = MachColors::dark();
+        ui.horizontal(|ui| {
+            let mode = usize::from(snap.strip_mode.min(3));
+            let tip = "Mode de la Smart Strip : PITCH (transpose), MOD (filtre, flanger), \
+                       PERFORM (stutter, écho, trémolo), NOTES (glisser joue les pads)";
+            if crate::gui::widgets::chip_tooltip(ui, MODES[mode].0, true, c.accent, tip) {
+                self.press_hardware_button(MODES[(mode + 1) % 4].1);
+            }
+            if let Some(fx) = snap.strip_fx {
+                let tip = "Effet suivant (SHIFT + MOD / PERFORM sur la MK3)";
+                if crate::gui::widgets::chip_tooltip(
+                    ui,
+                    &format!("{} ▶", fx.name()),
+                    false,
+                    c.text_dim,
+                    tip,
+                ) {
+                    self.press_hardware_button_with_shift(MODES[mode].1);
+                }
+            }
+            let width = ui.available_width().max(60.0);
+            let (rect, resp) =
+                ui.allocate_exact_size(egui::vec2(width, 20.0), egui::Sense::click_and_drag());
+            let resp = resp.on_hover_text("Smart Strip : glisser pour jouer (relâcher = fin)");
+            let painter = ui.painter_at(rect);
+            painter.rect_filled(rect, egui::CornerRadius::same(4), c.widget_bg);
+            // Les 25 LEDs de la bande, comme sur la MK3.
+            let seg = rect.width() / 25.0;
+            for (i, &index) in leds.strip_leds.iter().enumerate() {
+                if index != 0 {
+                    let r = egui::Rect::from_min_size(
+                        egui::pos2(rect.left() + i as f32 * seg + 1.0, rect.top() + 3.0),
+                        egui::vec2(seg - 2.0, rect.height() - 6.0),
+                    );
+                    painter.rect_filled(
+                        r,
+                        egui::CornerRadius::same(2),
+                        crate::gui::widgets::led_color(index),
+                    );
+                }
+            }
+            let touch = resp
+                .interact_pointer_pos()
+                .filter(|_| resp.is_pointer_button_down_on())
+                .map(|p| ((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0));
+            if touch != self.strip_down {
+                self.strip_down = touch;
+                let _ =
+                    self.mirror
+                        .events
+                        .send(maschine_hardware::events::HardwareEvent::TouchStrip(
+                            maschine_proto::TouchStripEvent {
+                                finger: 0,
+                                position: (touch.unwrap_or(0.0) * 1023.0).round() as u16,
+                                pressure: u16::from(touch.is_some()),
+                                touched: touch.is_some(),
+                            },
+                        ));
+            }
+        });
     }
 
     /// Met à jour les textures des 2 écrans (mêmes pixels que la MK3).
@@ -1070,11 +1170,14 @@ impl GuiApp {
         let groups_beside = width >= 4.0 * 64.0 + 18.0 + 2.0 * 56.0 + 16.0;
         let pads_w = if groups_beside { width * 0.64 } else { width };
         // 8 px de marge : le bas du panneau défilant ne coupe pas la rangée 1.
+        // 26 px de marges + la rangée de la Smart Strip au-dessus.
         let pad_size = ((pads_w - 18.0) / 4.0)
-            .min((height - 26.0 - if groups_beside { 0.0 } else { 48.0 }) / 4.0)
+            .min((height - 54.0 - if groups_beside { 0.0 } else { 48.0 }) / 4.0)
             .clamp(40.0, 104.0);
         let mut press: Option<(u8, u8, bool)> = None;
         let mut release: Option<u8> = None;
+        self.draw_smart_strip(ui, snap, &leds);
+        ui.add_space(4.0);
 
         if groups_beside {
             ui.horizontal(|ui| {

@@ -88,6 +88,7 @@ RUSTFLAGS="-D warnings" cargo check -p maschine-engine --no-default-features --l
 | New insert effect | `fx.rs` (`FxType`, `FxSlot::default_for`, DSP struct, `SlotDsp`), `plugin_pages::fx_pages`, visual in `display_render::draw_fx_visual`, shortcuts in `Engine::handle_fx_soft_key` |
 | New MK3 screen | `display_render.rs` using the shared helpers (`header_colored`, `encoder_row`, `finish_soft_keys`, `panel`, `cell`, `screen_vector`), dispatch in `render_screens_with_guitar`, add it to `examples/dump_screens.rs` |
 | Hardware button / knob routing | `mapper.rs` (`handle_*_button`, `handle_display_knob`, `handle_main_4d_encoder`), map the `MapperAction` in `maschine-app/src/main.rs` |
+| New Smart Strip effect | `fx::StripFx` (name, `setting`, `MOD` / `PERFORM` lists) and its arm in `PerformFx::process`; the mapper and the engine need nothing else |
 | GUI layout | `gui/app.rs` (header, rail, MK3 deck), views in `gui/views/`, tokens in `gui/theme.rs` (see `docs/design.md`) |
 
 ## Gotchas learned the hard way
@@ -159,6 +160,23 @@ RUSTFLAGS="-D warnings" cargo check -p maschine-engine --no-default-features --l
   range) after every project load. Source WAV files are never rewritten.
 - The CI sampler-free check runs with `-D warnings`: items only used under
   `#[cfg(feature = "sampler")]` need the same cfg.
+- Rack synths (`Engine::rack`, `monitor_rack`) never get `note_on` /
+  `note_off` straight from the sequencer: notes go through
+  `RackSlot::schedule(frame, RackNote)` (or `play_at`, immediate at frame 0
+  for live play) and `RackSlot::render` splits the block at each note, a
+  note-off before a note-on at the same frame. Sampler releases use
+  `Sampler::note_off_at(.., frame)`. Code called from `advance` (Note
+  Repeat, arpeggiator) uses `play_sound_voice` / `release_sound_voice_at`,
+  which never clone synth params (`trigger_sound_voice` does, for the
+  editing copies: live only).
+- Smart Strip: the mapper owns the mode (`touchstrip_mode`, LEDs) and sends
+  `SetStripMode` / `StripTouch` / `StripFxNext`; the engine keeps
+  `strip_mode`, `strip_touch`, `strip_fx` and renders `PerformFx` on the
+  Master after its inserts. Only finger 0 of the HID report is followed
+  (finger 1 reports « released » all the time). `NOTES` goes through
+  `handle_pad_event`, so strummed pads behave like pressed pads.
+- Reverb decay: `fx::reverb_decay_secs` is the single mapping SIZE → RT60
+  (DSP and screen curve).
 
 ## Conventions
 

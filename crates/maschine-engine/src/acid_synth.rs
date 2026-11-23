@@ -215,7 +215,6 @@ pub struct AcidSynth {
     filter_env: f32,
     amp_env: f32,
     accent_val: f32,
-    sample_offset: usize,
 
     // --- Filtre 4 pôles à saturation non-linéaire ---
     y1: f32,
@@ -232,6 +231,10 @@ pub struct AcidSynth {
     delay_write_pos: usize,
     delay_lp_l: f32,
     delay_lp_r: f32,
+    /// Pitch bend de la Smart Strip (demi-tons) : consigne, et valeur
+    /// atteinte à la fin du dernier bloc (rampe sur le bloc, sans marches).
+    pub bend: f32,
+    bend_now: f32,
 }
 
 impl Default for AcidSynth {
@@ -259,7 +262,6 @@ impl AcidSynth {
             filter_env: 0.0,
             amp_env: 0.0,
             accent_val: 0.0,
-            sample_offset: 0,
             y1: 0.0,
             y2: 0.0,
             y3: 0.0,
@@ -270,6 +272,8 @@ impl AcidSynth {
             delay_write_pos: 0,
             delay_lp_l: 0.0,
             delay_lp_r: 0.0,
+            bend: 0.0,
+            bend_now: 0.0,
         }
     }
 
@@ -299,21 +303,9 @@ impl AcidSynth {
         440.0 * 2.0f32.powf((effective_note - 69.0) / 12.0)
     }
 
-    /// Déclenchement d'une note (Note On).
+    /// Déclenchement d'une note (Note On). Le placement au sample près est
+    /// fait par l'appelant (le rack coupe le bloc à la trame de la note).
     pub fn note_on(&mut self, note: u8, velocity: u8) {
-        self.note_on_at(note, velocity, 0);
-    }
-
-    /// Note monitoring live pendant REC : changement de hauteur immédiat,
-    /// sans glissando ni délai — ce qu'on joue est entendu instantanément.
-    pub fn note_on_instant(&mut self, note: u8, velocity: u8) {
-        self.note_on(note, velocity);
-        self.current_freq = self.target_freq;
-    }
-
-    /// Déclenchement d'une note avec placement sample-accurate dans le bloc audio courant.
-    pub fn note_on_at(&mut self, note: u8, velocity: u8, start_frame: usize) {
-        self.sample_offset = start_frame;
         let new_freq = self.midi_to_freq(note);
 
         // Détection de glissando (slide legato) façon TB-303 :
@@ -341,6 +333,13 @@ impl AcidSynth {
         };
     }
 
+    /// Note monitoring live pendant REC : changement de hauteur immédiat,
+    /// sans glissando ni délai — ce qu'on joue est entendu instantanément.
+    pub fn note_on_instant(&mut self, note: u8, velocity: u8) {
+        self.note_on(note, velocity);
+        self.current_freq = self.target_freq;
+    }
+
     /// Coupe la note courante sans test de hauteur (monitoring live REC).
     pub fn cut_gate(&mut self) {
         self.gate_open = false;
@@ -362,6 +361,9 @@ impl AcidSynth {
         }
 
         let num_frames = out.len() / 2;
+        let (bend0, bend1) = (2f32.powf(self.bend_now / 12.0), 2f32.powf(self.bend / 12.0));
+        self.bend_now = self.bend;
+        let bend_step = (bend1 - bend0) / num_frames.max(1) as f32;
         let sr = self.sample_rate;
         let dt = 1.0 / sr;
 
@@ -402,11 +404,6 @@ impl AcidSynth {
         let master_gain = crate::engine::db_to_linear(self.params.volume_db);
 
         for frame in 0..num_frames {
-            if self.sample_offset > 0 {
-                self.sample_offset -= 1;
-                continue;
-            }
-
             // 1. Portamento / Fréquence
             if slide_alpha > 0.0 {
                 self.current_freq =
@@ -415,7 +412,8 @@ impl AcidSynth {
                 self.current_freq = self.target_freq;
             }
 
-            let freq = self.current_freq.clamp(10.0, sr * 0.45);
+            let bend = bend0 + bend_step * frame as f32;
+            let freq = (self.current_freq * bend).clamp(10.0, sr * 0.45);
             let phase_inc = (freq / sr) as f64;
 
             // 2. Oscillateur PolyBLEP (Saw ou Square)

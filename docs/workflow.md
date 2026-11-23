@@ -171,7 +171,7 @@ the effect's own settings follow:
 | Lo-Fi (bit depth, sample rate, tone) | MIX, BITS, RATE, TONE | `8-BIT` `SP-1200` `CRUSH` |
 | Chorus (two quadrature-modulated delays) | MIX, RATE, DEPTH, DELAY, FEEDBACK | `CHORUS` `FLANGER` `ENSEMBLE` |
 | Delay (stereo / ping-pong, up to 2 s) | MIX, TIME, FEEDBACK, TONE, PING-PONG | `PING-PONG` `1/16` `1/8` `1/4` (tempo-synced times) |
-| Reverb (stereo Freeverb) | MIX, SIZE, DAMP, PRE-DLY, WIDTH | `PIÈCE` `SALLE` `HALL` |
+| Reverb (8-line feedback delay network after 4 diffusers, slowly modulated delays; SIZE = decay 0.3–3.6 s, `fx::reverb_decay_secs`, the screen curve uses the same function) | MIX, SIZE, DAMP, PRE-DLY, WIDTH | `PIÈCE` `SALLE` `HALL` |
 
 Audio routing: each Sound with effects plays into its own bus, processed by
 its chain, then into its Group bus (Group effects), then into the Master
@@ -184,6 +184,29 @@ the audio thread when the chain changes.
 The MK3 manual describes SAMPLING as a Sample Editor tied to the focused Sound: buttons 1–4 select RECORD, EDIT, SLICE and ZONE; EDIT notably sets the play range, while ZONE handles mapping, tuning and key/velocity ranges. The controller's eight buttons and knobs are contextual and their function is displayed on screen ([official manual, Sampling and sample mapping](https://docs.native-instruments.com/ni-tech-manuals/maschine-mk3-manual/en/sampling-and-sample-mapping), [MK3 quick reference](https://docs.native-instruments.com/ni-tech-manuals/maschine-mk3-manual/en/quick-reference)).
 
 Since 0.14.0 both modes follow that reference; see the two sections below. Not implemented: destructive editing beyond REVERSE / NORMALIZE (no cut, paste or fades on the audio itself), several zones per Sound from the controller (ZONE edits the zones of the focused Sound together), slicing to a pattern, and multi-note selection in EVENTS (one note at a time).
+
+## Smart Strip (PITCH, MOD, PERFORM, NOTES)
+
+The four buttons above the MK3 touch strip choose what the strip does (LED
+lit on the active mode, PERFORM at start-up). The strip LEDs show the finger.
+The mapper owns the mode (`touchstrip_mode`) and sends `SetStripMode`,
+`StripTouch` and `StripFxNext`; the engine plays the effect
+(`Engine::strip_effect`, `fx::PerformFx` on the Master after its inserts).
+
+| Mode | Finger on the strip | `SHIFT` + button |
+|---|---|---|
+| `PITCH` | bends the active Sound up to ±12 semitones (sampler voices, TB-303, Kick Synth, Nexus, notes already playing); back to centre on release | — |
+| `MOD` (MOD FX) | `FILTRE`: low-pass closing towards the left (18 kHz → 120 Hz), high-pass rising towards the right (20 Hz → 5 kHz), neutral in the middle; `FLANGER`: delay set by the finger (0.5–8 ms, strong feedback). Also sends the MIDI mod wheel (CC 1). | next MOD effect |
+| `PERFORM` (PERFORM FX) | `STUTTER`: repeats the slice played since the touch (1/4 on the left … 1/32 on the right); `ÉCHO`: sends to a tempo-synced ping-pong echo while touched (1/4, dotted 1/8, 1/8, 1/16), the tail goes on after release; `TRÉMOLO`: tempo-synced volume wave (1/4 … 1/32) | next PERFORM effect (FX Select) |
+| `NOTES` | sixteen zones from left to right play pads 1 to 16, like pressing them (pad, KEYBOARD and CHORDS modes; ignored while the pads edit: STEP, PATTERN, SCENE, SELECT, ERASE, MUTE) | — |
+
+Effects fade in and out in a few milliseconds (no click); changing effect
+waits for the previous one to fade. The status chip of the screens shows the
+effect and the setting under the finger (`STUTTER : 1/16`,
+`FILTRE : passe-bas 1.2 kHz`), the SETTINGS screen shows the mode and effect.
+In the GUI the strip sits above the group buttons of the MK3 deck: a mode
+button (click: next mode), an effect button (click: next effect) and the
+strip itself (drag = finger down). Only the first finger is followed.
 
 ## Groups, launches and LEDs
 
@@ -361,7 +384,7 @@ The HID thread immediately wakes the GUI (`RepaintSignal`), and the engine snaps
 Output chain (in order): voices → groups (gains/pans/filters) → **master soft limiter** (linear below -3 dB then `tanh`, never hard clipping) → callback (safety clamp ±1.0).
 
 - **Latency**: the stream is negotiated as short as possible — 48 kHz if accepted, 256-frame buffer (period 64), fallbacks 512 → 1024 → 2048 → default. `set_audio_sample_rate()` regenerates the DSP kit at the device's actual rate on each open (otherwise the kit plays out of tune).
-- **Timing**: the callback advances the transport for the whole block then renders; each note is placed **sample-accurately** within the block (`start_frame`), so the groove does not depend on buffer size.
+- **Timing**: the callback advances the transport for the whole block then renders; each note is placed **sample-accurately** within the block, so the groove does not depend on buffer size. Sampler voices start at their `start_frame` and release at their `release_at` frame; the synthesizers of the rack (TB-303, Kick Synth, Nexus) receive their notes through a small per-instance queue (`RackSlot::schedule`) and the render splits the block at each note. At the same frame a note-off comes before a note-on (a note ending on the loop does not cut the next one). Note Repeat and the arpeggiator place each repeat on its frame too. Resolution: one tick (0.5 ms at 120 BPM).
 - **Anti-click**: sample end fade (3 ms) + end fade in the drum synth, voice stealing and choke with 5 ms fade, metronome clicks faded.
 - **Offline diagnostics**: `cargo run --release -p maschine-engine --example render_groove -- /tmp/g.wav 12 48000 0.85` (peak, RMS, clipped samples, largest jump) and `--example render_kit` (the 16 instruments as WAV). Demo groove reference: peak ≈0.92, RMS ≈-18 dB, 0 clipping, no abnormal jump at loop boundaries.
 

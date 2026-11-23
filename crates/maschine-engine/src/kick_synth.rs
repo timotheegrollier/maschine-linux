@@ -703,6 +703,14 @@ pub struct KickSynth {
     filter_ic2: f32,
     /// Filtre one-pole de tone
     tone_state: f32,
+    /// Dernier échantillon rendu, et reste du kick précédent qui s'éteint
+    /// en 3 ms après un redéclenchement (sinon la coupure claque).
+    last_out: f32,
+    declick: f32,
+    /// Pitch bend de la Smart Strip (demi-tons) : consigne, et valeur
+    /// atteinte à la fin du dernier bloc (rampe sur le bloc, sans marches).
+    pub bend: f32,
+    bend_now: f32,
 }
 
 impl Default for KickSynth {
@@ -729,6 +737,10 @@ impl KickSynth {
             filter_ic1: 0.0,
             filter_ic2: 0.0,
             tone_state: 0.0,
+            last_out: 0.0,
+            declick: 0.0,
+            bend: 0.0,
+            bend_now: 0.0,
         }
     }
 
@@ -742,6 +754,7 @@ impl KickSynth {
         self.fm_phase = 0.0;
         self.time = 0.0;
         let v = (velocity.clamp(1, 127) as f32 / 127.0).powf(0.85);
+        self.declick = if self.is_playing { self.last_out } else { 0.0 };
         self.velocity_gain = v;
         let hold_sec = (self.params.hold_ms * 0.001).clamp(0.0, 0.08);
         self.duration = (hold_sec + self.params.decay_ms / 1000.0 * 2.2).clamp(0.08, 3.5);
@@ -795,6 +808,10 @@ impl KickSynth {
         let a3 = g * a2;
 
         let frames = out.len() / 2;
+        let declick_decay = (-1.0 / (0.003 * sr)).exp();
+        let (bend0, bend1) = (2f32.powf(self.bend_now / 12.0), 2f32.powf(self.bend / 12.0));
+        self.bend_now = self.bend;
+        let bend_step = (bend1 - bend0) / frames.max(1) as f32;
 
         for f in 0..frames {
             if self.time >= self.duration {
@@ -806,7 +823,8 @@ impl KickSynth {
             let decay_t = (t - hold_sec).max(0.0);
 
             // Enveloppe de fréquence exponentielle : f(t) = base + snap * exp(-decay_t / tau)
-            let cur_freq = base_freq + snap_freq * (-decay_t / sweep_tau).exp();
+            let bend = bend0 + bend_step * f as f32;
+            let cur_freq = (base_freq + snap_freq * (-decay_t / sweep_tau).exp()) * bend;
 
             // Incréments de phase (oscillateur principal, modulateur FM et sub)
             let phase_inc = 2.0 * PI * cur_freq / sr;
@@ -978,8 +996,10 @@ impl KickSynth {
                 post_tone
             };
 
-            // Sortie finale amplifiée
-            let out_sample = filtered * vol_linear;
+            // Sortie finale amplifiée (+ queue du kick précédent, en fondu)
+            let out_sample = filtered * vol_linear + self.declick;
+            self.declick *= declick_decay;
+            self.last_out = out_sample;
 
             out[f * 2] += out_sample;
             out[f * 2 + 1] += out_sample;
@@ -1089,5 +1109,32 @@ mod tests {
             let amp = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
             assert!(amp > 0.05);
         }
+    }
+    #[test]
+    fn retrigger_continues_from_the_ringing_kick() {
+        let mut kick = KickSynth::new(48000);
+        kick.params.click = 0.0;
+        kick.params.noise_mix = 0.0;
+        kick.trigger(36, 120);
+        // Rejoue quand le kick précédent est fort : sans fondu, la sortie
+        // tombait d'un coup à zéro (clic).
+        let mut frame = [0.0f32; 2];
+        for _ in 0..4800 {
+            frame = [0.0; 2];
+            kick.render(&mut frame);
+            if frame[0].abs() > 0.3 {
+                break;
+            }
+        }
+        assert!(frame[0].abs() > 0.3);
+        kick.trigger(36, 120);
+        let mut next = [0.0f32; 2];
+        kick.render(&mut next);
+        assert!(
+            (next[0] - frame[0]).abs() < 0.05,
+            "pas de saut : {} puis {}",
+            frame[0],
+            next[0]
+        );
     }
 }

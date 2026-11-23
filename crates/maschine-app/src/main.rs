@@ -964,6 +964,16 @@ fn cmd_daemon(
                 MapperAction::ToggleAutomation => {
                     let _ = engine.lock().handle_event(EngineEvent::ToggleAutomation);
                 }
+                // Smart Strip : mode, doigt (PITCH / MOD / PERFORM), effet suivant.
+                MapperAction::SetStripMode(mode) => {
+                    let _ = engine.lock().handle_event(EngineEvent::SetStripMode(mode));
+                }
+                MapperAction::StripTouch(touch) => {
+                    let _ = engine.lock().handle_event(EngineEvent::Strip(touch));
+                }
+                MapperAction::StripFxNext => {
+                    let _ = engine.lock().handle_event(EngineEvent::StripFxNext);
+                }
                 MapperAction::PlayPauseToggle => {
                     let mut eng = engine.lock();
                     let is_playing = eng.transport.is_playing();
@@ -2893,6 +2903,9 @@ fn cmd_display_probe() -> anyhow::Result<()> {
             fixed_velocity: false,
             fixed_velocity_level: 100,
             sixteen_velocities: false,
+            strip_mode: 2,
+            strip_touch: None,
+            strip_fx: None,
             arp_mode: 0,
             shift_held: false,
             lock_active: false,

@@ -146,7 +146,7 @@ with `try_lock`.
   - **Fixed velocity**: the FIXED VEL button applies the displayed level to pads, live recording and step placement; while active, the 4D encoder sets that level and the screens show `VEL n FIXE`.
   - **MUTE / SOLO + Group**: holding MUTE or SOLO and pressing a group button instantly mutes or solos that group without losing track/pad focus. An actively held SOLO button takes priority over latched MUTE pad mode.
 - **Transport**: PLAY, REC, STOP, RESTART (clean restart or loop toggle with Shift), TAP (metronome), ERASE (erase notes by pad or clear pattern with Shift).
-- **Touchstrip**: modulation / pitch bend / perform / notes with LED ribbon visual feedback.
+- **Smart Strip** (`PITCH`, `MOD`, `PERFORM`, `NOTES` above the touch strip): `PITCH` bends the active Sound (±12 semitones, back to centre on release), `MOD` plays MOD FX (filter sweep, flanger) and sends the MIDI mod wheel, `PERFORM` plays PERFORM FX (stutter, echo, tremolo, tempo-synced), `SHIFT + MOD` / `SHIFT + PERFORM` pick the next effect, `NOTES` strums pads 1–16. LED ribbon feedback; see [Smart Strip](workflow.md#smart-strip-pitch-mod-perform-notes).
 
 ### Project workflow
 
@@ -168,7 +168,7 @@ The native GUI displays in real time:
 
 - **Header**: rail toggle, view picker (when the rail is hidden), Play/Stop, Rec, Restart, position and BPM in large type, Swing, Loop, Metronome, Song, latched workflow indicators, Master, audio settings, updates and panel toggles lit like MK3 buttons.
 - **Rail**: the eight views, then the eight groups with their colour, letter and name — click to focus, `M` / `S` buttons mute or solo each group; the rail hides itself below 1400 px and returns when the window grows.
-- **MK3 deck**: display buttons (click the label strip at the top of each screen), both screens, 8 endless knobs aligned under their on-screen slots (drag up/down; same mapping and speed as the physical knobs), `◀ PAGE` / `PAGE ▶`, and in PLUG-IN mode `◀ SLOT` / `SLOT ▶` (the 4D encoder of the controller); groups A–H and the 4×4 pads painted with the hardware LED colours. `ÉCRANS` and `PADS` hide either half.
+- **MK3 deck**: display buttons (click the label strip at the top of each screen), both screens, 8 endless knobs aligned under their on-screen slots (drag up/down; same mapping and speed as the physical knobs), `◀ PAGE` / `PAGE ▶`, and in PLUG-IN mode `◀ SLOT` / `SLOT ▶` (the 4D encoder of the controller); groups A–H and the 4×4 pads painted with the hardware LED colours. `ÉCRANS` and `PADS` hide either half. Above the groups, the Smart Strip: mode button (click: next mode), effect button (click: next effect) and the strip itself — drag on it to play, like a finger on the MK3.
 - **Multi-bar step sequencer (16 tracks)**:
   - Active bar selector (1, 2, 3, 4...) and `◀` / `▶` navigation arrows.
   - Pattern sizing buttons (1M, 2M, 4M, 8M).

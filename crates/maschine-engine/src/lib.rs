@@ -22,7 +22,7 @@ pub mod wavetable_synth;
 pub use acid_synth::{AcidParams, AcidSynth, AcidWaveform};
 pub use drum_synth::generate_complete_808_kit;
 pub use engine::{Engine, EngineEvent, EngineSnapshot, ProjectFileEntry, DRUM_PRESET_NAMES};
-pub use fx::{FxChainProcessor, FxSlot, FxType};
+pub use fx::{FxChainProcessor, FxSlot, FxType, PerformFx, StripFx};
 pub use keyboard::KeyboardState;
 pub use kick_synth::{KickDriveType, KickFilterMode, KickParams, KickSynth, KickWaveform};
 pub use project::{Group, Pattern, PatternEvent, Project, Scene, Section, Sound, Zone};

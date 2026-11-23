@@ -195,13 +195,13 @@ pub enum EncoderFocus {
 /// Mode assigné au Smart Strip (Touchstrip)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TouchStripMode {
-    /// Pitch Bend bipolaire avec retour au centre
+    /// Pitch bend du Sound actif, retour au centre au relâchement
     Pitch,
-    /// Modulation (CC 1)
+    /// MOD FX (filtre, flanger) + molette de modulation MIDI (CC 1)
     Mod,
-    /// Macro Performance / Filtre (CC 74)
+    /// PERFORM FX (stutter, écho, trémolo)
     Perform,
-    /// Notes / Résonance (CC 71)
+    /// Notes : glisser le doigt joue les pads un à un
     Notes,
 }
 
@@ -460,6 +460,12 @@ pub enum MapperAction {
     SetShiftHeld(bool),
     /// Verrou LOCK activé / désactivé
     ToggleLock(bool),
+    /// Mode de la Smart Strip (0 PITCH, 1 MOD, 2 PERFORM, 3 NOTES)
+    SetStripMode(u8),
+    /// Doigt sur la Smart Strip : position 0..1, None = relâché
+    StripTouch(Option<f32>),
+    /// Effet suivant du mode MOD / PERFORM (SHIFT + bouton)
+    StripFxNext,
     /// Page ampli guitare : ajustement d'un paramètre continu depuis un encodeur.
     /// `idx` : 0=Gain 1=Bass 2=Mid 3=Treble 4=Presence 5=Sag 6=Master 7=MonitorGain.
     /// `delta` : variation normalisée (cran d'encodeur relatif, typiquement ±1..128).
@@ -677,6 +683,8 @@ pub struct HardwareMapper {
     pub strip_touched: bool,
     /// Dernière position sur le smart strip (0..1023)
     pub strip_pos: u16,
+    /// NOTES : pad joué par le doigt sur la strip.
+    strip_pad: Option<u8>,
     /// Verrou LOCK actif
     pub lock_active: bool,
     /// Bouton Duplicate enfoncé
@@ -763,6 +771,7 @@ impl HardwareMapper {
             pad_hit_at: [None; 16],
             strip_touched: false,
             strip_pos: 512,
+            strip_pad: None,
             lock_active: false,
             duplicate_held: false,
             events_held: false,
@@ -1140,21 +1149,28 @@ impl HardwareMapper {
                 true
             }
 
-            // Modes Smart Strip
+            // Modes Smart Strip (SHIFT + MOD / PERFORM : effet suivant,
+            // « FX Select » sur la MK3).
             ButtonId::Pitch => {
-                self.touchstrip_mode = TouchStripMode::Pitch;
+                self.set_strip_mode(TouchStripMode::Pitch, actions);
                 true
             }
             ButtonId::Mod => {
-                self.touchstrip_mode = TouchStripMode::Mod;
+                self.set_strip_mode(TouchStripMode::Mod, actions);
+                if self.shift_held {
+                    actions.push(MapperAction::StripFxNext);
+                }
                 true
             }
             ButtonId::Perform => {
-                self.touchstrip_mode = TouchStripMode::Perform;
+                self.set_strip_mode(TouchStripMode::Perform, actions);
+                if self.shift_held {
+                    actions.push(MapperAction::StripFxNext);
+                }
                 true
             }
             ButtonId::Notes => {
-                self.touchstrip_mode = TouchStripMode::Notes;
+                self.set_strip_mode(TouchStripMode::Notes, actions);
                 true
             }
 
@@ -1897,56 +1913,100 @@ impl HardwareMapper {
         actions
     }
 
-    fn handle_touch_strip_event(&mut self, ts: TouchStripEvent) -> Vec<MapperAction> {
-        let mut actions = Vec::new();
-        self.strip_touched = ts.touched;
-        self.strip_pos = ts.position;
-        if ts.touched {
-            match self.touchstrip_mode {
-                TouchStripMode::Pitch => {
-                    // Position 0..1023 -> Pitch bend -8192..+8191 (centre 512)
-                    let pb = ((ts.position as i32 - 512) * 16).clamp(-8192, 8191) as i16;
-                    // Envoi CC 128 (placeholder pitch bend dans notre abstraction)
-                    actions.push(MapperAction::Midi(MidiEvent::Cc {
-                        channel: 0,
-                        cc: 128,
-                        value: ((pb + 8192) / 128).clamp(0, 127) as u8,
-                    }));
-                }
-                TouchStripMode::Mod => {
-                    let val = (ts.position / 8).min(127) as u8;
-                    actions.push(MapperAction::Midi(MidiEvent::Cc {
-                        channel: 0,
-                        cc: 1, // Modulation CC
-                        value: val,
-                    }));
-                }
-                TouchStripMode::Perform => {
-                    let val = (ts.position / 8).min(127) as u8;
-                    actions.push(MapperAction::Midi(MidiEvent::Cc {
-                        channel: 0,
-                        cc: 74, // Filter Cutoff
-                        value: val,
-                    }));
-                }
-                TouchStripMode::Notes => {
-                    let val = (ts.position / 8).min(127) as u8;
-                    actions.push(MapperAction::Midi(MidiEvent::Cc {
-                        channel: 0,
-                        cc: 71, // Resonance
-                        value: val,
-                    }));
-                }
-            }
-        } else if self.touchstrip_mode == TouchStripMode::Pitch {
-            // Relâchement : retour pitch bend à zéro au centre
-            actions.push(MapperAction::Midi(MidiEvent::Cc {
-                channel: 0,
-                cc: 128,
-                value: 64, // Centre
-            }));
+    /// Change le mode de la Smart Strip (un doigt posé est d'abord relâché).
+    fn set_strip_mode(&mut self, mode: TouchStripMode, actions: &mut Vec<MapperAction>) {
+        if self.strip_touched {
+            actions.extend(self.release_strip());
         }
-        actions
+        self.touchstrip_mode = mode;
+        let index = match mode {
+            TouchStripMode::Pitch => 0,
+            TouchStripMode::Mod => 1,
+            TouchStripMode::Perform => 2,
+            TouchStripMode::Notes => 3,
+        };
+        actions.push(MapperAction::SetStripMode(index));
+    }
+
+    /// Doigt levé : retour au centre (PITCH), fin d'effet, pad strummé relâché.
+    fn release_strip(&mut self) -> Vec<MapperAction> {
+        self.strip_touched = false;
+        match self.strip_pad.take() {
+            Some(pad) => self.strum_pad(pad, false),
+            None if self.touchstrip_mode == TouchStripMode::Notes => Vec::new(),
+            None => vec![MapperAction::StripTouch(None)],
+        }
+    }
+
+    /// NOTES : le pad sous le doigt, joué comme un appui physique (pads,
+    /// KEYBOARD, CHORDS ; ignoré dans les modes où les pads éditent).
+    fn strum_pad(&mut self, pad: u8, pressed: bool) -> Vec<MapperAction> {
+        let playing = matches!(
+            self.mode,
+            ControllerMode::Pad | ControllerMode::Keyboard | ControllerMode::Chords
+        ) && !self.pattern_select_mode
+            && !self.scene_select_mode
+            && !self.select_mode
+            && !self.erase_mode
+            && !self.mute_pad_mode;
+        if !playing && pressed {
+            return Vec::new();
+        }
+        self.handle_pad_event(PadState {
+            pad,
+            pressed,
+            velocity: 100,
+            pressure: 0,
+            ts_ns: 0,
+        })
+    }
+
+    fn handle_touch_strip_event(&mut self, ts: TouchStripEvent) -> Vec<MapperAction> {
+        // Un seul doigt suivi : le second envoie « relâché » à chaque rapport.
+        if ts.finger != 0 {
+            return Vec::new();
+        }
+        if !ts.touched {
+            return if self.strip_touched {
+                self.release_strip()
+            } else {
+                Vec::new()
+            };
+        }
+        let position = ts.position.min(1023);
+        if self.strip_touched && position == self.strip_pos {
+            return Vec::new();
+        }
+        self.strip_touched = true;
+        self.strip_pos = position;
+        let x = f32::from(position) / 1023.0;
+        match self.touchstrip_mode {
+            TouchStripMode::Notes => {
+                // Seize zones de gauche à droite : pads 1 à 16.
+                let pad = ((x * 16.0) as u8).min(15);
+                if self.strip_pad == Some(pad) {
+                    return Vec::new();
+                }
+                let mut actions = match self.strip_pad.replace(pad) {
+                    Some(old) => self.strum_pad(old, false),
+                    None => Vec::new(),
+                };
+                actions.extend(self.strum_pad(pad, true));
+                actions
+            }
+            TouchStripMode::Mod => vec![
+                MapperAction::StripTouch(Some(x)),
+                // Molette de modulation pour un synthé MIDI externe.
+                MapperAction::Midi(MidiEvent::Cc {
+                    channel: 0,
+                    cc: 1,
+                    value: (x * 127.0).round() as u8,
+                }),
+            ],
+            TouchStripMode::Pitch | TouchStripMode::Perform => {
+                vec![MapperAction::StripTouch(Some(x))]
+            }
+        }
     }
 
     fn handle_pad_event(&mut self, p: PadState) -> Vec<MapperAction> {
@@ -3791,6 +3851,77 @@ mod tests {
             pressed: true,
             ts_ns: 1,
         })
+    }
+
+    #[test]
+    fn smart_strip_follows_one_finger_switches_modes_and_strums_pads() {
+        let mut m = HardwareMapper::with_default();
+        let strip = |m: &mut HardwareMapper, finger: u8, position: u16, touched: bool| {
+            m.handle_hardware_event(HardwareEvent::TouchStrip(TouchStripEvent {
+                finger,
+                position,
+                pressure: 0,
+                touched,
+            }))
+        };
+        // PERFORM par défaut : toucher, glisser, relâcher (un seul relâché).
+        assert_eq!(
+            strip(&mut m, 0, 1023, true),
+            vec![MapperAction::StripTouch(Some(1.0))]
+        );
+        assert!(strip(&mut m, 1, 0, false).is_empty(), "second doigt ignoré");
+        assert!(strip(&mut m, 0, 1023, true).is_empty(), "même position");
+        assert_eq!(
+            strip(&mut m, 0, 0, false),
+            vec![MapperAction::StripTouch(None)]
+        );
+        assert!(strip(&mut m, 0, 0, false).is_empty());
+        // SHIFT + PERFORM (FX Select) : effet suivant.
+        m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Shift,
+            pressed: true,
+            ts_ns: 1,
+        });
+        let a = press_button(&mut m, maschine_proto::ButtonId::Perform);
+        assert_eq!(
+            a,
+            vec![MapperAction::SetStripMode(2), MapperAction::StripFxNext]
+        );
+        m.handle_hardware_event(HardwareEvent::Button {
+            id: maschine_proto::ButtonId::Shift,
+            pressed: false,
+            ts_ns: 2,
+        });
+        // MOD : effet + molette MIDI ; changer de mode relâche le doigt.
+        assert_eq!(
+            press_button(&mut m, maschine_proto::ButtonId::Mod),
+            vec![MapperAction::SetStripMode(1)]
+        );
+        let a = strip(&mut m, 0, 0, true);
+        assert!(a.contains(&MapperAction::StripTouch(Some(0.0))));
+        assert!(a
+            .iter()
+            .any(|x| matches!(x, MapperAction::Midi(MidiEvent::Cc { cc: 1, .. }))));
+        let a = press_button(&mut m, maschine_proto::ButtonId::Notes);
+        assert_eq!(
+            a,
+            vec![
+                MapperAction::StripTouch(None),
+                MapperAction::SetStripMode(3)
+            ]
+        );
+        // NOTES : chaque zone joue son pad, le précédent est relâché.
+        let pad = |a: &[MapperAction], n: u8, down: bool| {
+            a.iter().any(|x| {
+                matches!(x, MapperAction::PadTrigger { pad, pressed, .. } if *pad == n && *pressed == down)
+            })
+        };
+        let a = strip(&mut m, 0, 10, true);
+        assert!(pad(&a, 0, true));
+        let a = strip(&mut m, 0, 1000, true);
+        assert!(pad(&a, 0, false) && pad(&a, 15, true));
+        let a = strip(&mut m, 0, 1000, false);
+        assert!(pad(&a, 15, false));
     }
 
     #[test]

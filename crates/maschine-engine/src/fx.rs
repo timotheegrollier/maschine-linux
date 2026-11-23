@@ -6,8 +6,8 @@
 //! - Compressor : stéréo lié, genou doux, gain de compensation automatique
 //! - Delay : stéréo / ping-pong jusqu'à 2 s, temps lissé (pas de clic),
 //!   tonalité dans la réinjection
-//! - Reverb : Freeverb stéréo (8 peignes + 4 passe-tout par canal),
-//!   pré-délai et largeur
+//! - Reverb : réseau de 8 retards rebouclés (Hadamard) après 4 diffuseurs,
+//!   retards modulés, amortissement des aigus, pré-délai et largeur
 //! - EQ : 3 bandes (plateau grave, cloche médium réglable, plateau aigu)
 //! - Chorus : double ligne modulée en quadrature (chorus, flanger, ensemble)
 //! - Lo-Fi : réduction de résolution et d'échantillonnage, tonalité
@@ -279,6 +279,8 @@ struct Svf {
     ic2: [f32; 2],
     cutoff: f32,
     mix: Ramp,
+    /// Mode du dernier bloc (0 LP, 1 HP) : la strip y lit sa bascule.
+    mode: f32,
 }
 
 impl Svf {
@@ -529,126 +531,168 @@ impl StereoDelay {
     }
 }
 
-// ── Reverb (Freeverb) ───────────────────────────────────────────────────
+// ── Reverb (réseau de retards rebouclés) ────────────────────────────────
 
-#[derive(Debug, Clone)]
-struct Comb {
-    buf: Vec<f32>,
-    idx: usize,
-    store: f32,
+/// Durée de la queue (RT60, secondes) selon SIZE : de la petite pièce
+/// (0,3 s) au grand hall (3,6 s). Écran et DSP lisent la même courbe.
+#[must_use]
+pub fn reverb_decay_secs(size: f32) -> f32 {
+    0.3 * 12f32.powf(size.clamp(0.0, 1.0))
 }
 
-impl Comb {
-    fn new(len: usize) -> Self {
+/// Passe-tout de Schroeder : densifie l'entrée sans la colorer.
+#[derive(Debug, Clone)]
+struct Diffuser {
+    buf: Vec<f32>,
+    idx: usize,
+    g: f32,
+}
+
+impl Diffuser {
+    fn new(len: usize, g: f32) -> Self {
         Self {
             buf: vec![0.0; len.max(1)],
             idx: 0,
-            store: 0.0,
+            g,
         }
     }
 
     #[inline]
-    fn tick(&mut self, input: f32, feedback: f32, damp: f32) -> f32 {
-        let out = self.buf[self.idx];
-        self.store = flush(out * (1.0 - damp) + self.store * damp);
-        self.buf[self.idx] = input + self.store * feedback;
+    fn tick(&mut self, x: f32) -> f32 {
+        let delayed = self.buf[self.idx];
+        let w = flush(x + self.g * delayed);
+        self.buf[self.idx] = w;
         self.idx = (self.idx + 1) % self.buf.len();
-        out
+        delayed - self.g * w
     }
 }
 
-#[derive(Debug, Clone)]
-struct Allpass {
-    buf: Vec<f32>,
-    idx: usize,
-}
-
-impl Allpass {
-    fn new(len: usize) -> Self {
-        Self {
-            buf: vec![0.0; len.max(1)],
-            idx: 0,
+/// Hadamard 8×8 normalisée (sans perte) : chaque retard nourrit tous les autres.
+#[inline]
+fn hadamard8(x: &mut [f32; 8]) {
+    for h in [1, 2, 4] {
+        for i in (0..8).step_by(h * 2) {
+            for j in i..i + h {
+                let (a, b) = (x[j], x[j + h]);
+                x[j] = a + b;
+                x[j + h] = a - b;
+            }
         }
     }
-
-    #[inline]
-    fn tick(&mut self, input: f32) -> f32 {
-        let b = self.buf[self.idx];
-        self.buf[self.idx] = flush(input + b * 0.5);
-        self.idx = (self.idx + 1) % self.buf.len();
-        b - input
+    for v in x.iter_mut() {
+        *v *= std::f32::consts::FRAC_1_SQRT_2 * 0.5;
     }
 }
 
+/// Réverbe à 8 retards rebouclés par une matrice de Hadamard (FDN), après
+/// quatre diffuseurs : queue dense et lisse, sans le « métal » des peignes
+/// parallèles. Les retards ondulent lentement (quelques échantillons) pour
+/// casser les résonances fixes ; les aigus s'amortissent à chaque passage.
 #[derive(Debug, Clone)]
 struct Reverb {
-    combs: [Vec<Comb>; 2],
-    allpasses: [Vec<Allpass>; 2],
+    diffusers: [Diffuser; 4],
+    lines: [Vec<f32>; 8],
+    idx: [usize; 8],
+    lp: [f32; 8],
     pre: Vec<f32>,
     pre_pos: usize,
+    /// LFO de modulation : phaseur (cos, sin) tourné à chaque échantillon.
+    lfo: (f32, f32),
     sr: f32,
     mix: Ramp,
 }
 
 impl Reverb {
-    /// Longueurs de Freeverb (à 44,1 kHz), mises à l'échelle du taux réel.
-    const COMBS: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
-    const ALLPASSES: [usize; 4] = [556, 441, 341, 225];
-    const SPREAD: usize = 23;
+    /// Retards du réseau (ms), sans rapport simple entre eux.
+    const LINES_MS: [f32; 8] = [31.7, 37.1, 41.1, 43.7, 53.0, 59.9, 67.7, 73.3];
+    /// Diffuseurs d'entrée : (ms, gain).
+    const DIFFUSERS: [(f32, f32); 4] =
+        [(4.771, 0.75), (3.595, 0.75), (12.73, 0.625), (9.307, 0.625)];
+    /// Profondeur (échantillons à 48 kHz) et vitesse de la modulation.
+    const MOD_DEPTH: f32 = 12.0;
+    const MOD_HZ: f32 = 0.6;
+    /// Signes d'injection et des deux sorties : trois lignes de Hadamard,
+    /// gauche et droite décorrélées.
+    const IN: [f32; 8] = [1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0];
+    const OUT_L: [f32; 8] = [1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0];
+    const OUT_R: [f32; 8] = [1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0];
+    /// Niveau de sortie : même volume perçu que l'ancienne réverbe.
+    const OUT_GAIN: f32 = 1.0;
 
     fn new(sr: f32) -> Self {
-        let scale = |n: usize| ((n as f32) * sr / 44_100.0) as usize;
-        let side = |spread: usize| {
-            (
-                Self::COMBS.map(|n| Comb::new(scale(n + spread))).to_vec(),
-                Self::ALLPASSES
-                    .map(|n| Allpass::new(scale(n + spread)))
-                    .to_vec(),
-            )
-        };
-        let (cl, al) = side(0);
-        let (cr, ar) = side(Self::SPREAD);
+        let samples = |ms: f32| (ms * 0.001 * sr) as usize;
+        let depth = (Self::MOD_DEPTH * sr / 48_000.0) as usize;
         Self {
-            combs: [cl, cr],
-            allpasses: [al, ar],
+            diffusers: Self::DIFFUSERS.map(|(ms, g)| Diffuser::new(samples(ms), g)),
+            lines: Self::LINES_MS.map(|ms| vec![0.0; samples(ms) + depth + 4]),
+            idx: [0; 8],
+            lp: [0.0; 8],
             pre: vec![0.0; (sr * 0.1) as usize + 2],
             pre_pos: 0,
+            lfo: (1.0, 0.0),
             sr,
             mix: Ramp::default(),
         }
     }
 
     fn process(&mut self, buf: &mut [f32], slot: &FxSlot) {
-        let feedback = 0.70 + 0.28 * slot.p1.clamp(0.0, 1.0);
-        let damp = 0.4 * slot.p2.clamp(0.0, 1.0);
+        let sr = self.sr;
+        let rt60 = reverb_decay_secs(slot.p1);
+        let gains = Self::LINES_MS.map(|ms| 10f32.powf(-3.0 * ms * 0.001 / rt60));
+        // Passe-bas un pôle dans chaque boucle : 0 = brillant, 1 = sombre.
+        let damp = 0.45 * slot.p2.clamp(0.0, 1.0);
         let n = self.pre.len();
-        let pre = ((slot.p3.clamp(0.0, 100.0) * 0.001 * self.sr) as usize).min(n - 1);
+        let pre = ((slot.p3.clamp(0.0, 100.0) * 0.001 * sr) as usize).min(n - 1);
         let width = slot.p4.clamp(0.0, 1.0);
         let wet1 = width * 0.5 + 0.5;
         let wet2 = (1.0 - width) * 0.5;
+        let depth = Self::MOD_DEPTH * sr / 48_000.0;
+        let (sw, cw) = (2.0 * PI * Self::MOD_HZ / sr).sin_cos();
         let frames = buf.len() / 2;
         let (mut mix, dmix) = self.mix.begin(slot.mix.clamp(0.0, 1.0), frames);
         for frame in buf.as_chunks_mut::<2>().0 {
             let (dry_l, dry_r) = (frame[0], frame[1]);
-            self.pre[self.pre_pos] = (dry_l + dry_r) * 0.015;
-            let input = self.pre[(self.pre_pos + n - pre) % n];
+            self.pre[self.pre_pos] = (dry_l + dry_r) * 0.5;
+            let mut x = self.pre[(self.pre_pos + n - pre) % n];
             self.pre_pos = (self.pre_pos + 1) % n;
-            let mut out = [0.0f32; 2];
-            for (c, o) in out.iter_mut().enumerate() {
-                let mut acc = 0.0;
-                for comb in &mut self.combs[c] {
-                    acc += comb.tick(input, feedback, damp);
-                }
-                for ap in &mut self.allpasses[c] {
-                    acc = ap.tick(acc);
-                }
-                *o = acc * 3.0;
+            for d in &mut self.diffusers {
+                x = d.tick(x);
             }
+            let (c, s) = self.lfo;
+            self.lfo = (c * cw - s * sw, s * cw + c * sw);
+            let mut y = [0.0f32; 8];
+            for (i, yi) in y.iter_mut().enumerate() {
+                let line = &self.lines[i];
+                let len = line.len();
+                // Quatre phases du LFO (cos, sin, −cos, −sin) sur les 8 retards.
+                let m = if i % 2 == 0 { c } else { s } * if i & 2 == 0 { 1.0 } else { -1.0 };
+                let delay = (len - 4) as f32 - depth * 0.5 * (1.0 - m);
+                let rp = self.idx[i] as f32 + len as f32 - delay;
+                let i0 = rp as usize;
+                let frac = rp - i0 as f32;
+                let (a, b) = (line[i0 % len], line[(i0 + 1) % len]);
+                let v = a + (b - a) * frac;
+                self.lp[i] = flush(v + (self.lp[i] - v) * damp);
+                *yi = self.lp[i] * gains[i];
+            }
+            let out_l: f32 = y.iter().zip(Self::OUT_L).map(|(v, k)| v * k).sum();
+            let out_r: f32 = y.iter().zip(Self::OUT_R).map(|(v, k)| v * k).sum();
+            hadamard8(&mut y);
+            for (i, v) in y.iter().enumerate() {
+                let len = self.lines[i].len();
+                self.lines[i][self.idx[i]] = flush(v + x * Self::IN[i]);
+                self.idx[i] = (self.idx[i] + 1) % len;
+            }
+            let (out_l, out_r) = (out_l * Self::OUT_GAIN, out_r * Self::OUT_GAIN);
             let (dg, wg) = equal_power(mix);
-            frame[0] = dry_l * dg + (out[0] * wet1 + out[1] * wet2) * wg;
-            frame[1] = dry_r * dg + (out[1] * wet1 + out[0] * wet2) * wg;
+            frame[0] = dry_l * dg + (out_l * wet1 + out_r * wet2) * wg;
+            frame[1] = dry_r * dg + (out_r * wet1 + out_l * wet2) * wg;
             mix += dmix;
         }
+        // Le phaseur garde son module (les arrondis le feraient dériver).
+        let (c, s) = self.lfo;
+        let norm = (c * c + s * s).sqrt().max(1e-6);
+        self.lfo = (c / norm, s / norm);
     }
 }
 
@@ -872,6 +916,291 @@ impl LoFi {
     }
 }
 
+// ── Smart Strip : MOD FX et PERFORM FX ─────────────────────────────────
+
+/// Effet joué à la Smart Strip sur le Master : balayages en MOD, effets
+/// rythmés en PERFORM (comme les Perform FX de la MK3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StripFx {
+    Filter,
+    Flanger,
+    Stutter,
+    Echo,
+    Tremolo,
+}
+
+impl StripFx {
+    /// Effets du mode MOD (SHIFT + MOD : suivant).
+    pub const MOD: [Self; 2] = [Self::Filter, Self::Flanger];
+    /// Effets du mode PERFORM (SHIFT + PERFORM, « FX Select » : suivant).
+    pub const PERFORM: [Self; 3] = [Self::Stutter, Self::Echo, Self::Tremolo];
+
+    /// Nom (écrans, statut).
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Filter => "FILTRE",
+            Self::Flanger => "FLANGER",
+            Self::Stutter => "STUTTER",
+            Self::Echo => "ÉCHO",
+            Self::Tremolo => "TRÉMOLO",
+        }
+    }
+
+    /// Réglage donné par la position du doigt (0 = gauche, 1 = droite).
+    #[must_use]
+    pub fn setting(self, x: f32) -> String {
+        match self {
+            Self::Filter if x < 0.5 => format!("passe-bas {}", hz_label(strip_cutoff(x).0)),
+            Self::Filter => format!("passe-haut {}", hz_label(strip_cutoff(x).0)),
+            Self::Flanger => format!("{:.1} ms", flanger_ms(x)),
+            Self::Stutter | Self::Tremolo => strip_division(x).1.to_string(),
+            Self::Echo => echo_division(x).1.to_string(),
+        }
+    }
+}
+
+fn hz_label(hz: f32) -> String {
+    if hz >= 1000.0 {
+        format!("{:.1} kHz", hz / 1000.0)
+    } else {
+        format!("{hz:.0} Hz")
+    }
+}
+
+/// Filtre de la strip : passe-bas qui se ferme vers la gauche (18 kHz →
+/// 120 Hz), passe-haut qui monte vers la droite (20 Hz → 5 kHz). Le centre
+/// est transparent. Renvoie (coupure, mode 0 LP / 1 HP).
+fn strip_cutoff(x: f32) -> (f32, f32) {
+    let x = x.clamp(0.0, 1.0);
+    if x < 0.5 {
+        (120.0 * 150f32.powf(x * 2.0), 0.0)
+    } else {
+        (20.0 * 250f32.powf((x - 0.5) * 2.0), 1.0)
+    }
+}
+
+fn flanger_ms(x: f32) -> f32 {
+    0.5 + 7.5 * x.clamp(0.0, 1.0)
+}
+
+/// Division (en noires) des effets rythmés : 1/4 à gauche … 1/32 à droite.
+fn strip_division(x: f32) -> (f32, &'static str) {
+    const DIVS: [(f32, &str); 4] = [(1.0, "1/4"), (0.5, "1/8"), (0.25, "1/16"), (0.125, "1/32")];
+    DIVS[((x.clamp(0.0, 1.0) * 4.0) as usize).min(3)]
+}
+
+/// Temps d'écho : 1/4, 1/8 pointée, 1/8, 1/16.
+fn echo_division(x: f32) -> (f32, &'static str) {
+    const DIVS: [(f32, &str); 4] = [(1.0, "1/4"), (0.75, "1/8 P"), (0.5, "1/8"), (0.25, "1/16")];
+    DIVS[((x.clamp(0.0, 1.0) * 4.0) as usize).min(3)]
+}
+
+/// Effets de la Smart Strip sur le Master : actifs tant qu'un doigt est
+/// posé (la position règle l'effet), ils s'effacent en quelques ms au
+/// relâchement — l'écho, lui, garde sa queue. Aucune allocation dans
+/// `process`.
+#[derive(Debug, Clone)]
+pub struct PerformFx {
+    sr: f32,
+    filter: Svf,
+    flanger: Box<Chorus>,
+    echo: Box<StereoDelay>,
+    /// Tranche de travail : effet d'insert, puis envoi d'écho.
+    scratch: [f32; 64],
+    send: [f32; 64],
+    /// Mémoire du stutter : ce qui joue depuis le toucher (2 s stéréo).
+    stutter: Vec<f32>,
+    /// Effet en cours (le précédent finit de s'effacer avant le suivant).
+    active: Option<StripFx>,
+    touching: bool,
+    /// Trames depuis le toucher (stutter) et phase du trémolo (0..1).
+    t: usize,
+    phase: f32,
+    /// Position lissée du doigt, niveau d'effet (0 = sec), queue d'écho.
+    x: f32,
+    wet: f32,
+    echo_tail: usize,
+}
+
+impl PerformFx {
+    /// Tout est réservé ici (hors thread audio).
+    #[must_use]
+    pub fn new(sample_rate: u32) -> Self {
+        let sr = sample_rate.max(8000) as f32;
+        Self {
+            sr,
+            filter: Svf::default(),
+            flanger: Box::new(Chorus::new(sr)),
+            echo: Box::new(StereoDelay::new(sr)),
+            scratch: [0.0; 64],
+            send: [0.0; 64],
+            stutter: vec![0.0; (sr * 2.0) as usize * 2],
+            active: None,
+            touching: false,
+            t: 0,
+            phase: 0.0,
+            x: 0.5,
+            wet: 0.0,
+            echo_tail: 0,
+        }
+    }
+
+    /// Traite un bloc stéréo entrelacé : `fx` = effet du mode de la strip
+    /// (None hors MOD / PERFORM), `touch` = position du doigt (0..1),
+    /// `bpm` pour les effets rythmés.
+    pub fn process(&mut self, buf: &mut [f32], fx: Option<StripFx>, touch: Option<f32>, bpm: f32) {
+        if fx != self.active && self.wet < 1e-4 {
+            self.active = fx;
+            self.wet = 0.0;
+        }
+        let touch = touch.filter(|_| fx == self.active);
+        if let Some(x) = touch {
+            if !self.touching {
+                // Nouveau toucher : le stutter enregistre à partir d'ici.
+                self.t = 0;
+                self.phase = 0.0;
+                self.x = x;
+            }
+        }
+        self.touching = touch.is_some();
+        let sr = self.sr;
+        let echo_on = self.active == Some(StripFx::Echo);
+        if echo_on && self.touching {
+            self.echo_tail = (sr * 8.0) as usize;
+        }
+        if !self.touching && self.wet < 1e-4 && self.echo_tail == 0 {
+            self.wet = 0.0;
+            return;
+        }
+        let target = f32::from(u8::from(self.touching));
+        let beat = sr * 60.0 / bpm.clamp(20.0, 400.0);
+        // Fondus : niveau ~8 ms, position ~15 ms (par tranche de 32 trames).
+        let k_wet = 1.0 - (-1.0 / (0.008 * sr)).exp();
+        let k_x = 1.0 - (-32.0 / (0.015 * sr)).exp();
+        for chunk in buf.chunks_mut(64) {
+            if let Some(x) = touch {
+                self.x += (x - self.x) * k_x;
+            }
+            let x = self.x;
+            let n = chunk.len();
+            if let Some(fx) = self.active.filter(|&f| f != StripFx::Echo) {
+                let wet = &mut self.scratch[..n];
+                wet.copy_from_slice(chunk);
+                // Filtre : sec au centre, où il bascule de passe-bas à passe-haut.
+                let mut presence = 1.0;
+                match fx {
+                    StripFx::Filter => {
+                        let (cutoff, mode) = strip_cutoff(x);
+                        if mode != self.filter.mode {
+                            self.filter = Svf {
+                                cutoff,
+                                mode,
+                                ..Svf::default()
+                            };
+                        }
+                        let slot = FxSlot {
+                            p1: cutoff,
+                            p2: 0.55,
+                            p3: mode,
+                            ..FxSlot::default_for(FxType::Filter)
+                        };
+                        self.filter.process(wet, &slot, sr);
+                        presence = ((x - 0.5).abs() / 0.04).min(1.0);
+                    }
+                    StripFx::Flanger => {
+                        let slot = FxSlot {
+                            mix: 0.5,
+                            p1: 0.05,
+                            p2: 0.0,
+                            p3: flanger_ms(x),
+                            p4: 0.75,
+                            ..FxSlot::default_for(FxType::Chorus)
+                        };
+                        self.flanger.process(wet, &slot, sr);
+                    }
+                    StripFx::Stutter => {
+                        let cap = self.stutter.len() / 2;
+                        let slice = ((strip_division(x).0 * beat) as usize).clamp(64, cap);
+                        let fade = (sr * 0.002) as usize;
+                        for s in wet.as_chunks_mut::<2>().0 {
+                            let t = self.t;
+                            if t < cap {
+                                self.stutter[t * 2] = s[0];
+                                self.stutter[t * 2 + 1] = s[1];
+                            }
+                            if t >= slice {
+                                // Répète la tranche, fondu de 2 ms aux raccords.
+                                let p = t % slice;
+                                let g = (p.min(slice - p) as f32 / fade as f32).min(1.0);
+                                s[0] = self.stutter[p * 2] * g;
+                                s[1] = self.stutter[p * 2 + 1] * g;
+                            }
+                            self.t = t.saturating_add(1);
+                        }
+                    }
+                    StripFx::Tremolo => {
+                        let inc = 1.0 / (strip_division(x).0 * beat);
+                        for s in wet.as_chunks_mut::<2>().0 {
+                            let g = 1.0 - 0.9 * (0.5 - 0.5 * (2.0 * PI * self.phase).cos());
+                            s[0] *= g;
+                            s[1] *= g;
+                            self.phase = (self.phase + inc).fract();
+                        }
+                    }
+                    StripFx::Echo => {}
+                }
+                for (d, w) in chunk
+                    .as_chunks_mut::<2>()
+                    .0
+                    .iter_mut()
+                    .zip(self.scratch[..n].as_chunks::<2>().0)
+                {
+                    self.wet += (target - self.wet) * k_wet;
+                    let g = self.wet * presence;
+                    d[0] += (w[0] - d[0]) * g;
+                    d[1] += (w[1] - d[1]) * g;
+                }
+            }
+            if self.echo_tail > 0 {
+                // Écho : envoi tant que le doigt est posé, la queue continue.
+                let send = &mut self.send[..n];
+                for (o, i) in send
+                    .as_chunks_mut::<2>()
+                    .0
+                    .iter_mut()
+                    .zip(chunk.as_chunks::<2>().0)
+                {
+                    if echo_on {
+                        self.wet += (target - self.wet) * k_wet;
+                    }
+                    let level = if echo_on { self.wet } else { 0.0 };
+                    o[0] = i[0] * level;
+                    o[1] = i[1] * level;
+                }
+                let slot = FxSlot {
+                    mix: 1.0,
+                    p1: echo_division(x).0 * beat / sr * 1000.0,
+                    p2: 0.55,
+                    p3: 5000.0,
+                    p4: 1.0,
+                    ..FxSlot::default_for(FxType::Delay)
+                };
+                self.echo.process(send, &slot, sr);
+                for (d, w) in chunk.iter_mut().zip(send.iter()) {
+                    *d += *w;
+                }
+            }
+        }
+        if !(echo_on && self.touching) {
+            self.echo_tail = self.echo_tail.saturating_sub(buf.len() / 2);
+        }
+        if !self.touching && self.wet < 1e-4 {
+            self.wet = 0.0;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -969,6 +1298,58 @@ mod tests {
     }
 
     #[test]
+    fn reverb_tail_grows_with_size_level_stays_even_and_sides_differ() {
+        let mut seed = 1u32;
+        let noise: Vec<f32> = (0..SR as usize * 3)
+            .flat_map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                let v = (seed as f32 / u32::MAX as f32) * 0.5 - 0.25;
+                [v, v]
+            })
+            .collect();
+        let rms = |b: &[f32]| (b.iter().map(|v| v * v).sum::<f32>() / b.len() as f32).sqrt();
+        let mut impulse = vec![0.0f32; SR as usize * 4];
+        impulse[0] = 1.0;
+        impulse[1] = 1.0;
+        let mut last_t60 = 0.0;
+        for size in [0.2f32, 0.6, 0.9] {
+            let slot = FxSlot {
+                mix: 1.0,
+                p1: size,
+                ..FxSlot::default_for(FxType::Reverb)
+            };
+            // Bruit : le niveau mouillé reste du même ordre que le sec.
+            let out = run(std::slice::from_ref(&slot), &noise);
+            let gain = rms(&out[SR as usize..]) / rms(&noise);
+            assert!((0.8..3.0).contains(&gain), "SIZE {size} : gain {gain}");
+            // Impulsion : temps pour que l'énergie restante passe sous -60 dB.
+            let tail = run(&[slot], &impulse);
+            let total: f32 = tail.iter().map(|v| v * v).sum();
+            let mut rest = total;
+            let t60 = tail
+                .chunks(2)
+                .position(|f| {
+                    rest -= f[0] * f[0] + f[1] * f[1];
+                    rest < total * 1e-6
+                })
+                .unwrap_or(0) as f32
+                / SR as f32;
+            assert!(t60 > last_t60, "SIZE {size} : queue {t60} s");
+            last_t60 = t60;
+            // Largeur 100 % : gauche et droite décorrélées (espace stéréo).
+            let (l, r): (Vec<f32>, Vec<f32>) =
+                out[SR as usize..].chunks(2).map(|f| (f[0], f[1])).unzip();
+            let corr = l.iter().zip(&r).map(|(a, b)| a * b).sum::<f32>()
+                / (rms(&l) * rms(&r) * l.len() as f32);
+            assert!(corr.abs() < 0.3, "SIZE {size} : corrélation {corr}");
+        }
+        assert!((reverb_decay_secs(0.0) - 0.3).abs() < 1e-6);
+        assert!((reverb_decay_secs(1.0) - 3.6).abs() < 1e-4);
+    }
+
+    #[test]
     fn delay_repeats_after_its_time_and_reverb_leaves_a_tail() {
         let mut impulse = vec![0.0f32; SR as usize * 2];
         impulse[0] = 1.0;
@@ -1060,5 +1441,102 @@ mod tests {
         let mut silence = vec![0.0f32; 2048];
         p.process(&mut silence, &longer);
         assert!(peak(&silence) > 1e-4);
+    }
+
+    /// Rend `input` par blocs de 256 trames avec un doigt posé sur
+    /// `[from, to)` (trames) à la position `x`.
+    fn strip(fx: StripFx, x: f32, input: &[f32], (from, to): (usize, usize)) -> Vec<f32> {
+        let mut p = PerformFx::new(SR);
+        let mut out = input.to_vec();
+        for (k, block) in out.chunks_mut(512).enumerate() {
+            let at = k * 256;
+            let touch = (at >= from && at < to).then_some(x);
+            p.process(block, Some(fx), touch, 120.0);
+        }
+        out
+    }
+
+    #[test]
+    fn strip_filter_sweeps_while_touched_and_lets_go_cleanly() {
+        let input = sine(4000.0, 0.5, 48_000);
+        // Gauche : passe-bas presque fermé, 4 kHz disparaît.
+        let out = strip(StripFx::Filter, 0.05, &input, (0, 24_000));
+        assert!(peak(&out[2 * 12_000..2 * 24_000]) < 0.05, "passe-bas fermé");
+        // Relâché : retour au son sec en quelques ms.
+        assert!((peak(&out[2 * 30_000..]) - 0.5).abs() < 0.01, "sec après");
+        // Centre : transparent.
+        let out = strip(StripFx::Filter, 0.5, &input, (0, 48_000));
+        assert!(
+            (peak(&out[2 * 12_000..]) - 0.5).abs() < 0.02,
+            "centre neutre"
+        );
+        // Droite : passe-haut, une basse disparaît.
+        let bass = sine(60.0, 0.5, 48_000);
+        let out = strip(StripFx::Filter, 0.98, &bass, (0, 48_000));
+        assert!(peak(&out[2 * 12_000..]) < 0.05, "passe-haut");
+    }
+
+    #[test]
+    fn strip_stutter_repeats_the_slice_played_at_the_touch() {
+        // Signal qui ne se répète jamais : une rampe lente.
+        let input: Vec<f32> = (0..48_000)
+            .flat_map(|i| {
+                let v = i as f32 / 48_000.0;
+                [v, v]
+            })
+            .collect();
+        // Droite = 1/32 à 120 BPM : 3000 trames.
+        let out = strip(StripFx::Stutter, 0.95, &input, (0, 48_000));
+        for t in [3500usize, 7000, 20_000] {
+            let a = out[t * 2];
+            let b = out[(t % 3000) * 2];
+            assert!(
+                (a - b).abs() < 1e-4,
+                "trame {t} = trame {} : {a} / {b}",
+                t % 3000
+            );
+        }
+    }
+
+    #[test]
+    fn strip_echo_repeats_while_touched_and_keeps_its_tail() {
+        let mut input = vec![0.0f32; 2 * 48_000];
+        input[2 * 1000] = 1.0;
+        input[2 * 1000 + 1] = 1.0;
+        // Droite = 1/16 à 120 BPM : 6000 trames ; doigt levé à 2000.
+        let out = strip(StripFx::Echo, 0.95, &input, (0, 2000));
+        // Ping-pong : les échos alternent gauche / droite.
+        let around = |at: usize| {
+            (at - 400..at + 400)
+                .map(|i| out[i * 2].abs().max(out[i * 2 + 1].abs()))
+                .fold(0.0, f32::max)
+        };
+        assert!(around(7000) > 0.1, "premier écho : {}", around(7000));
+        assert!(around(13_000) > 0.03, "la queue continue après le relâché");
+        // Non touché : aucun écho.
+        let dry = strip(StripFx::Echo, 0.95, &input, (0, 0));
+        assert!(peak(&dry[2 * 2000..]) < 1e-6);
+    }
+
+    #[test]
+    fn strip_tremolo_and_flanger_stay_bounded_and_finite() {
+        let loud = sine(110.0, 1.0, 24_000);
+        for fx in StripFx::MOD.into_iter().chain(StripFx::PERFORM) {
+            for x in [0.0, 0.5, 1.0] {
+                let out = strip(fx, x, &loud, (0, 24_000));
+                assert!(out.iter().all(|v| v.is_finite()), "{fx:?} NaN");
+                assert!(peak(&out) < 4.0, "{fx:?} {x} : {}", peak(&out));
+            }
+        }
+        // Trémolo 1/4 à 120 BPM : creux toutes les 24000 trames.
+        let steady = sine(1000.0, 0.5, 48_000);
+        let out = strip(StripFx::Tremolo, 0.1, &steady, (0, 48_000));
+        let level = |at: usize| (at..at + 200).map(|i| out[i * 2].abs()).fold(0.0, f32::max);
+        assert!(
+            level(12_000 - 100) < 0.1,
+            "creux à mi-période : {}",
+            level(11_900)
+        );
+        assert!(level(23_900) > 0.4, "plein en fin de période");
     }
 }

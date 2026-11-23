@@ -613,6 +613,8 @@ fn vu_v(
 }
 
 /// Ligne « clé → valeur » : clé à gauche (atténuée), valeur alignée à droite.
+/// Ligne clé / valeur d'une carte (Barlow) : la clé à gauche, la valeur
+/// alignée à droite de la carte (`x + 206`), `y` = ligne de base.
 fn kv_row(
     frame: &mut DisplayFrame,
     p: &Pal,
@@ -622,10 +624,25 @@ fn kv_row(
     value: &str,
     vcol: DisplayPixel,
 ) {
-    draw_text(frame, x, y, &trunc(key, 15), p.muted, p.panel);
-    let v = trunc(value, 18);
-    let vx = (x + 196).saturating_sub(v.len() * 8);
-    draw_text(frame, vx, y, &v, vcol, p.panel);
+    use screen_text::Face;
+    label(frame, x as f32, y as f32, key, 13.0, p.muted, 1.0);
+    let v = fit_text(value, Face::Bold, 13.0, 120.0);
+    let w = screen_text::width(&v, Face::Bold, 13.0);
+    bold(frame, (x + 206) as f32 - w, y as f32, &v, 13.0, vcol);
+}
+
+/// Carte des réglages : fond, liseré de couleur et titre.
+fn settings_card(
+    frame: &mut DisplayFrame,
+    p: &Pal,
+    x: usize,
+    y: usize,
+    title: &str,
+    color: DisplayPixel,
+) {
+    panel(frame, p, x, y, 228, 76);
+    fill_rect(frame, x, y, 3, 76, color);
+    bold(frame, x as f32 + 10.0, y as f32 + 16.0, title, 13.0, color);
 }
 
 /// Pastille d'état (M, S, onglet de mode...).
@@ -1939,52 +1956,79 @@ pub fn render_arranger_right(snap: &EngineSnapshot) -> DisplayFrame {
     }
     fill_rect(&mut frame, 0, 74, SCR_W, 1, p.border);
 
-    // Contenu de la section active : scène + patterns par groupe.
+    // Contenu de la section active : la scène, puis le pattern de chaque
+    // groupe sur deux colonnes de quatre (tout tient au-dessus des knobs).
     if let Some(sec) = snap.project.song.get(active_sec) {
+        use screen_text::Face;
         let scene = snap.project.scenes.get(sec.scene);
-        draw_text(
-            &mut frame,
-            8,
-            80,
-            &format!(
-                "SECTION {} {} | SCENE {} {} | {} mes.",
-                active_sec + 1,
-                trunc(&sec.name, 10),
-                sec.scene + 1,
-                scene
-                    .map(|s| trunc(&s.name, 10))
-                    .unwrap_or_else(|| "--".into()),
-                (sec.length.bars as usize).max(1)
-            ),
-            p.white,
-            p.bg,
+        let info = format!(
+            "Section {} {} · scène {} {} · {} mes.",
+            active_sec + 1,
+            sec.name,
+            sec.scene + 1,
+            scene.map_or("--", |s| s.name.as_str()),
+            (sec.length.bars as usize).max(1)
         );
-        let mut y = 100usize;
+        label(
+            &mut frame,
+            8.0,
+            92.0,
+            &fit_text(&info, Face::Sans, 13.0, 464.0),
+            13.0,
+            p.white,
+            1.0,
+        );
         for gi in 0..8usize {
-            let focus = gi == snap.group_focus as usize;
-            let row_bg = if focus { p.panel2 } else { p.bg };
-            if focus {
-                fill_rect(&mut frame, 0, y - 2, SCR_W, 12, row_bg);
+            let (x, y) = (8 + gi / 4 * 236, 100 + gi % 4 * 22);
+            if gi == snap.group_focus as usize {
+                screen_vector::fill_round_rect(
+                    &mut frame, x as f32, y as f32, 228.0, 20.0, 3.0, p.panel2,
+                );
             }
-            draw_text(
+            screen_vector::fill_round_rect(
                 &mut frame,
-                8,
-                y - 2,
-                &format!(
-                    "{}  {}",
-                    group_letter(gi as u8),
-                    trunc(&group_name(snap, gi), 10)
-                ),
-                if focus { p.white } else { p.dim },
-                row_bg,
+                x as f32 + 4.0,
+                y as f32 + 4.0,
+                12.0,
+                12.0,
+                2.0,
+                hue_color(gi),
             );
-            let pat_txt = scene
+            let letter = group_letter(gi as u8).to_string();
+            bold(
+                &mut frame,
+                x as f32 + 22.0,
+                y as f32 + 15.0,
+                &letter,
+                13.0,
+                p.white,
+            );
+            let name = fit_text(&group_name(snap, gi), Face::Sans, 13.0, 92.0);
+            label(
+                &mut frame,
+                x as f32 + 36.0,
+                y as f32 + 15.0,
+                &name,
+                13.0,
+                p.dim,
+                1.0,
+            );
+            let pattern = scene
                 .and_then(|s| s.patterns.get(gi).copied().flatten())
                 .and_then(|pi| snap.project.groups.get(gi)?.patterns.get(pi))
-                .map(|pat| trunc(&pat.name, 12))
-                .unwrap_or_else(|| "--".to_string());
-            draw_text(&mut frame, 180, y - 2, &pat_txt, p.dim, row_bg);
-            y += 12;
+                .map_or_else(
+                    || "—".to_string(),
+                    |pat| fit_text(&pat.name, Face::Bold, 13.0, 90.0),
+                );
+            let w = screen_text::width(&pattern, Face::Bold, 13.0);
+            bold(
+                &mut frame,
+                x as f32 + 222.0 - w,
+                y as f32 + 15.0,
+                &pattern,
+                13.0,
+                p.white,
+            );
         }
     } else {
         center_text(&mut frame, 100, "AUCUNE SECTION", p.muted, p.bg);
@@ -4503,177 +4547,135 @@ pub fn render_settings_right(snap: &EngineSnapshot) -> DisplayFrame {
         3 => "STEP",
         _ => "PAD",
     };
-    let pad_map = std::env::var("MASCHINE_PAD_MAP").unwrap_or_else(|_| "hw".to_string());
 
-    // ── Carte PROJET ──
-    panel(&mut frame, &p, 8, 30, 226, 78);
-    fill_rect(&mut frame, 8, 30, 3, 78, p.accent);
-    draw_text(
-        &mut frame,
-        18,
-        34,
-        &format!("PROJET  v{}", snap.project.schema_version),
-        p.accent,
-        p.panel,
-    );
-    fill_rect(&mut frame, 18, 50, 40, 1, p.track);
-    kv_row(
-        &mut frame,
-        &p,
-        18,
-        54,
-        "Nom",
-        &trunc(&snap.project.name, 18),
-        p.white,
-    );
-    kv_row(
-        &mut frame,
-        &p,
-        18,
-        72,
-        "Groupes",
-        &format!("{}", snap.project.groups.len()),
-        p.cyan,
-    );
-    kv_row(
-        &mut frame,
-        &p,
-        18,
-        90,
-        "Scenes / Sect.",
-        &format!(
-            "{} / {}",
-            snap.project.scenes.len(),
-            snap.project.song.len()
-        ),
-        p.cyan,
-    );
-
-    // ── Carte TRANSPORT ──
-    panel(&mut frame, &p, 8, 112, 226, 78);
-    fill_rect(&mut frame, 8, 112, 3, 78, p.green);
-    draw_text(&mut frame, 18, 116, "TRANSPORT", p.green, p.panel);
-    fill_rect(&mut frame, 18, 132, 40, 1, p.track);
-    let (st_txt, st_col) = if snap.transport.is_playing() {
-        ("PLAY", p.green)
-    } else {
-        ("STOP", p.dim)
+    let strip = ["PITCH", "MOD", "PERFORM", "NOTES"][snap.strip_mode.min(3) as usize];
+    let strip = match snap.strip_fx {
+        Some(fx) => format!("{strip} · {}", fx.name()),
+        None => strip.to_string(),
     };
-    kv_row(&mut frame, &p, 18, 136, "Etat", st_txt, st_col);
-    kv_row(
-        &mut frame,
-        &p,
-        18,
-        154,
-        "BPM / Swing",
-        &format!(
-            "{:.1} / {:.0}%",
-            snap.transport.bpm,
-            snap.project.swing * 100.0
+    // Quatre cartes (2 × 2), trois lignes chacune, au-dessus des knobs.
+    let cards = [
+        (
+            8,
+            32,
+            "PROJET",
+            p.accent,
+            [
+                ("Nom", snap.project.name.clone(), p.white),
+                ("Groupes", snap.project.groups.len().to_string(), p.cyan),
+                (
+                    "Scènes / sections",
+                    format!(
+                        "{} / {}",
+                        snap.project.scenes.len(),
+                        snap.project.song.len()
+                    ),
+                    p.cyan,
+                ),
+            ],
         ),
-        p.white,
-    );
-    pill(
-        &mut frame,
-        &p,
-        18,
-        172,
-        52,
-        "LOOP",
-        p.cyan,
-        snap.transport.loop_enabled,
-    );
-    pill(
-        &mut frame,
-        &p,
-        78,
-        172,
-        58,
-        "METRO",
-        p.cyan,
-        snap.transport.metronome,
-    );
-    draw_text(
-        &mut frame,
-        146,
-        176,
-        &format!("bar {}.{}", tick_bar(snap) + 1, tick_step(snap) + 1),
-        p.muted,
-        p.panel,
-    );
-
-    // ── Carte AUDIO / JEU ──
-    panel(&mut frame, &p, 242, 30, 230, 78);
-    fill_rect(&mut frame, 242, 30, 3, 78, p.cyan);
-    draw_text(&mut frame, 252, 34, "AUDIO / JEU", p.cyan, p.panel);
-    fill_rect(&mut frame, 252, 50, 40, 1, p.track);
-    kv_row(
-        &mut frame,
-        &p,
-        252,
-        54,
-        "Taux",
-        &format!("{:.1} kHz", snap.transport.sample_rate as f32 / 1000.0),
-        p.white,
-    );
-    kv_row(
-        &mut frame,
-        &p,
-        252,
-        72,
-        "Voix",
-        &format!("{}", snap.num_voices),
-        p.cyan,
-    );
-    kv_row(
-        &mut frame,
-        &p,
-        252,
-        90,
-        "Master / Casque",
-        &format!(
-            "{:.0}% / {:.0}%",
-            snap.master_volume * 100.0,
-            snap.headphone_volume * 100.0
+        (
+            8,
+            114,
+            "TRANSPORT",
+            p.green,
+            [
+                (
+                    "État",
+                    format!(
+                        "{} · {}.{}",
+                        if snap.transport.is_playing() {
+                            "PLAY"
+                        } else {
+                            "STOP"
+                        },
+                        tick_bar(snap) + 1,
+                        tick_step(snap) + 1
+                    ),
+                    if snap.transport.is_playing() {
+                        p.green
+                    } else {
+                        p.dim
+                    },
+                ),
+                (
+                    "BPM / swing",
+                    format!(
+                        "{:.1} / {:.0}%",
+                        snap.transport.bpm,
+                        snap.project.swing * 100.0
+                    ),
+                    p.white,
+                ),
+                (
+                    "Boucle / métronome",
+                    format!(
+                        "{} / {}",
+                        if snap.transport.loop_enabled {
+                            "ON"
+                        } else {
+                            "OFF"
+                        },
+                        if snap.transport.metronome {
+                            "ON"
+                        } else {
+                            "OFF"
+                        }
+                    ),
+                    p.cyan,
+                ),
+            ],
         ),
-        p.white,
-    );
-
-    // ── Carte FOCUS ──
-    panel(&mut frame, &p, 242, 112, 230, 78);
-    fill_rect(
-        &mut frame,
-        242,
-        112,
-        3,
-        78,
-        hue_color(snap.group_focus as usize),
-    );
-    draw_text(&mut frame, 252, 116, "FOCUS", p.muted, p.panel);
-    fill_rect(&mut frame, 252, 132, 40, 1, p.track);
-    draw_text(
-        &mut frame,
-        252,
-        136,
-        &format!(
-            "{} / S{:02} {}",
-            group_letter(snap.group_focus),
-            snap.active_sound + 1,
-            trunc(&sound_name(snap, snap.active_sound as usize), 10)
+        (
+            244,
+            32,
+            "AUDIO / JEU",
+            p.cyan,
+            [
+                (
+                    "Taux",
+                    format!("{:.1} kHz", snap.transport.sample_rate as f32 / 1000.0),
+                    p.white,
+                ),
+                ("Voix", snap.num_voices.to_string(), p.cyan),
+                (
+                    "Master / casque",
+                    format!(
+                        "{:.0}% / {:.0}%",
+                        snap.master_volume * 100.0,
+                        snap.headphone_volume * 100.0
+                    ),
+                    p.white,
+                ),
+            ],
         ),
-        p.white,
-        p.panel,
-    );
-    kv_row(
-        &mut frame,
-        &p,
-        252,
-        154,
-        "Pads / Jeu",
-        &format!("{} / {ctrl}", modes.join("+")),
-        p.dim,
-    );
-    kv_row(&mut frame, &p, 252, 172, "Pad map", &pad_map, p.muted);
+        (
+            244,
+            114,
+            "FOCUS",
+            hue_color(snap.group_focus as usize),
+            [
+                (
+                    "Sound",
+                    format!(
+                        "{} / S{:02} {}",
+                        group_letter(snap.group_focus),
+                        snap.active_sound + 1,
+                        sound_name(snap, snap.active_sound as usize)
+                    ),
+                    p.white,
+                ),
+                ("Pads / jeu", format!("{} / {ctrl}", modes.join("+")), p.dim),
+                ("Smart Strip", strip, p.accent),
+            ],
+        ),
+    ];
+    for (x, y, title, color, rows) in cards {
+        settings_card(&mut frame, &p, x, y, title, color);
+        for (i, (key, value, vcol)) in rows.iter().enumerate() {
+            kv_row(&mut frame, &p, x + 10, y + 34 + i * 16, key, value, *vcol);
+        }
+    }
 
     let cut = focus_sound(snap)
         .map(|s| s.filter.cutoff_hz)
@@ -6065,7 +6067,7 @@ fn draw_fx_visual(
             }
             T::Reverb => {
                 // Décroissance (taille → durée), pré-délai décalé à gauche.
-                let decay_s = 0.4 + 3.6 * fx.p1.clamp(0.0, 1.0);
+                let decay_s = crate::fx::reverb_decay_secs(fx.p1);
                 let pre = fx.p3.clamp(0.0, 100.0) / 1000.0;
                 (0..=96)
                     .map(|i| {

@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
+use crate::fx::StripFx;
 use crate::project::{
     AutoTarget, BarsBeatsTicks, Pattern, PatternEvent, Project, Scene, Section, SoundAutomation,
     Zone,
@@ -533,6 +534,12 @@ pub enum EngineEvent {
     SetShiftHeld(bool),
     /// Bascule le verrouillage LOCK
     ToggleLock(bool),
+    /// Mode de la Smart Strip : 0 PITCH, 1 MOD, 2 PERFORM, 3 NOTES.
+    SetStripMode(u8),
+    /// Doigt sur la Smart Strip : position 0 (gauche) .. 1 (droite), None = relâché.
+    Strip(Option<f32>),
+    /// Effet suivant du mode MOD / PERFORM (SHIFT + MOD, SHIFT + PERFORM).
+    StripFxNext,
     /// Enchaîne plusieurs patterns (chain) pour un groupe
     PatternChain { group: u8, patterns: Vec<usize> },
     /// Active / désactive la vélocité fixe (bouton FIXED VEL).
@@ -745,6 +752,11 @@ pub struct EngineSnapshot {
     pub fixed_velocity_level: u8,
     /// 16 vélocités (SHIFT + FIXED VEL).
     pub sixteen_velocities: bool,
+    /// Smart Strip : mode (0 PITCH, 1 MOD, 2 PERFORM, 3 NOTES), doigt posé
+    /// (position 0..1) et effet joué en MOD / PERFORM.
+    pub strip_mode: u8,
+    pub strip_touch: Option<f32>,
+    pub strip_fx: Option<crate::fx::StripFx>,
     /// Bouton AUTO armé : les automations sont enregistrées pendant REC.
     pub automation_armed: bool,
     /// Vue AUTOMATION affichée sur les deux écrans.
@@ -1053,13 +1065,119 @@ struct SynthRack {
 struct RackSlot<T> {
     synth: Box<T>,
     idle_blocks: u32,
+    /// Notes programmées dans le bloc audio : (trame, note). Le rendu coupe
+    /// le bloc à chaque note, qui part ainsi au sample près.
+    queue: [Option<(usize, RackNote)>; RACK_QUEUE],
 }
 
-impl<T> RackSlot<T> {
+/// Note d'un synthé du rack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RackNote {
+    Off(u8),
+    On(u8, u8),
+}
+
+/// Notes programmables par synthé et par bloc (au-delà : jouées tout de suite).
+const RACK_QUEUE: usize = 16;
+
+/// Ce que le rack demande à un synthé : rendre un morceau de bloc et jouer
+/// une note.
+trait RackSynth {
+    fn render_into(&mut self, out: &mut [f32]);
+    fn play(&mut self, note: RackNote);
+}
+
+impl RackSynth for crate::acid_synth::AcidSynth {
+    fn render_into(&mut self, out: &mut [f32]) {
+        self.render(out);
+    }
+    fn play(&mut self, note: RackNote) {
+        match note {
+            RackNote::On(n, v) => self.note_on(n, v),
+            RackNote::Off(n) => self.note_off(n),
+        }
+    }
+}
+
+impl RackSynth for crate::kick_synth::KickSynth {
+    fn render_into(&mut self, out: &mut [f32]) {
+        self.render(out);
+    }
+    fn play(&mut self, note: RackNote) {
+        if let RackNote::On(n, v) = note {
+            self.trigger(n, v);
+        }
+    }
+}
+
+impl RackSynth for crate::wavetable_synth::WavetableSynth {
+    fn render_into(&mut self, out: &mut [f32]) {
+        self.render(out);
+    }
+    fn play(&mut self, note: RackNote) {
+        match note {
+            RackNote::On(n, v) => self.note_on(n, v),
+            RackNote::Off(n) => self.note_off(n),
+        }
+    }
+}
+
+impl<T: RackSynth> RackSlot<T> {
     fn new(synth: T) -> Self {
         Self {
             synth: Box::new(synth),
             idle_blocks: 0,
+            queue: [None; RACK_QUEUE],
+        }
+    }
+
+    /// Joue `note` tout de suite (`frame` 0 : jeu live, entre deux blocs) ou
+    /// à sa trame dans le prochain bloc rendu.
+    fn play_at(&mut self, frame: usize, note: RackNote) {
+        if frame > 0 {
+            self.schedule(frame, note);
+            return;
+        }
+        if matches!(note, RackNote::On(..)) {
+            self.idle_blocks = 0;
+        }
+        self.synth.play(note);
+    }
+
+    /// Joue `note` à la trame `frame` du prochain bloc rendu (0 = au début).
+    fn schedule(&mut self, frame: usize, note: RackNote) {
+        self.idle_blocks = 0;
+        match self.queue.iter_mut().find(|q| q.is_none()) {
+            Some(q) => *q = Some((frame, note)),
+            None => self.synth.play(note),
+        }
+    }
+
+    /// Rend `out` (stéréo entrelacé, déjà à zéro) en jouant chaque note à sa
+    /// trame ; à trame égale, le note-off passe avant le note-on (une note
+    /// qui finit pile quand la suivante commence ne la coupe pas). Les notes
+    /// au-delà de ce morceau de bloc restent pour le suivant.
+    fn render(&mut self, out: &mut [f32]) {
+        let frames = out.len() / 2;
+        let mut at = 0;
+        while let Some(i) = (0..RACK_QUEUE)
+            .filter(|&i| self.queue[i].is_some_and(|(f, _)| f < frames))
+            .min_by_key(|&i| self.queue[i].map(|(f, n)| (f, matches!(n, RackNote::On(..)))))
+        {
+            let Some((frame, note)) = self.queue[i].take() else {
+                break;
+            };
+            if frame > at {
+                self.synth.render_into(&mut out[at * 2..frame * 2]);
+                at = frame;
+            }
+            self.synth.play(note);
+        }
+        if at < frames {
+            self.synth.render_into(&mut out[at * 2..]);
+        }
+        for (f, _) in self.queue.iter_mut().flatten() {
+            *f -= frames;
         }
     }
 }
@@ -1237,6 +1355,14 @@ pub struct Engine {
     fx_buses: Vec<(FxOwner, crate::fx::FxChainProcessor)>,
     /// Inserts du Master, appliqués à la somme de tous les groupes.
     master_fx: crate::fx::FxChainProcessor,
+    /// Effets de la Smart Strip (MOD / PERFORM) sur le Master.
+    perform: crate::fx::PerformFx,
+    /// Smart Strip : mode, doigt posé, effet choisi en MOD et en PERFORM,
+    /// et instance du rack transposée par PITCH (à remettre au neutre).
+    strip_mode: u8,
+    strip_touch: Option<f32>,
+    strip_fx: [u8; 2],
+    bent_slot: Option<usize>,
     /// Synthés de lecture : une instance par Sound (voir `SynthRack`).
     rack: SynthRack,
     /// Voix de monitoring pendant REC : le Sound joué en direct utilise ses
@@ -1664,6 +1790,11 @@ impl Engine {
             wavetable_synth: crate::wavetable_synth::WavetableSynth::new(sample_rate),
             fx_buses: Vec::new(),
             master_fx: crate::fx::FxChainProcessor::new(sample_rate),
+            perform: crate::fx::PerformFx::new(sample_rate),
+            strip_mode: 2,
+            strip_touch: None,
+            strip_fx: [0; 2],
+            bent_slot: None,
             rack: SynthRack::new(),
             monitor_rack: SynthRack::new(),
             auto_sounds: vec![None; 8 * 16],
@@ -2119,6 +2250,9 @@ impl Engine {
             fixed_velocity: self.fixed_velocity,
             fixed_velocity_level: self.fixed_velocity_level,
             sixteen_velocities: self.sixteen_velocities,
+            strip_mode: self.strip_mode,
+            strip_touch: self.strip_touch,
+            strip_fx: self.strip_effect(),
             automation_armed: self.automation_armed,
             automation_view: self.automation_view,
             auto_lane: self.auto_lane,
@@ -2532,6 +2666,7 @@ impl Engine {
         // Inserts recréés au nouveau taux (temps de délai, coefficients).
         self.fx_buses.clear();
         self.master_fx = crate::fx::FxChainProcessor::new(rate);
+        self.perform = crate::fx::PerformFx::new(rate);
         self.master_limiter = crate::limiter::MasterLimiter::new(rate);
         self.rack = SynthRack::new();
         self.sync_synth_rack();
@@ -2580,55 +2715,87 @@ impl Engine {
         }
     }
 
-    /// Déclenche la voix sonore associée à un pad pour une note et vélocité données.
+    /// Déclenche la voix sonore associée à un pad pour une note et vélocité
+    /// données ; le synthé « édition » (pages PLUG-IN) suit le Sound joué.
     pub fn trigger_sound_voice(&mut self, pad: u8, note: u8, velocity: u8) {
+        let (g, sr, i) = (
+            self.group_focus,
+            self.transport.sample_rate,
+            rack_index(self.group_focus, pad),
+        );
+        let monitor = self.transport.state == TransportState::Recording && pad == self.active_sound;
+        {
+            // Hors thread audio : l'instance du rack est créée au besoin.
+            let guard = self.project.read();
+            let snd = guard
+                .groups
+                .get(g as usize)
+                .and_then(|grp| grp.sounds.get(pad as usize))
+                .and_then(Option::as_ref);
+            let rack = if monitor {
+                &mut self.monitor_rack
+            } else {
+                &mut self.rack
+            };
+            if let Some(p) = snd.and_then(|s| s.kick_synth.as_ref()) {
+                self.kick_synth.params = p.clone();
+                self.kick_sound_target = Some((g, pad));
+                rack.kick[i]
+                    .get_or_insert_with(|| RackSlot::new(crate::kick_synth::KickSynth::new(sr)))
+                    .synth
+                    .params = p.clone();
+            } else if let Some(p) = snd.and_then(|s| s.synth.as_ref()) {
+                self.acid_synth.params = p.clone();
+                self.acid_sound_target = Some((g, pad));
+                rack.acid[i]
+                    .get_or_insert_with(|| RackSlot::new(crate::acid_synth::AcidSynth::new(sr)))
+                    .synth
+                    .params = p.clone();
+            } else if let Some(p) = snd.and_then(|s| s.wavetable_synth.as_ref()) {
+                self.wavetable_synth.params = p.clone();
+                self.wavetable_sound_target = Some((g, pad));
+                rack.wavetable[i]
+                    .get_or_insert_with(|| {
+                        RackSlot::new(crate::wavetable_synth::WavetableSynth::new(sr))
+                    })
+                    .synth
+                    .params = p.clone();
+            }
+        }
+        self.play_sound_voice(pad, note, velocity, 0);
+    }
+
+    /// Joue une note d'un Sound du groupe focus à la trame `frame` du bloc
+    /// audio (0 = tout de suite). Sans allocation ni copie de paramètres :
+    /// aussi appelé depuis `advance` (Note Repeat, arpégiateur) ; les synthés
+    /// du rack sont tenus à jour par `sync_synth_rack`.
+    fn play_sound_voice(&mut self, pad: u8, note: u8, velocity: u8, frame: usize) {
         let sound = sampler_sound_id(self.group_focus, pad);
         self.note_pad_activity(pad, velocity);
         let guard = self.project.read();
-        let (group_gain, group_pan) = guard
-            .groups
-            .get(self.group_focus as usize)
-            .map(|g| (db_to_linear(g.volume_db), g.pan))
-            .unwrap_or((1.0, 0.0));
-        let snd_ref = guard
-            .groups
-            .get(self.group_focus as usize)
-            .and_then(|g| g.sounds.get(pad as usize))
-            .and_then(|s| s.as_ref());
-        let synth_params = snd_ref.and_then(|s| s.synth.clone());
-        let kick_params = snd_ref.and_then(|s| s.kick_synth.clone());
-        let wavetable_params = snd_ref.and_then(|s| s.wavetable_synth.clone());
-        let is_synth_sound = synth_params.is_some();
-        let is_kick_sound = kick_params.is_some();
-        let is_wavetable_sound = wavetable_params.is_some();
-        if snd_ref.is_none() {
+        let Some(grp) = guard.groups.get(self.group_focus as usize) else {
             return;
-        }
-        let (snd_gain, snd_pan, vparams) = snd_ref
-            .map(|s| {
-                let filter_off = s.filter.kind == crate::project::FilterKind::Off;
-                (
-                    db_to_linear(s.volume_db),
-                    s.pan,
-                    crate::sampler::VoiceParams {
-                        attack_ms: s.adsr.attack_ms,
-                        decay_ms: s.adsr.decay_ms,
-                        sustain: s.adsr.sustain,
-                        release_ms: s.adsr.release_ms,
-                        cutoff_hz: if filter_off {
-                            20000.0
-                        } else {
-                            s.filter.cutoff_hz
-                        },
-                        resonance: if filter_off { 0.0 } else { s.filter.resonance },
-                        kind: s.filter.kind,
-                    },
-                )
-            })
-            .unwrap_or((1.0, 0.0, crate::sampler::VoiceParams::default()));
+        };
+        let Some(snd) = grp.sounds.get(pad as usize).and_then(Option::as_ref) else {
+            return;
+        };
+        let (is_kick, is_acid, is_wavetable) = (
+            snd.kick_synth.is_some(),
+            snd.synth.is_some(),
+            snd.wavetable_synth.is_some(),
+        );
+        let gain = db_to_linear(grp.volume_db) * db_to_linear(snd.volume_db);
+        let (group_pan, snd_pan) = (grp.pan, snd.pan);
+        let vparams = crate::sampler::VoiceParams {
+            attack_ms: snd.adsr.attack_ms,
+            decay_ms: snd.adsr.decay_ms,
+            sustain: snd.adsr.sustain,
+            release_ms: snd.adsr.release_ms,
+            cutoff_hz: snd.filter.cutoff_hz,
+            resonance: snd.filter.resonance,
+            kind: snd.filter.kind,
+        };
         drop(guard);
-        // Synthés : l'instance de ce Sound dans le rack (créée au besoin, ce
-        // n'est pas le thread audio) ; le synthé « édition » suit le Sound joué.
         let i = rack_index(self.group_focus, pad);
         // Pendant REC, la note jouée en direct a sa propre voix : le pattern
         // continue de sonner sur `rack` et le monitoring sur `monitor_rack`.
@@ -2639,52 +2806,32 @@ impl Engine {
         } else {
             &mut self.rack
         };
-        if is_kick_sound {
-            self.kick_sound_target = Some((self.group_focus, pad));
-            if let Some(p) = kick_params {
-                self.kick_synth.params = p.clone();
-                let sr = self.transport.sample_rate;
-                let slot = rack.kick[i]
-                    .get_or_insert_with(|| RackSlot::new(crate::kick_synth::KickSynth::new(sr)));
-                slot.synth.params = p;
-                slot.idle_blocks = 0;
-                slot.synth.trigger(note, velocity);
+        let on = RackNote::On(note, velocity);
+        if is_kick {
+            if let Some(slot) = rack.kick[i].as_mut() {
+                slot.play_at(frame, on);
             }
-        } else if is_synth_sound {
-            self.acid_sound_target = Some((self.group_focus, pad));
-            if let Some(p) = synth_params {
-                self.acid_synth.params = p.clone();
-                let sr = self.transport.sample_rate;
-                let slot = rack.acid[i]
-                    .get_or_insert_with(|| RackSlot::new(crate::acid_synth::AcidSynth::new(sr)));
-                slot.synth.params = p;
-                slot.idle_blocks = 0;
-                if live_monitor {
+        } else if is_acid {
+            if let Some(slot) = rack.acid[i].as_mut() {
+                if live_monitor && frame == 0 {
                     // Monitoring live : coupe nette de la note précédente,
                     // nouvelle note immédiate (pas de portamento).
+                    slot.idle_blocks = 0;
                     slot.synth.cut_gate();
                     slot.synth.note_on_instant(note, velocity);
                 } else {
-                    slot.synth.note_on(note, velocity);
+                    slot.play_at(frame, on);
                 }
             }
-        } else if is_wavetable_sound {
-            self.wavetable_sound_target = Some((self.group_focus, pad));
-            if let Some(p) = wavetable_params {
-                self.wavetable_synth.params = p.clone();
-                let sr = self.transport.sample_rate;
-                let slot = rack.wavetable[i].get_or_insert_with(|| {
-                    RackSlot::new(crate::wavetable_synth::WavetableSynth::new(sr))
-                });
-                slot.synth.params = p;
-                slot.idle_blocks = 0;
+        } else if is_wavetable {
+            if let Some(slot) = rack.wavetable[i].as_mut() {
                 if live_monitor {
                     slot.synth.all_notes_off();
                 }
-                slot.synth.note_on(note, velocity);
+                slot.play_at(frame, on);
             }
-        } else if let Some(idx) = self.sampler.note_on(sound, note, velocity, note) {
-            self.sampler.set_voice_gain(idx, group_gain * snd_gain);
+        } else if let Some(idx) = self.sampler.note_on_at(sound, note, velocity, note, frame) {
+            self.sampler.set_voice_gain(idx, gain);
             self.sampler.set_voice_pan(idx, snd_pan);
             self.sampler.set_voice_group(idx, self.group_focus);
             self.sampler.set_voice_group_pan(idx, group_pan);
@@ -2694,6 +2841,11 @@ impl Engine {
 
     /// Relâche la note pour les synthétiseurs et le sampler.
     pub fn release_sound_voice(&mut self, pad: u8, note: u8) {
+        self.release_sound_voice_at(pad, note, 0);
+    }
+
+    /// [`Self::release_sound_voice`] à la trame `frame` du bloc audio.
+    fn release_sound_voice_at(&mut self, pad: u8, note: u8, frame: usize) {
         let sound = sampler_sound_id(self.group_focus, pad);
         let i = rack_index(self.group_focus, pad);
         // La voix release est celle du monitoring pendant REC (le pattern
@@ -2706,12 +2858,12 @@ impl Engine {
             &mut self.rack
         };
         if let Some(slot) = rack.acid[i].as_mut() {
-            slot.synth.note_off(note);
+            slot.play_at(frame, RackNote::Off(note));
         }
         if let Some(slot) = rack.wavetable[i].as_mut() {
-            slot.synth.note_off(note);
+            slot.play_at(frame, RackNote::Off(note));
         }
-        self.sampler.note_off(sound, note);
+        self.sampler.note_off_at(sound, note, frame);
     }
 
     /// Déclenche un son de pad (Kick Synth, TB-303, Wavetable ou Sampler)
@@ -3951,7 +4103,7 @@ impl Engine {
                     // MK3) : les notes tenues sont jouées une à une, en montant.
                     if pressed && first_key {
                         self.note_repeat_samples = 0;
-                        self.arp_step();
+                        self.arp_step(0, self.transport.tick);
                     } else if !pressed && self.arp_held.iter().all(|&v| v == 0) {
                         if let Some(last) = self.arp_last.take() {
                             self.release_sound_voice(self.active_sound, last);
@@ -4800,6 +4952,26 @@ impl Engine {
                 self.shift_held = held;
                 self.revision = self.revision.wrapping_add(1);
             }
+            EngineEvent::SetStripMode(mode) => {
+                self.strip_touch_at(None);
+                self.strip_mode = mode.min(3);
+                let name = ["PITCH", "MOD", "PERFORM", "NOTES"][self.strip_mode as usize];
+                match self.strip_effect() {
+                    Some(fx) => self.show_status(format!("Strip {name} : {}", fx.name())),
+                    None => self.show_status(format!("Strip {name}")),
+                }
+            }
+            EngineEvent::Strip(touch) => self.strip_touch_at(touch),
+            EngineEvent::StripFxNext => {
+                if let Some(i) = self.strip_mode.checked_sub(1).filter(|&i| i < 2) {
+                    let count = [StripFx::MOD.len(), StripFx::PERFORM.len()][i as usize];
+                    let sel = &mut self.strip_fx[i as usize];
+                    *sel = (*sel + 1) % count as u8;
+                }
+                if let Some(fx) = self.strip_effect() {
+                    self.show_status(format!("Effet de la strip : {}", fx.name()));
+                }
+            }
             EngineEvent::ToggleLock(locked) => {
                 self.lock_active = locked;
                 self.status_message = Some(if locked {
@@ -5243,41 +5415,78 @@ impl Engine {
             self.revision = self.revision.wrapping_add(1);
         }
 
-        // Traitement du Note Repeat
+        // Contexte du bloc : place chaque note au sample près au lieu de la
+        // quantifier à la taille du buffer (sinon le groove est décalé).
+        let bpm = self.transport.bpm.max(1.0) as f64;
+        let ppq = self.transport.ppq.max(1) as f64;
+        let ctx = BlockCtx {
+            frames: samples,
+            samples_per_tick: self.transport.sample_rate.max(1) as f64 * 60.0 / (bpm * ppq),
+            tick_fraction: frac_before,
+        };
+        // Fenêtre [prev, new) du bloc, en deux segments au bouclage :
+        // (début, fin, ticks du bloc déjà écoulés avant le segment).
+        let loop_end = self.transport.loop_end;
+        let segments = if wrapped {
+            [
+                (prev_tick, loop_end, 0),
+                (0, new_tick, loop_end.saturating_sub(prev_tick)),
+            ]
+        } else {
+            [(prev_tick, new_tick, 0), (0, 0, 0)]
+        };
+
+        // Note Repeat (et arpégiateur) : chaque répétition part à sa trame —
+        // un bloc long peut en contenir plusieurs aux cadences rapides.
         const NOTE_REPEAT_TICKS: [u32; 8] = [120, 240, 480, 960, 1920, 160, 320, 640];
-        let rep_rate_ticks = NOTE_REPEAT_TICKS[self.note_repeat_rate.min(7) as usize];
+        let rate = u64::from(NOTE_REPEAT_TICKS[self.note_repeat_rate.min(7) as usize]);
         if self.note_repeat_enabled {
             let arp_on = self.arp_held.iter().any(|&v| v > 0);
-            let due = if self.transport.is_playing() {
-                new_tick / rep_rate_ticks as u64 != prev_tick / rep_rate_ticks as u64
-            } else if arp_on || self.note_repeat_held_pads.iter().any(|v| v.is_some()) {
-                let bpm = self.transport.bpm.max(1.0) as f64;
-                let samples_per_repeat = ((rep_rate_ticks as f64 / 960.0)
-                    * (60.0 / bpm)
-                    * self.transport.sample_rate.max(1) as f64)
-                    as u64;
-                self.note_repeat_samples += samples;
-                let due = self.note_repeat_samples >= samples_per_repeat;
-                if due {
-                    self.note_repeat_samples %= samples_per_repeat.max(1);
+            // (trame dans le bloc, tick du transport) de chaque répétition.
+            let mut hits = [(0usize, 0u64); 8];
+            let mut n = 0;
+            if self.transport.is_playing() {
+                // Grille du transport, fenêtre ]début, fin] : le pas où l'on
+                // vient d'appuyer (déjà joué en direct) ne double pas.
+                for (from, to, lead) in segments {
+                    let mut b = from / rate + 1;
+                    while b * rate <= to && n < hits.len() {
+                        hits[n] = (ctx.offset((lead + b * rate - from) as f64), b * rate);
+                        n += 1;
+                        b += 1;
+                    }
                 }
-                due
-            } else {
-                false
-            };
-            if due {
-                let recording = self.transport.state == TransportState::Recording;
-                let held = self.note_repeat_held_pads;
-                for (pad, opt_v) in held.iter().enumerate() {
-                    if let Some(vel) = *opt_v {
-                        self.trigger_pad_voice(pad as u8, vel);
-                        if recording {
-                            self.queue_note(pad as u8, 36 + pad as u8, vel);
-                        }
+            } else if arp_on || self.note_repeat_held_pads.iter().any(Option::is_some) {
+                // Transport arrêté : `note_repeat_samples` compte depuis la
+                // dernière répétition (remis à zéro à l'appui du pad).
+                let per = ((rate as f64 * ctx.samples_per_tick) as u64).max(1);
+                let mut at = per.saturating_sub(self.note_repeat_samples);
+                while at < samples && n < hits.len() {
+                    hits[n] = (at as usize, self.transport.tick);
+                    n += 1;
+                    at += per;
+                }
+                self.note_repeat_samples = per - at.saturating_sub(samples).min(per);
+            }
+            let recording = self.transport.state == TransportState::Recording;
+            let held = self.note_repeat_held_pads;
+            for &(frame, tick) in &hits[..n] {
+                for (pad, vel) in held
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(p, v)| Some((p as u8, (*v)?)))
+                {
+                    if self.group_audible(self.group_focus)
+                        && !self.is_sound_muted(self.group_focus, pad)
+                    {
+                        self.play_sound_voice(pad, 36 + pad, vel, frame);
+                    }
+                    if recording {
+                        self.queue_note(pad, 36 + pad, vel, tick);
                     }
                 }
                 if arp_on || self.arp_last.is_some() {
-                    self.arp_step();
+                    self.arp_step(frame, tick);
                 }
             }
         }
@@ -5304,46 +5513,29 @@ impl Engine {
             }
         }
         // Voix de monitoring : on coupe la note live à la fin quantifiée
-        // enregistrée, pour que l'écoute et le pattern restent synchronisés.
+        // enregistrée (à sa trame), pour que l'écoute et le pattern restent
+        // synchronisés.
         let mut due = [None; 16];
         for (i, slot) in self.pending_note_offs.iter_mut().enumerate() {
             if let Some((pad, note, left)) = *slot {
                 if left <= elapsed {
-                    due[i] = Some((pad, note));
+                    due[i] = Some((pad, note, ctx.offset(left as f64)));
                     *slot = None;
                 } else {
                     *slot = Some((pad, note, left - elapsed));
                 }
             }
         }
-        for (pad, note) in due.into_iter().flatten() {
-            self.release_sound_voice(pad, note);
+        for (pad, note, frame) in due.into_iter().flatten() {
+            self.release_sound_voice_at(pad, note, frame);
         }
         if !self.transport.is_playing() {
             return;
         }
-        // Contexte du bloc : place chaque note au sample près au lieu de la
-        // quantifier à la taille du buffer (sinon le groove est décalé).
-        let bpm = self.transport.bpm.max(1.0) as f64;
-        let ppq = self.transport.ppq.max(1) as f64;
-        let ctx = BlockCtx {
-            frames: samples,
-            samples_per_tick: self.transport.sample_rate.max(1) as f64 * 60.0 / (bpm * ppq),
-            tick_fraction: frac_before,
-        };
         // Clic métronome sur chaque temps (accent sur début de mesure).
         // Fenêtre [prev, new) en deux segments au bouclage : le premier temps
         // sonne au départ et à chaque tour de boucle.
         if self.transport.metronome {
-            let loop_end = self.transport.loop_end;
-            let segments = if wrapped {
-                [
-                    (prev_tick, loop_end, 0),
-                    (0, new_tick, loop_end.saturating_sub(prev_tick)),
-                ]
-            } else {
-                [(prev_tick, new_tick, 0), (0, 0, 0)]
-            };
             for (from, to, lead) in segments {
                 let mut beat = from.div_ceil(960);
                 while beat * 960 < to && beat < from.div_ceil(960) + 8 {
@@ -5586,13 +5778,13 @@ impl Engine {
     }
 
     /// Met en file une note jouée par le thread audio (voir `pending_notes`).
-    fn queue_note(&mut self, pad: u8, pitch: u8, velocity: u8) {
+    fn queue_note(&mut self, pad: u8, pitch: u8, velocity: u8, tick: u64) {
         let note = PendingNote {
             group: self.group_focus,
             pad,
             pitch,
             velocity,
-            tick: self.transport.tick,
+            tick,
         };
         // shortcut: 64 notes entre deux validations (~16 ms), au-delà elles sont perdues.
         if let Some(slot) = self.pending_notes.iter_mut().find(|n| n.is_none()) {
@@ -5603,7 +5795,7 @@ impl Engine {
     /// Pas de l'arpégiateur : relâche la note précédente et joue la suivante
     /// parmi les notes tenues (et leur octave au-dessus en mode « 2 »), selon
     /// le sens du mode (`ARP_MODES`).
-    fn arp_step(&mut self) {
+    fn arp_step(&mut self, frame: usize, tick: u64) {
         let two_octaves = self.arp_mode >= 3;
         let held = |n: usize| match self.arp_held[n] {
             0 if two_octaves && n >= 12 => self.arp_held[n - 12],
@@ -5629,7 +5821,7 @@ impl Engine {
             }
         }
         if let Some(last) = self.arp_last.take() {
-            self.release_sound_voice(self.active_sound, last);
+            self.release_sound_voice_at(self.active_sound, last, frame);
         }
         let Some(note) = next else {
             return;
@@ -5638,10 +5830,10 @@ impl Engine {
             return;
         }
         let note = note as u8;
-        self.trigger_sound_voice(self.active_sound, note, velocity);
+        self.play_sound_voice(self.active_sound, note, velocity, frame);
         self.arp_last = Some(note);
         if self.transport.state == TransportState::Recording {
-            self.queue_note(self.active_sound, note, velocity);
+            self.queue_note(self.active_sound, note, velocity, tick);
         }
     }
 
@@ -5710,7 +5902,67 @@ impl Engine {
         let prev_in_pat = prev_tick % pat_len;
         let new_in_pat = new_tick % pat_len;
         let wrapped = new_in_pat < prev_in_pat;
-        for ev in &pat.events {
+        // Ticks entre le début du bloc et la position `t` du pattern.
+        let rel = |t: u64| {
+            if t >= prev_in_pat {
+                t - prev_in_pat
+            } else {
+                pat_len - prev_in_pat + t
+            }
+        };
+        // Joue les notes du bloc dans l'ordre de leurs trames (note-off avant
+        // note-on à trame égale) : chaque instrument part au sample près.
+        // shortcut: fenêtres en ticks entiers, une note peut partir jusqu'à
+        // 1 tick (0,5 ms à 120 BPM) après son instant exact ; fenêtres
+        // fractionnaires si cela s'entend un jour.
+        let mut play = |notes: &mut [(usize, bool, usize)]| {
+            notes.sort_unstable();
+            for &(frame, on, i) in notes.iter() {
+                let ev = &pat.events[i];
+                let s = ev.pad as usize;
+                let ri = rack_index(group, ev.pad);
+                let flag = |v: &[bool]| v.get(s).copied().unwrap_or(false);
+                let note = if on {
+                    RackNote::On(ev.pitch, ev.velocity)
+                } else {
+                    RackNote::Off(ev.pitch)
+                };
+                if flag(is_kick) {
+                    if let Some(slot) = rack.kick[ri].as_mut() {
+                        slot.schedule(frame, note);
+                    }
+                } else if flag(is_synth) {
+                    if let Some(slot) = rack.acid[ri].as_mut() {
+                        slot.schedule(frame, note);
+                    }
+                } else if flag(is_wavetable) {
+                    if let Some(slot) = rack.wavetable[ri].as_mut() {
+                        slot.schedule(frame, note);
+                    }
+                } else if !on {
+                    sampler.note_off_at(sampler_sound_id(group, ev.pad), ev.pitch, frame);
+                } else if let Some(idx) = sampler.note_on_at(
+                    sampler_sound_id(group, ev.pad),
+                    ev.pitch,
+                    ev.velocity,
+                    ev.pitch,
+                    frame,
+                ) {
+                    let sg = sound_gains.get(s).copied().unwrap_or(1.0);
+                    sampler.set_voice_gain(idx, group_gain * sg);
+                    sampler.set_voice_pan(idx, sound_pans.get(s).copied().unwrap_or(0.0));
+                    sampler.set_voice_group(idx, group);
+                    sampler.set_voice_group_pan(idx, group_pan);
+                    if let Some(vp) = voice_params.get(s) {
+                        sampler.set_voice_params(idx, vp);
+                    }
+                }
+            }
+        };
+        // (trame, note-on ?, index de l'événement) ; vidé s'il déborde.
+        let mut notes = [(0usize, false, 0usize); 64];
+        let mut count = 0;
+        for (i, ev) in pat.events.iter().enumerate() {
             let tick = ev.tick as u64;
             // Tick effectif avec swing (16e impaire = retardée)
             let eff = if swing_ticks > 0 && (tick / 240) % 2 == 1 {
@@ -5737,64 +5989,19 @@ impl Engine {
                     }
                     hit
                 });
-            if !live && in_window(eff % pat_len.max(1)) {
-                let sound = ev.pad;
-                let sound_muted =
-                    (sound as usize) < 16 && (muted_sound_mask & (1u16 << sound)) != 0;
-                if !sound_muted {
-                    let note = ev.pitch;
-                    let sg = sound_gains.get(sound as usize).copied().unwrap_or(1.0);
-                    let sp = sound_pans.get(sound as usize).copied().unwrap_or(0.0);
-                    // Décalage sample-accurate dans le bloc courant : la note part à
-                    // sa vraie position rythmique, pas au début du buffer audio.
-                    let local = eff % pat_len.max(1);
-                    let rel_ticks = if !wrapped || local >= prev_in_pat {
-                        local.saturating_sub(prev_in_pat) as f64
-                    } else {
-                        (pat_len - prev_in_pat + local) as f64
-                    };
-                    let start_frame = ctx.offset(rel_ticks);
-                    let is_acid = is_synth.get(sound as usize).copied().unwrap_or(false);
-                    let is_k = is_kick.get(sound as usize).copied().unwrap_or(false);
-                    let is_wt = is_wavetable.get(sound as usize).copied().unwrap_or(false);
-                    let ri = rack_index(group, sound);
-                    if is_k {
-                        if let Some(slot) = rack.kick[ri].as_mut() {
-                            slot.idle_blocks = 0;
-                            slot.synth.trigger(note, ev.velocity);
-                        }
-                    } else if is_acid {
-                        if let Some(slot) = rack.acid[ri].as_mut() {
-                            slot.idle_blocks = 0;
-                            slot.synth.note_on_at(note, ev.velocity, start_frame);
-                        }
-                    } else if is_wt {
-                        if let Some(slot) = rack.wavetable[ri].as_mut() {
-                            slot.idle_blocks = 0;
-                            slot.synth.note_on(note, ev.velocity);
-                        }
-                    } else if let Some(idx) = sampler.note_on_at(
-                        sampler_sound_id(group, sound),
-                        note,
-                        ev.velocity,
-                        note,
-                        start_frame,
-                    ) {
-                        sampler.set_voice_gain(idx, group_gain * sg);
-                        sampler.set_voice_pan(idx, sp);
-                        sampler.set_voice_group(idx, group);
-                        sampler.set_voice_group_pan(idx, group_pan);
-                        if let Some(vp) = voice_params.get(sound as usize) {
-                            sampler.set_voice_params(idx, vp);
-                        }
-                    }
-                    // Flash LED du pad (fenêtre d'une triple-croche : bref et net).
-                    if (sound as usize) < 16 {
-                        flash_until[sound as usize] = now_tick + 120;
-                        let level = (ev.velocity as f32 / 127.0).clamp(0.35, 1.0);
-                        if level > activity[sound as usize] {
-                            activity[sound as usize] = level;
-                        }
+            let sound = ev.pad;
+            let sound_muted = (sound as usize) < 16 && (muted_sound_mask & (1u16 << sound)) != 0;
+            if !live && in_window(eff % pat_len.max(1)) && !sound_muted {
+                // Décalage sample-accurate dans le bloc courant : la note part à
+                // sa vraie position rythmique, pas au début du buffer audio.
+                notes[count] = (ctx.offset(rel(eff % pat_len) as f64), true, i);
+                count += 1;
+                // Flash LED du pad (fenêtre d'une triple-croche : bref et net).
+                if (sound as usize) < 16 {
+                    flash_until[sound as usize] = now_tick + 120;
+                    let level = (ev.velocity as f32 / 127.0).clamp(0.35, 1.0);
+                    if level > activity[sound as usize] {
+                        activity[sound as usize] = level;
                     }
                 }
             }
@@ -5811,20 +6018,15 @@ impl Engine {
             // live continue.
             let held = rec_holds.contains(&Some((group, ev.pad, ev.pitch, ev.tick)));
             if off_triggered && end_tick > tick && tick <= new_tick && !held {
-                let ri = rack_index(group, ev.pad);
-                if is_synth.get(ev.pad as usize).copied().unwrap_or(false) {
-                    if let Some(slot) = rack.acid[ri].as_mut() {
-                        slot.synth.note_off(ev.pitch);
-                    }
-                } else if is_wavetable.get(ev.pad as usize).copied().unwrap_or(false) {
-                    if let Some(slot) = rack.wavetable[ri].as_mut() {
-                        slot.synth.note_off(ev.pitch);
-                    }
-                } else {
-                    sampler.note_off(sampler_sound_id(group, ev.pad), ev.pitch);
-                }
+                notes[count] = (ctx.offset(rel(end_in_pat) as f64), false, i);
+                count += 1;
+            }
+            if count + 2 > notes.len() {
+                play(&mut notes[..count]);
+                count = 0;
             }
         }
+        play(&mut notes[..count]);
     }
 
     fn record_pad_event(&mut self, pad: u8, velocity: u8) -> Option<u32> {
@@ -6364,7 +6566,7 @@ impl Engine {
             if let Some(mut slot) = self.rack.kick[i].take() {
                 if slot.idle_blocks < RACK_IDLE_BLOCKS {
                     self.synth_buf[..out_len].fill(0.0);
-                    slot.synth.render(&mut self.synth_buf[..out_len]);
+                    slot.render(&mut self.synth_buf[..out_len]);
                     slot.idle_blocks = self.note_idle(slot.idle_blocks, out_len);
                     self.mix_synth_buffer(out, out_len, (g, s), bus, &proj);
                 }
@@ -6373,7 +6575,7 @@ impl Engine {
             if let Some(mut slot) = self.rack.acid[i].take() {
                 if slot.idle_blocks < RACK_IDLE_BLOCKS {
                     self.synth_buf[..out_len].fill(0.0);
-                    slot.synth.render(&mut self.synth_buf[..out_len]);
+                    slot.render(&mut self.synth_buf[..out_len]);
                     slot.idle_blocks = self.note_idle(slot.idle_blocks, out_len);
                     self.mix_synth_buffer(out, out_len, (g, s), bus, &proj);
                 }
@@ -6382,7 +6584,7 @@ impl Engine {
             if let Some(mut slot) = self.rack.wavetable[i].take() {
                 if slot.idle_blocks < RACK_IDLE_BLOCKS {
                     self.synth_buf[..out_len].fill(0.0);
-                    slot.synth.render(&mut self.synth_buf[..out_len]);
+                    slot.render(&mut self.synth_buf[..out_len]);
                     slot.idle_blocks = self.note_idle(slot.idle_blocks, out_len);
                     self.mix_synth_buffer(out, out_len, (g, s), bus, &proj);
                 }
@@ -6399,7 +6601,7 @@ impl Engine {
             if let Some(mut slot) = self.monitor_rack.kick[i].take() {
                 if slot.idle_blocks < RACK_IDLE_BLOCKS {
                     self.synth_buf[..out_len].fill(0.0);
-                    slot.synth.render(&mut self.synth_buf[..out_len]);
+                    slot.render(&mut self.synth_buf[..out_len]);
                     slot.idle_blocks = self.note_idle(slot.idle_blocks, out_len);
                     self.mix_synth_buffer(out, out_len, (g, s), bus, &proj);
                 }
@@ -6408,7 +6610,7 @@ impl Engine {
             if let Some(mut slot) = self.monitor_rack.acid[i].take() {
                 if slot.idle_blocks < RACK_IDLE_BLOCKS {
                     self.synth_buf[..out_len].fill(0.0);
-                    slot.synth.render(&mut self.synth_buf[..out_len]);
+                    slot.render(&mut self.synth_buf[..out_len]);
                     slot.idle_blocks = self.note_idle(slot.idle_blocks, out_len);
                     self.mix_synth_buffer(out, out_len, (g, s), bus, &proj);
                 }
@@ -6417,7 +6619,7 @@ impl Engine {
             if let Some(mut slot) = self.monitor_rack.wavetable[i].take() {
                 if slot.idle_blocks < RACK_IDLE_BLOCKS {
                     self.synth_buf[..out_len].fill(0.0);
-                    slot.synth.render(&mut self.synth_buf[..out_len]);
+                    slot.render(&mut self.synth_buf[..out_len]);
                     slot.idle_blocks = self.note_idle(slot.idle_blocks, out_len);
                     self.mix_synth_buffer(out, out_len, (g, s), bus, &proj);
                 }
@@ -6458,6 +6660,9 @@ impl Engine {
             }
         }
         self.master_fx.process(out, &self.master_fx_copy);
+        let strip_fx = self.strip_effect();
+        self.perform
+            .process(out, strip_fx, self.strip_touch, self.transport.bpm);
         drop(proj);
         // VU-mètres : crêtes par groupe du sampler, attaque immédiate / release
         // exponentiel par bloc (≈ -20 dB en 300 ms), peak hold plus lent (~1,7 s).
@@ -6981,6 +7186,58 @@ impl Engine {
             self.show_status(format!("{} supprimé", fx.fx_type.label()));
         }
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Effet que joue la Smart Strip (modes MOD et PERFORM), sinon None.
+    #[must_use]
+    pub fn strip_effect(&self) -> Option<StripFx> {
+        let sel = |list: &[StripFx], i: u8| list.get(usize::from(i)).copied();
+        match self.strip_mode {
+            1 => sel(&StripFx::MOD, self.strip_fx[0]),
+            2 => sel(&StripFx::PERFORM, self.strip_fx[1]),
+            _ => None,
+        }
+    }
+
+    /// Doigt sur la Smart Strip (None = relâché) : PITCH transpose le Sound
+    /// actif de ±12 demi-tons (retour au centre au relâchement), MOD et
+    /// PERFORM jouent leur effet sur le Master (`render_audio`).
+    fn strip_touch_at(&mut self, touch: Option<f32>) {
+        let touch = touch.map(|x| x.clamp(0.0, 1.0));
+        self.strip_touch = touch;
+        let semis = match touch {
+            Some(x) if self.strip_mode == 0 => (x - 0.5) * 24.0,
+            _ => 0.0,
+        };
+        // L'instance transposée avant (autre Sound) revient au neutre.
+        let slot = rack_index(self.group_focus, self.active_sound);
+        if let Some(old) = self.bent_slot.filter(|&i| i != slot) {
+            self.set_rack_bend(old, 0.0);
+        }
+        self.set_rack_bend(slot, semis);
+        self.bent_slot = (semis != 0.0).then_some(slot);
+        self.sampler
+            .set_bend(sampler_sound_id(self.group_focus, self.active_sound), semis);
+        if let (Some(x), Some(fx)) = (touch, self.strip_effect()) {
+            self.show_status(format!("{} : {}", fx.name(), fx.setting(x)));
+        } else if let Some(x) = touch.filter(|_| self.strip_mode == 0) {
+            self.show_status(format!("PITCH {:+.1} demi-tons", (x - 0.5) * 24.0));
+        }
+    }
+
+    /// Pitch bend (demi-tons) des synthés d'une case du rack (jeu et REC).
+    fn set_rack_bend(&mut self, i: usize, semis: f32) {
+        for rack in [&mut self.rack, &mut self.monitor_rack] {
+            if let Some(slot) = rack.acid.get_mut(i).and_then(Option::as_mut) {
+                slot.synth.bend = semis;
+            }
+            if let Some(slot) = rack.kick.get_mut(i).and_then(Option::as_mut) {
+                slot.synth.bend = semis;
+            }
+            if let Some(slot) = rack.wavetable.get_mut(i).and_then(Option::as_mut) {
+                slot.synth.bend = semis;
+            }
+        }
     }
 
     fn show_status(&mut self, message: String) {
@@ -11457,7 +11714,9 @@ mod tests {
         key(&mut eng, 60, true);
         assert_eq!(eng.arp_last, Some(64));
         assert_eq!(eng.arp_held[64], 127);
-        // 1/16 à 120 BPM = 6000 samples : E3 → C3 → E3 → C3 (en montant, en boucle).
+        // 1/16 à 120 BPM = 6000 samples : E3 → C3 → E3 → C3 (en montant, en
+        // boucle). Décalé de 10 échantillons : chaque bloc contient un pas.
+        eng.advance(10);
         let mut seq = Vec::new();
         for _ in 0..3 {
             eng.advance(6000);
@@ -11528,6 +11787,8 @@ mod tests {
                 .unwrap();
             }
             let mut seq = vec![eng.arp_last.unwrap()];
+            // Décalé de 10 échantillons : chaque bloc contient un pas.
+            eng.advance(10);
             for _ in 0..steps {
                 eng.advance(6000);
                 seq.push(eng.arp_last.unwrap());
@@ -13307,5 +13568,252 @@ mod tests {
         assert_eq!(eng.keyboard.chord, 1);
         assert_eq!(eng.keyboard.inversion, 1);
         assert_eq!(eng.keyboard.octave, before.octave);
+    }
+
+    /// Groupe A seul (les autres retirés de la scène), pad 1 préparé par
+    /// `setup`, pattern d'une mesure réduit à `events`. Transport arrêté.
+    fn solo_pattern(setup: fn(&mut crate::project::Sound), events: &[PatternEvent]) -> Engine {
+        let mut eng = Engine::new_demo(48000);
+        eng.transport.bpm = 120.0;
+        {
+            let scene = eng.active_scene;
+            let mut guard = eng.project.write();
+            let proj = project_mut(&mut guard);
+            let pi = proj.active_pattern_index(0, scene).unwrap();
+            for slot in proj.scenes[scene.unwrap()].patterns.iter_mut().skip(1) {
+                *slot = None;
+            }
+            let group = &mut proj.groups[0];
+            setup(group.sounds[0].as_mut().unwrap());
+            let pat = &mut group.patterns[pi];
+            pat.length = crate::project::BarsBeatsTicks::new(1, 0, 0);
+            pat.events = events.to_vec();
+            pat.automations.clear();
+        }
+        eng.sync_synth_rack();
+        eng.sync_fx_buses();
+        eng
+    }
+
+    fn play(eng: &mut Engine) {
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec: false,
+            stop: false,
+        })
+        .unwrap();
+    }
+
+    /// `frames` trames du canal gauche, rendues par blocs de `block`.
+    fn render_left(eng: &mut Engine, frames: usize, block: usize) -> Vec<f32> {
+        let mut out = Vec::with_capacity(frames + block);
+        let mut buf = vec![0.0f32; block * 2];
+        while out.len() < frames {
+            eng.advance(block as u64);
+            eng.render_audio(&mut buf);
+            out.extend(buf.chunks(2).map(|f| f[0]));
+        }
+        out.truncate(frames);
+        out
+    }
+
+    const KICK: fn(&mut crate::project::Sound) = |s| {
+        s.kick_synth = Some(crate::kick_synth::KickParams::default());
+        s.synth = None;
+        s.wavetable_synth = None;
+    };
+    const ACID: fn(&mut crate::project::Sound) = |s| {
+        s.synth = Some(crate::acid_synth::AcidParams::preset_classic_acid());
+        s.kick_synth = None;
+        s.wavetable_synth = None;
+    };
+    const NEXUS: fn(&mut crate::project::Sound) = |s| {
+        s.wavetable_synth = Some(crate::wavetable_synth::WavetableParams::default());
+        s.synth = None;
+        s.kick_synth = None;
+    };
+
+    fn note(tick: u32, length_ticks: u32) -> PatternEvent {
+        PatternEvent {
+            pad: 0,
+            tick,
+            velocity: 120,
+            length_ticks,
+            pitch: 36,
+        }
+    }
+
+    #[test]
+    fn synth_notes_start_on_their_sample_whatever_the_block_size() {
+        // 120 BPM, 960 PPQ à 48 kHz : 25 échantillons par tick.
+        let latency = Engine::new_demo(48000).master_limiter.latency_frames();
+        for (name, setup) in [("kick", KICK), ("303", ACID), ("nexus", NEXUS)] {
+            let onsets: Vec<usize> = [64usize, 1000, 1024]
+                .iter()
+                .map(|&block| {
+                    let mut eng = solo_pattern(setup, &[note(240, 240)]);
+                    play(&mut eng);
+                    let out = render_left(&mut eng, 12_000, block);
+                    out.iter().position(|v| v.abs() > 1e-6).unwrap()
+                })
+                .collect();
+            // Résolution du séquenceur : 1 tick (25 échantillons ici).
+            assert!(
+                onsets.iter().all(|&o| o.abs_diff(onsets[0]) <= 25),
+                "{name} : même départ quel que soit le bloc {onsets:?}"
+            );
+            assert!(
+                onsets[0].abs_diff(6000 + latency) <= 25,
+                "{name} part sur son temps : {}",
+                onsets[0]
+            );
+        }
+    }
+
+    #[test]
+    fn tb303_legato_notes_play_without_a_silent_gap() {
+        // Deux notes qui se chevauchent : la seconde ne doit plus couper le
+        // début du bloc où elle tombe (trou de silence = clic).
+        let mut eng = solo_pattern(ACID, &[note(0, 480), note(250, 230)]);
+        play(&mut eng);
+        let out = render_left(&mut eng, 11_000, 1024);
+        let start = out.iter().position(|v| v.abs() > 1e-4).unwrap();
+        let mut run = 0;
+        let mut longest = 0;
+        for v in &out[start + 200..11_000] {
+            run = if v.abs() < 1e-7 { run + 1 } else { 0 };
+            longest = longest.max(run);
+        }
+        assert!(longest < 4, "trou de {longest} échantillons");
+    }
+
+    #[test]
+    fn a_note_ending_on_the_loop_does_not_cut_the_first_one() {
+        // Même hauteur : fin de la dernière note (tick 3840 = boucle) et début
+        // de la première tombent sur la même trame — le note-off passe avant.
+        let pass = |out: &[f32], from: usize| {
+            let w = &out[from + 2400..from + 5800];
+            (w.iter().map(|v| v * v).sum::<f32>() / w.len() as f32).sqrt()
+        };
+        for setup in [ACID, NEXUS] {
+            let mut eng = solo_pattern(setup, &[note(0, 240), note(3600, 240)]);
+            play(&mut eng);
+            let out = render_left(&mut eng, 96_000 + 8000, 1000);
+            let (first, second) = (pass(&out, 0), pass(&out, 96_000));
+            assert!(first > 1e-3, "la note sonne : {first}");
+            assert!(
+                second > first * 0.7,
+                "au 2e tour la note n'est pas coupée : {first} puis {second}"
+            );
+        }
+    }
+
+    #[test]
+    fn note_repeat_hits_are_evenly_spaced_whatever_the_block_size() {
+        // Un clic court sur le pad 1 : chaque répétition 1/16 (6000
+        // échantillons à 120 BPM) est un départ net, au sample près.
+        for (playing, block) in [(true, 1000), (false, 1000), (true, 333)] {
+            let mut eng = solo_pattern(|_| {}, &[]);
+            let id = sampler_sound_id(0, 0);
+            eng.sampler.clear_sound(id);
+            eng.sampler.add_zone(
+                id,
+                crate::sampler::ZoneMapping {
+                    sample: Some(Arc::new((0..32).map(|i| f32::from(i < 8)).collect())),
+                    sample_rate: 48000,
+                    root_key: 36,
+                    ..Default::default()
+                },
+            );
+            if playing {
+                play(&mut eng);
+            }
+            eng.note_repeat_enabled = true;
+            eng.note_repeat_rate = 1;
+            eng.handle_event(EngineEvent::Pad {
+                pad: 0,
+                velocity: 100,
+                pressed: true,
+            })
+            .unwrap();
+            let out = render_left(&mut eng, 40_000, block);
+            let onsets: Vec<usize> = (1..out.len())
+                .filter(|&i| {
+                    out[i].abs() > 1e-6
+                        && out[i.saturating_sub(64)..i].iter().all(|v| v.abs() <= 1e-6)
+                })
+                .collect();
+            let gaps: Vec<usize> = onsets.windows(2).map(|w| w[1] - w[0]).collect();
+            assert!(
+                gaps.len() >= 4 && gaps.iter().all(|&g| g.abs_diff(6000) <= 1),
+                "lecture {playing}, bloc {block} : {gaps:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn smart_strip_bends_the_active_sound_and_plays_mod_and_perform_fx() {
+        // Pad 1 : un La 440 Hz tenu deux secondes (joué à sa note racine).
+        let mut eng = solo_pattern(|_| {}, &[]);
+        let id = sampler_sound_id(0, 0);
+        eng.sampler.clear_sound(id);
+        let tone: Vec<f32> = (0..96_000)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48_000.0).sin() * 0.5)
+            .collect();
+        eng.sampler.add_zone(
+            id,
+            crate::sampler::ZoneMapping {
+                sample: Some(Arc::new(tone)),
+                sample_rate: 48000,
+                root_key: 36,
+                ..Default::default()
+            },
+        );
+        eng.handle_event(EngineEvent::SelectSound(0)).unwrap();
+        eng.handle_event(EngineEvent::SetStripMode(0)).unwrap();
+        eng.handle_event(EngineEvent::Pad {
+            pad: 0,
+            velocity: 127,
+            pressed: true,
+        })
+        .unwrap();
+        let crossings = |eng: &mut Engine| {
+            let out = render_left(eng, 9600, 960);
+            out[4800..]
+                .windows(2)
+                .filter(|w| w[0] < 0.0 && w[1] >= 0.0)
+                .count()
+        };
+        let level = |eng: &mut Engine| {
+            let out = render_left(eng, 9600, 960);
+            out[4800..].iter().fold(0.0f32, |m, v| m.max(v.abs()))
+        };
+        // PITCH : à droite, une octave au-dessus ; relâché, retour au centre.
+        let base = crossings(&mut eng);
+        eng.handle_event(EngineEvent::Strip(Some(1.0))).unwrap();
+        let bent = crossings(&mut eng);
+        assert!(
+            (bent as f32 / base as f32 - 2.0).abs() < 0.1,
+            "+12 demi-tons : {base} puis {bent} passages"
+        );
+        eng.handle_event(EngineEvent::Strip(None)).unwrap();
+        assert!(crossings(&mut eng).abs_diff(base) <= 2, "retour au centre");
+
+        // Effets : PERFORM (stutter, SHIFT + PERFORM : écho), MOD (filtre).
+        eng.handle_event(EngineEvent::SetStripMode(2)).unwrap();
+        assert_eq!(eng.strip_effect(), Some(StripFx::Stutter));
+        eng.handle_event(EngineEvent::StripFxNext).unwrap();
+        assert_eq!(eng.strip_effect(), Some(StripFx::Echo));
+        eng.handle_event(EngineEvent::SetStripMode(1)).unwrap();
+        assert_eq!(eng.strip_effect(), Some(StripFx::Filter));
+        assert_eq!(eng.snapshot().strip_fx, Some(StripFx::Filter));
+        let open = level(&mut eng);
+        // MOD tout à gauche : passe-bas presque fermé sur tout le Master.
+        eng.handle_event(EngineEvent::Strip(Some(0.0))).unwrap();
+        let closed = level(&mut eng);
+        assert!(closed < open * 0.3, "filtre fermé : {open} puis {closed}");
+        eng.handle_event(EngineEvent::Strip(None)).unwrap();
+        let back = level(&mut eng);
+        assert!(back > open * 0.8, "relâché, le son revient : {back}");
     }
 }

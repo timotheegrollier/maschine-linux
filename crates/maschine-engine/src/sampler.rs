@@ -214,6 +214,9 @@ pub struct SamplerVoice {
     /// placer les notes au sample près dans un buffer audio, au lieu de les
     /// quantifier à la taille du buffer.
     pub start_frame: usize,
+    /// Note-off programmé dans le bloc courant (trames) : la voix entre en
+    /// Release à cette trame, au sample près (voir [`Sampler::note_off_at`]).
+    pub release_at: Option<usize>,
     /// Longueur (en positions de lecture) du fondu anti-clic en fin de sample.
     pub end_fade: f64,
     /// Position de fin de lecture (plage du Sound), en échantillons.
@@ -247,6 +250,28 @@ pub struct SamplerVoice {
     pub group: u8,
 }
 
+impl SamplerVoice {
+    /// Release à la trame `frame` du bloc : tout de suite si 0 (comme avant),
+    /// sinon programmé pour le rendu (le plus tôt des deux s'il y en a déjà un).
+    fn release(&mut self, frame: usize) {
+        if frame == 0 {
+            self.adsr_phase = AdsrPhase::Release;
+            self.phase_samples = 0;
+            self.release_from = self.env_level.max(0.05);
+            self.release_at = None;
+        } else {
+            self.release_at = Some(self.release_at.map_or(frame, |f| f.min(frame)));
+        }
+    }
+
+    /// Sonne encore à la trame `frame` (ni relâchée, ni relâchée avant) ?
+    fn held_at(&self, frame: usize) -> bool {
+        self.adsr_phase != AdsrPhase::Release
+            && self.adsr_phase != AdsrPhase::Off
+            && self.release_at.is_none_or(|r| r > frame)
+    }
+}
+
 /// Phase ADSR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdsrPhase {
@@ -261,6 +286,9 @@ pub enum AdsrPhase {
     /// Off
     Off,
 }
+
+/// Voix réservées à la création du sampler (64 actives + celles en fondu).
+const VOICE_CAPACITY: usize = 256;
 
 /// Sampler — gère les voix.
 #[derive(Debug, Default)]
@@ -289,6 +317,11 @@ pub struct Sampler {
     pub group_peak: [f32; 8],
     /// Crête par pad/sound (0..15) et par groupe (0..8) mise à jour à chaque `render`.
     pub sound_peak: [[f32; 16]; 8],
+    /// Pitch bend de la Smart Strip : Sound visé, consigne (demi-tons) et
+    /// valeur atteinte à la fin du dernier bloc (rampe sur le bloc).
+    bend_sound: Option<u16>,
+    bend: f32,
+    bend_now: f32,
 }
 
 impl Sampler {
@@ -298,8 +331,30 @@ impl Sampler {
         Self {
             sample_rate,
             max_voices: 64,
+            // Réservé ici : le thread audio crée des voix sans jamais réallouer.
+            voices: Vec::with_capacity(VOICE_CAPACITY),
             ..Default::default()
         }
+    }
+
+    /// Ajoute une voix sans allocation : quand la réserve est pleine (rafale
+    /// au-delà des voix en fondu), la plus ancienne est remplacée.
+    fn push_voice(&mut self, voice: SamplerVoice) -> usize {
+        if self.voices.len() < self.voices.capacity() {
+            self.voices.push(voice);
+            return self.voices.len() - 1;
+        }
+        let oldest = self
+            .voices
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, v)| v.age)
+            .map_or(0, |(i, _)| i);
+        match self.voices.get_mut(oldest) {
+            Some(slot) => *slot = voice,
+            None => self.voices.push(voice),
+        }
+        oldest
     }
 
     /// Ajoute une zone à un Sound.
@@ -311,6 +366,8 @@ impl Sampler {
                 .map(|sample| Arc::<[(f32, f32)]>::from(make_waveform_envelope(sample, 512)))
         });
         self.zones.entry(sound).or_default().push(zone);
+        // Créé ici (hors thread audio) : `note_on_at` n'insère jamais.
+        self.rr_counters.entry(sound).or_insert(0);
         if let Some(cache) = cache {
             self.waveform_cache.entry(sound).or_insert(cache);
         }
@@ -442,9 +499,11 @@ impl Sampler {
             return None;
         }
         // Round-robin : alterne les zones candidates pour le même Sound
-        let rr = self.rr_counters.entry(sound).or_insert(0);
-        let rr_idx = (*rr as usize) % n_cand;
-        *rr = rr.wrapping_add(1);
+        let rr_idx = self.rr_counters.get_mut(&sound).map_or(0, |rr| {
+            let i = usize::from(*rr) % n_cand;
+            *rr = rr.wrapping_add(1);
+            i
+        });
         // Copie locale : le vol de voix ci-dessous a besoin de `&mut self`.
         let (sample, pan, choke_group, root_key, tune_cents, volume_db, is_one_shot, zone_rate) = {
             let zone = zones
@@ -470,21 +529,17 @@ impl Sampler {
         let (start_pos, end_pos) = (f64::from(range_start) * len, f64::from(range_end) * len);
 
         // choke : les voix du même groupe fondent en Release (5ms, pas de clic)
-        // au lieu d'être coupées net.
+        // au lieu d'être coupées net — à la trame où la nouvelle note part.
         if let Some(choke) = choke_group {
+            // fade choke court : ~5ms, en resserrant le release existant
+            let choke_rel = ((0.005 * self.sample_rate as f32) as u32).max(1);
             for v in self.voices.iter_mut() {
                 if v.choke_group == Some(choke)
-                    && v.adsr_phase != AdsrPhase::Off
-                    && v.adsr_phase != AdsrPhase::Release
+                    && v.start_frame <= start_frame
+                    && v.held_at(start_frame)
                 {
-                    v.adsr_phase = AdsrPhase::Release;
-                    v.phase_samples = 0;
-                    v.release_from = v.env_level.max(0.05);
-                    // fade choke court : ~5ms, en resserrant le release existant
-                    let choke_rel = ((0.005 * self.sample_rate as f32) as u32).max(1);
-                    if v.release_samples > choke_rel {
-                        v.release_samples = choke_rel;
-                    }
+                    v.release_samples = v.release_samples.min(choke_rel);
+                    v.release(start_frame);
                 }
             }
         }
@@ -495,26 +550,18 @@ impl Sampler {
         let active_same_sound = self
             .voices
             .iter()
-            .filter(|v| {
-                v.sound == sound
-                    && v.adsr_phase != AdsrPhase::Release
-                    && v.adsr_phase != AdsrPhase::Off
-            })
+            .filter(|v| v.sound == sound && v.held_at(start_frame))
             .count();
         if active_same_sound >= polyphony {
             if let Some(idx) = self
                 .voices
                 .iter()
                 .enumerate()
-                .filter(|(_, v)| {
-                    v.sound == sound
-                        && v.adsr_phase != AdsrPhase::Release
-                        && v.adsr_phase != AdsrPhase::Off
-                })
+                .filter(|(_, v)| v.sound == sound && v.held_at(start_frame))
                 .min_by_key(|(_, v)| v.age)
                 .map(|(i, _)| i)
             {
-                self.fade_out_voice(idx, 0.005);
+                self.fade_out_voice(idx, 0.005, start_frame);
             }
         }
 
@@ -529,18 +576,7 @@ impl Sampler {
         // Polyphonie pleine : on ne coupe plus la plus vieille voix d'un coup
         // (clic) — elle part en fondu de 5 ms (le rendu la supprime ensuite).
         if self.voices.len() >= self.max_voices {
-            if let Some(idx) = self
-                .voices
-                .iter()
-                .enumerate()
-                .filter(|(_, v)| {
-                    v.adsr_phase != AdsrPhase::Release && v.adsr_phase != AdsrPhase::Off
-                })
-                .min_by_key(|(_, v)| v.age)
-                .map(|(i, _)| i)
-            {
-                self.fade_out_voice(idx, 0.005);
-            }
+            self.steal_oldest(start_frame);
         }
 
         let voice = SamplerVoice {
@@ -571,6 +607,7 @@ impl Sampler {
             env_level: 0.0,
             release_from: 1.0,
             start_frame,
+            release_at: None,
             // Fondu anti-clic de 3 ms en fin de sample (positions de lecture).
             end_fade: (0.003 * self.sample_rate as f64 / increment.max(0.01)).max(1.0),
             note,
@@ -582,20 +619,32 @@ impl Sampler {
             group: u8::MAX,
         };
         self.age_counter += 1;
-        self.voices.push(voice);
-        Some(self.voices.len() - 1)
+        Some(self.push_voice(voice))
     }
 
     /// Fait fondre une voix sur `secs` puis la laisse s'éteindre (anti-clic).
-    fn fade_out_voice(&mut self, idx: usize, secs: f32) {
+    fn fade_out_voice(&mut self, idx: usize, secs: f32, frame: usize) {
         if let Some(v) = self.voices.get_mut(idx) {
             if v.adsr_phase == AdsrPhase::Release || v.adsr_phase == AdsrPhase::Off {
                 return;
             }
-            v.adsr_phase = AdsrPhase::Release;
-            v.phase_samples = 0;
-            v.release_from = v.env_level.max(0.05);
             v.release_samples = ((secs * self.sample_rate as f32) as u32).max(1);
+            v.release(frame);
+        }
+    }
+
+    /// Polyphonie globale pleine : la plus vieille voix fond en 5 ms à
+    /// partir de `frame` (le rendu la supprime ensuite, sans clic).
+    fn steal_oldest(&mut self, frame: usize) {
+        if let Some(idx) = self
+            .voices
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.held_at(frame))
+            .min_by_key(|(_, v)| v.age)
+            .map(|(i, _)| i)
+        {
+            self.fade_out_voice(idx, 0.005, frame);
         }
     }
 
@@ -615,18 +664,7 @@ impl Sampler {
             return None;
         }
         if self.voices.len() >= self.max_voices {
-            if let Some(idx) = self
-                .voices
-                .iter()
-                .enumerate()
-                .filter(|(_, v)| {
-                    v.adsr_phase != AdsrPhase::Release && v.adsr_phase != AdsrPhase::Off
-                })
-                .min_by_key(|(_, v)| v.age)
-                .map(|(i, _)| i)
-            {
-                self.fade_out_voice(idx, 0.005);
-            }
+            self.steal_oldest(start_frame);
         }
         let voice = SamplerVoice {
             end: sample.len() as f64,
@@ -656,6 +694,7 @@ impl Sampler {
             env_level: 1.0,
             release_from: 1.0,
             start_frame,
+            release_at: None,
             end_fade: (0.003 * self.sample_rate as f64).max(1.0),
             note: 255,
             velocity: 127,
@@ -666,12 +705,28 @@ impl Sampler {
             group: u8::MAX,
         };
         self.age_counter += 1;
-        self.voices.push(voice);
-        Some(self.voices.len() - 1)
+        Some(self.push_voice(voice))
+    }
+
+    /// Pitch bend (demi-tons) des voix d'un Sound, notes en cours comprises
+    /// (Smart Strip, mode PITCH). Un seul Sound à la fois : le Sound actif.
+    pub fn set_bend(&mut self, sound: u16, semitones: f32) {
+        if self.bend_sound != Some(sound) {
+            self.bend_now = 0.0;
+        }
+        self.bend_sound = Some(sound);
+        self.bend = semitones;
     }
 
     /// Note off — passe en Release si non one-shot.
     pub fn note_off(&mut self, sound: u16, note: u8) {
+        self.note_off_at(sound, note, 0);
+    }
+
+    /// Note off placé `frame` trames après le début du bloc audio : les voix
+    /// déjà créées de ce Sound et de cette note entrent en Release à cette
+    /// trame. Celles créées ensuite (note suivante) ne sont pas touchées.
+    pub fn note_off_at(&mut self, sound: u16, note: u8, frame: usize) {
         for v in &mut self.voices {
             // Les percussions en mode One-Shot ne sont pas coupées au relâchement
             if v.sound == sound
@@ -680,9 +735,7 @@ impl Sampler {
                 && v.adsr_phase != AdsrPhase::Off
                 && v.adsr_phase != AdsrPhase::Release
             {
-                v.adsr_phase = AdsrPhase::Release;
-                v.phase_samples = 0;
-                v.release_from = v.env_level.max(0.05);
+                v.release(frame);
             }
         }
     }
@@ -717,6 +770,13 @@ impl Sampler {
                 *sp = 0.0;
             }
         }
+        let (bend0, bend1) = (
+            2f64.powf(f64::from(self.bend_now) / 12.0),
+            2f64.powf(f64::from(self.bend) / 12.0),
+        );
+        self.bend_now = self.bend;
+        let bend_step = (bend1 - bend0) / frames.max(1) as f64;
+        let bend_sound = self.bend_sound.filter(|_| bend0 != 1.0 || bend1 != 1.0);
         // Suppression en place : pas de Vec temporaire ni de tri dans le
         // callback audio. `swap_remove` est sûr ici, l'ordre des voix n'est pas
         // un invariant (le voice stealing compare explicitement leur âge).
@@ -729,10 +789,18 @@ impl Sampler {
                 // bloc suivant (le compteur est consommé bloc par bloc).
                 if voice.start_frame >= frames {
                     voice.start_frame -= frames;
+                    voice.release_at = voice.release_at.map(|r| r.saturating_sub(frames));
                     (false, None)
                 } else {
                     let first = voice.start_frame;
                     voice.start_frame = 0;
+                    // Note-off au sample près : pris à sa trame, ou reporté
+                    // au bloc suivant s'il tombe après celui-ci.
+                    let mut release_at = voice.release_at.take();
+                    if let Some(r) = release_at.filter(|&r| r >= frames) {
+                        voice.release_at = Some(r - frames);
+                        release_at = None;
+                    }
                     let bus = route
                         .get(voice.group as usize)
                         .and_then(|g| g.get(voice.sound as usize))
@@ -746,6 +814,7 @@ impl Sampler {
                     };
                     let mut pos = voice.pos;
                     let inc = voice.increment;
+                    let bent = bend_sound == Some(voice.sound);
                     let sample = &voice.sample;
                     let sample_len = voice.end.min(sample.len() as f64);
                     let end_fade = voice.end_fade;
@@ -755,6 +824,16 @@ impl Sampler {
                         if pos >= sample_len - 1.0 {
                             finished = true;
                             break;
+                        }
+                        if release_at.is_some_and(|r| frame >= r) {
+                            release_at = None;
+                            if voice.adsr_phase != AdsrPhase::Off
+                                && voice.adsr_phase != AdsrPhase::Release
+                            {
+                                voice.adsr_phase = AdsrPhase::Release;
+                                voice.phase_samples = 0;
+                                voice.release_from = voice.env_level.max(0.05);
+                            }
                         }
                         let i = pos as usize;
                         let frac = (pos - i as f64) as f32;
@@ -839,7 +918,11 @@ impl Sampler {
                         if mag > voice_peak {
                             voice_peak = mag;
                         }
-                        pos += inc;
+                        pos += if bent {
+                            inc * (bend0 + bend_step * frame as f64)
+                        } else {
+                            inc
+                        };
                     }
                     voice.pos = pos;
                     // Le SoundId porte le groupe (octet haut) et le slot (octet
@@ -1429,6 +1512,68 @@ mod tests {
         Arc::new(v)
     }
 
+    /// Sampler avec un Sound 0 tenu (non one-shot) sur un signal constant.
+    fn held_sampler() -> Sampler {
+        let mut s = Sampler::new(48000);
+        s.add_zone(
+            0,
+            ZoneMapping {
+                sample: Some(Arc::new(vec![0.5; 48_000])),
+                sample_rate: 48000,
+                root_key: 60,
+                is_one_shot: false,
+                ..Default::default()
+            },
+        );
+        s
+    }
+
+    #[test]
+    fn note_off_at_releases_on_its_frame_and_spares_the_next_note() {
+        let mut s = held_sampler();
+        let idx = s.note_on(0, 60, 127, 60).unwrap();
+        let params = VoiceParams {
+            attack_ms: 0.1,
+            decay_ms: 0.0,
+            sustain: 1.0,
+            release_ms: 5.0,
+            ..Default::default()
+        };
+        s.set_voice_params(idx, &params);
+        let mut buf = vec![0.0f32; 2048];
+        s.render(&mut buf);
+        // Fin de note à la trame 300, note suivante (même hauteur) à 300.
+        s.note_off_at(0, 60, 300);
+        let next = s.note_on_at(0, 60, 127, 60, 300).unwrap();
+        s.set_voice_params(next, &params);
+        s.render(&mut buf);
+        let left = |f: usize| buf[f * 2];
+        assert!((left(299) - left(0)).abs() < 1e-4, "tenue jusqu'à 300");
+        assert!(left(1023) > 0.3, "la note suivante n'est pas relâchée");
+        assert_eq!(s.num_voices(), 1, "l'ancienne s'est éteinte");
+        // Un note-off au-delà du bloc attend le bloc suivant.
+        s.note_off_at(0, 60, 1500);
+        s.render(&mut buf);
+        assert!(buf[1023 * 2] > 0.3, "pas encore relâchée");
+        s.render(&mut buf);
+        assert!(buf[1023 * 2] < 0.05, "relâchée à 1500");
+    }
+
+    #[test]
+    fn voices_never_reallocate_in_the_audio_thread() {
+        let mut s = held_sampler();
+        let cap = s.voices.capacity();
+        let mut buf = vec![0.0f32; 256];
+        for i in 0..2000 {
+            s.note_on(0, 60, 100, 60);
+            if i % 50 == 0 {
+                s.render(&mut buf);
+            }
+        }
+        assert_eq!(s.voices.capacity(), cap);
+        assert!(s.num_voices() <= cap);
+    }
+
     #[test]
     fn note_on_off_render() {
         let mut s = Sampler::new(48000);
@@ -1731,6 +1876,7 @@ mod tests {
                 env_level: 0.0,
                 release_from: 1.0,
                 start_frame: 0,
+                release_at: None,
                 end_fade: 1.0,
                 end: 0.0,
                 note: 60,

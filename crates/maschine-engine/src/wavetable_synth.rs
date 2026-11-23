@@ -1892,6 +1892,10 @@ pub struct WavetableSynth {
     // Effet réverbération simple à peignes
     comb_buffers: Vec<Vec<f32>>,
     comb_positions: Vec<usize>,
+    /// Pitch bend de la Smart Strip (demi-tons) : consigne, et valeur
+    /// atteinte à la fin du dernier bloc (rampe sur le bloc, sans marches).
+    pub bend: f32,
+    bend_now: f32,
 }
 
 impl Default for WavetableSynth {
@@ -1929,6 +1933,8 @@ impl WavetableSynth {
             chorus_phase: 0.0,
             comb_buffers,
             comb_positions,
+            bend: 0.0,
+            bend_now: 0.0,
         }
     }
 
@@ -2077,6 +2083,9 @@ impl WavetableSynth {
         let dt = 1.0 / sr;
         let frames = out.len() / 2;
         let vol_linear = crate::engine::db_to_linear(p.master_volume_db);
+        let (bend0, bend1) = (2f32.powf(self.bend_now / 12.0), 2f32.powf(self.bend / 12.0));
+        self.bend_now = self.bend;
+        let bend_step = (bend1 - bend0) / frames.max(1) as f32;
 
         // Paramètres LFO
         let lfo_inc = 2.0 * PI * p.lfo_rate_hz / sr;
@@ -2086,6 +2095,7 @@ impl WavetableSynth {
             let mut mix_l = 0.0f32;
             let mut mix_r = 0.0f32;
 
+            let bend = bend0 + bend_step * f as f32;
             // Valeur courante du LFO de modulation
             let lfo_val = self.lfo_phase.sin() * p.lfo_amount;
             self.lfo_phase = (self.lfo_phase + lfo_inc) % (2.0 * PI);
@@ -2134,7 +2144,7 @@ impl WavetableSynth {
                 } else {
                     1.0
                 };
-                let freq = voice.current_freq * pitch_mod;
+                let freq = voice.current_freq * pitch_mod * bend;
 
                 // --- Oscillateur 1 ---
                 let osc1_semi = p.osc1_semitones as f32 + p.osc1_cents as f32 / 100.0;

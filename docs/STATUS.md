@@ -4,7 +4,7 @@ Living document: what works, what is partial, what is missing, and what to
 check on real hardware. Update it with every release (see the release steps in
 `AGENTS.md`). Behaviour details live in `workflow.md`; this file is the map.
 
-## Current version: 0.27.0
+## Current version: 0.28.0
 
 ### Done (with tests)
 
@@ -63,11 +63,19 @@ check on real hardware. Update it with every release (see the release steps in
   rounded shapes and knob slots, but keep their older layouts.
 - **Standby before any launch** needs the packages (or `standby --install`) and
   a logged-in systemd user session; a `SIGKILL` leaves the last frame.
-- **Automation** : le bouton `AUTO` de la MK3 (LED allumé) arme l'enregistrement
-  des points pendant `REC` et ouvre deux écrans dédiés (liste des automations
-  du pattern et courbe des points). Les points sont enregistrés dans le Pattern
-  mais ne sont pas encore rejoués pendant la lecture ; `CLEAR AUTO` et le
-  comportement des knobs tactiles restent à implémenter.
+- **Automation** (0.28.0): recorded per target (instrument parameter, Sound /
+  Group / Master insert effect, Group volume and pan) with pattern-local
+  ticks, played back by the audio thread on playback copies
+  (`Engine::apply_automation`), linear ramps for continuous parameters,
+  edited with the display buttons while `AUTO` is lit, cleared with
+  `SHIFT + pad 10`. Not done: Sound volume / pan of synth Sounds and master
+  volume, tempo; touch-sensitive knobs; automation on notes played by hand on
+  sampler Sounds; in a pattern chain a parameter keeps its last automated
+  value when the next pattern has no lane for it (until the next action);
+  effect lanes are keyed by slot index (they are dropped when an effect is
+  removed or its type changed). Check on hardware: PLUG-IN + `AUTO` + `REC`,
+  sweep the TB-303 cutoff over a bar, stop REC — the sweep replays on every
+  loop; then `PT >` / `VAL +` move a point on the right screen.
 - **Pattern workflow**: two pads pressed together chain the existing patterns
   of the interval (1→16 possible); the playback loop follows the chain / the
   longest pattern of the scene (`Engine::cycle_ticks`), recording goes to the
@@ -107,13 +115,14 @@ check on real hardware. Update it with every release (see the release steps in
   edits on the selection.
 - Redesign the mixer, browser and step layouts with the same care as PLUG-IN
   (see `docs/design.md`).
-- Automation playback: points store the knob index without its page and an
-  absolute tick; the model needs `page` and pattern-local ticks first.
-- Automation lanes (knob recording) — would make `CLEAR AUTO` meaningful.
+- Automation: Sound volume / pan for synth Sounds, master volume, tempo.
 - Confirm the pad LED behaviour on hardware and adjust `HardwareMapper::update_leds`.
 
 ## History (recent)
 
+- **0.28.0** — automations : relecture (rampes), instruments, effets
+  d'insert et volume / pan de groupe, édition des points aux boutons d'écran,
+  `CLEAR AUTO`, écrans AUTOMATION refaits.
 - **0.27.0** — chaînes de patterns et de scènes qui jouent vraiment à la
   suite (la boucle suit ce qui joue), LEDs de chaîne (pattern joué en blanc),
   REC sans flam ni note tenue, longueurs par note, premier temps conservé au

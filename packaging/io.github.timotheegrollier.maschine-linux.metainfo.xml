@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.28.0" date="2026-11-23">
+      <description>
+        <p>Release 0.28.0: automation playback (linear ramps) for instrument parameters, insert effects and group volume / pan, point editing from the display buttons while AUTO is lit, CLEAR AUTO, and redesigned automation screens.</p>
+      </description>
+    </release>
     <release version="0.27.0" date="2026-11-23">
       <description>
         <p>Release 0.27.0: pattern and scene chains now really play in turn (the loop follows what plays), brighter chain LEDs with the playing pattern in white, cleaner live recording (no flam on early hits, correct held-note and chord lengths, no hanging notes, downbeat kept on every loop) and a stable position display in the GUI.</p>

@@ -2,6 +2,26 @@
 
 All notable changes.
 
+## [0.28.0] - 2026-11-23
+
+### Added
+- **Relecture des automations** : les points enregistrés avec `AUTO` + `REC` sont rejoués à chaque tour du pattern, sans modifier la valeur du projet. Les paramètres continus suivent une rampe d'un point au suivant, les choix et entiers restent en paliers.
+- **Cibles d'automation** : paramètres d'instrument d'un Sound, effets d'insert du Sound, du groupe et du Master (knobs PLUG-IN), volume et pan du groupe (MIXER / GUI).
+- **Édition depuis la MK3** : quand `AUTO` est allumé, les boutons d'écran deviennent `LIGNE <` `LIGNE >` `PT <` `PT >` `VAL -` `VAL +` `SUPPR PT` `SUPPR` (choix de l'automation et du point, valeur, suppression), annulables.
+- **`CLEAR AUTO`** (`SHIFT` + pad 10) : efface les automations du Sound actif dans le pattern actif (annulable).
+
+### Fixed
+- **Enregistrement des automations** : la page du paramètre est enregistrée (le même knob d'une autre page n'est plus confondu), les ticks sont ceux du pattern (plus ceux du transport), les points restent triés et un nouveau passage remplace la zone qu'il parcourt ; dans une chaîne, l'automation va dans le pattern en cours.
+- **Écrans AUTOMATION (MK3)** : cible et nom du paramètre, valeur lisible avec son unité, courbe sur la longueur du pattern avec point sélectionné et tête de lecture ; les knobs affichés sont ceux de la page PLUG-IN réellement enregistrés ; les libellés des boutons de l'écran gauche étaient ceux de l'écran droit.
+- Les automations d'avant cette version (page inconnue) sont listées « ancien format » et ne sont pas rejouées.
+- Un pattern lancé repart des valeurs du projet (les copies de lecture sont resynchronisées au lancement).
+
+### Changed
+- Tant que `AUTO` est allumé, les boutons d'écran sont ceux de l'édition d'automation ; ceux de l'instrument reviennent quand `AUTO` est éteint.
+
+### Validation
+- Tests : `automation_is_recorded_in_the_pattern_and_played_back`, `automation_plays_back_on_sampler_sounds_without_touching_the_project`, `automation_drives_effects_and_group_mix_from_playback_copies`, `automation_view_buttons_select_and_edit_points`, `automation_value_holds_the_last_point_across_the_loop` ; `dump_screens` exporte `automation` et `automation_empty`.
+
 ## [0.27.0] - 2026-11-23
 
 ### Fixed

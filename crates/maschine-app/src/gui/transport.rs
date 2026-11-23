@@ -77,11 +77,15 @@ pub(crate) fn transport_controls(
     ui.separator();
 
     // ── Position ─────────────────────────────────────────────────
-    ui.label(
-        egui::RichText::new(format!("{}", snap.bbt))
-            .family(crate::gui::theme::bold_family())
-            .size(19.0)
-            .color(c.text),
+    // Case de largeur fixe : le texte ne décale plus le reste de l'en-tête.
+    ui.add_sized(
+        [76.0, 32.0],
+        egui::Label::new(
+            egui::RichText::new(position_text(snap))
+                .family(crate::gui::theme::bold_family())
+                .size(19.0)
+                .color(c.text),
+        ),
     );
     if wide {
         caption(
@@ -180,4 +184,11 @@ pub(crate) fn transport_master(
             .lock()
             .handle_event(EngineEvent::MasterVolume(master));
     }
+}
+
+/// Position « mesure.temps.double-croche » comme Maschine (les ticks
+/// défilaient à chaque image et rendaient le texte illisible).
+pub fn position_text(snap: &maschine_engine::EngineSnapshot) -> String {
+    let p = snap.bbt;
+    format!("{}.{}.{}", p.bars + 1, p.beats + 1, p.ticks / 240 + 1)
 }

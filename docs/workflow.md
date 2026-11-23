@@ -211,6 +211,19 @@ Since 0.14.0 both modes follow that reference; see the two sections below. Not i
   (start quantize unchanged), and the live monitoring voice is held until that
   quantized end tick — so what you hear matches what is written. Pattern
   chaining accepts two pads held simultaneously or pressed within 800 ms.
+  In SCENE mode two pads held together chain the existing scenes of the
+  interval (it rewrites the Song and turns Song mode on): each scene plays for
+  the length of its longest pattern, chained scene pads are lit brighter, and
+  pressing a single scene pad leaves the chain.
+  Pattern chain LEDs have three levels: existing pattern dim, chained
+  patterns bright, the chain's playing pattern white (it moves with playback).
+  Only existing patterns of the interval are chained. The playback loop
+  follows what plays: the chain, otherwise the longest pattern of the scene
+  (shorter ones repeat), or the Song. While REC is on, a hit played just
+  before the grid is quantized forward and not retriggered by the sequencer
+  (no flam), a held note is not released by the sequencer until the pad or
+  key is released (each chord note gets its own length), note lengths are measured inside the looping pattern, and notes
+  played over a chain are written to the pattern that is playing.
 - **16 Velocities**: `SHIFT + FIXED VEL` — the 16 pads play the selected Sound
   from velocity 7 (pad 1) to 127 (pad 16) without changing the selection; pads
   shaded in its colour, `FIXED VEL` half lit, GUI pads labelled `VEL n`.

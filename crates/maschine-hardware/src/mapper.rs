@@ -527,6 +527,8 @@ pub struct SequencerLedInfo {
     pub scene_pattern: Option<usize>,
     /// Pads de la chaîne de patterns (LED plus intense).
     pub pattern_chain_mask: u16,
+    /// Pads des scènes enchaînées (LED plus intense).
+    pub scene_chain_mask: u16,
     /// Boucle transport active (LED RESTART)
     pub loop_enabled: bool,
     /// Métronome actif (LED TAP quand stoppé)
@@ -2566,6 +2568,9 @@ impl HardwareMapper {
                         .set_pad(i, if blink_on { yellow } else { dim_yellow });
                 } else if Some(i) == info.active_scene {
                     self.led_state.set_pad(i, bright_pad_color(yellow));
+                } else if info.scene_chain_mask & (1u16 << i) != 0 {
+                    // Scènes de la chaîne : entre la scène jouée et les autres.
+                    self.led_state.set_pad(i, yellow);
                 } else if i < info.num_scenes {
                     self.led_state.set_pad(i, dim_yellow);
                 } else {
@@ -2591,8 +2596,17 @@ impl HardwareMapper {
                     };
                     self.led_state.set_pad(i, c);
                 } else if info.pattern_chain_mask & (1u16 << i) != 0 {
-                    // Pads de la boucle chaînée : plus intenses pour voir le chainage.
-                    self.led_state.set_pad(i, bright_pad_color(group));
+                    // Chaîne : pads vifs, celui qui joue en blanc — trois
+                    // niveaux nets (existant, chaîné, en lecture).
+                    let playing = Some(i) == info.scene_pattern;
+                    self.led_state.set_pad(
+                        i,
+                        if playing {
+                            white
+                        } else {
+                            bright_pad_color(group)
+                        },
+                    );
                 } else if Some(i) == info.scene_pattern {
                     self.led_state.set_pad(i, bright_pad_color(group));
                 } else if i < info.group_num_patterns {
@@ -4271,6 +4285,26 @@ mod tests {
     }
 
     #[test]
+    fn chained_scene_pads_are_brighter() {
+        let mut m = HardwareMapper::with_default();
+        let info = SequencerLedInfo {
+            scene_mode: true,
+            num_scenes: 4,
+            active_scene: Some(0),
+            scene_chain_mask: 0b0111,
+            ..SequencerLedInfo::default()
+        };
+        m.update_leds(&info);
+        let leds = m.led_state().pad_leds;
+        assert_ne!(
+            leds[1], leds[3],
+            "scène chaînée plus vive qu'une scène libre"
+        );
+        assert_ne!(leds[1], leds[0], "la scène jouée reste la plus vive");
+        assert_eq!(leds[1], leds[2]);
+    }
+
+    #[test]
     fn chained_pattern_pads_are_brighter() {
         use maschine_proto::hid_output::offsets;
         let mut m = HardwareMapper::with_default();
@@ -4281,12 +4315,15 @@ mod tests {
             group_colors,
             group_num_patterns: 16,
             pattern_chain_mask: 0b0000_0000_0001_1100, // pads 2,3,4
+            scene_pattern: Some(4),
             ..SequencerLedInfo::default()
         };
         m.update_leds(&info);
         let bright = bright_pad_color(Color::from_index(22).unwrap()).to_index();
         let dim = dim_pad_color(Color::from_index(22).unwrap()).to_index();
-        for pad in [2usize, 3, 4] {
+        let white = Color::from_index(78).unwrap().to_index();
+        assert_eq!(m.led_state().pad_leds[4], white, "pattern joué en blanc");
+        for pad in [2usize, 3] {
             assert_eq!(
                 m.led_state().pad_leds[pad],
                 bright,

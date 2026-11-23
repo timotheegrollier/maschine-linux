@@ -1537,7 +1537,10 @@ impl eframe::App for GuiApp {
                         ui.add_space(10.0);
                         ui.separator();
                         ui.add_space(6.0);
-                        crate::gui::theme::caption(ui, format!("Position : {}", snap.bbt));
+                        crate::gui::theme::caption(
+                            ui,
+                            format!("Position : {}", crate::gui::transport::position_text(&snap)),
+                        );
                         crate::gui::theme::caption(
                             ui,
                             format!("Pattern : {} mesure(s)", snap.pattern_bars),

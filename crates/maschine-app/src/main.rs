@@ -1805,6 +1805,7 @@ fn cmd_daemon(
             group_num_patterns: snap.group_num_patterns,
             scene_pattern: snap.scene_pattern,
             pattern_chain_mask: snap.pattern_chain_mask,
+            scene_chain_mask: snap.scene_chain_mask,
             loop_enabled: snap.loop_enabled,
             metronome: snap.metronome,
             selected_bar: snap.selected_bar,

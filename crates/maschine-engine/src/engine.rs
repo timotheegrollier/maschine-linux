@@ -809,6 +809,8 @@ pub struct HardwareSnapshot {
     pub scene_pattern: Option<usize>,
     /// Masque des pads appartenant à la chaîne de patterns du groupe focus.
     pub pattern_chain_mask: u16,
+    /// Masque des pads des scènes enchaînées (mode Song actif).
+    pub scene_chain_mask: u16,
     pub loop_enabled: bool,
     pub metronome: bool,
     pub selected_bar: usize,
@@ -1248,8 +1250,16 @@ pub struct Engine {
     /// Note tenue sur chaque pad pendant REC (tick de l'événement enregistré),
     /// pour enregistrer les slides (glissando legato) du TB-303.
     rec_sounding: [Option<u32>; 16],
-    /// Notes tenues pendant REC : (pad, note, tick de fin quantifié).
+    /// Notes relâchées pendant REC : (pad, note, ticks restants avant la fin
+    /// quantifiée). Un compte à rebours survit au bouclage du transport.
     pending_note_offs: [Option<(u8, u8, u64)>; 16],
+    /// Notes enregistrées en avance sur la grille : (groupe, pad, hauteur,
+    /// tick). Le séquenceur ne les rejoue pas au premier passage (pas de flam
+    /// avec la voix live).
+    rec_skip: [Option<(u8, u8, u8, u32)>; 16],
+    /// Notes enregistrées encore tenues : (groupe, pad, hauteur, tick). Le
+    /// séquenceur ne les relâche pas (longueur provisoire) tant qu'on les tient.
+    rec_holds: [Option<(u8, u8, u8, u32)>; 16],
     /// Notes clavier tenues enregistrées pendant REC : par note, le
     /// (groupe, Sound, tick de l'événement enregistré).
     rec_key_press: [Option<(u8, u8, u32)>; 128],
@@ -1441,6 +1451,25 @@ fn assign_pattern_to_active_scene(
     }
 }
 
+/// Position dans une chaîne de patterns : (pattern joué au tick donné, tick
+/// de son début dans la chaîne, longueur totale). `None` sans chaîne réelle.
+fn chain_slot(chain: &[usize], patterns: &[Pattern], tick: u64) -> Option<(usize, u64, u64)> {
+    let len = |i: usize| patterns.get(i).map_or(0, |p| p.length.to_ticks() as u64);
+    let total: u64 = chain.iter().map(|&i| len(i)).sum();
+    if chain.len() < 2 || total == 0 {
+        return None;
+    }
+    let pos = tick % total;
+    let mut start = 0;
+    for &i in chain {
+        if pos < start + len(i) {
+            return Some((i, start, total));
+        }
+        start += len(i);
+    }
+    None
+}
+
 /// Longueur par défaut d'un nouveau pattern : celle du pattern actif, sinon
 /// 2 mesures (valeur historique de la démo).
 fn new_pattern_length(
@@ -1617,6 +1646,8 @@ impl Engine {
             rec_pad_press: [None; 16],
             rec_sounding: [None; 16],
             pending_note_offs: [None; 16],
+            rec_skip: [None; 16],
+            rec_holds: [None; 16],
             rec_key_press: [None; 128],
             arp_held: [0; 128],
             arp_last: None,
@@ -2126,6 +2157,13 @@ impl Engine {
                 .flatten()
         });
 
+        // Dans une chaîne : le pattern en cours de lecture.
+        let scene_pattern = self.pattern_chains[self.group_focus as usize % 8]
+            .as_deref()
+            .zip(group)
+            .and_then(|(c, g)| chain_slot(c, &g.patterns, self.transport.tick))
+            .map(|(i, _, _)| i)
+            .or(scene_pattern);
         let pattern_chain_mask = self.pattern_chains[self.group_focus as usize % 8]
             .as_ref()
             .map(|chain| {
@@ -2177,6 +2215,14 @@ impl Engine {
             group_num_patterns,
             scene_pattern,
             pattern_chain_mask,
+            scene_chain_mask: if self.song_mode {
+                let song = &self.project.read().song;
+                song.iter()
+                    .filter(|s| s.scene < 16)
+                    .fold(0, |mask, s| mask | 1 << s.scene)
+            } else {
+                0
+            },
             loop_enabled: self.transport.loop_enabled,
             metronome: self.transport.metronome,
             selected_bar,
@@ -2735,12 +2781,19 @@ impl Engine {
                         // sonore (tenue) — on étend son événement enregistré
                         // jusqu'à ce nouvel événement (glissando legato TB-303).
                         let prev = self.rec_sounding[pad as usize].take();
+                        // Ré-appui sans relâchement vu : l'ancienne note n'est plus tenue.
+                        if let Some(q) = self.rec_pad_press[pad as usize] {
+                            self.rec_hold((self.group_focus, pad, 36 + pad, q), false);
+                        }
                         let q_new = self.record_pad_event(pad, velocity);
                         if let (Some(q_prev), Some(q_new)) = (prev, q_new) {
                             self.extend_recorded_note(self.group_focus, pad, q_prev, q_new);
                         }
                         self.rec_pad_press[pad as usize] = q_new;
                         self.rec_sounding[pad as usize] = q_new;
+                        if let Some(q) = q_new {
+                            self.rec_hold((self.group_focus, pad, 36 + pad, q), true);
+                        }
                     }
                 } else {
                     let mut scheduled = false;
@@ -2748,7 +2801,11 @@ impl Engine {
                         self.note_repeat_held_pads[pad as usize] = None;
                         self.rec_sounding[pad as usize] = None;
                         if let Some(q) = self.rec_pad_press[pad as usize].take() {
-                            self.set_recorded_length(self.group_focus, pad, q, self.transport.tick);
+                            self.rec_hold((self.group_focus, pad, 36 + pad, q), false);
+                            self.set_recorded_length(
+                                (self.group_focus, pad, 36 + pad, q),
+                                self.transport.tick,
+                            );
                             if self.transport.state == TransportState::Recording {
                                 self.schedule_note_off(pad, 36 + pad, q, self.transport.tick);
                                 scheduled = true;
@@ -2812,6 +2869,8 @@ impl Engine {
             EngineEvent::Scene(s) => {
                 let len = self.project.read().scenes.len();
                 if s < len {
+                    // Une scène seule quitte la chaîne (sinon le Song la reprend).
+                    self.song_mode = false;
                     if self.transport.is_playing() && self.active_scene != Some(s) {
                         // En lecture : la scène démarre à la mesure suivante.
                         self.pending_scene = Some(s);
@@ -3708,18 +3767,34 @@ impl Engine {
                     let project = project_mut(&mut guard);
                     project.song.clear();
                     for (sec_idx, &scene_idx) in indices.iter().enumerate() {
-                        if scene_idx < project.scenes.len() {
+                        if let Some(scene) = project.scenes.get(scene_idx) {
+                            // Chaque scène joue en entier : son plus long pattern.
+                            let length = scene
+                                .patterns
+                                .iter()
+                                .zip(&project.groups)
+                                .filter_map(|(pat, group)| {
+                                    Some(group.patterns.get((*pat)?)?.length)
+                                })
+                                .max_by_key(|l| l.to_ticks())
+                                .unwrap_or(BarsBeatsTicks::new(2, 0, 0));
                             project.song.push(Section {
                                 scene: scene_idx,
-                                length: BarsBeatsTicks::new(2, 0, 0),
+                                length,
                                 name: format!("Section {}", sec_idx + 1),
                             });
                         }
                     }
-                    if !project.song.is_empty() {
+                    if let (Some(first), Some(last)) = (project.song.first(), project.song.last()) {
+                        let (first, last) = (first.scene, last.scene);
                         self.active_section = Some(0);
-                        self.active_scene = Some(project.song[0].scene);
+                        self.active_scene = Some(first);
                         self.song_mode = true;
+                        // Le premier pad a déjà demandé sa scène seule : la
+                        // chaîne la remplace.
+                        self.pending_scene = None;
+                        drop(guard);
+                        self.show_status(format!("Scènes {} → {} chaînées", first + 1, last + 1));
                     }
                     self.revision = self.revision.wrapping_add(1);
                 }
@@ -3841,6 +3916,7 @@ impl Engine {
                         // Keyboard/Chords : enregistre la hauteur jouée (accords = plusieurs événements).
                         let q = self.record_note_event(self.active_sound, note, velocity);
                         if let Some(q) = q {
+                            self.rec_hold((self.group_focus, self.active_sound, note, q), true);
                             self.rec_key_press[note as usize] =
                                 Some((self.group_focus, self.active_sound, q));
                         }
@@ -3848,7 +3924,8 @@ impl Engine {
                 } else {
                     let mut scheduled = false;
                     if let Some((g, s, q)) = self.rec_key_press[note as usize].take() {
-                        self.set_recorded_length(g, s, q, self.transport.tick);
+                        self.rec_hold((g, s, note, q), false);
+                        self.set_recorded_length((g, s, note, q), self.transport.tick);
                         if self.transport.state == TransportState::Recording {
                             self.schedule_note_off(s, note, q, self.transport.tick);
                             scheduled = true;
@@ -4688,18 +4765,32 @@ impl Engine {
                 self.revision = self.revision.wrapping_add(1);
             }
             EngineEvent::PatternChain { group, patterns } => {
-                let group_idx = group as usize;
+                let group_idx = group as usize % 8;
+                let mut guard = self.project.write();
+                let proj = project_mut(&mut guard);
+                // Seuls les patterns existants se chaînent (deux pads éloignés
+                // couvrent aussi des emplacements vides) ; un seul = sélection.
+                let count = proj.groups.get(group_idx).map_or(0, |g| g.patterns.len());
+                let patterns: Vec<usize> = patterns.into_iter().filter(|&p| p < count).collect();
                 if !patterns.is_empty() {
-                    self.pattern_chains[group_idx] = Some(patterns.clone());
-                    let mut guard = self.project.write();
-                    let proj = project_mut(&mut guard);
+                    // Le premier pad a déjà demandé son pattern seul : la chaîne
+                    // le remplace.
+                    self.pending_patterns[group_idx] = None;
+                    self.launched_patterns[group_idx] = None;
+                    self.pattern_chains[group_idx] = (patterns.len() > 1).then(|| patterns.clone());
                     assign_pattern_to_active_scene(
                         proj,
                         &mut self.active_scene,
                         group_idx,
                         patterns[0],
                     );
-                    self.status_message = Some(format!("Patterns chaînés: {:?}", patterns));
+                    self.status_message = Some(match patterns[..] {
+                        [only] => format!("Pattern {}", only + 1),
+                        [first, .., last] => {
+                            format!("Patterns {} → {} chaînés", first + 1, last + 1)
+                        }
+                        [] => String::new(),
+                    });
                     self.status_expires_at =
                         std::time::Instant::now() + std::time::Duration::from_millis(1500);
                     self.revision = self.revision.wrapping_add(1);
@@ -5039,6 +5130,34 @@ impl Engine {
         self.show_status("Pré-compte : 1 mesure, puis enregistrement".to_string());
     }
 
+    /// Longueur de la boucle de lecture : le Song en mode Song, sinon la
+    /// plus longue chaîne ou le plus long pattern de la scène (les plus courts
+    /// se répètent), comme une scène Maschine. Sans allocation (thread audio).
+    fn cycle_ticks(&self) -> Option<u64> {
+        let proj = self.project.read();
+        let len = if self.song_mode && !proj.song.is_empty() {
+            proj.song.iter().map(|s| s.length.to_ticks() as u64).sum()
+        } else {
+            let scene = proj.scenes.get(self.active_scene?)?;
+            (0..proj.groups.len().min(8))
+                .map(|g| {
+                    let patterns = &proj.groups[g].patterns;
+                    let chained = self.pattern_chains[g]
+                        .as_deref()
+                        .and_then(|c| chain_slot(c, patterns, 0))
+                        .map(|(_, _, total)| total);
+                    let single = self.launched_patterns[g]
+                        .or(scene.patterns.get(g).copied().flatten())
+                        .and_then(|i| patterns.get(i))
+                        .map_or(0, |p| p.length.to_ticks() as u64);
+                    chained.unwrap_or(single)
+                })
+                .max()
+                .unwrap_or(0)
+        };
+        (len > 0).then_some(len)
+    }
+
     /// Avance le transport + séquenceur, déclenche les notes des patterns.
     pub fn advance(&mut self, samples: u64) {
         // Décroissance de l'activité des pads (animation écrans, ~170 ms).
@@ -5056,8 +5175,23 @@ impl Engine {
 
         let prev_tick = self.transport.tick;
         let frac_before = self.transport.tick_fraction;
+        // La boucle suit ce qui joue (chaîne, pattern le plus long, Song) :
+        // une boucle fixe coupait les chaînes et les patterns plus longs.
+        if self.transport.is_playing() && self.transport.loop_enabled {
+            if let Some(len) = self.cycle_ticks() {
+                self.transport.loop_start = 0;
+                self.transport.loop_end = len;
+            }
+        }
         self.transport.advance_samples(samples);
         let new_tick = self.transport.tick;
+        // Bouclage dans ce bloc : `elapsed` reste le nombre de ticks écoulés.
+        let wrapped = new_tick < prev_tick;
+        let elapsed = if wrapped {
+            (self.transport.loop_end + new_tick).saturating_sub(prev_tick)
+        } else {
+            new_tick - prev_tick
+        };
         if new_tick != prev_tick {
             self.revision = self.revision.wrapping_add(1);
         }
@@ -5068,7 +5202,7 @@ impl Engine {
         if self.note_repeat_enabled {
             let arp_on = self.arp_held.iter().any(|&v| v > 0);
             let due = if self.transport.is_playing() {
-                new_tick / rep_rate_ticks as u64 > prev_tick / rep_rate_ticks as u64
+                new_tick / rep_rate_ticks as u64 != prev_tick / rep_rate_ticks as u64
             } else if arp_on || self.note_repeat_held_pads.iter().any(|v| v.is_some()) {
                 let bpm = self.transport.bpm.max(1.0) as f64;
                 let samples_per_repeat = ((rep_rate_ticks as f64 / 960.0)
@@ -5126,10 +5260,12 @@ impl Engine {
         // enregistrée, pour que l'écoute et le pattern restent synchronisés.
         let mut due = [None; 16];
         for (i, slot) in self.pending_note_offs.iter_mut().enumerate() {
-            if let Some((pad, note, end)) = *slot {
-                if self.transport.tick >= end {
+            if let Some((pad, note, left)) = *slot {
+                if left <= elapsed {
                     due[i] = Some((pad, note));
                     *slot = None;
+                } else {
+                    *slot = Some((pad, note, left - elapsed));
                 }
             }
         }
@@ -5149,13 +5285,25 @@ impl Engine {
             tick_fraction: frac_before,
         };
         // Clic métronome sur chaque temps (accent sur début de mesure).
-        if self.transport.metronome && new_tick > prev_tick {
-            let first_beat = prev_tick / 960 + 1;
-            let last_beat = new_tick / 960;
-            for beat in first_beat..=last_beat.min(first_beat + 8) {
-                let accent = beat % 4 == 0;
-                let rel = (beat * 960).saturating_sub(prev_tick) as f64;
-                self.trigger_click(accent, ctx.offset(rel));
+        // Fenêtre [prev, new) en deux segments au bouclage : le premier temps
+        // sonne au départ et à chaque tour de boucle.
+        if self.transport.metronome {
+            let loop_end = self.transport.loop_end;
+            let segments = if wrapped {
+                [
+                    (prev_tick, loop_end, 0),
+                    (0, new_tick, loop_end.saturating_sub(prev_tick)),
+                ]
+            } else {
+                [(prev_tick, new_tick, 0), (0, 0, 0)]
+            };
+            for (from, to, lead) in segments {
+                let mut beat = from.div_ceil(960);
+                while beat * 960 < to && beat < from.div_ceil(960) + 8 {
+                    let rel = (lead + beat * 960 - from) as f64;
+                    self.trigger_click(beat % 4 == 0, ctx.offset(rel));
+                    beat += 1;
+                }
             }
         }
         // Pour chaque Group, joue les events du pattern actif de la scène courante
@@ -5187,7 +5335,7 @@ impl Engine {
 
         // Lancements en attente : ils prennent effet au début de la mesure
         // (sans écrire le projet ici : `commit_launches` s'en charge).
-        if new_tick / 3840 > prev_tick / 3840 || prev_tick == 0 {
+        if new_tick / 3840 > prev_tick / 3840 || prev_tick == 0 || wrapped {
             if let Some(s) = self.pending_scene.take() {
                 self.active_scene = Some(s);
                 self.launched_patterns = [None; 8];
@@ -5211,41 +5359,44 @@ impl Engine {
                         continue;
                     }
                     if let Some(group) = proj.groups.get(gi) {
+                        // (pattern, fenêtre [eff_prev, eff_new) dans le pattern)
                         let mut pat_to_play = None;
                         let mut eff_prev = prev_tick;
                         let mut eff_new = new_tick;
-
-                        if let Some(ref chain) = self.pattern_chains[gi] {
-                            if chain.len() > 1 {
-                                let total: u64 = chain
-                                    .iter()
-                                    .filter_map(|&pi| group.patterns.get(pi))
-                                    .map(|p| p.length.to_ticks() as u64)
-                                    .sum();
-                                if total > 0 {
-                                    let pos = new_tick % total;
-                                    let mut acc = 0u64;
-                                    for &pi in chain {
-                                        if let Some(p) = group.patterns.get(pi) {
-                                            let plen = p.length.to_ticks() as u64;
-                                            if pos < acc + plen {
-                                                pat_to_play = Some(p);
-                                                eff_prev = (prev_tick % total).saturating_sub(acc);
-                                                eff_new = pos.saturating_sub(acc);
-                                                break;
-                                            }
-                                            acc += plen;
-                                        }
-                                    }
-                                }
+                        let mut restarted = false;
+                        if let Some((pi, start, total)) = self.pattern_chains[gi]
+                            .as_deref()
+                            .and_then(|c| chain_slot(c, &group.patterns, new_tick))
+                        {
+                            pat_to_play = group.patterns.get(pi);
+                            let pos = new_tick % total;
+                            let before = prev_tick % total;
+                            eff_new = pos - start;
+                            // Le bloc entre dans ce pattern : il part de zéro.
+                            restarted = wrapped || before < start || before > pos;
+                            eff_prev = if restarted { 0 } else { before - start };
+                        } else if let Some(pat) = pat_opt.and_then(|i| group.patterns.get(i)) {
+                            pat_to_play = Some(pat);
+                            // Pattern plus court que la boucle et non multiple :
+                            // il repart de zéro au bouclage.
+                            let len = (pat.length.to_ticks() as u64).max(1);
+                            if wrapped && !self.transport.loop_end.is_multiple_of(len) {
+                                restarted = true;
+                                eff_prev = 0;
                             }
                         }
-
-                        if pat_to_play.is_none() {
-                            if let Some(pat_idx) = pat_opt {
-                                pat_to_play = group.patterns.get(*pat_idx);
-                            }
-                        }
+                        // Les notes du nouveau départ restent au sample près :
+                        // elles commencent `elapsed - eff_new` ticks après le bloc.
+                        let lead = if restarted {
+                            elapsed.saturating_sub(eff_new)
+                        } else {
+                            0
+                        };
+                        let ctx = BlockCtx {
+                            frames: ctx.frames,
+                            samples_per_tick: ctx.samples_per_tick,
+                            tick_fraction: ctx.tick_fraction - lead as f64,
+                        };
 
                         if let Some(pat) = pat_to_play {
                             let gain = db_to_linear(group.volume_db);
@@ -5294,6 +5445,8 @@ impl Engine {
                                 &ctx,
                                 &mut self.pad_activity,
                                 self.muted_sounds[gi],
+                                &mut self.rec_skip,
+                                &self.rec_holds,
                             );
                         }
                     }
@@ -5479,6 +5632,8 @@ impl Engine {
         ctx: &BlockCtx,
         activity: &mut [f32; 16],
         muted_sound_mask: u16,
+        rec_skip: &mut [Option<(u8, u8, u8, u32)>; 16],
+        rec_holds: &[Option<(u8, u8, u8, u32)>; 16],
     ) {
         let pat_len = pat.length.to_ticks() as u64;
         if pat_len == 0 || prev_tick == new_tick {
@@ -5498,18 +5653,26 @@ impl Engine {
             } else {
                 tick
             };
+            // Fenêtre semi-ouverte [prev, new) : le tick 0 joue au départ et
+            // une seule fois quand la boucle retombe exactement dessus.
             let in_window = |t: u64| {
                 if !wrapped {
-                    if prev_tick == 0 {
-                        t >= prev_in_pat && t <= new_in_pat
-                    } else {
-                        t > prev_in_pat && t <= new_in_pat
-                    }
+                    t >= prev_in_pat && t < new_in_pat
                 } else {
-                    t > prev_in_pat || t <= new_in_pat
+                    t >= prev_in_pat || t < new_in_pat
                 }
             };
-            if in_window(eff % pat_len.max(1)) {
+            // Note jouée en direct juste avant la grille : la voix live sonne
+            // déjà, le séquenceur ne la redéclenche pas à ce passage.
+            let live = in_window(eff % pat_len.max(1))
+                && rec_skip.iter_mut().any(|s| {
+                    let hit = *s == Some((group, ev.pad, ev.pitch, ev.tick));
+                    if hit {
+                        *s = None;
+                    }
+                    hit
+                });
+            if !live && in_window(eff % pat_len.max(1)) {
                 let sound = ev.pad;
                 let sound_muted =
                     (sound as usize) < 16 && (muted_sound_mask & (1u16 << sound)) != 0;
@@ -5520,7 +5683,7 @@ impl Engine {
                     // Décalage sample-accurate dans le bloc courant : la note part à
                     // sa vraie position rythmique, pas au début du buffer audio.
                     let local = eff % pat_len.max(1);
-                    let rel_ticks = if !wrapped || local > prev_in_pat {
+                    let rel_ticks = if !wrapped || local >= prev_in_pat {
                         local.saturating_sub(prev_in_pat) as f64
                     } else {
                         (pat_len - prev_in_pat + local) as f64
@@ -5579,7 +5742,10 @@ impl Engine {
                 end_in_pat > prev_in_pat || end_in_pat <= new_in_pat
             };
             // évite de couper la note à t=0 et seulement si la note a déjà sonné
-            if off_triggered && end_tick > tick && tick <= new_tick {
+            // Note encore tenue en REC : sa longueur n'est pas connue, la voix
+            // live continue.
+            let held = rec_holds.contains(&Some((group, ev.pad, ev.pitch, ev.tick)));
+            if off_triggered && end_tick > tick && tick <= new_tick && !held {
                 let ri = rack_index(group, ev.pad);
                 if is_synth.get(ev.pad as usize).copied().unwrap_or(false) {
                     if let Some(slot) = rack.acid[ri].as_mut() {
@@ -5612,6 +5778,7 @@ impl Engine {
         velocity: u8,
         tick: u64,
     ) -> Option<u32> {
+        let group_id = group;
         let focus = group as usize;
         // Pendant REC : l'historique couvre les notes ajoutées (Shift + Undo).
         if self.transport.state == TransportState::Recording {
@@ -5621,14 +5788,29 @@ impl Engine {
         let proj = project_mut(&mut guard);
         // Comme le logiciel officiel : enregistrer sur un groupe sans pattern
         // dans la scène en crée un et l'y place (sinon les notes se perdaient).
-        let pat_idx = ensure_group_pattern(proj, &mut self.active_scene, focus);
+        // Dans une chaîne, la note va dans le pattern en cours de lecture.
+        let (pat_idx, tick) = match self.rec_position(proj, focus, tick) {
+            Some((i, t)) => (Some(i), t),
+            None => (
+                ensure_group_pattern(proj, &mut self.active_scene, focus),
+                tick,
+            ),
+        };
         let mut recorded = None;
         if let Some(group) = proj.groups.get_mut(focus) {
             if let Some(idx) = pat_idx {
                 if let Some(pat) = group.patterns.get_mut(idx) {
                     let pat_len = pat.length.to_ticks().max(1);
                     let tick_in_pat = (tick % pat_len as u64) as u32;
-                    let q_tick = self.sequencer.grid.quantize(tick_in_pat);
+                    // Une note quantifiée sur la fin du pattern est son premier pas.
+                    let raw = self.sequencer.grid.quantize(tick_in_pat);
+                    let q_tick = raw % pat_len;
+                    // En avance sur la grille (ou sur le tick courant, que le
+                    // bloc audio n'a pas encore joué) : la voix live suffit.
+                    if raw >= tick_in_pat {
+                        let slot = self.rec_skip.iter().position(Option::is_none);
+                        self.rec_skip[slot.unwrap_or(0)] = Some((group_id, pad, pitch, q_tick));
+                    }
                     // évite les doublons exacts (même son + tick + hauteur)
                     pat.events
                         .retain(|e| !(e.pad == pad && e.tick == q_tick && e.pitch == pitch));
@@ -5647,46 +5829,87 @@ impl Engine {
         recorded
     }
 
-    /// Met à jour la longueur d'une note enregistrée pendant REC : celle de la
-    /// note tenue (relâchement du pad / de la touche), comme en mode keyboard.
-    /// Longueur quantisée à la grille d'une note tenue pendant REC.
-    fn quantize_note_len(&self, from_tick: u32, release_tick: u64) -> u32 {
+    /// Pattern qui reçoit l'enregistrement du groupe et position dedans :
+    /// celui de la chaîne en cours de lecture, sinon celui de la scène.
+    fn rec_position(&self, proj: &Project, group: usize, tick: u64) -> Option<(usize, u64)> {
+        let patterns = &proj.groups.get(group)?.patterns;
+        let chained = self.pattern_chains[group % 8]
+            .as_deref()
+            .and_then(|c| chain_slot(c, patterns, tick))
+            .map(|(i, start, total)| (i, tick % total - start));
+        chained.or_else(|| Some((proj.active_pattern_index(group, self.active_scene)?, tick)))
+    }
+
+    /// Durée tenue (ticks) d'une note enregistrée à `from_tick` du pattern et
+    /// relâchée au tick `release_tick` du transport : le pattern boucle, la
+    /// différence se calcule modulo sa longueur.
+    fn rec_held(&self, group: u8, from_tick: u32, release_tick: u64) -> u64 {
+        let proj = self.project.read();
+        let from = u64::from(from_tick);
+        let pos = self.rec_position(&proj, group as usize, release_tick);
+        let len = pos
+            .and_then(|(i, _)| proj.groups[group as usize].patterns.get(i))
+            .map_or(0, |p| p.length.to_ticks() as u64);
+        match pos {
+            Some((_, local)) if len > 0 => (local % len + len - from % len) % len,
+            _ => release_tick.saturating_sub(from),
+        }
+    }
+
+    /// Longueur quantisée à la grille d'une note tenue `held` ticks pendant REC.
+    fn quantize_note_len(&self, held: u64) -> u32 {
         let step = self.sequencer.grid.ticks().max(1) as u64;
-        let raw = release_tick.saturating_sub(u64::from(from_tick));
-        (((raw + step / 2) / step * step).max(step).min(3840 * 8)) as u32
+        (((held + step / 2) / step * step).max(step).min(3840 * 8)) as u32
     }
 
     /// Pendant REC, la voix live est coupée à la fin quantifiée de la note —
     /// pas au relâchement physique — pour que l'écoute colle à l'enregistrement.
     fn schedule_note_off(&mut self, pad: u8, note: u8, from_tick: u32, release_tick: u64) {
-        let len = self.quantize_note_len(from_tick, release_tick);
-        let end = u64::from(from_tick).saturating_add(len as u64);
-        if let Some(slot) = self
+        let held = self.rec_held(self.group_focus, from_tick, release_tick);
+        let left = u64::from(self.quantize_note_len(held)).saturating_sub(held);
+        // Un compte par (pad, note) : les notes d'un accord partagent le pad.
+        match self
             .pending_note_offs
             .iter_mut()
-            .find(|s| s.is_none_or(|(p, _, _)| p == pad))
+            .find(|s| s.is_none_or(|(p, n, _)| p == pad && n == note))
         {
-            *slot = Some((pad, note, end));
+            Some(slot) => *slot = Some((pad, note, left)),
+            None => self.release_sound_voice(pad, note),
         }
     }
 
-    fn set_recorded_length(&mut self, group: u8, pad: u8, q_tick: u32, release_tick: u64) {
+    /// Marque (ou libère) une note enregistrée encore tenue, voir `rec_holds`.
+    fn rec_hold(&mut self, key: (u8, u8, u8, u32), on: bool) {
+        let (from, to) = if on {
+            (None, Some(key))
+        } else {
+            (Some(key), None)
+        };
+        if let Some(slot) = self.rec_holds.iter_mut().find(|s| **s == from) {
+            *slot = to;
+        }
+    }
+
+    /// Longueur définitive d'une note (groupe, pad, hauteur, tick) au
+    /// relâchement : chaque note d'un accord a la sienne.
+    fn set_recorded_length(&mut self, key: (u8, u8, u8, u32), release_tick: u64) {
+        let (group, pad, pitch, q_tick) = key;
         if self.transport.state != TransportState::Recording {
             return;
         }
-        let len = self.quantize_note_len(q_tick, release_tick);
+        let len = self.quantize_note_len(self.rec_held(group, q_tick, release_tick));
         let focus = group as usize;
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
-        if let Some(pat) = proj
-            .active_pattern_index(focus, self.active_scene)
-            .and_then(|i| proj.groups.get_mut(focus)?.patterns.get_mut(i))
+        if let Some(pat) = self
+            .rec_position(proj, focus, release_tick)
+            .and_then(|(i, _)| proj.groups.get_mut(focus)?.patterns.get_mut(i))
         {
             if let Some(e) = pat
                 .events
                 .iter_mut()
                 .rev()
-                .find(|e| e.pad == pad && e.tick == q_tick)
+                .find(|e| e.pad == pad && e.tick == q_tick && e.pitch == pitch)
             {
                 e.length_ticks = len;
             }
@@ -5703,9 +5926,9 @@ impl Engine {
         let focus = group as usize;
         let mut guard = self.project.write();
         let proj = project_mut(&mut guard);
-        if let Some(pat) = proj
-            .active_pattern_index(focus, self.active_scene)
-            .and_then(|i| proj.groups.get_mut(focus)?.patterns.get_mut(i))
+        if let Some(pat) = self
+            .rec_position(proj, focus, self.transport.tick)
+            .and_then(|(i, _)| proj.groups.get_mut(focus)?.patterns.get_mut(i))
         {
             if let Some(e) = pat
                 .events
@@ -5725,6 +5948,8 @@ impl Engine {
         self.rec_pad_press = [None; 16];
         self.rec_key_press = [None; 128];
         self.rec_sounding = [None; 16];
+        self.rec_skip = [None; 16];
+        self.rec_holds = [None; 16];
         let mut due = [None; 16];
         for (i, slot) in self.pending_note_offs.iter_mut().enumerate() {
             if let Some((pad, note, _)) = slot.take() {
@@ -10082,6 +10307,210 @@ mod tests {
             .filter(|(p, _, _)| *p == 3)
             .count();
         assert_eq!(count, 1, "un seul note-off programmé par pad");
+    }
+
+    /// Vide tous les patterns : seuls les événements du test sonnent.
+    fn silence_patterns(eng: &mut Engine) {
+        let mut guard = eng.project.write();
+        for group in &mut project_mut(&mut guard).groups {
+            for pat in &mut group.patterns {
+                pat.events.clear();
+            }
+        }
+    }
+
+    fn transport(eng: &mut Engine, rec: bool) {
+        eng.handle_event(EngineEvent::Transport {
+            play: true,
+            rec,
+            stop: false,
+        })
+        .unwrap();
+    }
+
+    /// 25 samples par tick à 120 BPM / 48 kHz.
+    const SPT: u64 = 25;
+
+    #[test]
+    fn chained_patterns_play_one_after_the_other_with_the_loop_on() {
+        let mut eng = Engine::new_demo(48000);
+        let g = eng.group_focus;
+        eng.handle_event(EngineEvent::AddPattern { group: g })
+            .unwrap();
+        silence_patterns(&mut eng);
+        // Deux pads éloignés : l'intervalle couvre des emplacements vides.
+        eng.handle_event(EngineEvent::PatternChain {
+            group: g,
+            patterns: (0..=5).collect(),
+        })
+        .unwrap();
+        assert_eq!(eng.pattern_chains[g as usize], Some(vec![0, 1]));
+        let len = {
+            let mut guard = eng.project.write();
+            let pats = &mut project_mut(&mut guard).groups[g as usize].patterns;
+            for (pat, pad) in pats.iter_mut().zip([2u8, 5]) {
+                pat.events = vec![PatternEvent {
+                    pad,
+                    tick: 0,
+                    velocity: 100,
+                    length_ticks: 120,
+                    pitch: 36 + pad,
+                }];
+            }
+            pats[0].length.to_ticks() as u64
+        };
+        assert!(eng.transport.loop_enabled, "boucle active par défaut");
+        transport(&mut eng, false);
+        // Pads (2, 5) déclenchés pendant la durée d'un pattern.
+        let run = |eng: &mut Engine| {
+            let mut hit = (false, false);
+            for _ in 0..len / 20 {
+                eng.advance(20 * SPT);
+                hit.0 |= eng.pad_activity[2] > 0.9 * 100.0 / 127.0;
+                hit.1 |= eng.pad_activity[5] > 0.9 * 100.0 / 127.0;
+            }
+            hit
+        };
+        assert_eq!(run(&mut eng), (true, false), "premier pattern");
+        assert_eq!(
+            eng.hardware_snapshot().scene_pattern,
+            Some(1),
+            "le pad du pattern en cours de la chaîne est signalé"
+        );
+        assert_eq!(run(&mut eng), (false, true), "second pattern de la chaîne");
+        assert_eq!(run(&mut eng), (true, false), "retour au premier");
+        assert!(eng.transport.tick < 2 * len, "la boucle suit la chaîne");
+    }
+
+    #[test]
+    fn chained_scenes_play_one_after_the_other_with_the_loop_on() {
+        let mut eng = Engine::new_demo(48000);
+        eng.handle_event(EngineEvent::AddScene).unwrap();
+        // Deux pads éloignés : les scènes inexistantes sont ignorées.
+        eng.handle_event(EngineEvent::SceneChain((0..=15).collect()))
+            .unwrap();
+        let (count, len) = {
+            let proj = eng.project.read();
+            (proj.song.len(), proj.song[0].length.to_ticks() as u64)
+        };
+        assert_eq!(count, eng.project.read().scenes.len());
+        assert_eq!(eng.hardware_snapshot().scene_chain_mask, (1 << count) - 1);
+        assert!(eng.transport.loop_enabled);
+        transport(&mut eng, false);
+        eng.advance((len + 20) * SPT);
+        assert_eq!(eng.active_scene, Some(1), "seconde scène de la chaîne");
+        // Choisir une scène seule quitte la chaîne.
+        eng.handle_event(EngineEvent::Scene(0)).unwrap();
+        assert_eq!(eng.hardware_snapshot().scene_chain_mask, 0);
+    }
+
+    #[test]
+    fn rec_note_played_ahead_of_the_grid_is_not_retriggered() {
+        let mut eng = Engine::new_demo(48000);
+        silence_patterns(&mut eng);
+        transport(&mut eng, true);
+        eng.advance(220 * SPT);
+        let before = eng.sampler.num_voices();
+        eng.handle_event(EngineEvent::Pad {
+            pad: 0,
+            velocity: 100,
+            pressed: true,
+        })
+        .unwrap();
+        assert!(eng.rec_skip.iter().any(Option::is_some));
+        assert!(eng.rec_holds.iter().any(Option::is_some), "note tenue");
+        let live = eng.sampler.num_voices();
+        assert!(live > before, "la voix live sonne tout de suite");
+        // Le séquenceur franchit le pas quantifié (tick 240) : pas de flam.
+        eng.advance(40 * SPT);
+        assert_eq!(eng.sampler.num_voices(), live, "pas de seconde voix");
+        assert!(eng.rec_skip.iter().all(Option::is_none));
+        // Au tour suivant, la note enregistrée joue normalement.
+        eng.handle_event(EngineEvent::Pad {
+            pad: 0,
+            velocity: 0,
+            pressed: false,
+        })
+        .unwrap();
+        let cycle = eng.cycle_ticks().unwrap();
+        eng.pad_activity = [0.0; 16];
+        let mut replayed = false;
+        for _ in 0..cycle / 20 {
+            eng.advance(20 * SPT);
+            replayed |= eng.pad_activity[0] > 0.5;
+        }
+        assert!(replayed, "la note est rejouée au passage suivant");
+    }
+
+    #[test]
+    fn rec_note_held_across_the_loop_keeps_its_length() {
+        let mut eng = Engine::new_demo(48000);
+        silence_patterns(&mut eng);
+        transport(&mut eng, true);
+        let g = eng.group_focus as usize;
+        let len = {
+            let proj = eng.project.read();
+            let i = proj.active_pattern_index(g, eng.active_scene).unwrap();
+            proj.groups[g].patterns[i].length.to_ticks() as u64
+        };
+        // Appui un pas avant la fin du pattern, relâché deux pas plus tard.
+        eng.advance((len - 240) * SPT);
+        let pad = |eng: &mut Engine, pressed| {
+            eng.handle_event(EngineEvent::Pad {
+                pad: 0,
+                velocity: 100,
+                pressed,
+            })
+            .unwrap();
+        };
+        pad(&mut eng, true);
+        for _ in 0..24 {
+            eng.advance(20 * SPT);
+        }
+        pad(&mut eng, false);
+        let proj = eng.project.read();
+        let i = proj.active_pattern_index(g, eng.active_scene).unwrap();
+        let ev = &proj.groups[g].patterns[i].events[0];
+        assert_eq!((u64::from(ev.tick), ev.length_ticks), (len - 240, 480));
+    }
+
+    #[test]
+    fn rec_chord_schedules_one_note_off_per_note() {
+        let mut eng = Engine::new_demo(48000);
+        eng.load_plugin_to_sound(0, 0, 1).unwrap();
+        eng.handle_event(EngineEvent::SelectSound(0)).unwrap();
+        transport(&mut eng, true);
+        for (pressed, velocity) in [(true, 110), (false, 0)] {
+            for note in [60, 64, 67] {
+                eng.handle_event(EngineEvent::KeyboardTrigger {
+                    note,
+                    velocity,
+                    pressed,
+                })
+                .unwrap();
+            }
+            eng.advance(1200);
+        }
+        // Les trois fins de note existent, puis s'éteignent toutes.
+        assert_eq!(eng.pending_note_offs.iter().flatten().count(), 3);
+        assert!(eng.rec_holds.iter().all(Option::is_none));
+        {
+            // Chaque note de l'accord garde la durée tenue (1200 samples = 48
+            // ticks, arrondis à un pas), pas la longueur provisoire.
+            let proj = eng.project.read();
+            let i = proj.active_pattern_index(0, eng.active_scene).unwrap();
+            let lens: Vec<u32> = proj.groups[0].patterns[i]
+                .events
+                .iter()
+                .filter(|e| e.pad == 0 && [60, 64, 67].contains(&e.pitch))
+                .map(|e| e.length_ticks)
+                .collect();
+            assert_eq!(lens, [240, 240, 240]);
+        }
+        for _ in 0..40 {
+            eng.advance(240);
+        }
+        assert!(eng.pending_note_offs.iter().all(Option::is_none));
     }
 
     #[test]

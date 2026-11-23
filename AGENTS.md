@@ -126,6 +126,22 @@ RUSTFLAGS="-D warnings" cargo check -p maschine-engine --no-default-features --l
   `commit_launches` runs in `handle_event` and in the HID loop (`refresh_leds`,
   ~60 Hz). Writing the project from `advance` would clone the whole `Arc<Project>`
   in the audio callback.
+- Sequencer windows are half-open `[prev, new)`. `Engine::advance` sets the
+  transport loop to `cycle_ticks()` (chain, longest pattern, Song) and passes
+  `wrapped` / `elapsed`; anything timed across blocks must use `elapsed`, not
+  `transport.tick` comparisons (the tick wraps). Live notes recorded ahead of
+  the grid go to `rec_skip` so the sequencer does not retrigger them; notes
+  still held go to `rec_holds` so it does not release them at their
+  provisional length (120 ticks until `set_recorded_length`). Recorded events
+  are identified by (group, pad, pitch, tick): chord notes share pad and tick.
+- A chain is not stored in the project: `Engine::pattern_chains` (per group,
+  runtime) and, for scenes, `Project::song` + `song_mode` (a scene chain
+  rewrites the Song). `chain_slot` is the only place that maps a tick to the
+  chain's pattern; `rec_position` uses it for recording, the hardware
+  snapshot for the white "playing" pad (`scene_pattern`).
+- The first of two "simultaneous" pads always arrives alone (one
+  `PatternTrigger` / `SceneTrigger`, then the chain action): the engine's
+  chain events must undo its effect (pending launch), not the mapper.
 - Sample editor tools (REVERSE, NORMLZ, LOOP) change the sampler and record a
   flag in `Sound::edits`; `restore_sound_edits` replays them (and the play
   range) after every project load. Source WAV files are never rewritten.

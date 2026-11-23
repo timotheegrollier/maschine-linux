@@ -36,6 +36,11 @@
   </provides>
 
   <releases>
+    <release version="0.29.0" date="2026-11-23">
+      <description>
+        <p>Release 0.29.0: the MK3 Smart Strip works (PITCH bend, MOD FX filter and flanger, PERFORM FX stutter, echo and tremolo, NOTES strumming, also in the GUI deck); every instrument now plays and releases its notes on the exact sample (Kick Synth, Nexus and TB-303 no longer drift or drop out with large audio buffers), steady Note Repeat and arpeggiator, a denser and smoother reverb, and cleaner SONG and SETTINGS screens.</p>
+      </description>
+    </release>
     <release version="0.28.0" date="2026-11-23">
       <description>
         <p>Release 0.28.0: automation playback (linear ramps) for instrument parameters, insert effects and group volume / pan, point editing from the display buttons while AUTO is lit, CLEAR AUTO, and redesigned automation screens.</p>

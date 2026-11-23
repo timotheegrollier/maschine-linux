@@ -2,6 +2,33 @@
 
 All notable changes.
 
+## [0.29.0] - 2026-11-23
+
+### Added
+- **Smart Strip de la MK3** (boutons `PITCH`, `MOD`, `PERFORM`, `NOTES` au-dessus de la bande tactile, LED allumée sur le mode actif) :
+  - `PITCH` : transpose le Sound actif jusqu'à ±12 demi-tons (sampler, TB-303, Kick Synth, Nexus, notes en cours comprises), retour au centre au relâchement, sans marches audibles.
+  - `MOD` (**MOD FX**) : `FILTRE` (passe-bas qui se ferme vers la gauche, passe-haut qui monte vers la droite, neutre au centre) et `FLANGER` (retard réglé au doigt) sur tout le Master ; envoie aussi la molette de modulation MIDI (CC 1).
+  - `PERFORM` (**PERFORM FX**) : `STUTTER` (répète la tranche jouée au toucher, de 1/4 à 1/32), `ÉCHO` (envoi tant que le doigt est posé, la queue continue au relâchement ; 1/4, 1/8 pointée, 1/8, 1/16) et `TRÉMOLO` (de 1/4 à 1/32), calés sur le tempo.
+  - `SHIFT + MOD` / `SHIFT + PERFORM` (« FX Select ») : effet suivant ; l'effet et le réglage sous le doigt s'affichent sur les écrans.
+  - `NOTES` : glisser le doigt joue les pads 1 à 16 un à un (modes pads, KEYBOARD, CHORDS).
+  - Effets sur le Master, après ses inserts : ils s'effacent en quelques millisecondes au relâchement, sans clic.
+- **Smart Strip dans la GUI** (pont MK3, au-dessus des groupes) : bouton du mode (clic : mode suivant), bouton de l'effet (clic : effet suivant) et la bande — glisser dessus revient à poser le doigt ; ses LEDs sont celles de la MK3.
+
+### Fixed
+- **Lecture au sample près pour tous les instruments** : le Kick Synth et le Nexus partaient au début du bloc audio (jusqu'à 21 ms d'avance avec un buffer de 1024) ; le TB-303 coupait le début du bloc où tombait chaque note (trou de silence et clic sur les lignes liées et l'écho interne). Les notes et leurs fins sont maintenant jouées à leur trame exacte, quel que soit le buffer.
+- **Fin de boucle** : une note qui finit pile quand la suivante commence (dernière note du pattern sur la même hauteur que la première) ne coupe plus cette dernière (TB-303, Nexus, sampler).
+- **Note Repeat et arpégiateur réguliers** : chaque répétition part à sa trame (plusieurs par bloc si besoin) au lieu du début du bloc — roulements et arpèges sans irrégularité, transport lancé ou arrêté ; les répétitions enregistrées gardent leur position.
+- **Kick Synth** : un nouveau coup pendant la queue du précédent ne claque plus (fondu de 3 ms du son en cours).
+- **Fins de note du sampler au sample près**, choke et vol de voix à la trame de la nouvelle note (le charley ouvert n'est plus coupé en avance par le fermé).
+- **Thread audio sans allocation** : les voix du sampler sont réservées à l'avance et le round-robin n'insère plus dans le callback ; le Note Repeat et l'arpégiateur ne copient plus les paramètres des synthés (craquements possibles aux premières notes).
+
+### Changed
+- **Reverb** : nouveau moteur à 8 retards rebouclés (Hadamard) après 4 diffuseurs, retards légèrement modulés — queue dense et lisse, sans le timbre métallique de l'ancien Freeverb ; même volume perçu, `SIZE` règle la durée de 0,3 s à 3,6 s (la courbe de l'écran suit exactement le son).
+- **Écrans SONG TIMELINE et SETTINGS (MK3)** : texte Barlow, plus aucun chevauchement — groupes de la section sur deux colonnes, cartes des réglages sur trois lignes ; la carte FOCUS montre le mode de la Smart Strip et son effet.
+
+### Validation
+- Tests : `synth_notes_start_on_their_sample_whatever_the_block_size`, `tb303_legato_notes_play_without_a_silent_gap`, `a_note_ending_on_the_loop_does_not_cut_the_first_one`, `note_repeat_hits_are_evenly_spaced_whatever_the_block_size`, `note_off_at_releases_on_its_frame_and_spares_the_next_note`, `voices_never_reallocate_in_the_audio_thread`, `retrigger_continues_from_the_ringing_kick`, `reverb_tail_grows_with_size_level_stays_even_and_sides_differ`, `strip_filter_sweeps_while_touched_and_lets_go_cleanly`, `strip_stutter_repeats_the_slice_played_at_the_touch`, `strip_echo_repeats_while_touched_and_keeps_its_tail`, `strip_tremolo_and_flanger_stay_bounded_and_finite`, `smart_strip_bends_the_active_sound_and_plays_mod_and_perform_fx`, `smart_strip_follows_one_finger_switches_modes_and_strums_pads`.
+
 ## [0.28.0] - 2026-11-23
 
 ### Added

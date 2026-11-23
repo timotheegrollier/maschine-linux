@@ -4,7 +4,7 @@ Living document: what works, what is partial, what is missing, and what to
 check on real hardware. Update it with every release (see the release steps in
 `AGENTS.md`). Behaviour details live in `workflow.md`; this file is the map.
 
-## Current version: 0.28.0
+## Current version: 0.29.0
 
 ### Done (with tests)
 
@@ -12,7 +12,9 @@ check on real hardware. Update it with every release (see the release steps in
 |---|---|---|
 | MK3 screens | Official layout (labels top, knob slots bottom), Barlow typography, group-colour accent, anti-aliased shapes (tiny-skia), page transitions | `display_render` tests, `dump_screens` |
 | PLUG-IN | Every instrument parameter on pages (Page ◄ ►), plugin chain on the 4D (instrument, Sound / Group / Master inserts, `+ effet`) | `plugin_chain_inserts_edits_and_bypasses_effects_from_soft_keys`, `plugin_pages` tests |
-| Effects | Filter, EQ, Distortion, Compressor, Lo-Fi, Chorus, Delay, Reverb; per-slot DSP state; real Sound → Group → Master buses | `fx::tests`, `sound_group_and_master_inserts_process_the_audio` |
+| Effects | Filter, EQ, Distortion, Compressor, Lo-Fi, Chorus, Delay, Reverb (8-line FDN since 0.29.0, decay from `fx::reverb_decay_secs`); per-slot DSP state; real Sound → Group → Master buses | `fx::tests`, `sound_group_and_master_inserts_process_the_audio`, `reverb_tail_grows_with_size_level_stays_even_and_sides_differ` |
+| Smart Strip (0.29.0) | `PITCH` bend ±12 st of the active Sound (sampler + synths), `MOD` FX (filter, flanger) + MIDI CC 1, `PERFORM` FX (stutter, echo, tremolo), `SHIFT` + MOD / PERFORM = next effect, `NOTES` strums pads 1–16; strip LEDs; GUI strip in the MK3 deck | `smart_strip_bends_the_active_sound_and_plays_mod_and_perform_fx`, `smart_strip_follows_one_finger_switches_modes_and_strums_pads`, `strip_*` (fx) |
+| Sample-accurate playback (0.29.0) | Rack synths (TB-303, Kick, Nexus) take notes through `RackSlot::schedule` (block split at each note, off before on), sampler note-offs at their frame, Note Repeat / Arp on their frame, Kick retrigger declick, no allocation in the sampler voice path | `synth_notes_start_on_their_sample_whatever_the_block_size`, `tb303_legato_notes_play_without_a_silent_gap`, `a_note_ending_on_the_loop_does_not_cut_the_first_one`, `note_repeat_hits_are_evenly_spaced_whatever_the_block_size`, `note_off_at_*`, `voices_never_reallocate_in_the_audio_thread`, `retrigger_continues_from_the_ringing_kick` |
 | Sound quality | Transparent master limiter, Hermite sampler interpolation, PolyBLEP oscillators, guitar amp (oversampler fixed, compensated gain, 24 dB/oct cabinet) | `limiter` tests, `maschine-dsp` amp tests |
 | SAMPLING | Sample editor: RECORD (MK3 input → WAV → pad), EDIT (play range, tune, gain, ADSR), SLICE (grid / transients → pads), ZONE (root, key and velocity ranges, fine tune, pan, gain) | `sample_editor_pages_edit_slice_zone_and_record`, `play_range_*`, `onsets_*` |
 | EVENTS | Note editing: position, note, velocity, length; select, delete, duplicate, quantize, nudge; one Sound or all | `events_mode_edits_the_selected_note_with_knobs_and_buttons` |
@@ -30,6 +32,15 @@ check on real hardware. Update it with every release (see the release steps in
 | GUI | Single header, colour-coded group rail, MK3 deck at the bottom (screens, buttons, knobs, pads, PAGE / SLOT / EVENTS), plugin chain strip, sample editor strip, nothing clipped from 420×340 up, deck folds below 620 px | Xvfb captures at 1920×1080 → 800×600 |
 
 ### Partial or not implemented
+
+- **Smart Strip** (0.29.0): the touch-strip bytes of report `0x01`
+  (28–35, finger 0 = bytes 28–29, position on 10 bits) come from the
+  reverse-engineering notes and were not checked on a controller — if the
+  strip does not react, capture `hid-dump` while sliding a finger and fix
+  `parse_input_01`. Effects are on the Master only (no per-group Perform FX
+  slot), `PITCH` has a fixed ±12 semitone range, `MOD` has no internal
+  modulation target besides MOD FX (CC 1 goes to the MIDI output), the strip
+  position is 1-D (no pressure).
 
 - **Sample editor**: no destructive cut / paste / fades on the audio (only
   REVERSE and NORMALIZE, stored in `Sound::edits` and replayed on load), one recording source (the MK3 / default capture
@@ -85,6 +96,14 @@ check on real hardware. Update it with every release (see the release steps in
 
 ### Check on real hardware (not covered by CI)
 
+00. (0.29.0) Smart Strip: the strip LEDs follow the finger; `PITCH` on a
+   TB-303 or sampler pad bends up / down and comes back; `MOD`: left closes
+   a low-pass, right opens a high-pass, nothing in the middle; `SHIFT + MOD`
+   → `FLANGER`; `PERFORM`: `STUTTER` repeats, `SHIFT + PERFORM` → `ÉCHO`
+   (tail after release) → `TRÉMOLO`; `NOTES`: sliding plays the pads. With a
+   PipeWire quantum of 1024, a Kick Synth / TB-303 pattern now stays tight
+   against the sampled hats.
+
 0. (0.27.0) SCENE: hold pads 1 + 3 while playing — scenes
    1 to 3 play in turn, their pads are lit brighter than free scenes, a single
    pad leaves the chain. PATTERN (LEDs): chained pads bright, the playing one white and moving.
@@ -109,6 +128,9 @@ check on real hardware. Update it with every release (see the release steps in
 
 ### Suggested next steps
 
+- Confirm the Smart Strip bytes on hardware (`hid-dump`), then per-group
+  Perform FX slots like Maschine 3 (Perform FX in a Group / Master slot).
+
 - Sample editor: destructive EDIT functions (truncate to range, fades, cut /
   copy / paste), slice-to-pattern, recording through the guitar amp.
 - EVENTS: multi-selection with pads (select all notes of a Sound) and relative
@@ -119,6 +141,11 @@ check on real hardware. Update it with every release (see the release steps in
 - Confirm the pad LED behaviour on hardware and adjust `HardwareMapper::update_leds`.
 
 ## History (recent)
+
+- **0.29.0** — Smart Strip (PITCH, MOD FX, PERFORM FX, NOTES) sur la MK3 et
+  dans la GUI ; lecture au sample près de tous les instruments (Kick Synth,
+  Nexus, TB-303 sans trou), fins de note et Note Repeat / arpégiateur à leur
+  trame ; reverb FDN ; écrans SONG TIMELINE et SETTINGS refaits.
 
 - **0.28.0** — automations : relecture (rampes), instruments, effets
   d'insert et volume / pan de groupe, édition des points aux boutons d'écran,

@@ -14,7 +14,7 @@ Maschine Linux is an independent project. It does not include Native
 Instruments code or proprietary assets; it reproduces the documented workflow
 and hardware behavior through a clean-room implementation.
 
-## Current state (0.28.0)
+## Current state (0.29.0)
 
 Cargo workspace with six crates:
 
@@ -35,6 +35,18 @@ Audio uses a 256-frame buffer (64-frame period, about 1.3 ms) at 48 kHz, a
 inside each block, and a drum kit regenerated at the device sample rate.
 Instrumentation: `--debug-latency` (HID→Engine, real buffer size, misses,
 errors) and `--stress` (deliberate engine-lock contention).
+
+### Smart Strip and sample-accurate playback in 0.29.0
+
+- The MK3 Smart Strip works: `PITCH` bends the active Sound (±12 semitones),
+  `MOD` plays MOD FX (filter sweep, flanger) and sends the MIDI mod wheel,
+  `PERFORM` plays PERFORM FX (stutter, echo, tremolo, tempo-synced),
+  `SHIFT + MOD / PERFORM` picks the next effect, and `NOTES` strums the pads.
+  The GUI deck has the same strip above the group buttons.
+- Every instrument plays and releases its notes on the exact sample: the Kick
+  Synth, Nexus and TB-303 no longer drift or drop out with large audio
+  buffers; Note Repeat and the arpeggiator are steady.
+- New reverb (8-line feedback delay network): denser, smoother tail.
 
 ### 16 Velocities, arpeggiator modes and multi-note editing in 0.17.0
 
@@ -164,7 +176,7 @@ errors) and `--stress` (deliberate engine-lock contention).
   state.
 - **Cleaner sound everywhere**: transparent master limiter instead of a
   saturating waveshaper, rewritten effects (TPT filter, anti-aliased
-  distortion, soft-knee compressor, smoothed delay, Freeverb reverb), Hermite
+  distortion, soft-knee compressor, smoothed delay, FDN reverb), Hermite
   interpolation in the sampler, PolyBLEP oscillators in Nexus, and a guitar amp
   whose oversampler read one input in four (-12 dB, aliasing) — fixed, with
   level-compensated gain and a 24 dB/oct cabinet.

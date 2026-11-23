@@ -4,7 +4,7 @@ Living document: what works, what is partial, what is missing, and what to
 check on real hardware. Update it with every release (see the release steps in
 `AGENTS.md`). Behaviour details live in `workflow.md`; this file is the map.
 
-## Current version: 0.26.3
+## Current version: 0.27.0
 
 ### Done (with tests)
 
@@ -68,12 +68,22 @@ check on real hardware. Update it with every release (see the release steps in
   du pattern et courbe des points). Les points sont enregistrés dans le Pattern
   mais ne sont pas encore rejoués pendant la lecture ; `CLEAR AUTO` et le
   comportement des knobs tactiles restent à implémenter.
-- **Pattern workflow**: two pads pressed together chain the whole interval
-  (1→16 possible); SHIFT + a pattern pad now switches immediately while the
+- **Pattern workflow**: two pads pressed together chain the existing patterns
+  of the interval (1→16 possible); the playback loop follows the chain / the
+  longest pattern of the scene (`Engine::cycle_ticks`), recording goes to the
+  chain's playing pattern (`rec_position`); SHIFT + a pattern pad now switches immediately while the
   transport runs (pending launch and chain cancelled). The generic SHIFT-pad
   layer (UNDO/REDO/…) remains active outside PATTERN mode.
 
 ### Check on real hardware (not covered by CI)
+
+0. (0.27.0) SCENE: hold pads 1 + 3 while playing — scenes
+   1 to 3 play in turn, their pads are lit brighter than free scenes, a single
+   pad leaves the chain. PATTERN (LEDs): chained pads bright, the playing one white and moving.
+   PATTERN: hold pads 1 + 2 with two patterns of
+   2 bars or more — both play in turn. REC with the metronome: hits played
+   slightly early do not flam, the accented click sounds on every loop, a
+   chord released during REC leaves no hanging note.
 
 1. Plug the MK3 with the application closed: the standby screen appears after
    about 3 s (`journalctl --user -u maschine-linux-standby` otherwise).
@@ -97,11 +107,17 @@ check on real hardware. Update it with every release (see the release steps in
   edits on the selection.
 - Redesign the mixer, browser and step layouts with the same care as PLUG-IN
   (see `docs/design.md`).
+- Automation playback: points store the knob index without its page and an
+  absolute tick; the model needs `page` and pattern-local ticks first.
 - Automation lanes (knob recording) — would make `CLEAR AUTO` meaningful.
 - Confirm the pad LED behaviour on hardware and adjust `HardwareMapper::update_leds`.
 
 ## History (recent)
 
+- **0.27.0** — chaînes de patterns et de scènes qui jouent vraiment à la
+  suite (la boucle suit ce qui joue), LEDs de chaîne (pattern joué en blanc),
+  REC sans flam ni note tenue, longueurs par note, premier temps conservé au
+  bouclage, position stable dans la GUI.
 - **0.26.3** — fiabilité : timeout des écritures LED/pw-link, arrêt USB
   non bloquant, plus de changement automatique de la source PipeWire par défaut,
   relâchement propre des note-offs REC programmés.

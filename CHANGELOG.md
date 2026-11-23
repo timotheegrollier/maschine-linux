@@ -2,6 +2,25 @@
 
 All notable changes.
 
+## [0.27.0] - 2026-11-23
+
+### Fixed
+- **GUI, position en haut** : affichée en mesure.temps.double-croche (comme Maschine) dans une case de largeur fixe — les ticks ne défilent plus à chaque image et l'en-tête ne saute plus.
+- **Chaînage de patterns** : la boucle de lecture suit ce qui joue (chaîne, pattern le plus long de la scène, Song) au lieu de rester fixée à 2 mesures — une chaîne ou un pattern plus long n'est plus coupé. Deux pads éloignés ne chaînent que les patterns existants, et le lancement demandé par le premier pad est annulé par la chaîne.
+- **REC sans flam** : une note jouée juste avant la grille n'est plus redéclenchée par le séquenceur quelques millisecondes plus tard (la voix live suffit au premier passage).
+- **REC, longueur des notes** : calculée dans le pattern (modulo sa longueur) — une note tenue à travers le bouclage garde sa durée ; la fin quantifiée de la pré-écoute est un compte à rebours qui survit au bouclage.
+- **REC, accords** : une fin de note par note (les notes d'un accord partageaient le même emplacement et restaient tenues).
+- **REC dans une chaîne** : la note va dans le pattern en cours de lecture.
+- **Boucle** : le premier temps (notes au tick 0, clic accentué du métronome, lancements « à la prochaine mesure ») n'est plus perdu ni doublé au tour de boucle ; le métronome clique aussi sur le premier temps au départ.
+
+- **Chaînage de scènes** (deux pads en mode SCENE, bouton `ENCHAIN`) : la chaîne avance réellement avec la boucle active, chaque scène joue sur la longueur de son plus long pattern (au lieu de 2 mesures fixes), les pads vides de l'intervalle sont ignorés et le lancement du premier pad est annulé. Les pads des scènes chaînées sont allumés plus fort que les scènes libres (MK3 et GUI).
+
+- **LEDs de chaîne de patterns** : trois niveaux nets en mode PATTERN — pattern existant atténué, patterns chaînés vifs, pattern en cours de lecture dans la chaîne en blanc (il se déplace avec la lecture).
+- **REC, notes tenues** : tant qu'un pad / une touche est tenu, le séquenceur ne relâche plus la note à sa longueur provisoire (un sample tenu était coupé après une triple-croche) ; chaque note d'un accord reçoit sa propre longueur au relâchement (seule la dernière était mise à jour).
+
+### Validation
+- Tests : `chained_scenes_play_one_after_the_other_with_the_loop_on`, `chained_scene_pads_are_brighter`, `chained_patterns_play_one_after_the_other_with_the_loop_on`, `rec_note_played_ahead_of_the_grid_is_not_retriggered`, `rec_note_held_across_the_loop_keeps_its_length`, `rec_chord_schedules_one_note_off_per_note` (longueurs par note), `chained_pattern_pads_are_brighter` (pattern joué en blanc).
+
 ## [0.26.3] - 2026-11-23
 
 ### Fixed
